@@ -338,12 +338,11 @@ def _cmd_ab(args) -> int:
         # otherwise wastes every answer, then fails every grade (the '0/5 judged' symptom).
         ok, msg = judge_preflight(cfg.root)
         if not ok:
-            print(f"⚠ ABORT: the Opus judge is not reachable — {msg}\n"
-                  "  Set the credential in THIS shell, e.g.:\n"
-                  "    export CODEQA_JUDGE_AUTH=\"$(az account get-access-token "
-                  "--resource https://cognitiveservices.azure.com --query accessToken -o tsv)\"\n"
-                  "  (token expires ~1h; re-run the export if it lapses). Or run without --judge "
-                  "for diagnostics-only.")
+            print(f"⚠ ABORT: the judge is not reachable — {msg}\n"
+                  "  By default the judge uses your installed `claude` CLI (no extra setup).\n"
+                  "  Ensure `claude` is on PATH and logged in, or set CODEQA_JUDGE_BACKEND=codex.\n"
+                  "  To use an HTTP endpoint instead: export CODEQA_JUDGE_BASE=<url> (+ any\n"
+                  "  CODEQA_JUDGE_AUTH it needs). Or run without --judge for diagnostics-only.")
             return 3
         # blinded Opus correctness judge — grades against the LIVE tree at cfg.root (Codex F1)
         judge_fn = opus_judge_fn(cfg.root)

@@ -36,10 +36,6 @@ _ML = Path(__file__).resolve().parents[1]
 # The verify gate needs pytest+ruff. Prefer an explicit APEX_ORNITH_VERIFY_PY (a venv that
 # has them), else fall back to the current interpreter. No machine-specific path is baked in.
 _VERIFY_PY = os.environ.get("APEX_ORNITH_VERIFY_PY") or sys.executable
-if str(_ML) not in sys.path:
-    sys.path.insert(0, str(_ML))
-if str(_ML / "ornith") not in sys.path:
-    sys.path.insert(0, str(_ML / "ornith"))
 
 REVIEW_PREAMBLE = (
     "You are an adversarial code reviewer auditing a git diff. Find REAL correctness defects: "

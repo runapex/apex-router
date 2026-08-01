@@ -20,7 +20,11 @@ from .ornith_client import LOCK, MAINTENANCE, readiness
 ROOT = Path(__file__).resolve().parent
 FEEDBACK = ROOT / 'feedback/approved.jsonl'
 TRAIN = ROOT / 'training/train.sh'
-MIN = int(os.environ.get('ORNITH_MIN_TRAINING_EXAMPLES', '100'))
+def _min_examples() -> int:
+    try:
+        return int(os.environ.get('ORNITH_MIN_TRAINING_EXAMPLES', '100'))
+    except (TypeError, ValueError):
+        return 100
 
 
 def count() -> int:
@@ -42,7 +46,7 @@ def main() -> None:
 
     n = count()
     print(f'approved de-identified examples: {n}')
-    if n < MIN:
+    if n < _min_examples():
         raise SystemExit(0)
     if not (TRAIN.exists() and os.access(TRAIN, os.X_OK)):
         print('training disabled: create verified executable training/train.sh')

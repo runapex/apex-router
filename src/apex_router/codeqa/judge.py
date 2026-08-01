@@ -14,8 +14,9 @@ Design (model-routing skill):
     "supported by the code the model was shown", not the judge's own repo knowledge (which it lacks).
 
 The API call is a SEAM (`call_fn`) so scoring logic is unit-testable offline; `opus_judge_fn()`
-wires the real call through the apex proxy (which forwards Azure-APIM/Foundry creds verbatim). The
-credential is provided by the environment (az login / APIM key) — this module does NOT embed one.
+wires the real call through the target's own `claude`/`codex` CLI by default (tools disabled), or
+an HTTP endpoint the user sets via CODEQA_JUDGE_BASE. Any credential comes from the environment —
+this module does NOT embed one.
 """
 from __future__ import annotations
 
@@ -31,19 +32,18 @@ from .impact import parse_emitted_citations
 
 # The judge reaches a frontier model through the target machine's OWN capabilities. By
 # default that is the installed `claude` CLI (via the CLI adapter — no Foundry, no
-# internal endpoint). A power user may instead point CODEQA_JUDGE_BASE at an HTTP
-# messages endpoint they control; only then is the HTTP path used. There is NO hardcoded
-# Foundry/localhost default, so nothing internal ships.
-_JUDGE_BASE = os.environ.get("CODEQA_JUDGE_BASE")            # None -> use the CLI adapter
-_JUDGE_BACKEND = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")  # claude | codex
-# The Opus DEPLOYMENT name on the gateway — NOT the "[1m]"-suffixed context-window alias that
-# ANTHROPIC_DEFAULT_OPUS_MODEL carries (that suffix is a Claude-Code marker the deployment rejects
-# with DeploymentNotFound; verified 2026-07-27). Strip a trailing "[...]" from the env value if set.
-# Model id: an explicit CODEQA_JUDGE_MODEL if set, else None -> let the target's CLI use
-# its own default model. No internal deployment id is baked in. A trailing "[...]" marker
-# is stripped if present (some gateways reject it).
-_JUDGE_MODEL_ENV = os.environ.get("CODEQA_JUDGE_MODEL")
-_JUDGE_MODEL = re.sub(r"\[.*?\]$", "", _JUDGE_MODEL_ENV) if _JUDGE_MODEL_ENV else None
+# internal endpoint, tools disabled). A power user may instead point CODEQA_JUDGE_BASE at
+# an HTTP messages endpoint they control; only then is the HTTP path used.
+#
+# Config is resolved at CALL time from the environment (Codex #3) — never snapshotted at
+# import — so a later env change (or a test) takes effect immediately. An empty
+# CODEQA_JUDGE_BASE ("") means "use the CLI adapter", same as unset.
+def _judge_config():
+    base = os.environ.get("CODEQA_JUDGE_BASE") or None      # "" -> None -> CLI adapter
+    backend = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")
+    m = os.environ.get("CODEQA_JUDGE_MODEL")
+    model = re.sub(r"\[.*?\]$", "", m) if m else None       # strip a trailing "[...]" marker
+    return base, backend, model
 
 # Grades against the LIVE CODE at the answer's cited locations — NOT the answerer's retrieved excerpts
 # (Codex A/B-judge-F1: grading vs excerpts penalizes a CORRECT digest-derived claim that isn't in the
@@ -161,17 +161,21 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
     no Foundry, no internal endpoint. Only if CODEQA_JUDGE_BASE is explicitly set does the
     request go over HTTP to that user-supplied messages endpoint. Never embeds a credential.
     """
+    base, backend, model = _judge_config()      # resolved fresh each call (Codex #3)
     system_prompt = _RUBRIC
-    if _JUDGE_BASE is None:
-        # CLI adapter path (the portable default).
+    if base is None:
+        # CLI adapter path (the portable default) — tools disabled, model via env.
         from ..backend import cli_adapter
         full = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        return cli_adapter.model_call(full, backend=_JUDGE_BACKEND, model=_JUDGE_MODEL,
-                                      timeout=timeout).content
+        try:
+            return cli_adapter.model_call(full, backend=backend, model=model,
+                                          timeout=timeout).content
+        except cli_adapter.AdapterError as e:
+            raise JudgeProtocolError(f"CLI judge call failed: {e}") from e
 
     # Explicit HTTP endpoint the user pointed us at (power-user override).
     body = json.dumps({
-        "model": _JUDGE_MODEL, "max_tokens": max_tokens,
+        "model": model, "max_tokens": max_tokens,
         "system": system_prompt,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -182,7 +186,7 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
     key = os.environ.get("CODEQA_JUDGE_APIM_KEY")
     if key:
         headers["Ocp-Apim-Subscription-Key"] = key
-    req = urllib.request.Request(_JUDGE_BASE.rstrip("/") + "/v1/messages",
+    req = urllib.request.Request(base.rstrip("/") + "/v1/messages",
                                  data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         payload = json.loads(r.read())

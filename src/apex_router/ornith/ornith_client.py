@@ -19,11 +19,20 @@ JOBS_FAILED = ROOT / "jobs/failed"
 
 MAX_ITEM_BYTES = 100_000
 
+def _env_num(name, default, cast):
+    """Parse a numeric env var, falling back to the default on a bad value — so a typo'd
+    env var can never crash `import` (Codex #7)."""
+    try:
+        return cast(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return cast(default)
+
+
 # Real inference gets the long timeout; probes get their own short ones.
-INFER_TIMEOUT = float(os.environ.get("ORNITH_SOCKET_TIMEOUT_SECS", "900"))
-READY_TIMEOUT = float(os.environ.get("ORNITH_READY_TIMEOUT_SECS", "30"))
-LIVE_TIMEOUT = float(os.environ.get("ORNITH_LIVE_TIMEOUT_SECS", "5"))
-STARTUP_RETRIES = int(os.environ.get("ORNITH_STARTUP_RETRIES", "12"))
+INFER_TIMEOUT = _env_num("ORNITH_SOCKET_TIMEOUT_SECS", "900", float)
+READY_TIMEOUT = _env_num("ORNITH_READY_TIMEOUT_SECS", "30", float)
+LIVE_TIMEOUT = _env_num("ORNITH_LIVE_TIMEOUT_SECS", "5", float)
+STARTUP_RETRIES = _env_num("ORNITH_STARTUP_RETRIES", "12", int)
 
 
 class OrnithError(RuntimeError): pass

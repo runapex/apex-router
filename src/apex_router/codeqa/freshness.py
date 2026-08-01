@@ -375,7 +375,7 @@ def frontier_verifier(claim: str, code: str) -> str:
     by default (no Foundry, no internal endpoint); only if CODEQA_JUDGE_BASE is explicitly
     set does it use that HTTP messages endpoint. Credentials, if used, come from the env
     (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded. Returns a raw verdict word."""
-    base = os.environ.get("CODEQA_JUDGE_BASE")
+    base = os.environ.get("CODEQA_JUDGE_BASE") or None   # "" -> None -> CLI adapter (Codex #3)
     model = os.environ.get("CODEQA_JUDGE_MODEL")  # None -> the CLI's own default model
     prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
 
@@ -384,7 +384,10 @@ def frontier_verifier(claim: str, code: str) -> str:
         from ..backend import cli_adapter
         backend = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")
         full = f"{_VERIFIER_SYS}\n\n{prompt}"
-        return cli_adapter.model_call(full, backend=backend, model=model, timeout=60).content
+        try:
+            return cli_adapter.model_call(full, backend=backend, model=model, timeout=60).content
+        except cli_adapter.AdapterError:
+            return ""      # unreachable verifier -> empty verdict -> CANNOT-DECIDE upstream
 
     body = json.dumps({
         "model": model, "max_tokens": 8, "system": _VERIFIER_SYS,
