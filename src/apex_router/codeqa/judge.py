@@ -30,16 +30,14 @@ from typing import Callable
 
 from .impact import parse_emitted_citations
 
-# The judge reaches a frontier model through the target machine's OWN capabilities. By
-# default that is the installed `claude` CLI (via the CLI adapter — no Foundry, no
-# internal endpoint, tools disabled). A power user may instead point CODEQA_JUDGE_BASE at
-# an HTTP messages endpoint they control; only then is the HTTP path used.
-#
-# Config is resolved at CALL time from the environment (Codex #3) — never snapshotted at
-# import — so a later env change (or a test) takes effect immediately. An empty
-# CODEQA_JUDGE_BASE ("") means "use the CLI adapter", same as unset.
+# The frontier judge is OPT-IN and HTTP-ONLY: the user points CODEQA_JUDGE_BASE at an
+# Anthropic-messages endpoint they control. There is deliberately no agentic-CLI path —
+# grading untrusted scanned source through the local claude/codex CLI cannot be isolated
+# from repo-local hooks/plugins/MCP (see the module docstring). With no endpoint, use the
+# local verifier (--local). Config is resolved at CALL time (never snapshotted at import);
+# an empty CODEQA_JUDGE_BASE ("") is treated the same as unset.
 def _judge_config():
-    base = os.environ.get("CODEQA_JUDGE_BASE") or None      # "" -> None -> CLI adapter
+    base = os.environ.get("CODEQA_JUDGE_BASE") or None      # "" -> None -> no frontier endpoint
     backend = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")
     m = os.environ.get("CODEQA_JUDGE_MODEL")
     model = re.sub(r"\[.*?\]$", "", m) if m else None       # strip a trailing "[...]" marker
