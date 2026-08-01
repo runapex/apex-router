@@ -14,9 +14,11 @@ Design (model-routing skill):
     "supported by the code the model was shown", not the judge's own repo knowledge (which it lacks).
 
 The API call is a SEAM (`call_fn`) so scoring logic is unit-testable offline; `opus_judge_fn()`
-wires the real call through the target's own `claude`/`codex` CLI by default (tools disabled), or
-an HTTP endpoint the user sets via CODEQA_JUDGE_BASE. Any credential comes from the environment —
-this module does NOT embed one.
+wires the real call to an HTTP Anthropic-messages endpoint the user OPTS INTO via
+CODEQA_JUDGE_BASE. There is deliberately NO agentic-CLI path — grading untrusted scanned source
+through the local claude/codex CLI cannot be isolated from repo-local hooks/plugins/MCP, so
+codeqa never does it. With no endpoint, use the LOCAL verifier. Any credential comes from the
+environment — this module does NOT embed one.
 """
 from __future__ import annotations
 
@@ -38,10 +40,9 @@ from .impact import parse_emitted_citations
 # an empty CODEQA_JUDGE_BASE ("") is treated the same as unset.
 def _judge_config():
     base = os.environ.get("CODEQA_JUDGE_BASE") or None      # "" -> None -> no frontier endpoint
-    backend = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")
     m = os.environ.get("CODEQA_JUDGE_MODEL")
     model = re.sub(r"\[.*?\]$", "", m) if m else None       # strip a trailing "[...]" marker
-    return base, backend, model
+    return base, model
 
 # Grades against the LIVE CODE at the answer's cited locations — NOT the answerer's retrieved excerpts
 # (Codex A/B-judge-F1: grading vs excerpts penalizes a CORRECT digest-derived claim that isn't in the
@@ -124,6 +125,70 @@ class JudgeConfigError(ValueError):
     loop). Use --local or set CODEQA_JUDGE_BASE."""
 
 
+# --- shared HTTP-judge helpers (used by judge + freshness so they can't diverge) ----------
+_HTTP_MAX_BYTES = 4 * 1024 * 1024   # bound the response read so a hostile endpoint can't OOM
+
+_SENSITIVE_HEADERS = ("authorization", "ocp-apim-subscription-key")
+
+
+def _strip_auth_headers(headers) -> dict:
+    """Drop credential headers (used when a redirect crosses to another origin). Accepts any
+    mapping (a Request's headers are a MutableMapping)."""
+    return {k: v for k, v in dict(headers).items() if str(k).lower() not in _SENSITIVE_HEADERS}
+
+
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect handler that strips Authorization / APIM-key headers before following a
+    redirect to a DIFFERENT origin, so a hostile/misconfigured endpoint returning
+    `302 Location: https://attacker/...` can't harvest the credential (Codex #1)."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        import urllib.parse
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            same_origin = (urllib.parse.urlsplit(req.full_url).netloc
+                           == urllib.parse.urlsplit(newurl).netloc)
+            if not same_origin:
+                new.headers = _strip_auth_headers(new.headers)
+        return new
+
+
+def _extract_text(payload) -> str:
+    """Concatenate the text of an Anthropic-messages `content` array, tolerating malformed
+    blocks (a non-dict block, or a `text` that isn't a string — Codex #3). Non-object
+    payloads / missing content -> ''."""
+    if not isinstance(payload, dict):
+        return ""
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    out = []
+    for b in content:
+        if isinstance(b, dict) and b.get("type") == "text":
+            t = b.get("text")
+            if isinstance(t, str):
+                out.append(t)
+    return "".join(out)
+
+
+def _http_post_json(url: str, body: bytes, headers: dict, *, timeout: float) -> dict:
+    """POST `body` to `url` and return the parsed JSON object. Reads at most _HTTP_MAX_BYTES
+    (Codex #2); uses a no-auth-on-cross-origin-redirect opener (Codex #1). Raises
+    JudgeProtocolError on an oversize / non-JSON / non-object response."""
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    opener = urllib.request.build_opener(_NoAuthRedirect())
+    with opener.open(req, timeout=timeout) as r:
+        raw = r.read(_HTTP_MAX_BYTES + 1)
+    if len(raw) > _HTTP_MAX_BYTES:
+        raise JudgeProtocolError(f"HTTP judge response exceeded {_HTTP_MAX_BYTES} bytes")
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        raise JudgeProtocolError("HTTP judge returned non-JSON")
+    if not isinstance(payload, dict):
+        raise JudgeProtocolError("HTTP judge returned a non-object response")
+    return payload
+
+
 def parse_judge_score(raw: str) -> float:
     """Extract the score from the judge's JSON reply via STRICT parsing (Codex A/B-judge-F6: a greedy
     regex accepted corrupted results — a nested {"score":0.2} in the `why` field, `99` clamped to
@@ -171,7 +236,7 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
     Credentials, if the endpoint needs them, come from the environment
     (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded.
     """
-    base, _backend, model = _judge_config()     # resolved fresh each call
+    base, model = _judge_config()               # resolved fresh each call
     system_prompt = _RUBRIC
     if base is None:
         raise JudgeConfigError(
@@ -180,6 +245,10 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
             "grading through an agentic CLI.")
 
     # User-configured HTTP messages endpoint.
+    if base.lower().startswith("http://"):
+        import warnings
+        warnings.warn("CODEQA_JUDGE_BASE uses plaintext http:// — credential and prompt "
+                      "are sent unencrypted; prefer https://", stacklevel=2)
     body = json.dumps({
         "model": model, "max_tokens": max_tokens,
         "system": system_prompt,
@@ -192,17 +261,8 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
     key = os.environ.get("CODEQA_JUDGE_APIM_KEY")
     if key:
         headers["Ocp-Apim-Subscription-Key"] = key
-    req = urllib.request.Request(base.rstrip("/") + "/v1/messages",
-                                 data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        payload = json.loads(r.read())
-    if not isinstance(payload, dict):           # a malformed 'null'/list body (Codex pass2 #3)
-        raise JudgeProtocolError("HTTP judge returned a non-object response")
-    content = payload.get("content")
-    if not isinstance(content, list):
-        return ""
-    return "".join(b.get("text", "") for b in content
-                   if isinstance(b, dict) and b.get("type") == "text")
+    payload = _http_post_json(base.rstrip("/") + "/v1/messages", body, headers, timeout=timeout)
+    return _extract_text(payload)
 
 
 def judge_preflight(repo_root, *, call_fn: Callable[[str], str] | None = None) -> tuple[bool, str]:

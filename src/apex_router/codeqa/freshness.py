@@ -377,9 +377,9 @@ def frontier_verifier(claim: str, code: str) -> str:
     safely isolated from repo-local hooks/plugins/MCP. If CODEQA_JUDGE_BASE is unset, this
     returns "" (-> CANNOT-DECIDE upstream); use the LOCAL verifier instead. Credentials, if
     the endpoint needs them, come from the env — never embedded. Returns a raw verdict word."""
-    # Single source of truth for config so judge/verifier never diverge.
-    from .judge import _judge_config
-    base, _backend, model = _judge_config()
+    # Single source of truth for config + HTTP handling so judge/verifier never diverge.
+    from .judge import _judge_config, _http_post_json, _extract_text, JudgeProtocolError
+    base, model = _judge_config()
     prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
 
     if base is None:
@@ -396,17 +396,11 @@ def frontier_verifier(claim: str, code: str) -> str:
     key = os.environ.get("CODEQA_JUDGE_APIM_KEY")
     if key:
         headers["Ocp-Apim-Subscription-Key"] = key
-    req = urllib.request.Request(base.rstrip("/") + "/v1/messages",
-                                 data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        payload = json.loads(r.read())
-    if not isinstance(payload, dict):           # malformed 'null'/list body (Codex pass2 #3)
-        return ""
-    content = payload.get("content")
-    if not isinstance(content, list):
-        return ""
-    return "".join(b.get("text", "") for b in content
-                   if isinstance(b, dict) and b.get("type") == "text")
+    try:
+        payload = _http_post_json(base.rstrip("/") + "/v1/messages", body, headers, timeout=60)
+    except (JudgeProtocolError, OSError):
+        return ""      # unreachable/malformed -> CANNOT-DECIDE
+    return _extract_text(payload)
 
 
 def _normalize(raw: str) -> Verdict:

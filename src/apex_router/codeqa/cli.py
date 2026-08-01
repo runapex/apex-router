@@ -338,11 +338,11 @@ def _cmd_ab(args) -> int:
         # otherwise wastes every answer, then fails every grade (the '0/5 judged' symptom).
         ok, msg = judge_preflight(cfg.root)
         if not ok:
-            print(f"⚠ ABORT: the judge is not reachable — {msg}\n"
-                  "  By default the judge uses your installed `claude` CLI (no extra setup).\n"
-                  "  Ensure `claude` is on PATH and logged in, or set CODEQA_JUDGE_BACKEND=codex.\n"
-                  "  To use an HTTP endpoint instead: export CODEQA_JUDGE_BASE=<url> (+ any\n"
-                  "  CODEQA_JUDGE_AUTH it needs). Or run without --judge for diagnostics-only.")
+            print(f"⚠ ABORT: the frontier judge is not reachable — {msg}\n"
+                  "  The frontier judge is opt-in: export CODEQA_JUDGE_BASE=<https-url> for an\n"
+                  "  Anthropic-messages endpoint you control (+ CODEQA_JUDGE_AUTH if it needs one).\n"
+                  "  Or use the LOCAL verifier (no frontier call), or run without --judge for\n"
+                  "  diagnostics-only. codeqa does NOT grade through an agentic CLI.")
             return 3
         # blinded Opus correctness judge — grades against the LIVE tree at cfg.root (Codex F1)
         judge_fn = opus_judge_fn(cfg.root)

@@ -298,3 +298,52 @@ def test_frontier_verifier_without_endpoint_returns_empty(monkeypatch):
     from apex_router.codeqa import freshness
     monkeypatch.delenv("CODEQA_JUDGE_BASE", raising=False)
     assert freshness.frontier_verifier("some claim", "def x(): pass") == ""
+
+
+# --------------------------------------------------------------------------- #
+# HTTP-path hardening (Codex final pass, 2026-07-31)
+# --------------------------------------------------------------------------- #
+def test_text_block_with_null_value_does_not_crash():
+    # BUG (Codex #3): {"content":[{"type":"text","text":null}]} caused TypeError in the
+    # "".join(...). A non-str text value must be tolerated, not crash.
+    from apex_router.codeqa import judge
+    payload = {"content": [{"type": "text", "text": None}, {"type": "text", "text": "ok"}]}
+    assert judge._extract_text(payload) == "ok"    # None skipped, str kept
+
+
+def test_extract_text_non_dict_and_missing():
+    from apex_router.codeqa import judge
+    assert judge._extract_text(None) == ""
+    assert judge._extract_text({"content": "not a list"}) == ""
+    assert judge._extract_text({"content": [42, {"type": "text", "text": "x"}]}) == "x"
+
+
+def test_http_post_bounds_the_read(monkeypatch):
+    # BUG (Codex #2): r.read() was unbounded. The helper must read at most a bounded size.
+    from apex_router.codeqa import judge
+    big = b'{"x":"' + b"a" * (judge._HTTP_MAX_BYTES + 100) + b'"}'
+    class R:
+        def __enter__(s): return s
+        def __exit__(s, *a): return False
+        def read(s, n=-1): return big[:n] if n and n > 0 else big
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", lambda self, req, **k: R())
+    # a body larger than the cap must raise, not be fully buffered/parsed
+    try:
+        judge._http_post_json("http://x.test", b"{}", {}, timeout=5)
+        raised = False
+    except judge.JudgeProtocolError:
+        raised = True
+    assert raised
+
+
+def test_http_post_strips_auth_on_cross_origin_redirect():
+    # BUG (Codex #1): auth headers followed a 302 to another origin. The opener must NOT
+    # carry Authorization/APIM key across a redirect to a different host.
+    from apex_router.codeqa import judge
+    h = judge._NoAuthRedirect()
+    # a redirect handler must drop sensitive headers when building the redirected request
+    hdrs = {"Authorization": "Bearer secret", "Ocp-Apim-Subscription-Key": "k", "Content-Type": "application/json"}
+    cleaned = judge._strip_auth_headers(hdrs)
+    assert "Authorization" not in cleaned
+    assert "Ocp-Apim-Subscription-Key" not in cleaned
+    assert cleaned.get("Content-Type") == "application/json"
