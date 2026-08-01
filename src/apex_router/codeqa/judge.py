@@ -170,8 +170,8 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
         try:
             return cli_adapter.model_call(full, backend=backend, model=model,
                                           timeout=timeout).content
-        except cli_adapter.AdapterError as e:
-            raise JudgeProtocolError(f"CLI judge call failed: {e}") from e
+        except (cli_adapter.AdapterError, ValueError) as e:
+            raise JudgeProtocolError(f"CLI judge call failed: {type(e).__name__}") from e
 
     # Explicit HTTP endpoint the user pointed us at (power-user override).
     body = json.dumps({
@@ -190,7 +190,13 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
                                  data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         payload = json.loads(r.read())
-    return "".join(b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text")
+    if not isinstance(payload, dict):           # a malformed 'null'/list body (Codex pass2 #3)
+        raise JudgeProtocolError("HTTP judge returned a non-object response")
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") == "text")
 
 
 def judge_preflight(repo_root, *, call_fn: Callable[[str], str] | None = None) -> tuple[bool, str]:

@@ -3,23 +3,27 @@
 The toolkit's tools (codeqa judge/freshness) grade text with a frontier model. On a
 machine that has only the Claude/Codex subscriptions this adapter shells to those CLIs.
 
-SECURITY POSTURE (hardened after a Codex adversarial review):
-  - **No tools.** These are GRADING calls, not agents. `claude` runs with an empty
-    allowed-tools list + a deny-all permission mode; `codex` runs in a read-only sandbox.
-    So even if the graded text (e.g. scanned source code) contains "run this command",
-    the CLI cannot execute anything (Codex #2).
-  - **Config resolved by the CALLER at call time**, never snapshotted at import — the
-    caller passes backend/model explicitly (Codex #3).
-  - **Model id off argv.** The model is passed via the subprocess ENV, not argv, so
-    process inspection doesn't reveal an internal deployment id (Codex #4).
-  - **Bounded, validated output.** stdout is capped; a non-object / partial / oversize
-    response raises AdapterError rather than crashing or being accepted (Codex #5).
-  - **Every failure is an AdapterError**, including a subprocess timeout (Codex #6).
+SECURITY POSTURE (hardened over two Codex adversarial reviews; flags VERIFIED against the
+live CLIs):
+  - **No tool execution.** These are GRADING calls, not agents. `claude` runs in
+    `--permission-mode plan` (a read-only mode that cannot execute) with an explicit
+    `--disallowedTools` deny-list; `codex` runs in a read-only sandbox (`-s read-only`).
+    So even if the graded text (e.g. scanned source) says "run this command", the CLI
+    cannot act. ('deny'/'bypassPermissions' modes are NOT used — 'deny' is invalid and
+    'bypass' would be the opposite of safe.)
+  - **Config resolved by the CALLER at call time** (never snapshotted at import).
+  - **Model id off argv where the CLI allows it.** `claude` reads ANTHROPIC_MODEL from the
+    child env (kept out of argv). `codex` IGNORES a model env var, so its model must go via
+    `-c model=` (unavoidably in argv — the CLI's contract).
+  - **Bounded, validated output.** stdout is capped by BYTE length; a non-object / partial
+    / oversize response raises AdapterError.
+  - **Every failure is an AdapterError** — timeout, a misbehaving runner, a malformed
+    result — nothing else escapes.
 
-HONEST LIMITATION (documented, not a code guarantee): this adapter does not hardcode any
-endpoint, but it cannot control which provider the user's own `claude`/`codex` CLI is
-configured to reach. "No Foundry" means *we* ship no Foundry default — it does not
-override a user CLI configured to point at an internal provider (Codex #1).
+HONEST LIMITATION (documented, not a code guarantee): this adapter hardcodes no endpoint,
+but it cannot control which provider the user's own `claude`/`codex` CLI is configured to
+reach. "No Foundry" means we ship no Foundry default; it does not override a user CLI
+configured to point at an internal provider.
 """
 from __future__ import annotations
 
@@ -28,12 +32,16 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 
-# Cap captured stdout so a runaway/hostile CLI can't exhaust memory (Codex #5).
+# Cap captured stdout by BYTES (not characters — multibyte content must not slip past).
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024   # 4 MiB is ample for a grading reply
+
+# Tools a grading call must never be able to use. `plan` mode already blocks execution;
+# this deny-list is defense-in-depth against any tool that could act or exfiltrate.
+_CLAUDE_DISALLOWED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
 
 
 class AdapterError(RuntimeError):
-    """A CLI model call failed (non-zero exit, timeout, error/oversize/malformed output)."""
+    """A CLI model call failed (non-zero exit, timeout, misbehaving runner, or bad output)."""
 
 
 @dataclass(frozen=True)
@@ -54,19 +62,23 @@ class ModelResult:
 
 
 def _subprocess_runner(cmd, input=None, timeout=None, env=None) -> RunResult:
-    """Default runner: run argv with `input` on stdin and `env`, capture stdout/stderr."""
     p = subprocess.run(cmd, input=input, capture_output=True, text=True,
                        timeout=timeout, env=env)
     return RunResult(returncode=p.returncode, stdout=p.stdout, stderr=p.stderr)
 
 
-def _invoke(runner, cmd, prompt, timeout, env):
-    """Call the runner, tolerating one that doesn't accept an env= kwarg (e.g. a test
-    stub). The env-less retry is still inside the caller's failure guard."""
+def _runner_accepts_env(runner) -> bool:
+    """Detect whether the runner accepts an env= kwarg WITHOUT calling it — so we never
+    invoke a runner twice (a TypeError raised *after* launch must not trigger a retry,
+    Codex pass2 #5)."""
     try:
-        return runner(cmd, input=prompt, timeout=timeout, env=env)
-    except TypeError:
-        return runner(cmd, input=prompt, timeout=timeout)
+        import inspect
+        sig = inspect.signature(runner)
+        params = sig.parameters
+        return "env" in params or any(
+            p.kind == p.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        return True   # builtins / C funcs: assume kwargs ok; the real runner accepts env
 
 
 def _run(cmd, prompt, timeout, runner, extra_env=None) -> RunResult:
@@ -74,52 +86,65 @@ def _run(cmd, prompt, timeout, runner, extra_env=None) -> RunResult:
     if extra_env:
         env.update(extra_env)
     try:
-        res = _invoke(runner, cmd, prompt, timeout, env)
+        if _runner_accepts_env(runner):
+            res = runner(cmd, input=prompt, timeout=timeout, env=env)
+        else:
+            res = runner(cmd, input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise AdapterError(f"{cmd[0]} timed out after {timeout}s")
     except AdapterError:
         raise
     except Exception as e:
-        raise AdapterError(f"{cmd[0]} failed to run: {e}")
-    if res.stdout is not None and len(res.stdout) > MAX_OUTPUT_BYTES:
+        raise AdapterError(f"{cmd[0]} failed to run: {type(e).__name__}")
+    # Validate the runner's return shape — a misbehaving runner must become AdapterError,
+    # not an uncaught AttributeError downstream (Codex pass2 #6).
+    if res is None or not hasattr(res, "returncode") or not hasattr(res, "stdout"):
+        raise AdapterError(f"{cmd[0]} runner returned a malformed result")
+    stdout = res.stdout if isinstance(res.stdout, str) else ""
+    if len(stdout.encode("utf-8", "ignore")) > MAX_OUTPUT_BYTES:
         raise AdapterError(f"{cmd[0]} output exceeded {MAX_OUTPUT_BYTES} bytes")
     return res
 
 
 def _call_claude(prompt, model, runner, timeout) -> ModelResult:
-    # Non-interactive print + JSON envelope, prompt on stdin, and NO tools: an empty
-    # allowed-tools list plus a deny permission mode so the agentic CLI can't act on
-    # adversarial graded text (Codex #2). Model via env, not argv (Codex #4).
+    # Non-interactive print + JSON envelope, prompt on stdin, and NO execution: 'plan'
+    # mode (read-only) + a disallowed-tools deny-list. Model via env, not argv.
     cmd = ["claude", "-p", "--output-format", "json",
-           "--allowedTools", "", "--permission-mode", "deny"]
+           "--permission-mode", "plan", "--disallowedTools", _CLAUDE_DISALLOWED]
     extra_env = {"ANTHROPIC_MODEL": model} if model else None
     res = _run(cmd, prompt, timeout, runner, extra_env)
     if res.returncode != 0:
-        raise AdapterError(f"claude exited {res.returncode}: {res.stderr.strip()[:200]}")
+        raise AdapterError(f"claude exited {res.returncode}")
     try:
         env = json.loads(res.stdout)
-    except (ValueError, TypeError) as e:
-        raise AdapterError(f"claude output was not JSON: {e}")
+    except (ValueError, TypeError):
+        raise AdapterError("claude output was not JSON")
     if not isinstance(env, dict):
         raise AdapterError("claude output JSON was not an object")
+    # A complete, successful envelope carries an explicit is_error flag AND a string
+    # result. A partial envelope (missing is_error) is not trusted (Codex pass2 #3).
+    if "is_error" not in env:
+        raise AdapterError("claude envelope missing 'is_error' (partial response)")
     if env.get("is_error"):
-        raise AdapterError(f"claude returned an error envelope: {str(env.get('result'))[:200]}")
+        raise AdapterError("claude returned an error envelope")
     content = env.get("result")
-    if not isinstance(content, str) or not content:
+    if not isinstance(content, str) or not content.strip():
         raise AdapterError("claude envelope missing a non-empty string 'result'")
     usage = env.get("usage")
     return ModelResult(content=content, usage=usage if isinstance(usage, dict) else {})
 
 
 def _call_codex(prompt, model, runner, timeout) -> ModelResult:
-    # `codex exec` in a READ-ONLY sandbox (model-generated shell can't mutate anything),
-    # prompt on stdin, model via env not argv. Plain-text stdout.
+    # `codex exec` in a READ-ONLY sandbox. The codex CLI ignores a model env var, so the
+    # model goes via `-c model=` (the CLI's contract) — unavoidably in argv.
     cmd = ["codex", "exec", "-s", "read-only", "--skip-git-repo-check"]
-    extra_env = {"CODEX_MODEL": model} if model else None
-    res = _run(cmd, prompt, timeout, runner, extra_env)
+    if model:
+        cmd += ["-c", f"model={model}"]
+    res = _run(cmd, prompt, timeout, runner, None)
     if res.returncode != 0:
-        raise AdapterError(f"codex exited {res.returncode}: {res.stderr.strip()[:200]}")
-    content = (res.stdout or "").strip()
+        raise AdapterError(f"codex exited {res.returncode}")
+    content = res.stdout if isinstance(res.stdout, str) else ""
+    content = content.strip()
     if not content:
         raise AdapterError("codex produced no output")
     return ModelResult(content=content, usage={})
@@ -130,11 +155,10 @@ _BACKENDS = {"claude": _call_claude, "codex": _call_codex}
 
 def model_call(prompt, *, backend: str = "claude", model=None, runner=None,
                timeout: float = 120.0) -> ModelResult:
-    """Grade `prompt` with a frontier model via the target's own CLI (tools disabled).
+    """Grade `prompt` with a frontier model via the target's own CLI (no tool execution).
 
     backend: 'claude' | 'codex' (no Foundry/HTTP option). model: id or None (CLI default).
-    runner: injected subprocess runner (defaults to the real one). Raises ValueError on an
-    unknown backend, AdapterError on any call failure.
+    Raises ValueError on an unknown backend, AdapterError on ANY call failure.
     """
     fn = _BACKENDS.get(backend)
     if fn is None:

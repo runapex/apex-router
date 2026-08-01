@@ -375,19 +375,20 @@ def frontier_verifier(claim: str, code: str) -> str:
     by default (no Foundry, no internal endpoint); only if CODEQA_JUDGE_BASE is explicitly
     set does it use that HTTP messages endpoint. Credentials, if used, come from the env
     (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded. Returns a raw verdict word."""
-    base = os.environ.get("CODEQA_JUDGE_BASE") or None   # "" -> None -> CLI adapter (Codex #3)
-    model = os.environ.get("CODEQA_JUDGE_MODEL")  # None -> the CLI's own default model
+    # Single source of truth for judge/verifier config so the two never diverge
+    # (Codex pass2 #7): base/backend/model incl. the [tag]-strip normalization.
+    from .judge import _judge_config
+    base, backend, model = _judge_config()
     prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
 
     if base is None:
         # CLI adapter path (the portable default).
         from ..backend import cli_adapter
-        backend = os.environ.get("CODEQA_JUDGE_BACKEND", "claude")
         full = f"{_VERIFIER_SYS}\n\n{prompt}"
         try:
             return cli_adapter.model_call(full, backend=backend, model=model, timeout=60).content
-        except cli_adapter.AdapterError:
-            return ""      # unreachable verifier -> empty verdict -> CANNOT-DECIDE upstream
+        except (cli_adapter.AdapterError, ValueError):
+            return ""      # unreachable/misconfigured verifier -> empty -> CANNOT-DECIDE upstream
 
     body = json.dumps({
         "model": model, "max_tokens": 8, "system": _VERIFIER_SYS,
@@ -404,7 +405,13 @@ def frontier_verifier(claim: str, code: str) -> str:
                                  data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=60) as r:
         payload = json.loads(r.read())
-    return "".join(b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text")
+    if not isinstance(payload, dict):           # malformed 'null'/list body (Codex pass2 #3)
+        return ""
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") == "text")
 
 
 def _normalize(raw: str) -> Verdict:

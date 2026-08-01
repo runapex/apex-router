@@ -96,12 +96,13 @@ def test_codex_call_returns_content():
     assert seen["cmd"][0] == "codex" and seen["cmd"][1] == "exec"
 
 
-def test_codex_passes_model_via_env_not_argv():
-    # model id off argv (Codex #4) — passed via env, not a `-c model=` argv token.
+def test_codex_passes_model_via_config_flag():
+    # VERIFIED (Codex #4): the codex CLI IGNORES a CODEX_MODEL env var; only `-c model=` /
+    # `-m` changes the model. So the model MUST go via `-c model=` (unavoidably in argv —
+    # that is the CLI's contract), NOT a silently-ignored env var.
     run, seen = _fake_runner(stdout="ok")
     A.model_call("x", backend="codex", model="gpt-5", runner=run)
-    assert "gpt-5" not in " ".join(seen["cmd"])
-    assert seen["env"].get("CODEX_MODEL") == "gpt-5"
+    assert "-c" in seen["cmd"] and "model=gpt-5" in " ".join(seen["cmd"])
 
 
 def test_codex_nonzero_exit_raises():
@@ -142,13 +143,15 @@ def test_sec2_claude_launched_with_tools_disabled():
     # trigger tool execution. Assert the lockdown flags are present.
     run, seen = _fake_runner(stdout=_claude_json())
     A.model_call("grade this", backend="claude", model="m", runner=run)
-    joined = " ".join(seen["cmd"])
-    # empty allowed-tools = no tools; a deny-all permission mode.
-    assert "--allowedTools" in seen["cmd"] or "--allowed-tools" in seen["cmd"]
-    assert "--permission-mode" in seen["cmd"]
-    # must NOT bypass permissions.
+    cmd = seen["cmd"]
+    joined = " ".join(cmd)
+    # VERIFIED against the live CLI: 'deny' is NOT a valid --permission-mode. The real
+    # lockdown is 'plan' mode (read-only, cannot execute) + an explicit --disallowedTools.
+    assert "--permission-mode" in cmd
+    assert cmd[cmd.index("--permission-mode") + 1] == "plan"
+    assert "--disallowedTools" in cmd or "--disallowed-tools" in cmd
+    assert "bypassPermissions" not in joined
     assert "--dangerously-skip-permissions" not in joined
-    assert "--allow-dangerously-skip-permissions" not in joined
 
 
 def test_sec2_codex_launched_read_only_sandbox():
@@ -192,7 +195,52 @@ def test_sec6_timeout_becomes_adaptererror():
     # BUG (Codex #6): subprocess.TimeoutExpired escaped, contradicting "AdapterError on
     # any call failure". The runner raising TimeoutExpired must surface as AdapterError.
     import subprocess
-    def timing_out(cmd, input=None, timeout=None):
+    def timing_out(cmd, input=None, timeout=None, env=None):
         raise subprocess.TimeoutExpired(cmd, timeout or 1)
     with pytest.raises(A.AdapterError):
         A.model_call("x", backend="claude", model="m", runner=timing_out)
+
+
+# --- pass-2 residual security findings ---
+def test_p2_byte_limit_counts_bytes_not_chars():
+    # BUG (Codex pass2 #2): the cap counted characters; multibyte content slipped past.
+    # A string whose UTF-8 encoding exceeds the byte cap must be rejected.
+    payload = "é" * A.MAX_OUTPUT_BYTES        # 2 bytes each -> ~2x the byte cap
+    run, _ = _fake_runner(stdout=payload)
+    with pytest.raises(A.AdapterError):
+        A.model_call("x", backend="codex", model="m", runner=run)
+
+
+def test_p2_claude_partial_envelope_without_is_error_still_validated():
+    # BUG (Codex pass2 #3): {"result":"ok"} (no is_error/usage) was accepted as complete.
+    # A valid grade needs the envelope's success signal; a partial one must raise.
+    run, _ = _fake_runner(stdout='{"result":"ok"}')   # missing is_error / usage
+    with pytest.raises(A.AdapterError):
+        A.model_call("x", backend="claude", model="m", runner=run)
+
+
+def test_p2_codex_non_error_shape_is_still_text():
+    # codex has no envelope; nonempty text is its answer. But whitespace-only must raise.
+    run, _ = _fake_runner(stdout="   \n  ")
+    with pytest.raises(A.AdapterError):
+        A.model_call("x", backend="codex", model="m", runner=run)
+
+
+def test_p2_runner_returning_none_is_adaptererror():
+    # BUG (Codex pass2 #6): a runner returning None caused an uncaught AttributeError.
+    with pytest.raises(A.AdapterError):
+        A.model_call("x", backend="claude", model="m",
+                     runner=lambda cmd, input=None, timeout=None, env=None: None)
+
+
+def test_p2_no_double_invoke_on_internal_typeerror():
+    # BUG (Codex pass2 #5): a TypeError raised AFTER the runner launched was mistaken for
+    # an unsupported env= kwarg and the runner ran a SECOND time. The runner must be called
+    # exactly once when it accepts env=.
+    calls = []
+    def run(cmd, input=None, timeout=None, env=None):
+        calls.append(1)
+        raise TypeError("internal failure after launch")
+    with pytest.raises(A.AdapterError):
+        A.model_call("x", backend="claude", model="m", runner=run)
+    assert len(calls) == 1                     # NOT retried
