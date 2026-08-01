@@ -1,6 +1,7 @@
 # apex-router
 
-Adaptive model routing — measured, per-task-class model selection.
+Adaptive model routing — measured, per-task-class model selection — plus the local
+code-Q&A / freshness toolkit the routing evidence is built from.
 
 Instead of a hand-authored "use model X for task Y" table, `apex-router` learns which
 model is actually best for each kind of task from evidence, behind a statistically
@@ -26,6 +27,28 @@ task → classify (§11) → cell → route table → resolve (fallback to stati
 - **Portable route tables.** A table generated on one machine names the models it had;
   on a machine that lacks those (e.g. no Foundry, only Claude+Codex), the `known_models`
   gate falls back to a model that machine can actually run.
+
+## The toolkit
+
+Alongside the routing core, `apex-router` bundles the local tools the routing evidence is
+built from:
+
+- **`apex_router.codeqa`** — grounded code-Q&A over a repo (ripgrep retrieval + a local
+  model answering with `file:line` citations) and a **freshness gate** that checks a
+  doc/digest's claims against the live code. Run: `python -m apex_router.codeqa.cli ask …`
+  / `… validate …`.
+- **`apex_router.ornith`** — a thin client + batch/codegen helpers for a local MLX model
+  server (the offline answerer/bench backend), plus a capability-fit router. Apple Silicon
+  for the server; the client is portable.
+
+**Security posture — no agentic grading of untrusted code.** codeqa's frontier
+"judge"/verifier is **opt-in and HTTP-only**: you point `CODEQA_JUDGE_BASE` at an
+Anthropic-messages endpoint you control. It deliberately does **not** route grading
+through the local `claude`/`codex` CLIs — those are agentic (tools, hooks, MCP), and
+scanned source may be adversarial, so feeding it to an agentic CLI could trigger code
+execution. With no endpoint configured, codeqa uses its **local verifier** instead. The
+HTTP path strips credentials on cross-origin redirects, bounds response size, and warns on
+plaintext `http://`.
 
 ## Install
 
