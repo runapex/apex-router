@@ -30,7 +30,7 @@ task → classify (§11) → cell → route table → resolve (fallback to stati
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/apex-router/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/runapex/apex-router/main/install.sh | bash
 ```
 
 The installer is **arch-aware and idempotent**:

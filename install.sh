@@ -24,7 +24,7 @@ set -euo pipefail
 # --------------------------------------------------------------------------- #
 # config + arg parsing
 # --------------------------------------------------------------------------- #
-REPO_URL_DEFAULT="https://github.com/OWNER/apex-router.git"   # <- set on publish
+REPO_URL_DEFAULT="https://github.com/runapex/apex-router.git"
 INSTALL_DIR="${APEX_ROUTER_DIR:-$HOME/.apex-router}"
 REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
