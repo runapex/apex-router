@@ -13,20 +13,36 @@ static choice on any uncertainty.
 ## What it does
 
 ```
-task → classify (§11) → cell → route table → resolve (fallback to static default) → model
-                                    ▲
-      corpus steps → replay bench → gate (out-of-sample, FDR-corrected) → route table
+task → classify → cell → route table → resolve (fallback to static default) → model
+                             ▲
+   corpus steps → replay bench → gate (out-of-sample, FDR-corrected) → route table
 ```
 
-- **Pure-stdlib core.** The routing decision (classify → gate → route table → shim) has
-  **zero third-party dependencies**. It runs on a machine that has only the Claude and
-  Codex CLIs and no model server.
+- **Pure-stdlib core.** The routing decision (classify → gate → route table → resolve)
+  has **zero third-party dependencies**. It runs on a machine that has only the Claude
+  and Codex CLIs and no model server.
 - **Sound by construction.** Promotions require an out-of-sample confirmation split,
   Benjamini-Hochberg FDR across cells, replication across capture windows, and a
   candidate that independently clears the gate — never a cheaper-but-worse model.
 - **Portable route tables.** A table generated on one machine names the models it had;
-  on a machine that lacks those (e.g. no Foundry, only Claude+Codex), the `known_models`
+  on a machine that lacks those (e.g. no Foundry, only Claude+Codex), a `known_models`
   gate falls back to a model that machine can actually run.
+
+## Status — what works today
+
+This release ships the **routing library and the toolkit it learns from**, tested and
+installable. Two honest caveats about the *adaptive* layer:
+
+- **Route tables start empty**, so routing returns your **static defaults** until you
+  capture a corpus of real tasks and run the replay bench to fill the table. "Adaptive"
+  is earned from evidence, not automatic on install — by design (a data-starved cell
+  always defers to the safe default).
+- The routing decision is a **library** (`apex_router.consumer.resolve`); wiring it to
+  drive a specific host (a subagent dispatcher, a proxy) is an integration step, not yet
+  done for you. codeqa's `ask`/`validate` tools work out of the box.
+
+So on day one you get: the tools (codeqa/ornith), a sound routing library that safely
+defaults to static, and the machinery to make it adaptive as you feed it data.
 
 ## The toolkit
 
@@ -64,7 +80,7 @@ The installer is **arch-aware and idempotent**:
 | `apex-router` package | always | pure stdlib, near-instant |
 | ollama + `nomic-embed-text` | if missing | embedding-refinement classifier (optional) |
 | Ornith MLX server | **Apple Silicon only** | local replay bench / codegen; skipped with a notice elsewhere |
-| starter route table | always | all-fallback, so routing works day one |
+| starter route table | always | empty → resolves to your static defaults until a bench fills it |
 
 No Foundry is required anywhere — the target uses its own Claude + Codex subscriptions.
 Pass `--no-ornith` to skip the large model download.
