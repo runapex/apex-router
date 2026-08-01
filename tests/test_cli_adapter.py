@@ -1,6 +1,6 @@
 """Tests for apex_router.backend.cli_adapter — the Foundry replacement.
 
-The moved tools (codeqa judge/freshness) used to POST to a Foundry proxy (localhost:8788)
+The moved tools (codeqa judge/freshness) used to POST to a Foundry proxy (an internal proxy)
 with an internal model id. On a Claude+Codex-only machine that endpoint doesn't exist.
 This adapter routes their model calls through the installed `claude` / `codex` CLIs —
 the subscriptions the target actually has — and parses the CLI output back into the
