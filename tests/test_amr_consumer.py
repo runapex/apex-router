@@ -248,16 +248,17 @@ def test_p2_1_routed_model_must_be_known_else_static():
     assert got == "opus"                 # 'worse-model' not known -> static debug default
 
 
-def test_p2_1_cross_machine_foundry_only_model_falls_back():
-    # THE distribution safety: a route table generated on a Foundry box names
-    # 'it-entra-claude-opus-4-8'; on a Claude+Codex-only target that model is unknown, so
-    # the shim MUST fall back to the target's static default, never route an unrunnable model.
+def test_p2_1_cross_machine_gateway_only_model_falls_back():
+    # THE distribution safety: a route table generated on a machine behind an enterprise
+    # gateway names gateway-prefixed model ids (e.g. 'gw-provider-opus'); on a target with
+    # only the standard Claude+Codex CLIs that model is unknown, so the shim MUST fall back
+    # to the target's static default, never route an unrunnable model.
     clf = _fixed_classifier("generate", 0.9)
-    target_known = {"claude-opus", "claude-sonnet"}      # no it-entra-* on this machine
+    target_known = {"claude-opus", "claude-sonnet"}      # no gateway-prefixed models here
     got = consumer.resolve_model(
         "gen", tools=["Write"], sys_markers=[], classifier=clf,
         static_default_map={"generate": "claude-sonnet"},
-        route_reader=lambda c: "it-entra-claude-opus-4-8",   # from the source machine's table
+        route_reader=lambda c: "gw-provider-opus",       # from the source machine's table
         min_confidence=0.7, known_models=target_known,
         safe_default="claude-opus")      # safe_default must itself be a known model
     assert got == "claude-sonnet"        # falls back to a model this machine can actually run

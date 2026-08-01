@@ -7,3 +7,22 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+# --- secrets / never publish ---
+.env
+.env.*
+*.pem
+*.key
+*_rsa
+*_ed25519
+secrets/
+**/secrets/**
+credentials*
+*.credentials
+# real captured corpus / route tables can contain production data — keep local
+corpus/
+tables/*.json
+!tables/route_table.skill.json
+!tables/route_table.proxy.json
+*.jsonl
+
