@@ -261,3 +261,40 @@ def test_huge_integer_score_is_a_protocol_failure_and_reprompts(tmp_path):
     judge = opus_judge_fn(tmp_path, call_fn=huge_then_ok, max_attempts=3, sleep_fn=lambda s: None)
     assert judge("q", "a.py:1") == 0.5
     assert len(prompts) == 2 and "json" in prompts[1].lower()  # recovered via corrective reprompt
+
+
+# --------------------------------------------------------------------------- #
+# HTTP-only judge (agentic-CLI grader dropped for security, 2026-07-31)
+# --------------------------------------------------------------------------- #
+def test_call_opus_without_endpoint_raises_config_error(monkeypatch):
+    # No CODEQA_JUDGE_BASE -> a CONFIG error (opt-in frontier judge), NOT an agentic-CLI
+    # call. codeqa never routes grading through claude/codex.
+    from apex_router.codeqa import judge
+    monkeypatch.delenv("CODEQA_JUDGE_BASE", raising=False)
+    try:
+        judge._call_opus("grade this")
+        assert False, "expected JudgeConfigError"
+    except judge.JudgeConfigError:
+        pass
+
+
+def test_config_error_is_not_reprompt_retried(tmp_path, monkeypatch):
+    # A JudgeConfigError from the call must be raised immediately (no 3x reprompt loop).
+    from apex_router.codeqa import judge
+    calls = []
+    def boom(prompt):
+        calls.append(1)
+        raise judge.JudgeConfigError("no endpoint")
+    jf = judge.opus_judge_fn(tmp_path, call_fn=boom, max_attempts=3, sleep_fn=lambda s: None)
+    try:
+        jf("q", "a")
+    except judge.JudgeConfigError:
+        pass
+    assert len(calls) == 1                       # NOT retried 3x
+
+
+def test_frontier_verifier_without_endpoint_returns_empty(monkeypatch):
+    # freshness verifier with no endpoint -> "" (CANNOT-DECIDE), never an agentic CLI call.
+    from apex_router.codeqa import freshness
+    monkeypatch.delenv("CODEQA_JUDGE_BASE", raising=False)
+    assert freshness.frontier_verifier("some claim", "def x(): pass") == ""

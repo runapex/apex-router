@@ -370,25 +370,20 @@ _VERIFIER_SYS = (
 
 
 def frontier_verifier(claim: str, code: str) -> str:
-    """Default verifier: a frontier model that clears the default-value→runtime-state
-    inference a local 35B hedges on. Routes through the target's own `claude`/`codex` CLI
-    by default (no Foundry, no internal endpoint); only if CODEQA_JUDGE_BASE is explicitly
-    set does it use that HTTP messages endpoint. Credentials, if used, come from the env
-    (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded. Returns a raw verdict word."""
-    # Single source of truth for judge/verifier config so the two never diverge
-    # (Codex pass2 #7): base/backend/model incl. the [tag]-strip normalization.
+    """Frontier verifier over a user-configured HTTP endpoint (OPT-IN via CODEQA_JUDGE_BASE).
+
+    Like the judge, there is deliberately NO agentic-CLI path: a verifier call embeds
+    scanned source that may be adversarial, and the local `claude`/`codex` CLI cannot be
+    safely isolated from repo-local hooks/plugins/MCP. If CODEQA_JUDGE_BASE is unset, this
+    returns "" (-> CANNOT-DECIDE upstream); use the LOCAL verifier instead. Credentials, if
+    the endpoint needs them, come from the env — never embedded. Returns a raw verdict word."""
+    # Single source of truth for config so judge/verifier never diverge.
     from .judge import _judge_config
-    base, backend, model = _judge_config()
+    base, _backend, model = _judge_config()
     prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
 
     if base is None:
-        # CLI adapter path (the portable default).
-        from ..backend import cli_adapter
-        full = f"{_VERIFIER_SYS}\n\n{prompt}"
-        try:
-            return cli_adapter.model_call(full, backend=backend, model=model, timeout=60).content
-        except (cli_adapter.AdapterError, ValueError):
-            return ""      # unreachable/misconfigured verifier -> empty -> CANNOT-DECIDE upstream
+        return ""      # no frontier endpoint configured -> CANNOT-DECIDE (use --local)
 
     body = json.dumps({
         "model": model, "max_tokens": 8, "system": _VERIFIER_SYS,

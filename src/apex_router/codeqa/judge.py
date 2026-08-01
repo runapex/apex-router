@@ -120,6 +120,12 @@ class JudgeProtocolError(ValueError):
     ValueError so existing callers/tests that catch ValueError still work."""
 
 
+class JudgeConfigError(ValueError):
+    """No frontier judge endpoint is configured (CODEQA_JUDGE_BASE unset). A CONFIG error —
+    retrying/reprompting cannot fix it, so it is raised immediately (never the 3× reprompt
+    loop). Use --local or set CODEQA_JUDGE_BASE."""
+
+
 def parse_judge_score(raw: str) -> float:
     """Extract the score from the judge's JSON reply via STRICT parsing (Codex A/B-judge-F6: a greedy
     regex accepted corrupted results — a nested {"score":0.2} in the `why` field, `99` clamped to
@@ -155,25 +161,27 @@ def parse_judge_score(raw: str) -> float:
 
 
 def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> str:
-    """Grade one blinded prompt with a frontier model.
+    """Grade one blinded prompt with a frontier model over a user-configured HTTP endpoint.
 
-    Default path: route through the target's own `claude`/`codex` CLI (the CLI adapter) —
-    no Foundry, no internal endpoint. Only if CODEQA_JUDGE_BASE is explicitly set does the
-    request go over HTTP to that user-supplied messages endpoint. Never embeds a credential.
+    The frontier judge is OPT-IN: the user sets CODEQA_JUDGE_BASE to an Anthropic-messages
+    HTTP endpoint they control. There is deliberately NO agentic-CLI fallback — routing a
+    grading call (which contains scanned source that may be adversarial) through the local
+    `claude`/`codex` CLI cannot be safely isolated from repo-local hooks/plugins/MCP
+    config, so codeqa never does it. Without CODEQA_JUDGE_BASE, use the LOCAL verifier
+    (`--local`) or the grounded local-Ornith ASK path instead.
+
+    Credentials, if the endpoint needs them, come from the environment
+    (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded.
     """
-    base, backend, model = _judge_config()      # resolved fresh each call (Codex #3)
+    base, _backend, model = _judge_config()     # resolved fresh each call
     system_prompt = _RUBRIC
     if base is None:
-        # CLI adapter path (the portable default) — tools disabled, model via env.
-        from ..backend import cli_adapter
-        full = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        try:
-            return cli_adapter.model_call(full, backend=backend, model=model,
-                                          timeout=timeout).content
-        except (cli_adapter.AdapterError, ValueError) as e:
-            raise JudgeProtocolError(f"CLI judge call failed: {type(e).__name__}") from e
+        raise JudgeConfigError(
+            "no frontier judge endpoint configured — set CODEQA_JUDGE_BASE to an HTTP "
+            "messages endpoint, or use the local verifier (--local). codeqa does NOT route "
+            "grading through an agentic CLI.")
 
-    # Explicit HTTP endpoint the user pointed us at (power-user override).
+    # User-configured HTTP messages endpoint.
     body = json.dumps({
         "model": model, "max_tokens": max_tokens,
         "system": system_prompt,
