@@ -1,0 +1,40 @@
+[project]
+name = "apex-router"
+version = "0.1.0"
+description = "Adaptive model routing — measured per-task-class model selection with an out-of-sample, FDR-corrected promotion gate."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Juri Kern" }]
+keywords = ["llm", "model-routing", "claude", "codex", "adaptive-routing"]
+
+# The CORE package is pure Python standard library — no third-party runtime deps.
+# This is deliberate: the routing decision (classify -> gate -> route table -> shim)
+# must run anywhere, incl. a machine with only Claude + Codex CLIs and no model server.
+dependencies = []
+
+[project.optional-dependencies]
+# The embedding-refinement classifier signal (Tier-2 §11) talks to a local ollama
+# serving nomic-embed-text. It's OPTIONAL: without it the request-signal classifier
+# (tool-set / system markers, 0 services) still routes. The client itself is stdlib
+# (urllib), so this extra only documents the runtime service expectation.
+embed = []
+# The replay bench can drive a local Ornith MLX server for offline scoring/codegen.
+# Apple-Silicon only; the installer provisions it there and skips it elsewhere.
+ornith = ["mlx-lm>=0.19.0"]
+# Dev/test.
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+apex-router = "apex_router.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apex_router"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
