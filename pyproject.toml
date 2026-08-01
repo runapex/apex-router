@@ -1,6 +1,6 @@
 [project]
 name = "apex-router"
-version = "0.1.0"
+version = "0.2.0"
 description = "Adaptive model routing — measured per-task-class model selection with an out-of-sample, FDR-corrected promotion gate."
 readme = "README.md"
 requires-python = ">=3.11"

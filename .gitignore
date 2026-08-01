@@ -26,3 +26,6 @@ tables/*.json
 !tables/route_table.proxy.json
 *.jsonl
 
+
+# tool-local config (not part of the package)
+.serena/
