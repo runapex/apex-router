@@ -149,7 +149,9 @@ def test_sec2_claude_launched_with_tools_disabled():
     # lockdown is 'plan' mode (read-only, cannot execute) + an explicit --disallowedTools.
     assert "--permission-mode" in cmd
     assert cmd[cmd.index("--permission-mode") + 1] == "plan"
-    assert "--disallowedTools" in cmd or "--disallowed-tools" in cmd
+    # closed-by-default allow-list: only Read is available (safer than a deny-list).
+    assert "--tools" in cmd
+    assert cmd[cmd.index("--tools") + 1] == "Read"
     assert "bypassPermissions" not in joined
     assert "--dangerously-skip-permissions" not in joined
 

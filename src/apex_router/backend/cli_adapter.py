@@ -35,9 +35,12 @@ from dataclasses import dataclass, field
 # Cap captured stdout by BYTES (not characters — multibyte content must not slip past).
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024   # 4 MiB is ample for a grading reply
 
-# Tools a grading call must never be able to use. `plan` mode already blocks execution;
-# this deny-list is defense-in-depth against any tool that could act or exfiltrate.
-_CLAUDE_DISALLOWED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
+# A grading call gets a CLOSED-BY-DEFAULT allow-list: only `Read` is available. This is
+# strictly safer than a deny-list (which would miss any tool we forgot, or an MCP/plugin
+# tool) — nothing not explicitly listed can run. Combined with `--permission-mode plan`
+# (read-only, non-executing) it is two independent layers. Verified live: Bash cannot
+# execute and a plain grading question still answers.
+_CLAUDE_ALLOWED_TOOLS = "Read"
 
 
 class AdapterError(RuntimeError):
@@ -110,7 +113,7 @@ def _call_claude(prompt, model, runner, timeout) -> ModelResult:
     # Non-interactive print + JSON envelope, prompt on stdin, and NO execution: 'plan'
     # mode (read-only) + a disallowed-tools deny-list. Model via env, not argv.
     cmd = ["claude", "-p", "--output-format", "json",
-           "--permission-mode", "plan", "--disallowedTools", _CLAUDE_DISALLOWED]
+           "--permission-mode", "plan", "--tools", _CLAUDE_ALLOWED_TOOLS]
     extra_env = {"ANTHROPIC_MODEL": model} if model else None
     res = _run(cmd, prompt, timeout, runner, extra_env)
     if res.returncode != 0:
