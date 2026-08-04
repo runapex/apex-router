@@ -40,7 +40,14 @@ def main(argv=None) -> int:
     sub.add_parser("status", help="report which components are live")
     verify = sub.add_parser("verify", help="self-check: import + report; exit 0 if routing works")
     verify.add_argument("--json", action="store_true")
+    watch = sub.add_parser("watch", help="install/manage background watchers (drain + daily)")
+    watch.add_argument("action", nargs="?", default="status",
+                       choices=["install", "uninstall", "status"])
     args = ap.parse_args(argv)
+
+    if args.cmd == "watch":
+        from . import watch as watch_mod
+        return watch_mod.main([args.action])
 
     if args.cmd in (None, "status", "verify"):
         st = _status()
