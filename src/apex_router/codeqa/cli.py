@@ -7,7 +7,7 @@ Usage:
   python -m codeqa.cli retrieve <repo> "question"    # show retrieved chunks only (no Ornith)
   python -m codeqa.cli repos                          # list registered repos
 
-repos: sample-cpp (C++), sample-ruby (Ruby). Register more as codeqa/repos/<name>.json.
+repos: a C++ repo and a Ruby repo are the reference configs. Register more as codeqa/repos/<name>.json.
 """
 from __future__ import annotations
 
