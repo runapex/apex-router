@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 import urllib.request
+from pathlib import Path
 
 
 def _service_up(url: str, timeout: float = 2.0) -> bool:
@@ -43,11 +44,25 @@ def main(argv=None) -> int:
     watch = sub.add_parser("watch", help="install/manage background watchers (drain + daily)")
     watch.add_argument("action", nargs="?", default="status",
                        choices=["install", "uninstall", "status"])
+    setup_proxy = sub.add_parser(
+        "setup-proxy",
+        help="merge proxy/Foundry client env into ~/.claude/settings.json (from --config/env)")
+    setup_proxy.add_argument("--config", type=Path)
+    setup_proxy.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
     if args.cmd == "watch":
         from . import watch as watch_mod
         return watch_mod.main([args.action])
+
+    if args.cmd == "setup-proxy":
+        from . import proxy_setup
+        pa = []
+        if args.config:
+            pa += ["--config", str(args.config)]
+        if args.dry_run:
+            pa.append("--dry-run")
+        return proxy_setup.main(pa)
 
     if args.cmd in (None, "status", "verify"):
         st = _status()

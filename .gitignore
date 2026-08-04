@@ -29,3 +29,4 @@ tables/*.json
 
 # tool-local config (not part of the package)
 .serena/
+proxy.env
