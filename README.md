@@ -133,7 +133,8 @@ Arch-aware and idempotent:
 | background watchers | **only with `--watch`** | drain worker + daily report (see below) |
 
 Flags: `--no-ornith` (skip the large model download), `--no-embed`, `--watch` (install
-watchers at first run), `--dir PATH`, `--verify-only`.
+watchers at first run), `--skills-marketplace <git-url>` (print the wiring for a private
+team skill marketplace — see below), `--dir PATH`, `--verify-only`.
 
 No Foundry required — the target uses its own Claude + Codex subscriptions.
 
@@ -198,6 +199,30 @@ stays self-contained). The installer can do this at first run with `--watch`; it
 auto-starts a daemon without that consent.
 
 ---
+
+## Team skills (private marketplace)
+
+apex-router ships **no skills** and hardcodes no private URL. Internal skills (PCE/VEN
+ops, team workflows) belong in a **private** Claude Code plugin marketplace — a separate
+git repo you control — so they never land in this public repo.
+
+Point the installer at yours (URL taken from a flag/env, never baked in):
+
+```bash
+./install.sh --skills-marketplace ssh://YOUR-GIT-HOST/team/skills-bundler.git
+# or: export APEX_SKILLS_MARKETPLACE=ssh://... && ./install.sh
+```
+
+It prints the two commands to run inside Claude Code:
+
+```
+/plugin marketplace add <your-private-git-url>
+/plugin install <plugin>@<marketplace-name>     # e.g. pce-troubleshooting@skills-bundler
+```
+
+A marketplace repo is just `.claude-plugin/marketplace.json` listing plugins, each a
+folder of `SKILL.md` bundles — Claude Code's native mechanism, so updates propagate on
+`git pull`. Keep internal-only content in that private repo, never here.
 
 ## Telemetry — reading and sharing it
 
