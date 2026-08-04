@@ -29,6 +29,7 @@ INSTALL_DIR="${APEX_ROUTER_DIR:-$HOME/.apex-router}"
 REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
 DO_EMBED=1
+DO_WATCH=0
 VERIFY_ONLY=0
 ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
 
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --no-ornith) DO_ORNITH=0 ;;
     --no-embed)  DO_EMBED=0 ;;
+    --watch)     DO_WATCH=1 ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
     --repo)      REPO_URL="$2"; shift ;;
     --verify-only) VERIFY_ONLY=1 ;;
@@ -182,6 +184,22 @@ verify() {
 }
 
 # --------------------------------------------------------------------------- #
+# 7. watchers (opt-in) — cross-platform background jobs: drain worker + daily report
+# --------------------------------------------------------------------------- #
+install_watchers() {
+  [ "$DO_WATCH" = "1" ] || {
+    echo "  background watchers NOT installed (run 'apex-router watch install' to enable, or"
+    echo "  re-run the installer with --watch). They drain the local job queue + write a daily report."
+    return 0
+  }
+  say "installing background watchers ($OS)"
+  # launchd on macOS, systemd --user on Linux — the CLI picks the right one.
+  "$INSTALL_DIR/.venv/bin/apex-router" watch install \
+    && ok "watchers installed (apex-router watch status to check; watch uninstall to remove)" \
+    || warn "watcher install did not complete (routing still works; try 'apex-router watch install')"
+}
+
+# --------------------------------------------------------------------------- #
 main() {
   say "apex-router installer  ($OS/$ARCH; apple-silicon=$IS_APPLE_SILICON)"
   if [ "$VERIFY_ONLY" = "1" ]; then verify; exit 0; fi
@@ -190,6 +208,7 @@ main() {
   install_embed
   install_ornith
   check_clients_and_table
+  install_watchers
   verify
 }
 main
