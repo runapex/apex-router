@@ -1,0 +1,65 @@
+"""Lane dispatch — route a queued job to its lane and return a LaneResult the worker records.
+
+The worker owns the filesystem state machine (inbox->running->done/failed) and telemetry; THIS owns
+the "which lane, what verdict" decision. Lane runners are parameters so the routing is unit-testable
+without a live server (tests inject stubs; production passes the real ornith_client/offload_lanes).
+
+Verdict doctrine (unchanged from offload_lanes / the aggregator):
+  - codegen  -> gated=True  (tests actually run); ok/escalate from whether they passed.
+  - review   -> gated=False (recall pre-filter, 1/5 precision); always escalate for triage.
+  - adhoc/unknown -> raw chat, gated=False, ok=False (a served completion is never an earned pass;
+    it cannot count as frontier work saved).
+"""
+from __future__ import annotations
+
+from .offload_lanes import LaneResult
+
+
+def _default_chat(messages, *, max_tokens, enable_thinking):
+    from . import ornith_client as oc
+    return oc.chat_messages(messages, max_tokens=max_tokens, enable_thinking=enable_thinking)
+
+
+def _default_codegen(spec, tests, *, max_tokens=1200, timeout_s=30):
+    from .offload_lanes import codegen_lane
+    return codegen_lane(spec, tests, max_tokens=max_tokens, timeout_s=timeout_s)
+
+
+def _default_review(preamble, diff, *, max_tokens=512):
+    from .offload_lanes import review_lane
+    return review_lane(preamble, diff, max_tokens=max_tokens)
+
+
+_DEFAULT_REVIEW_PREAMBLE = (
+    "You are a code reviewer. Report concrete bugs with exact line refs, verbatim. "
+    "Do not invent identifiers."
+)
+
+
+def run_job(job: dict, *, chat=_default_chat, codegen=_default_codegen,
+            review=_default_review) -> LaneResult:
+    """Dispatch one job dict to its lane and return a LaneResult. Never raises for routing reasons —
+    a lane runner may raise (server error); the worker's try/except handles that as a FAILED job."""
+    lane = job.get("lane") or "adhoc"
+    max_tokens = job.get("max_tokens", 4096)
+
+    if lane == "codegen":
+        spec, tests = job.get("spec"), job.get("tests")
+        if not spec or not tests:
+            # cannot gate without tests -> do NOT run ungated code; escalate to the frontier.
+            return LaneResult("codegen", ok=False, escalate=True, output="",
+                              usage=None, detail="codegen job missing spec/tests", gated=False)
+        return codegen(spec, tests, max_tokens=min(max_tokens, 2048))
+
+    if lane == "review":
+        diff = job.get("diff") or job.get("context") or ""
+        preamble = job.get("preamble") or _DEFAULT_REVIEW_PREAMBLE
+        return review(preamble, diff, max_tokens=min(max_tokens, 1024))
+
+    # adhoc / unknown lane -> raw chat, thinking-OFF unless the job explicitly opts in.
+    messages = job.get("messages") or [{"role": "user", "content": job.get("task", "")}]
+    r = chat(messages, max_tokens=max_tokens,
+             enable_thinking=bool(job.get("enable_thinking", False)))
+    return LaneResult("adhoc", ok=False, escalate=False, output=getattr(r, "answer", ""),
+                      usage=getattr(r, "usage", None), gated=False,
+                      detail=f"raw chat finish={getattr(r, 'finish_reason', None)}")

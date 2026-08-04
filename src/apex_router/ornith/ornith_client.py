@@ -122,7 +122,11 @@ def _parse(payload: dict[str, Any]) -> ChatResult:
 
 
 def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
-                  temperature=0.3, top_p=0.95) -> ChatResult:
+                  temperature=0.3, top_p=0.95, raise_on_truncation=True) -> ChatResult:
+    """raise_on_truncation (default True): a finish_reason=length answer raises OrnithProtocolError —
+    correct for codegen/extraction where a cut-off answer is useless. Callers whose PARTIAL output is
+    still valuable (e.g. the review pre-filter, where partial findings still escalate usefully) pass
+    False to receive the truncated ChatResult instead of an exception."""
     if MAINTENANCE.exists():
         raise OrnithMaintenance("Scheduled maintenance")
     body = {"messages": messages, "max_tokens": max_tokens,
@@ -132,7 +136,7 @@ def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
         if MAINTENANCE.exists():
             raise OrnithMaintenance("Scheduled maintenance")
         result = _parse(_post("/v1/chat/completions", body, timeout=INFER_TIMEOUT))
-    if result.finish_reason == "length":
+    if result.finish_reason == "length" and raise_on_truncation:
         raise OrnithProtocolError("Answer truncated (finish_reason=length)")
     return result
 
