@@ -32,12 +32,16 @@ DO_EMBED=1
 DO_WATCH=0
 VERIFY_ONLY=0
 ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
+# Private team skill marketplace (Claude Code plugin repo). Public apex-router hardcodes NO private
+# URL — pass --skills-marketplace <git-url> or set APEX_SKILLS_MARKETPLACE to wire your team's.
+SKILLS_MARKETPLACE="${APEX_SKILLS_MARKETPLACE:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ornith) DO_ORNITH=0 ;;
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
+    --skills-marketplace) SKILLS_MARKETPLACE="$2"; shift ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
     --repo)      REPO_URL="$2"; shift ;;
     --verify-only) VERIFY_ONLY=1 ;;
@@ -186,6 +190,28 @@ verify() {
 # --------------------------------------------------------------------------- #
 # 7. watchers (opt-in) — cross-platform background jobs: drain worker + daily report
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# team skill marketplace (optional) — print the /plugin wiring, never hardcode a private URL
+# --------------------------------------------------------------------------- #
+skills_hint() {
+  local url="$SKILLS_MARKETPLACE"
+  echo
+  say "team skills (Claude Code plugin marketplace)"
+  if [ -n "$url" ]; then
+    echo "  add your team's private skill marketplace and install its plugins:"
+    echo "    (in Claude Code)"
+    echo "    /plugin marketplace add $url"
+    echo "    /plugin install <plugin>@<marketplace-name>   # e.g. team-ops@skills-bundler"
+  else
+    echo "  apex-router ships no skills. To share team skills (internal ops, workflows) via a PRIVATE"
+    echo "  Claude Code marketplace, re-run with --skills-marketplace <git-url> (or set"
+    echo "  APEX_SKILLS_MARKETPLACE), then in Claude Code:"
+    echo "    /plugin marketplace add <your-private-git-url>"
+    echo "    /plugin install <plugin>@<marketplace-name>"
+    echo "  (kept out of this public repo on purpose — internal skills stay in your private repo.)"
+  fi
+}
+
 install_watchers() {
   [ "$DO_WATCH" = "1" ] || {
     echo "  background watchers NOT installed (run 'apex-router watch install' to enable, or"
@@ -210,5 +236,6 @@ main() {
   check_clients_and_table
   install_watchers
   verify
+  skills_hint
 }
 main
