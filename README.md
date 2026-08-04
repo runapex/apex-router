@@ -200,6 +200,27 @@ auto-starts a daemon without that consent.
 
 ---
 
+## Proxy / Foundry client setup
+
+If your machine routes Claude Code through a local proxy (e.g. a measuring/routing proxy in
+front of your model backend), apex-router can **replicate that client wiring** into
+`~/.claude/settings.json` — but it hardcodes **nothing**. The values come from your
+environment or a config file:
+
+```bash
+cp proxy.env.example proxy.env      # then edit proxy.env with YOUR proxy url / model ids
+./install.sh --proxy-config proxy.env
+# or, if the keys are already in your environment:
+apex-router setup-proxy             # merges them; apex-router setup-proxy --dry-run to preview
+```
+
+It **merges** (never overwrites) — your existing `permissions`, `hooks`, `enabledPlugins`,
+and unrelated `env` keys are preserved, and a `.apex-bak` backup is written before any edit.
+The keys it manages are non-secret client wiring (`CLAUDE_CODE_USE_FOUNDRY`,
+`ANTHROPIC_FOUNDRY_BASE_URL`, the `ANTHROPIC_DEFAULT_*_MODEL` mappings, prompt-cache flag).
+**Any auth your proxy itself needs lives in the proxy's own environment, never here** —
+`proxy.env` is gitignored so a filled-in copy is never committed.
+
 ## Team skills (private marketplace)
 
 apex-router ships **no skills** and hardcodes no private URL. Internal skills (internal

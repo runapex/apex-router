@@ -35,6 +35,9 @@ ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
 # Private team skill marketplace (Claude Code plugin repo). Public apex-router hardcodes NO private
 # URL — pass --skills-marketplace <git-url> or set APEX_SKILLS_MARKETPLACE to wire your team's.
 SKILLS_MARKETPLACE="${APEX_SKILLS_MARKETPLACE:-}"
+# Proxy/Foundry client wiring merged into ~/.claude/settings.json. Values come from a --proxy-config
+# file or your environment — NOTHING is hardcoded here. Empty = skip (routing still installs).
+PROXY_CONFIG="${APEX_PROXY_CONFIG:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,6 +45,7 @@ while [ $# -gt 0 ]; do
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
     --skills-marketplace) SKILLS_MARKETPLACE="$2"; shift ;;
+    --proxy-config) PROXY_CONFIG="$2"; shift ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
     --repo)      REPO_URL="$2"; shift ;;
     --verify-only) VERIFY_ONLY=1 ;;
@@ -193,6 +197,22 @@ verify() {
 # --------------------------------------------------------------------------- #
 # team skill marketplace (optional) — print the /plugin wiring, never hardcode a private URL
 # --------------------------------------------------------------------------- #
+setup_proxy() {
+  # Merge proxy/Foundry client env into ~/.claude/settings.json IF the user provided config.
+  # Values come from --proxy-config file or the environment; apex-router hardcodes none.
+  if [ -z "$PROXY_CONFIG" ]; then
+    # still run if the proxy env keys are already exported (env-only setup)
+    "$INSTALL_DIR/.venv/bin/apex-router" setup-proxy --dry-run >/dev/null 2>&1 && {
+      echo "  proxy env detected in environment — apply with: apex-router setup-proxy"
+    }
+    return 0
+  fi
+  say "wiring Claude Code through your proxy (from $PROXY_CONFIG)"
+  "$INSTALL_DIR/.venv/bin/apex-router" setup-proxy --config "$PROXY_CONFIG" \
+    && ok "settings.json updated (a .apex-bak backup was written)" \
+    || warn "proxy setup did not complete (routing still works)"
+}
+
 skills_hint() {
   local url="$SKILLS_MARKETPLACE"
   echo
@@ -235,6 +255,7 @@ main() {
   install_ornith
   check_clients_and_table
   install_watchers
+  setup_proxy
   verify
   skills_hint
 }
