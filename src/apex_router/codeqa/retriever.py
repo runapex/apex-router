@@ -4,13 +4,13 @@ The DETERMINISTIC tools traverse; Ornith only reads what they return. This modul
 the "traverse" half — it turns a natural-language question into a small set of exact,
 cited source chunks that get handed to Ornith as context.
 
-Design (per the sample-cpp/sample-ruby integration):
+Design (validated on a C++ and a Ruby repo):
   - HYBRID retrieval: symbol/keyword FIRST (ripgrep + optional clangd index), a vector
     similarity layer as a phase-2 fallback (seam present, see `vector.py`).
   - Repo-agnostic: everything repo-specific lives in codeqa/repos/<name>.json, so
-    sample-cpp (C++) and sample-ruby (Ruby) are two configs over one code path.
+    a C++ repo and a Ruby repo are two configs over one code path.
   - ripgrep is the common backbone (identical for C++ and Ruby); clangd/compile_commands
-    is a sample-cpp-only accuracy bonus, not required.
+    is a C++-only accuracy bonus, not required.
 
 Ornith's strength is verbatim fidelity over EXACT identifiers (measured), so keyword/
 symbol retrieval is the primary path by design — it plays to that strength and avoids

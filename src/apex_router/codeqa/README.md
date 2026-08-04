@@ -25,8 +25,8 @@ question ─► retriever (ripgrep + optional clangd index)  ─► exact cited 
   turn of every request, so mlx's PromptTrie serves it from cache (measured here:
   **8169/10127 prompt tokens cached** on a warm question). This is the
   `ornith_batch.batch_over_preamble` pattern applied to code Q&A.
-- **Repo-agnostic:** all repo specifics live in `repos/<name>.json`. C++ (sample-cpp) and
-  Ruby (sample-ruby) are two configs over one code path.
+- **Repo-agnostic:** all repo specifics live in `repos/<name>.json`. A C++ repo and a
+  Ruby repo are two configs over one code path.
 
 ## Answers are advisory — verify at ground truth
 
@@ -40,10 +40,10 @@ anything load-bearing, confirm with Opus/human at the cited source.
 cd <your-repo>
 PY=python
 
-$PY -m codeqa.cli repos                                   # list registered repos
-$PY -m codeqa.cli retrieve sample-cpp "how is rollback done" # show retrieved chunks (no Ornith)
-$PY -m codeqa.cli ask      sample-cpp "What does Firewall::reset do?"
-$PY -m codeqa.cli batch    sample-cpp questions.txt          # one Q/line, digest cache-reused
+$PY -m codeqa.cli repos                                    # list registered repos
+$PY -m codeqa.cli retrieve myrepo "how is rollback done"   # show retrieved chunks (no Ornith)
+$PY -m codeqa.cli ask      myrepo "What does Firewall::reset do?"
+$PY -m codeqa.cli batch    myrepo questions.txt            # one Q/line, digest cache-reused
 ```
 
 Flags: `--max-tokens N` (default 1200 — **do not set too low**: a truncated answer raises
@@ -73,15 +73,15 @@ are how the retriever finds *definition* sites vs. plain references — tune per
 
 | Repo | Lang | Digest | Index | Status |
 |---|---|---|---|---|
-| sample-cpp | C++ | `docs/architecture/sample-cpp-architecture.md` ✓ | clangd (`cmake-index/`) | **live, tested** |
-| sample-ruby | Ruby | `docs/architecture/sample-ruby-architecture.md` ✓ | ripgrep-only | **live, tested** |
+| a C++ repo | C++ | `docs/architecture/<name>-architecture.md` ✓ | clangd (`cmake-index/`) | **live, tested** |
+| a Ruby repo | Ruby | `docs/architecture/<name>-architecture.md` ✓ | ripgrep-only | **live, tested** |
 
 Both repos are at full parity — grounded digest + retrieval + live Ornith Q&A, verified
 end-to-end with prompt-cache reuse active (6–8k tokens/question served from cache).
 
-## Two retrieval bugs fixed during sample-ruby bring-up (both affected sample-cpp too)
+## Two retrieval bugs fixed during a Ruby-repo bring-up (both affected the C++ repo too)
 
-Surfaced by a live sample-ruby test that returned junk (build scripts, `obscure.rb`):
+Surfaced by a live test that returned junk (build scripts, an unrelated `.rb`):
 1. **Extension globs OR'd with path globs.** ripgrep OToRs multiple positive `--glob`
    includes, so passing `*.rb` alongside `app/**` matched every Ruby file anywhere,
    defeating the path whitelist. Fix: path globs are the only rg includes; extensions
