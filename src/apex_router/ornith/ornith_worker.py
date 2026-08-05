@@ -67,7 +67,15 @@ def main() -> None:
         d.mkdir(parents=True, exist_ok=True)
     for p in RUNNING.glob('*.json'):        # requeue anything left running from a prior run
         p.replace(INBOX / p.name)
+    # Version-guard: snapshot our own source at startup. If the code on disk changes, exit cleanly so
+    # the supervisor (launchd KeepAlive / systemd Restart) relaunches on fresh code — a long-lived
+    # daemon must never keep running a stale bugfix (measured: a fix sat unused ~19h once).
+    from .version_guard import Guard
+    guard = Guard(ROOT)
     while True:
+        if guard.is_stale():
+            print("worker source changed on disk — exiting for supervisor to restart on fresh code")
+            return
         if MAINT.exists():
             time.sleep(5)
             continue
