@@ -110,7 +110,7 @@ def classify(text: str, file_path: str = "") -> str:
     return "prose"
 
 
-# Δ2 (revised, instrument lesson #7): CANONICAL BYTE STRATA — the one plane-neutral size-binning
+# Δ2 (revised, a measurement lesson): CANONICAL BYTE STRATA — the one plane-neutral size-binning
 # contract, like `classify()`. BOTH planes bin on the SAME observable — CONTEXT BYTES (the ledger's
 # committed_wire_length at runtime; the replayed emission length offline) — via the SAME
 # `size_stratum_bytes()`. So a cell's admission evidence covers exactly the population routing to it
@@ -118,7 +118,7 @@ def classify(text: str, file_path: str = "") -> str:
 # This DELETES the earlier byte←token ratio, which was structurally broken: bytes/token varies
 # 3.2–4.06 by class, so ANY single ratio misroutes some class in some direction (the hole Codex
 # found — the ratio-invariant test only checked the min-bpt class while routing applies to all).
-# The register rule under measure-don't-estimate: when two planes can share one observable, share it
+# The design rule under measure-don't-estimate: when two planes can share one observable, share it
 # — never bridge them with a distribution-dependent conversion.
 #
 # Token strata survive only as a DERIVED reporting dimension (computed offline from measured tokens)
@@ -148,7 +148,7 @@ def size_stratum_bytes(context_bytes: int) -> str:
 # caller who doesn't state one").
 _KEY_FILENAME = "key"
 _KEY_BYTES = 32  # the exact per-install key length (secrets.token_bytes(32)); a shorter file is a
-# crash-truncated/partial write and is REFUSED, never adopted as a weak key (Codex xval).
+# crash-truncated/partial write and is REFUSED, never adopted as a weak key (cross-validation).
 
 
 def _read_key_file(key_path: Path) -> bytes | None:

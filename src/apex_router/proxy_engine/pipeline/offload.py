@@ -49,7 +49,7 @@ class OffloadPool:
 
         If the pool is already shutting down, submit raises RuntimeError; we surface it as
         OffloadUnavailable so the pipeline can fall open (ship the original block) rather than
-        leak a raw executor error (Codex M3). We do NOT catch asyncio.CancelledError — real task
+        leak a raw executor error (cross-validation). We do NOT catch asyncio.CancelledError — real task
         cancellation must propagate (swallowing it breaks structured cancellation); the
         pipeline's fail-open wrapper handles a cancelled offload by shipping the original.
         Exceptions from `fn` ITSELF propagate unchanged — the transform's fail-open signal (§6).

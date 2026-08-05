@@ -60,7 +60,7 @@ def collapse_cr(s: str) -> str:
 
     A terminal renders `a\\rbb` as `bb` (CR → col 0, later chars overwrite). But the common
     progress pattern is `text\\r\\x1b[Knewtext`: CR to col 0, then `\\x1b[K` ERASES the line, so
-    the result is `newtext` — NOT `newtextt` (Codex M3: stripping ANSI first lost the erase and
+    the result is `newtext` — NOT `newtextt` (cross-validation: stripping ANSI first lost the erase and
     produced garbage like 'Doneloading 99%'). So collapse_cr MUST run BEFORE strip_ansi and
     honor erase sequences at each `\\r` segment boundary:
       \\x1b[2K → erase whole line;  \\x1b[K/\\x1b[0K → erase cursor→eol (cursor at col0 ⇒ all);
@@ -90,7 +90,7 @@ def strip_motd(s: str) -> str:
 
 def run(block: Block, knobs: Snapshot) -> Rendering:
     text = block.content
-    # ORDER MATTERS (Codex M3): collapse_cr FIRST (erase-aware, needs the \x1b[K sequences),
+    # ORDER MATTERS (cross-validation): collapse_cr FIRST (erase-aware, needs the \x1b[K sequences),
     # then strip remaining ANSI, then MOTD.
     if knobs.get("collapse_cr", True):
         text = collapse_cr(text)

@@ -30,23 +30,23 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction"]
 # v2: added `endpoint_id` (where a wire was reached). The pre-shadow attribution field that lets
 # shadow-era data be endpoint-attributed at birth (adding it later leaves the shadow week
 # unattributable). NOT a constant — DERIVED from the resolved upstream by `Upstream.endpoint_id`
-# (Codex cross-validation: codex traffic routes to openai, not the Anthropic gateway, so a static "anthropic"
+# (Codex cross-validation: codex traffic routes to openai, not anthropic, so a static "anthropic"
 # mislabels it).
 # v3: added `content_encoding` (the response's Content-Encoding, as seen by the usage scanner). The
-# 3-day shadow mine (2026-07-16) root-caused ~16.7% `usage=null` to the scanner self-disabling on
+# a measurement window) root-caused ~16.7% `usage=null` to the scanner self-disabling on
 # undecodable encodings (brotli, uninstalled at the time); logging the encoding converts that from a
 # silent, retro-unprovable gap into a monitored field — the discriminating instrument for the
 # pre-registered brotli acceptance test (join content_encoding × usage-present on the next window).
 # v4: added `upstream_error_wait_ms` AND changed `apex_added_ms` semantics on the upstream-raise
 # error path. Pre-v4, a send_stream failure billed the whole elapsed wait (t0→raise) to
-# apex_added_ms, so a 600s read-timeout read as 600s of apex latency (live finding 2026-07-19:
+# apex_added_ms, so a 600s read-timeout read as 600s of apex latency (live finding the reference window:
 # 42/127 errors mis-billed ~600_000ms). v4 bills apex only its own pre_forward cost and records the
 # upstream wait-until-failure separately. Consumers pooling pre-v4 apex_added_ms across error rows
 # will see an inflated tail; filter is_error or split on schema_version >= 4.
 TELEMETRY_SCHEMA_VERSION = 4
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
-# (the Anthropic gateway for the Anthropic wire, openai for codex) — this default is only the fallback for an
+# (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
 # event constructed without a handler (e.g. `start()` before routing). A real endpoints table
 # (A-Proto) replaces the derivation with a lookup on the resolved endpoint profile.
 ENDPOINT_ID = "anthropic"
@@ -76,7 +76,7 @@ class TelemetryEvent:
     model_resolved: str | None
     stratum: str
     # endpoint the wire was reached through — set per request by the handler from the resolved
-    # upstream (the Anthropic gateway | openai). Attribution substrate: shadow-era data is endpoint-labeled from
+    # upstream (anthropic | openai). Attribution substrate: shadow-era data is endpoint-labeled from
     # line one, so a later multi-endpoint world can bucket it without re-collecting. See ENDPOINT_ID
     # for the derivation.
     endpoint_id: str = ENDPOINT_ID
@@ -115,7 +115,7 @@ class TelemetryEvent:
     # apex_added_ms so a 600s read-timeout is attributed to the upstream, not billed to apex (whose
     # own cost stays pre_forward_ms). 0 on success and on the mid-stream error path (there ttfb_ms
     # already captured the wait). A latency panel reads apex_added_ms for apex cost, this for the
-    # upstream-failure tail. See the 2026-07-19 finding: 42/127 errors showed ~600_000ms mis-billed.
+    # upstream-failure tail. See the the reference window finding: 42/127 errors showed ~600_000ms mis-billed.
     upstream_error_wait_ms: float = 0.0
     is_error: bool = False
     # content_encoding — the response Content-Encoding the usage scanner saw (gzip/br/identity/...).

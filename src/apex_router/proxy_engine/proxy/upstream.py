@@ -80,10 +80,10 @@ class Upstream:
         """A stable telemetry label for the endpoint a wire is reached through — derived from the
         SAME client→upstream routing as `base_for`, so a row's endpoint attribution matches where
         the request actually went (Codex cross-validation: a static "anthropic" mislabels codex rows,
-        which route to `openai_upstream`, not the Anthropic gateway). Two endpoints exist today — that this is no
+        which route to `openai_upstream`, not the anthropic wire). Two endpoints exist today — that this is no
         longer a single constant is itself the A-Proto "second endpoint" re-activation trigger; the
         degenerate-constant assumption was wrong, so the label is derived, not hard-coded. Anthropic
-        traffic → `the Anthropic gateway` (a gateway in front of the provider); codex traffic → `openai`. When a real
+        traffic → `anthropic` ; codex traffic → `openai`. When a real
         endpoints table lands (A-Proto), this becomes a lookup on the resolved endpoint profile."""
         return "openai" if client_kind == "codex" else "anthropic"
 

@@ -346,7 +346,7 @@ class Store:
     def prefix_put(self, session_id: str, turn: int, t_hash: str, t_len: int) -> None:
         """Checkpoint turn N's shipped-prefix hash+length. APPEND-ONLY per turn: a checkpoint
         is the immutable fingerprint of bytes already shipped, and the guard's soundness
-        depends on it never changing (Codex M2 xval #3: an overwrite to a shorter/different
+        depends on it never changing (cross-validation xval #3: an overwrite to a shorter/different
         prefix makes hash_at_length pass falsely = a false-silent cache bust). A retry writing
         the IDENTICAL (t_hash, t_len) is a no-op; a DIFFERENT value for an existing turn is a
         bug/race and raises rather than silently corrupting the checkpoint.

@@ -49,7 +49,7 @@ class Frontier:
     # (how many later requests re-read this block). Per-entry-position, NOT a session-aggregate: a
     # block entering at turn 95 of a 100-request session has R=4, not the band-aggregate 13. Pricing
     # `saving(R)`/`retrieval_cost(R)` at this per-block R avoids the phantom-horizon mispricing (the
-    # terminal/xl failure family in the time dimension — internal review 2026-07-15).
+    # terminal/xl failure family in the time dimension — internal review the reference window).
     remaining_requests: int = 0
 
 

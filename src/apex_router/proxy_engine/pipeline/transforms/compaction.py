@@ -39,7 +39,7 @@ _NUM_RE = re.compile(r"(?<![\w.])-?\d+\.?\d*(?:[eE][+-]?\d+)?")
 def _reject_duplicate_keys(pairs):
     """json object_pairs_hook: raise if any object has duplicate keys. Minifying such JSON
     would DROP a key on the wire (the model would read different content), so compaction must
-    not apply — otherwise 'lossless' would be a lie (Codex M3 review). Reconstructs a normal
+    not apply — otherwise 'lossless' would be a lie (cross-validation review). Reconstructs a normal
     dict when keys are unique."""
     seen = set()
     for k, _ in pairs:
@@ -66,7 +66,7 @@ def _value_preserving(original: str) -> bool:
     model-visible content. Two failure modes, both → skip (ship raw):
 
     (a) VALUE drift at PARSE time: 9007199254740993 → …992 (past 2^53), 0.1000…005 → 0.1. Compared
-        as exact Decimals (Codex M3).
+        as exact Decimals (cross-validation).
     (b) LEXEME drift under re-serialization (Δ7): `1e0` → `1.0`, `-0` → `0`, `1E5` → `100000.0`,
         `2.0e-3` → `0.002`. The VALUE is preserved but the BYTES the model reads change — a
         scientific-notation measurement or a `-0` sentinel is a token the model may reason about, so
