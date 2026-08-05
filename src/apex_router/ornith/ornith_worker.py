@@ -14,8 +14,14 @@ from pathlib import Path
 
 from .dispatch import run_job
 from .offload_telemetry import OffloadRecord, usage_tokens, write_offload
+from .queue_paths import queue_root
 
-ROOT = Path(__file__).resolve().parent
+# CODE_ROOT (the package dir) is watched by the version-guard — it must NOT move with the queue.
+# QUEUE_ROOT (jobs/state) is config-driven (APEX_ORNITH_QUEUE, default ~/.apex-router/queue) so the
+# daemon and enqueuers agree on ONE location regardless of where the code lives — this is what lets
+# a machine run the packaged code while keeping a stable queue (kills private/public path drift).
+CODE_ROOT = Path(__file__).resolve().parent
+ROOT = queue_root()
 INBOX = ROOT / 'jobs/inbox'
 RUNNING = ROOT / 'jobs/running'
 DONE = ROOT / 'jobs/done'
@@ -71,7 +77,7 @@ def main() -> None:
     # the supervisor (launchd KeepAlive / systemd Restart) relaunches on fresh code — a long-lived
     # daemon must never keep running a stale bugfix (measured: a fix sat unused ~19h once).
     from .version_guard import Guard
-    guard = Guard(ROOT)
+    guard = Guard(CODE_ROOT)   # watch the CODE, not the queue
     while True:
         if guard.is_stale():
             print("worker source changed on disk — exiting for supervisor to restart on fresh code")

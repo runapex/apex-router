@@ -18,7 +18,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from .queue_paths import queue_root
+
+# Same resolver the worker uses — enqueuer and drainer must agree on ONE queue location.
+ROOT = queue_root()
 
 
 def main(argv=None) -> None:
