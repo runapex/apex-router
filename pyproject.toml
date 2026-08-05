@@ -19,11 +19,18 @@ dependencies = []
 # (tool-set / system markers, 0 services) still routes. The client itself is stdlib
 # (urllib), so this extra only documents the runtime service expectation.
 embed = []
-# The replay bench can drive a local Ornith MLX server for offline scoring/codegen.
-# Apple-Silicon only; the installer provisions it there and skips it elsewhere.
-ornith = ["mlx-lm>=0.19.0"]
+# The replay bench can drive a local MLX server for offline scoring/codegen. MLX is Apple-Silicon
+# only, so the dependency carries a platform marker — `pip install apex-router[ornith]` is a clean
+# no-op on Linux/Intel (installs nothing) instead of failing on an unavailable wheel.
+ornith = ["mlx-lm>=0.19.0; platform_system == 'Darwin' and platform_machine == 'arm64'"]
+# The measuring PROXY (apex_router.proxy_engine): an ASGI server that fronts the provider,
+# measures composition/usage, and runs the offline policy tuner. Heavy deps live ONLY here, so the
+# routing core stays pure-stdlib — install with `pip install apex-router[proxy]` to run the proxy.
+proxy = ["starlette>=1.3", "uvicorn>=0.34", "httpx>=0.28", "brotli>=1.2.0", "numpy>=1.26"]
+# The offline tuner adds stats + tokenizer on top of [proxy].
+tuner = ["scipy>=1.13", "tiktoken>=0.7"]
 # Dev/test.
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "hypothesis>=6"]
 
 [project.scripts]
 apex-router = "apex_router.cli:main"

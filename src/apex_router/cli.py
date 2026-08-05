@@ -46,14 +46,33 @@ def main(argv=None) -> int:
                        choices=["install", "uninstall", "status"])
     setup_proxy = sub.add_parser(
         "setup-proxy",
-        help="merge proxy/Foundry client env into ~/.claude/settings.json (from --config/env)")
+        help="merge proxy client env into ~/.claude/settings.json (from --config/env)")
     setup_proxy.add_argument("--config", type=Path)
     setup_proxy.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args(argv)
+    # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
+    # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
+    sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
+                   add_help=False)
+    sub.add_parser("proxy", help="proxy engine CLI: serve/doctor/compile/readout (needs [proxy])",
+                   add_help=False)
+    args, extra = ap.parse_known_args(argv)
 
     if args.cmd == "watch":
         from . import watch as watch_mod
         return watch_mod.main([args.action])
+
+    if args.cmd in ("serve", "proxy"):
+        # `serve` is shorthand for `proxy serve`; `proxy <sub> …` forwards the rest verbatim.
+        # The proxy engine's heavy deps (starlette/uvicorn/…) load lazily inside its subcommands, so
+        # a missing dep surfaces here — catch it and point at the extra instead of dumping a traceback.
+        forwarded = (["serve"] if args.cmd == "serve" else []) + extra
+        try:
+            from .proxy_engine import cli as proxy_cli
+            return proxy_cli.main(forwarded)
+        except ImportError as e:
+            print("the proxy engine needs the [proxy] extra: "
+                  f"pip install 'apex-router[proxy]'  (missing: {e.name or e})")
+            return 1
 
     if args.cmd == "setup-proxy":
         from . import proxy_setup
