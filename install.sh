@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/<owner>/apex-router/main/install.sh | bash
 #
 # Provisions the full stack, arch-aware and IDEMPOTENT (anything already present is
-# skipped). No Foundry is required anywhere — the target uses its own Claude + Codex
+# skipped). No model gateway is required anywhere — the target uses its own Claude + Codex
 # subscriptions; the known-models gate keeps route tables from pointing at models this
 # machine can't run.
 #
@@ -18,6 +18,7 @@
 #         --no-embed    skip ollama / nomic-embed
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
+#         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  print /plugin commands for a private team skill marketplace
 #         --dir PATH    install location (default: ~/.apex-router)
@@ -37,10 +38,12 @@ DO_WATCH=0
 DO_PROXY=0
 VERIFY_ONLY=0
 ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
+# Repos to install the review post-commit hook into (space-separated; user-supplied, none hardcoded).
+HOOK_REPOS="${APEX_HOOK_REPOS:-}"
 # Private team skill marketplace (Claude Code plugin repo). Public apex-router hardcodes NO private
 # URL — pass --skills-marketplace <git-url> or set APEX_SKILLS_MARKETPLACE to wire your team's.
 SKILLS_MARKETPLACE="${APEX_SKILLS_MARKETPLACE:-}"
-# Proxy/Foundry client wiring merged into ~/.claude/settings.json. Values come from a --proxy-config
+# Proxy client wiring merged into ~/.claude/settings.json. Values come from a --proxy-config
 # file or your environment — NOTHING is hardcoded here. Empty = skip (routing still installs).
 PROXY_CONFIG="${APEX_PROXY_CONFIG:-}"
 
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
+    --install-hooks) HOOK_REPOS="$2"; shift ;;
     --skills-marketplace) SKILLS_MARKETPLACE="$2"; shift ;;
     --proxy-config) PROXY_CONFIG="$2"; shift ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
@@ -170,7 +174,7 @@ EOF
 }
 
 # --------------------------------------------------------------------------- #
-# 5. Claude + Codex presence (no Foundry needed) + starter route table
+# 5. Claude + Codex presence (no gateway needed) + starter route table
 # --------------------------------------------------------------------------- #
 check_clients_and_table() {
   have claude && ok "claude CLI detected" || warn "claude CLI not found — install it for the routing consumer to dispatch"
@@ -206,6 +210,31 @@ verify() {
 # --------------------------------------------------------------------------- #
 # team skill marketplace (optional) — print the /plugin wiring, never hardcode a private URL
 # --------------------------------------------------------------------------- #
+install_hooks() {
+  # Install the review post-commit hook into the user-named repos. Nothing hardcoded — repos come
+  # from --install-hooks / APEX_HOOK_REPOS. Symlinked so a hook update propagates; never clobbers an
+  # existing real (non-symlink) post-commit.
+  [ -n "$HOOK_REPOS" ] || {
+    echo "  review git-hooks NOT installed (pass --install-hooks \"<repo> <repo>\" to enable)."
+    return 0
+  }
+  local hook="$INSTALL_DIR/hooks/ornith-review-enqueue.sh"
+  [ -f "$hook" ] || { warn "hook script missing at $hook"; return 0; }
+  chmod +x "$hook" 2>/dev/null
+  say "installing review post-commit hook"
+  local r dest
+  for r in $HOOK_REPOS; do
+    r="${r/#\~/$HOME}"
+    if [ ! -d "$r/.git" ]; then warn "  $r is not a git repo — skipped"; continue; fi
+    dest="$r/.git/hooks/post-commit"
+    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+      warn "  $r already has a real post-commit — skipped (remove it to use the review hook)"
+    else
+      ln -sf "$hook" "$dest" && ok "  hooked $r"
+    fi
+  done
+}
+
 install_proxy() {
   # The measuring proxy is a LIVE data plane on your request path — we install it (via the
   # [proxy] extra above) but never auto-start it. Print how to run it + verify it imports.
@@ -225,7 +254,7 @@ install_proxy() {
 }
 
 setup_proxy() {
-  # Merge proxy/Foundry client env into ~/.claude/settings.json IF the user provided config.
+  # Merge proxy client env into ~/.claude/settings.json IF the user provided config.
   # Values come from --proxy-config file or the environment; apex-router hardcodes none.
   if [ -z "$PROXY_CONFIG" ]; then
     # still run if the proxy env keys are already exported (env-only setup)
@@ -282,6 +311,7 @@ main() {
   install_ornith
   check_clients_and_table
   install_watchers
+  install_hooks
   install_proxy
   setup_proxy
   verify
