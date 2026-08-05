@@ -12,7 +12,7 @@ DOCTRINE (inherited from impact.py)
     - Records counts / verdicts / lane / model ONLY. No source text, no prompt content.
     - The writer is FAIL-OPEN: an instrument must never break the tool it measures.
 
-TOKEN SHAPE (verified against the live :8080 MLX server, 2026-08-03):
+TOKEN SHAPE (verified against the live :8080 MLX server, the reference window):
     usage = {"prompt_tokens": P, "completion_tokens": C, "total_tokens": T,
              "prompt_tokens_details": {"cached_tokens": K}}
 """
@@ -36,7 +36,7 @@ def usage_tokens(usage: dict | None) -> tuple[int, int, int]:
         return (0, 0, 0)
 
     def _int(v) -> int:
-        # never raises (Codex xval-2 #5): a non-numeric token value like "bad" coerces to 0, not
+        # never raises (cross-validation): a non-numeric token value like "bad" coerces to 0, not
         # a ValueError that would break the instrument's "never raises" contract.
         try:
             return int(v) if v is not None else 0
@@ -57,7 +57,7 @@ class OffloadRecord:
     gated     : did a CORRECTNESS GATE actually run on this call (codegen ran the tests; codeqa
                 verified citations)? A raw served completion with no gate is `gated=False` and can
                 NEVER count as frontier work saved — otherwise every completion inflates the metric
-                (Codex xval #6). Only a gated call has an earned verdict.
+                (cross-validation). Only a gated call has an earned verdict.
     ok        : did the local answer PASS its gate (tests passed / grounded). Meaningless unless
                 `gated` is True.
     escalated : was the item handed to the frontier anyway. A call that escalates saved NO frontier
@@ -86,7 +86,7 @@ def write_offload(log_path, rec: OffloadRecord | None = None) -> None:
     """Append one offload record as JSONL. Fail-open — an instrument must never break the tool.
 
     Two call forms, disambiguated by TYPE (not by None — `write_offload(path, None)` must not be
-    mistaken for the single-arg form, Codex xval #9):
+    mistaken for the single-arg form, cross-validation):
         write_offload(path, rec)   # explicit sink (tests)
         write_offload(rec)         # default sink DEFAULT_OFFLOAD_LOG (worker/lanes)
     """
@@ -109,17 +109,17 @@ def aggregate_offload(log_path: Path) -> dict:
     The load-bearing number is `frontier_completion_tokens_saved`. Frontier generation is avoided
     ONLY when a call is (a) `gated` — a real correctness gate ran, so the verdict is earned; (b)
     `ok` — it passed that gate; and (c) NOT `escalated` — the item was not also sent upstream. All
-    three are required (Codex xval #4/#6): a raw served completion (gated=False) or a review that
+    three are required (cross-validation): a raw served completion (gated=False) or a review that
     always escalates (ok but escalated) saved NO frontier tokens. Counting either would inflate the
     metric — the exact measurement-integrity trap this whole effort exists to avoid.
 
     Every field is read defensively: a malformed record (null, list, string token count) is skipped,
-    never allowed to abort the report (Codex xval #11).
+    never allowed to abort the report (cross-validation).
     """
     empty = {"overall": {"n": 0, "ok": 0, "escalated": 0, "gated": 0}, "by_lane": {}}
     try:
         # errors="replace" so a single invalid-UTF-8 byte can't abort the whole report
-        # (Codex xval-2 #5). Catch broadly — reading the log must never raise.
+        # (cross-validation). Catch broadly — reading the log must never raise.
         text = Path(log_path).read_text(errors="replace")
     except Exception:  # noqa: BLE001
         return empty
@@ -128,7 +128,7 @@ def aggregate_offload(log_path: Path) -> dict:
         return v if isinstance(v, int) and not isinstance(v, bool) else 0
 
     def _flag(v) -> bool:
-        # STRICT: only a literal JSON `true` counts (Codex xval-2 #3). A string "false" is truthy
+        # STRICT: only a literal JSON `true` counts (cross-validation). A string "false" is truthy
         # under bool() and would flip a failed call into a saving one — the exact metric-inflation
         # this design exists to prevent.
         return v is True

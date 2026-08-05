@@ -72,14 +72,14 @@ def test_concurrent_turns_serialize_on_revision():
     led.reserve(rev)  # turn A reserves the current revision
     with pytest.raises(StaleRevision):
         led.reserve(rev)  # turn B reserves the SAME stale revision
-    # the holder commits by presenting its reserved revision (Codex F4: CAS enforced at commit)
+    # the holder commits by presenting its reserved revision (cross-validation: CAS enforced at commit)
     led.commit_turn(request_id="rA", block_id="b0", original=b"O", render=lambda: b"X", epoch=1,
                     expected_revision=rev)
     assert led.revision() == rev + 1  # exactly one advance
 
 
 def test_commit_cannot_bypass_a_held_reservation():
-    """Codex F4: a DIFFERENT turn cannot commit while another holds the reservation — it is a real
+    """cross-validation: a DIFFERENT turn cannot commit while another holds the reservation — it is a real
     CAS token, not a decoration. A non-holder (no / wrong expected_revision) is stale."""
     led = PrefixLedger("s")
     rev = led.revision()

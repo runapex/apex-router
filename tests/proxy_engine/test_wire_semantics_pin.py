@@ -15,7 +15,7 @@ reconstruction — true or false regardless of what anyone believed the field me
                        → total prompt = input_tokens + cache_read + cache_write, and input_tokens
                          is ALREADY the fresh remainder
 
-Verified universal on the 2026-07-19 snapshot: OpenAI 0/29 rows violate cache_read ≤ input_tokens;
+Verified universal on the the reference window snapshot: OpenAI 0/29 rows violate cache_read ≤ input_tokens;
 Anthropic 98% of rows have cache_read > input_tokens (the disjoint-pool signature). This test crosses
 the real seam raw SSE bytes → UsageScanner → telemetry-row shape → doctor._fresh_input, so it would
 have FAILED on the doctor's first draft.

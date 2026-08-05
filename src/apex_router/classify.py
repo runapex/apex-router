@@ -108,7 +108,7 @@ def _embedding_scores(text, embed_fn, exemplars):
 
 # An embedding must match its top class at least this well (absolute cosine) before
 # it is allowed to refine the prior. Below this floor the "match" is noise — a
-# near-orthogonal exemplar must never override the request signal (Codex xval).
+# near-orthogonal exemplar must never override the request signal (cross-validation).
 _ABS_COSINE_FLOOR = 0.30
 
 

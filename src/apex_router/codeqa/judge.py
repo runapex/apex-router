@@ -76,7 +76,7 @@ _JSON_ONLY_REMINDER = (
 
 def _live_source_at_citations(repo_root: Path, answer_text: str, *, radius: int = 8) -> str:
     """For each file:line the answer CITED, read the ACTUAL current code around it from the live tree
-    (ground truth). This is what the judge grades against — NOT the answerer's excerpts (Codex F1)."""
+    (ground truth). This is what the judge grades against — NOT the answerer's excerpts (cross-validation)."""
     cites = parse_emitted_citations(answer_text)
     if not cites:
         return "(the answer cited no file:line locations to verify against the source)"
@@ -197,7 +197,7 @@ def parse_judge_score(raw: str) -> float:
     JudgeProtocolError — a scoring failure must be visible and reprompted per-item, never silently
     clamped into valid-looking evidence. (All internal errors — JSONDecodeError, OverflowError on a
     huge int — are normalized to JudgeProtocolError so the judge loop treats them as protocol, not
-    transport, failures; Codex xval P1/P3.)"""
+    transport, failures; cross-validation.)"""
     start = raw.find("{")
     end = raw.rfind("}")
     if start < 0 or end <= start:
@@ -323,7 +323,7 @@ def is_transient_judge_error(exc: BaseException) -> bool:
 def opus_judge_fn(repo_root, *, call_fn: Callable[[str], str] | None = None,
                   max_attempts: int = 3, sleep_fn: Callable[[float], None] | None = None):
     """Build a blinded judge_fn(question, answer_text) -> [0,1] backed by Opus, grading against the
-    LIVE code at `repo_root` (treatment-neutral ground truth — Codex F1). `call_fn` is the injectable
+    LIVE code at `repo_root` (treatment-neutral ground truth — cross-validation). `call_fn` is the injectable
     API seam (defaults to the real proxy call); pass a fake in tests.
 
     Makes up to `max_attempts` TOTAL grading calls (default 3 = 1 initial + 2 retries), retrying only

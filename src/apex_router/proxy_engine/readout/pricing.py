@@ -58,10 +58,10 @@ _TABLE: tuple[tuple[str, str, Rates], ...] = (
 # needed to strip vendor prefixes (`<gateway>-gpt-5.x` → gpt-5 family), but it would also map
 # `gpt-5-mini`/`gpt-5-nano` — much cheaper tiers — onto the full gpt-5 rate (a ~60× overprice). The
 # markers force such a model to the labeled `unknown` rate instead of a wrong flagship number, until
-# a real row for the SKU is priced. (Codex-xval F8: a substring match must not silently mis-SKU.)
+# a real row for the SKU is priced. (cross-validation: a substring match must not silently mis-SKU.)
 # Matched as DELIMITED TOKENS, not raw substrings, so a flagship routed through a proxy whose NAME
 # merely contains the letters (`litellm-gpt-5` has "lite", `satellite-…` has "lite") is NOT refused
-# (Codex pass-2 P2 — my own substring fix introduced that regression; this is the delimited repair).
+# (cross-validation — my own substring fix introduced that regression; this is the delimited repair).
 _CHEAPER_VARIANT_MARKERS = frozenset({"mini", "nano", "small", "lite"})
 
 

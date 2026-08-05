@@ -116,7 +116,7 @@ def test_healed_cell_routes_to_parent_default():
 
 
 # --------------------------------------------------------------------------- #
-# Regression — confirmed by Codex cross-validation (2026-07-31)
+# Regression — confirmed by Codex cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
 def test_rt5_promoted_chosen_must_be_in_ranking():
     # BUG (Codex #5): a promoted cell whose gate chosen_model is NOT in the ranking
@@ -200,7 +200,7 @@ def test_rt9_build_ranking_zero_n_does_not_crash():
 # Regression — Codex PASS 2 (route-table + gate composition)
 # --------------------------------------------------------------------------- #
 def test_rt_p2f4_absent_heal_row_does_not_break_emit():
-    # BUG (Codex pass2 #4): run_gate emits absent-heal cells with parent_task_type="",
+    # BUG (cross-validation#4): run_gate emits absent-heal cells with parent_task_type="",
     # which the emitter then REJECTED -> the whole table failed to regenerate and the
     # stale route stayed live. An absent-heal row (no real cell to route) must be
     # tolerated: skipped from the cells, surfaced as a dropped route, not a hard error.
@@ -218,7 +218,7 @@ def test_rt_p2f4_absent_heal_row_does_not_break_emit():
 
 
 def test_rt_p2f5_empty_model_name_in_ranking_not_routed():
-    # BUG (Codex pass2 #5): a ranking containing model "" allowed a promoted chosen=""
+    # BUG (cross-validation#5): a ranking containing model "" allowed a promoted chosen=""
     # to be 'supported'. An empty model name is not a real route -> demote to default.
     results = [_gate_result("c1", True, "", parent="generate")]
     rankings = {"c1": [{"model": "", "quality": 0.9, "quality_ci": (0.8, 0.95),
@@ -230,7 +230,7 @@ def test_rt_p2f5_empty_model_name_in_ranking_not_routed():
 
 
 def test_rt_p2f5_read_route_requires_chosen_in_ranking(tmp_path):
-    # BUG (Codex pass2 #5): read_route returned a promoted chosen_model without checking
+    # BUG (cross-validation#5): read_route returned a promoted chosen_model without checking
     # it is in the persisted ranking. A promoted cell whose chosen isn't ranked -> default.
     p = tmp_path / "t.json"
     p.write_text(json.dumps({"schema_version": 1, "venue": "proxy", "cells": [
@@ -240,7 +240,7 @@ def test_rt_p2f5_read_route_requires_chosen_in_ranking(tmp_path):
 
 
 def test_rt_p2f5_read_route_none_path_falls_back():
-    # BUG (Codex pass2 #5): Path(None) raised before the fallback. A None/invalid path
+    # BUG (cross-validation#5): Path(None) raised before the fallback. A None/invalid path
     # must return the parent default, not crash.
     assert rt.read_route(None, cell_id="c1", parent_task_type="debug") == "debug"
 

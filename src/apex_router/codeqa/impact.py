@@ -45,8 +45,7 @@ class EmittedCite:
 
 
 def parse_emitted_citations(answer_text: str) -> list[EmittedCite]:
-    """Pull the file:line citations the MODEL actually emitted in its answer (Codex xval: we must
-    verify what the model CITED, not what retrieval supplied). De-duplicated, order-preserving."""
+    """Pull the file:line citations the MODEL actually emitted in its answer (cross-validation). De-duplicated, order-preserving."""
     out: list[EmittedCite] = []
     seen: set[tuple[str, int, int]] = set()
     for m in _CITE_RE.finditer(answer_text):
@@ -62,8 +61,7 @@ def parse_emitted_citations(answer_text: str) -> list[EmittedCite]:
 
 def _same_file(cite_file: str, chunk_file: str) -> bool:
     """Whether an emitted cite path and a chunk path denote the same file. Requires a full path-
-    SEGMENT suffix match, NOT a bare basename (Codex xval F2: bare-basename matching marks a same-
-    named file in another dir as supplied). 'a/b/x.py' matches 'b/x.py' and 'x.py' by trailing
+    SEGMENT suffix match, NOT a bare basename (cross-validation). 'a/b/x.py' matches 'b/x.py' and 'x.py' by trailing
     segments, but 'other/x.py' does NOT match 'src/x.py'."""
     if cite_file == chunk_file:
         return True
@@ -74,8 +72,7 @@ def _same_file(cite_file: str, chunk_file: str) -> bool:
 
 def _chunk_covers(ch: Chunk, cite: EmittedCite) -> bool:
     """True iff a retrieved chunk actually SUPPLIED this emitted cite: same file AND the cite's span
-    is FULLY CONTAINED in the chunk's span (Codex xval F2: mere overlap let 'x.py:1-999999' pass over
-    a 5-line chunk). The cite must be a valid forward range."""
+    is FULLY CONTAINED in the chunk's span (cross-validation). The cite must be a valid forward range."""
     if cite.start > cite.end:  # reversed range is malformed → not a supplied cite
         return False
     if not _same_file(cite.file, ch.file):
@@ -84,7 +81,7 @@ def _chunk_covers(ch: Chunk, cite: EmittedCite) -> bool:
 
 
 def verify_emitted_citation(repo_root: Path, cite: EmittedCite, chunks: list[Chunk]) -> Verdict:
-    """Classify one MODEL-EMITTED citation (Codex xval rev 2):
+    """Classify one MODEL-EMITTED citation (cross-validation):
 
       - hallucinated : the cite was NOT supplied by any retrieved chunk — the model invented a
                        file:line it was never given. (The failure grounding-of-retrieval can't catch.)
@@ -106,7 +103,7 @@ def verify_emitted_citation(repo_root: Path, cite: EmittedCite, chunks: list[Chu
         n_lines = len(path.read_text(errors="replace").splitlines())
     except OSError:
         return "stale"  # file gone
-    # grounded iff the WHOLE cited span is within the live file (Codex xval F2: check end, not start).
+    # grounded iff the WHOLE cited span is within the live file (cross-validation).
     return "grounded" if 1 <= cite.start <= cite.end <= n_lines else "stale"
 
 
@@ -155,8 +152,7 @@ def write_impact(log_path: Path, rec: ImpactRecord) -> None:
 
 
 def aggregate_grounding(log_path: Path) -> dict:
-    """Aggregate an impact log into a CITATION-COMPLIANCE diagnostic (Codex xval: NOT an
-    answer-correctness metric and NOT a causal Phase-1 gate — see the honesty limits below):
+    """Aggregate an impact log into a CITATION-COMPLIANCE diagnostic (cross-validation):
 
       - citation_validity = grounded / total EMITTED citations (did the model cite real code it was
         given). A wrong answer can still cite valid lines, so this is compliance, not correctness.

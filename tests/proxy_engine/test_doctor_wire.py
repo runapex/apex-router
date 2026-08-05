@@ -1,4 +1,4 @@
-"""Wire-asymmetry of the cache accounting — the Codex-xval finding that the doctor computed the
+"""Wire-asymmetry of the cache accounting — the cross-validation that the doctor computed the
 OpenAI served fraction backwards.
 
 Ground truth (verified against real telemetry + the scanner in apex/proxy/usage.py):
@@ -71,7 +71,7 @@ def test_fully_cached_openai_session_does_not_alarm():
 
 def test_cold_start_single_turn_does_not_alarm():
     # A single first request has no PRIOR prefix to have read from cache — 0% served is compulsory,
-    # not instability. Requires >= 2 generative turns before the alarm can fire (Codex F3).
+    # not instability. Requires >= 2 generative turns before the alarm can fire (cross-validation).
     h = session_health([_openai("s", tokens_in_total=80_000, cache_read=0)])[("s", None, "openai", "gpt-5")]
     assert h.n_generative == 1
     assert prefix_instability_alarm(h, rates_for("gpt-5", "openai")) is None, (
@@ -80,7 +80,7 @@ def test_cold_start_single_turn_does_not_alarm():
 
 
 def test_healthy_anthropic_session_with_cache_creation_does_not_false_alarm():
-    # Codex F4 proposed adding cache_write to the served denominator. REJECTED at ground truth: the
+    # cross-validation proposed adding cache_write to the served denominator. REJECTED at ground truth: the
     # 0.939 floor was DERIVED from read/(read+fresh) (excl-write) — real healthy Anthropic sessions
     # have read/(read+WRITE+fresh) as low as 0.332 because cache CREATION is normal, not instability.
     # This pins that a healthy session doing heavy cache creation (big write, tiny fresh, good reads)
@@ -92,7 +92,7 @@ def test_healthy_anthropic_session_with_cache_creation_does_not_false_alarm():
 
 
 def test_no_session_bucket_does_not_merge_distinct_models():
-    # Codex F7: no-session traffic on one endpoint must not collapse two models into one bucket
+    # cross-validation: no-session traffic on one endpoint must not collapse two models into one bucket
     # priced by whichever appeared first. Key the fallback bucket by (endpoint, model).
     rows = [
         _openai(None, 1000, 700), _openai(None, 1000, 700),

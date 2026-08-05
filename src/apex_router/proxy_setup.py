@@ -1,4 +1,4 @@
-"""Replicate a proxy/Foundry client setup into ~/.claude/settings.json — config-driven, no secrets.
+"""Replicate a proxy/anthropic client setup into ~/.claude/settings.json — config-driven, no secrets.
 
 Some deployments front Claude Code with a local proxy (e.g. a measuring/routing proxy on
 localhost) via Claude Code's env settings. This module merges the required `env` keys into
@@ -22,7 +22,7 @@ import json
 import os
 from pathlib import Path
 
-# The client-side keys that point Claude Code at a proxy / Foundry and map model ids. These are
+# The client-side keys that point Claude Code at a proxy / anthropic and map model ids. These are
 # NON-SECRET wiring. Only these keys are ever read from env/config and merged — nothing else.
 PROXY_KEYS = (
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -106,7 +106,7 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(
         prog="apex-router setup-proxy",
-        description="Merge proxy/Foundry client env into ~/.claude/settings.json "
+        description="Merge proxy/anthropic client env into ~/.claude/settings.json "
                     "(values from --config file or environment; nothing hardcoded).")
     ap.add_argument("--config", type=Path, help="a KEY=VALUE file of proxy env keys")
     ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)

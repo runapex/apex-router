@@ -215,10 +215,10 @@ def test_freeze_pipeline_beats_raw_without_the_recompaction_penalty():
     assert (raw_cost - comp_cost) / raw_cost < 0.7         # sane fraction of raw, not absurd
 
 
-# ---- per-block pricing regressions (Codex F1/F2/F5/F6) ---------------------------------------
+# ---- per-block pricing regressions (cross-validation/F2/F5/F6) ---------------------------------------
 
 def test_ceiling_derived_from_worst_block_not_aggregate():
-    """Codex F1/F2: the retrieval ceiling must be safe for the WORST block — a small frontier
+    """cross-validation/F2: the retrieval ceiling must be safe for the WORST block — a small frontier
     block on a large cached context (expensive to retrieve) — not an aggregate 'median' block that
     averages a tiny block together with a huge one. Prove the small-on-huge block is priced against
     its REAL context and the ceiling reflects it."""
@@ -237,7 +237,7 @@ def test_ceiling_derived_from_worst_block_not_aggregate():
 
 
 def test_ratio_floor_gates_marginal_blocks():
-    """Codex F5: a block that compresses BELOW the emitted ratio_floor must not be credited as a
+    """cross-validation: a block that compresses BELOW the emitted ratio_floor must not be credited as a
     win — the runtime would ship it raw, so the compiler must model that. Already-minified JSON
     (≈0% further shrink) compresses zero blocks under a 10% floor."""
     from apex_router.proxy_engine.tuner.compiler import _min_bytes_for, block_econs
@@ -248,7 +248,7 @@ def test_ratio_floor_gates_marginal_blocks():
 
 
 def test_diverged_turn_resets_prefix_and_busts():
-    """Codex F3: a turn whose content does NOT extend the previous (client edit / compaction) must
+    """cross-validation: a turn whose content does NOT extend the previous (client edit / compaction) must
     reset the frozen prefix and report a bust — never append divergent bytes to a stale prefix."""
     c1 = json.dumps([{"id": i} for i in range(80)], indent=2)
     c2 = json.dumps([{"id": i} for i in range(40)], indent=2)   # shorter → diverges
@@ -310,7 +310,7 @@ def test_cold_start_empty_and_single_session_are_safe():
                 assert rule.retrieval_ceiling == 0.0
 
 
-# ---- token-unit consistency (Codex M5a.1 F1/F2/F3) -------------------------------------------
+# ---- token-unit consistency (cross-validation F1/F2/F3) -------------------------------------------
 
 def test_compression_decision_is_token_based_not_byte_based():
     """M5a.1 F1: the emit test and economics must agree in units. A block credited as compressing
@@ -478,7 +478,7 @@ def test_emit_decision_is_the_single_shared_gate():
             rule = rules.get(cls, {}).get(size_stratum_bytes(len(fr.req.content)))
             if rule and rule.enabled and rule.transform:
                 # omit the floor arg — exactly like the production freeze pipeline, which uses the
-                # TOKEN floor default, NOT rule.ratio_floor (now a byte floor) — Codex M5a.1 #4.
+                # TOKEN floor default, NOT rule.ratio_floor (now a byte floor) — cross-validation #4.
                 _c, out = emit_decision(cls, text, len(fr.block), rule.min_bytes)
             else:
                 out = text
@@ -490,10 +490,10 @@ def test_emit_decision_is_the_single_shared_gate():
         assert emitted == expected_by_req[req.ts]   # byte-exact agreement, no char-gate drift
 
 
-# ---- load totality (Codex M5a.1 F7) ----------------------------------------------------------
+# ---- load totality (cross-validation F7) ----------------------------------------------------------
 # NOTE: the per-block real-R spend + band-invariance properties are now pinned by the SINGLE pricing
 # source (test_r_wiring.py::test_signed_by_stratum_equals_admission_per_block_net) — the separate
-# `_expected_retrieval_spend` path was deleted (2026-07-15, witness-six chapter close).
+# `_expected_retrieval_spend` path was deleted (the reference window, witness-six chapter close).
 
 
 def test_load_verified_rejects_non_total_table():
@@ -511,10 +511,10 @@ def test_load_verified_rejects_non_total_table():
         pass
 
 
-# ---- provenance load gate (Codex F9) ---------------------------------------------------------
+# ---- provenance load gate (cross-validation) ---------------------------------------------------------
 
 def test_load_verified_rejects_tampered_policy():
-    """Codex F9: the registry's only load path verifies the seal and refuses tampered policy, so a
+    """cross-validation: the registry's only load path verifies the seal and refuses tampered policy, so a
     hand-edited rule can't reach rule_for(). load_verified raises InvalidPolicy."""
     from apex_router.proxy_engine.policy import InvalidPolicy
     res = compile_policy(_growing_json_corpus(), version=1, compiled_at=1_720_600_000.0)

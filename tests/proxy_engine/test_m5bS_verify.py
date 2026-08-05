@@ -1,7 +1,7 @@
 """M5b-S verify-first pins (roadmap §0) — V1/V2/V3 outcomes, committed as regressions.
 
 These three facts were established before any Δ work and are pinned so a later change can't silently
-flip them without a test failing. See docs/2026-07-12-apex-roadmap-m5bS-m7.md §0.
+flip them without a test failing. See docs/the reference window-apex-roadmap-m5bS-m7.md §0.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def test_v1_json_crush_is_runnable_but_only_via_explicit_rule():
 # does NOT call decide / offload / freeze / guard, so no path can apply an offloaded rendering to an
 # already-emitted block. Δ5 is therefore spec + this pin, not a bugfix.
 #
-# NARROWED 2026-07-17: the pin forbids the byte-MUTATING rendering/emit machinery
+# NARROWED the reference window: the pin forbids the byte-MUTATING rendering/emit machinery
 # (decide/OffloadPool/guard/freeze), NOT all pipeline imports. Active mode now runs the COMPUTE-ONLY
 # `run_shadow` side-read (bytes_by_class = R1's X, measurement-always-on — telemetry contract); that
 # is a prediction over a COPY, never mutates forwarded bytes, so it does not implicate Δ5. A real

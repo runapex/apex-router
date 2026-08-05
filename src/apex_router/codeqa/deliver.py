@@ -127,7 +127,7 @@ def deliver(
     answer = ask_fn(repo, question, max_tokens=max_tokens, enable_thinking=enable_thinking)
     latency_ms = int((clock() - t0) * 1000)
 
-    # Verify the citations the MODEL EMITTED in its answer (Codex xval rev 2), not the retrieved
+    # Verify the citations the MODEL EMITTED in its answer (cross-validation), not the retrieved
     # chunks. Each emitted cite is classified grounded / stale / hallucinated against the chunks it
     # was given + the live tree.
     emitted = parse_emitted_citations(answer.text)

@@ -45,7 +45,7 @@ def test_parse_score_rejects_corrupted_json_not_silently_accepts():
         parse_judge_score("I could not grade this answer.")  # no JSON at all
 
 
-# ---------- grades against the LIVE tree (Codex F1 fix), blinded ----------
+# ---------- grades against the LIVE tree (cross-validation fix), blinded ----------
 
 def test_judge_prompt_reads_live_code_at_cited_locations(tmp_path):
     # The judge grades against the ACTUAL current source at the answer's cited lines — not the
@@ -254,7 +254,7 @@ def test_huge_integer_score_is_a_protocol_failure_and_reprompts(tmp_path):
         prompts.append(prompt)
         if len(prompts) == 1:
             # 5000 digits — ABOVE Python's 4300-digit json.loads int limit, so json.loads itself
-            # raises a bare ValueError (not JSONDecodeError, not our float() guard). Codex pass-2:
+            # raises a bare ValueError (not JSONDecodeError, not our float() guard). cross-validation:
             # the 400-digit version was below the limit and never exercised this path.
             return '{"score": ' + ("9" * 5000) + '}'
         return '{"score": 0.5}'
@@ -264,7 +264,7 @@ def test_huge_integer_score_is_a_protocol_failure_and_reprompts(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# HTTP-only judge (agentic-CLI grader dropped for security, 2026-07-31)
+# HTTP-only judge (agentic-CLI grader dropped for security, the reference window)
 # --------------------------------------------------------------------------- #
 def test_call_opus_without_endpoint_raises_config_error(monkeypatch):
     # No CODEQA_JUDGE_BASE -> a CONFIG error (opt-in frontier judge), NOT an agentic-CLI
@@ -301,7 +301,7 @@ def test_frontier_verifier_without_endpoint_returns_empty(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# HTTP-path hardening (Codex final pass, 2026-07-31)
+# HTTP-path hardening (Codex final pass, the reference window)
 # --------------------------------------------------------------------------- #
 def test_text_block_with_null_value_does_not_crash():
     # BUG (Codex #3): {"content":[{"type":"text","text":null}]} caused TypeError in the

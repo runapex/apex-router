@@ -1,4 +1,4 @@
-"""Δ2 (revised — instrument lesson #7) — CANONICAL byte binning as the plane-neutral cell key.
+"""Δ2 (revised — a measurement lesson) — CANONICAL byte binning as the plane-neutral cell key.
 
 History: the first Δ2 bridged compiler token-bins to runtime byte-bins with a byte/token RATIO, and
 its invariant test asserted the ratio was "conservative". Codex found the hole: the test only checks

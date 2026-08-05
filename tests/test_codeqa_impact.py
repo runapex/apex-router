@@ -1,6 +1,6 @@
 """codeqa Phase 0 (rev 2) — verify the citations the MODEL EMITTED, and log citation validity.
 
-rev 1 was REJECTED by Codex xval: it verified `answer.chunks` (everything retrieved), so 'current'
+rev 1 was REJECTED by cross-validation.chunks` (everything retrieved), so 'current'
 was near-predetermined and digest drift could never move the metric. rev 2 parses the file:line
 citations the model emitted in `answer.text` and classifies each grounded / stale / hallucinated
 (hallucinated = the model cited a location it was never given — the failure the old design missed).
@@ -37,13 +37,13 @@ def test_parse_emitted_citations_pulls_file_line_refs():
 
 def test_parse_ignores_prose_that_is_not_a_file_cite():
     # "line 5", a "3:1 ratio", and a host:port must NOT be scooped up as file:line citations
-    # (Codex xval F5: "127.0.0.1:9000" was parsed — the final segment must be an alpha-initial ext).
+    # (cross-validation).
     cites = parse_emitted_citations("a 3:1 ratio on line 5; the proxy is at 127.0.0.1:9000")
     assert cites == []
 
 
 def test_parse_handles_en_dash_ranges(tmp_path):
-    # Codex xval F5: "a.py:10–20" (en-dash) was silently truncated to line 10.
+    # cross-validation.py:10–20" (en-dash) was silently truncated to line 10.
     cites = parse_emitted_citations("see a.py:10–20 for detail")
     assert cites == [EmittedCite("a.py", 10, 20)]
 
@@ -89,7 +89,7 @@ def test_grounded_verdict_is_a_location_check_not_a_semantic_one(tmp_path):
 
 
 def test_basename_collision_is_not_grounded(tmp_path):
-    # Codex xval F2: a chunk for src/x.py must NOT ground a cite to other/x.py (same basename, diff
+    # cross-validation.py must NOT ground a cite to other/x.py (same basename, diff
     # file). _same_file requires a trailing-path-segment match, not a bare basename.
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "x.py").write_text("l1\nl2\n")
@@ -98,7 +98,7 @@ def test_basename_collision_is_not_grounded(tmp_path):
 
 
 def test_over_wide_span_is_not_grounded(tmp_path):
-    # Codex xval F2: a cite spanning far past the chunk (a.py:1-999999 over a 5-line chunk) must NOT
+    # cross-validation.py:1-999999 over a 5-line chunk) must NOT
     # be grounded — full containment is required, not mere overlap.
     (tmp_path / "a.py").write_text("l1\nl2\nl3\nl4\nl5\n")
     chunks = [_chunk("a.py", 1, 5)]
@@ -106,7 +106,7 @@ def test_over_wide_span_is_not_grounded(tmp_path):
 
 
 def test_reversed_range_is_not_grounded(tmp_path):
-    # Codex xval F2: a malformed reversed range (20-10) must not pass as supplied.
+    # cross-validation) must not pass as supplied.
     (tmp_path / "a.py").write_text("l1\nl2\nl3\n")
     chunks = [_chunk("a.py", 1, 30)]
     assert verify_emitted_citation(tmp_path, EmittedCite("a.py", 20, 10), chunks) == "hallucinated"
@@ -125,7 +125,7 @@ def test_impact_record_tallies_the_three_verdicts():
 
 
 def test_deliver_impact_record_leaks_no_question_or_source_content(tmp_path):
-    # REAL canary (Codex xval twice-flagged the vacuous version): drive the actual deliver() path
+    # REAL canary (cross-validation): drive the actual deliver() path
     # with a canary QUESTION and a canary SOURCE line, then assert the emitted record contains
     # NEITHER anywhere — this exercises the real content boundary, not a hand-built record.
     from apex_router.codeqa.deliver import deliver

@@ -344,7 +344,7 @@ def _cmd_ab(args) -> int:
                   "  Or use the LOCAL verifier (no frontier call), or run without --judge for\n"
                   "  diagnostics-only. codeqa does NOT grade through an agentic CLI.")
             return 3
-        # blinded Opus correctness judge — grades against the LIVE tree at cfg.root (Codex F1)
+        # blinded Opus correctness judge — grades against the LIVE tree at cfg.root (cross-validation)
         judge_fn = opus_judge_fn(cfg.root)
     axis = "Opus correctness judge (primary)" if judge_fn else "NO judge (diagnostics only)"
     print(f"A/B: {len(questions)} questions × {len(variants)} variants "

@@ -1,6 +1,6 @@
 """run_shadow observation budget — a DECISION, not an apologetic guard.
 
-The metrics re-collection (2026-07-19) found the active latency tail is single 1.3–2.0 MB blocks:
+The metrics re-collection (the reference window) found the active latency tail is single 1.3–2.0 MB blocks:
 run_shadow's decompose/classify cost is ~linear in body size (measured `ms = 17.7·MB + 0.36` on this
 machine), so a multi-MB single-block frontier blows the G3 25ms gate. The fix is an observation
 BUDGET: above a DERIVED byte threshold, skip decompose but COUNT what wasn't inspected — telemetry

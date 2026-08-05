@@ -157,7 +157,7 @@ def test_paired_bootstrap_empty_raises():
 
 
 # --------------------------------------------------------------------------- #
-# Regression tests — confirmed by Codex empirical cross-validation (2026-07-31)
+# Regression tests — confirmed by Codex empirical cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
 def test_bt_default_budget_equals_fully_converged():
     # BUG (Codex): at the default tolerance the MM loop stopped EARLY (its stop test
@@ -269,7 +269,7 @@ def test_bootstrap_pvalue_bad_alternative_raises():
 
 
 def test_bootstrap_pvalue_imposes_null_not_anticonservative_on_skew():
-    # BUG (Codex F4): the p-value must IMPOSE the mean-zero null (center the sample)
+    # BUG (cross-validation): the p-value must IMPOSE the mean-zero null (center the sample)
     # rather than resample the raw sample and take its tail beyond zero. A skewed
     # sample whose mean is exactly 0 (Codex's example: mostly +1 with a rare large
     # negative) is genuinely NOT evidence of a positive effect, so a calibrated test
@@ -282,14 +282,14 @@ def test_bootstrap_pvalue_imposes_null_not_anticonservative_on_skew():
 
 
 def test_bootstrap_pvalue_nan_deltas_raises():
-    # BUG (Codex F2 upstream): NaN comparisons are all-false, so a NaN sample silently
+    # BUG (cross-validation upstream): NaN comparisons are all-false, so a NaN sample silently
     # returned 0.0005 (max significance). NaN input must raise, not fabricate a p.
     with pytest.raises(ValueError):
         stats.paired_bootstrap_pvalue([float("nan")] * 8, n_boot=100, seed=1)
 
 
 def test_bootstrap_pvalue_overflowing_mean_raises():
-    # BUG (Codex pass2 #4): each element is finite (1e308) but the MEAN overflows to
+    # BUG (cross-validation#4): each element is finite (1e308) but the MEAN overflows to
     # inf, centered values become -inf, and the p floored to 0.0005 (false max
     # significance). A non-finite mean after summation must raise, not fabricate a p.
     with pytest.raises(ValueError):

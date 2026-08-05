@@ -181,7 +181,7 @@ def test_prose_mentioning_a_date_is_not_volatile_without_substitution_shape():
     # A changed region of ordinary prose that HAPPENS to contain a date-like mention, but the change
     # is a large rewrite (not a same-length value substitution). Must NOT be VOLATILE_VALUE — the
     # protected-leaf discipline: the pattern is necessary, the substitution SHAPE is also required.
-    prior = b"We met on 2026-01-01 to discuss the plan and agreed on the first milestone " + b"z" * 200
+    prior = b"We met on the reference window to discuss the plan and agreed on the first milestone " + b"z" * 200
     current = (b"The team held a lengthy retrospective covering many unrelated topics and open "
                b"questions before adjourning without a decision " + b"z" * 200)
     res = classify_divergence(_ctx(prior, current))

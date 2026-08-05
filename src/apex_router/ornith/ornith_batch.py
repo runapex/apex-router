@@ -2,7 +2,7 @@
 
 A multi-item summarizer/review run re-prefills its shared preamble on every item when the
 items are sent as independent, unrelated requests — ~3.8s of wasted prefill per item on a
-~2,500-token preamble (measured 2026-07-21 on the live :8080 server).
+~2,500-token preamble (measured on the reference window).
 
 WHY A FROZEN PREFIX (not a growing thread): mlx_lm's server keeps a PromptTrie that can
 reuse a prior request's KV in two ways (models/cache.py:fetch_nearest_cache):
@@ -12,7 +12,7 @@ reuse a prior request's KV in two ways (models/cache.py:fetch_nearest_cache):
     which is GATED on `can_trim_prompt_cache`.
 Ornith's architecture mixes non-trimmable `ArraysCache` (SSM/linear) layers with `KVCache`,
 so `can_trim_prompt_cache` is False and the `longer`/trim path never fires (root-caused
-2026-07-21). Only the un-gated `shorter` (prefix-extension) path yields reuse on this model.
+the reference window). Only the un-gated `shorter` (prefix-extension) path yields reuse on this model.
 
 So each item is sent as a fresh `[preamble, item_k]` request. The frozen preamble is a
 byte-prefix of every request, so the trie serves it via the `shorter` path every time

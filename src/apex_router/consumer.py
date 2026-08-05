@@ -49,7 +49,7 @@ def _clean_model(v):
 
     Coerces to a fresh `str(...)` so a stateful `str` subclass (whose `.strip()` returns
     different values on repeated calls) cannot slip an empty/​mutating value past
-    validation and into a Decision (Codex pass2 #2/#5). Anything non-string -> None.
+    validation and into a Decision (cross-validation#2/#5). Anything non-string -> None.
     """
     if not isinstance(v, str):
         return None
@@ -60,8 +60,8 @@ def _clean_model(v):
 def _known_ok(model, known_models):
     """A model passes the known-model gate iff known_models is unset (opt-in) OR the model
     is in it. This is the cross-machine safety: a route table naming a model the TARGET
-    machine can't run (e.g. a Foundry-only id on a Claude+Codex-only box) is rejected here
-    and the caller falls back to a model this machine actually has (Codex pass2 #1)."""
+    machine can't run (e.g. a anthropic-only id on a Claude+Codex-only box) is rejected here
+    and the caller falls back to a model this machine actually has (cross-validation#1)."""
     return known_models is None or model in known_models
 
 
@@ -103,7 +103,7 @@ def resolve(text, *, tools=None, sys_markers=None, classifier, static_default_ma
                 m = None
             if m is not None and _known_ok(m, known_models):
                 return m
-            return safe                  # static missing/​unknown -> safe_default (Codex pass2 #1/#5)
+            return safe                  # static missing/​unknown -> safe_default (cross-validation#1/#5)
 
         # (0) classify, tolerating a raising/malformed classifier.
         try:

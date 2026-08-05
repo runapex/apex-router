@@ -1,6 +1,6 @@
 """detect_client routing — the OpenAI/Codex wire must route by PATH, not by User-Agent.
 
-Wiring Codex through apex (2026-07-17): Codex's real deployment is Azure the gateway with base_url
+Wiring Codex through apex (the reference window): Codex's real deployment is Azure the gateway with base_url
 `.../gpt5/openai` and wire_api=responses, so with a host-only client base_url it POSTs to
 `/responses` (or `/gpt5/openai/responses` if the prefix stays on the client) — NOT `/v1/responses`.
 The old detect_client only matched `/v1/{chat/completions,completions,responses}` by path, so a real
@@ -68,7 +68,7 @@ def test_unknown_path_defaults_claude_code():
 
 
 def test_embeddings_is_a_known_latent_gap():
-    # DOCUMENTED LATENT GAP (cross-val 2026-07-17): /v1/embeddings is an OpenAI endpoint but does
+    # DOCUMENTED LATENT GAP (cross-val the reference window): /v1/embeddings is an OpenAI endpoint but does
     # not end in a matched suffix, so it currently routes claude-code. The Codex CODING agent never
     # calls embeddings (wire_api=responses → only /responses), so this does not fire on our traffic.
     # If an embeddings client is ever added, THIS test flips to `== "codex"` and the suffix list

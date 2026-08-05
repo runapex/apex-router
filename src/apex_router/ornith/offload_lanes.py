@@ -40,22 +40,20 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
     """Run caller-supplied `tests` against generated `code` in an isolated subprocess.
 
     The CALLER's tests are the only source of truth: only `test_*` names defined in `tests` are
-    executed (Codex xval #1 / RISK2: a `test_*` the generated CODE emits must NOT be able to stand
-    in for, or mask, the caller's suite). `code` runs first to populate the shared namespace; if it
+    executed (cross-validation). `code` runs first to populate the shared namespace; if it
     raises ANYTHING — including `SystemExit`/`raise SystemExit(0)`, a BaseException that a bare
     `except Exception` would miss and let exit 0 through — that is a failure, not a pass.
 
     Returns (passed, detail). Any exception, assertion failure, syntax error, empty caller suite, or
     timeout -> (False, detail). Never raises — the gate turns every failure mode into a clean False
     so the caller escalates instead of crashing. On timeout the whole process GROUP is killed so a
-    grandchild the generated code spawned cannot outlive the gate (Codex xval #3).
+    grandchild the generated code spawned cannot outlive the gate (cross-validation).
     """
-    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (Codex xval-2
-    # #1): the harness writes "PASS" to argv[3] only when every caller test passed. `os._exit(0)` or
+    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (cross-validation): the harness writes "PASS" to argv[3] only when every caller test passed. `os._exit(0)` or
     # a replaced `sys.exit` in generated code exits 0 WITHOUT writing the sentinel -> the parent
     # reads no "PASS" and fails. Return code alone is not trusted.
     #
-    # Caller tests always win over same-named code tests (Codex xval-2 #2): before running the tests
+    # Caller tests always win over same-named code tests (cross-validation): before running the tests
     # we DELETE every `test_*` name the generated code defined, so a caller `test_add` is never
     # shadowed or dropped by a code `test_add`.
     harness = (
@@ -113,7 +111,7 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
                 except (ProcessLookupError, PermissionError):
                     pass
                 # bounded drain: a detached grandchild holding the pipes must not hang us forever
-                # (Codex xval-2 #4). If it still won't close, abandon the pipes.
+                # (cross-validation). If it still won't close, abandon the pipes.
                 try:
                     out, err = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -172,7 +170,7 @@ def review_lane(preamble: str, diff: str, *, max_tokens: int = 1024) -> LaneResu
     (recall is the value), not "verdict trusted". The escalation payload is the local findings so the
     frontier reviews a shortlist instead of the whole diff cold.
 
-    max_tokens default 1024 (measured 2026-08-04): a real multi-bug diff review runs 160-260
+    max_tokens default 1024 (measured on the reference window): a real multi-bug diff review runs 160-260
     completion tokens; the old 512 cap truncated large-diff reviews (finish_reason=length ->
     OrnithProtocolError -> empty local output, escalated cold). A truncated review still escalates
     correctly, but yields zero local value, so the cap is sized for genuine diffs.
@@ -192,7 +190,7 @@ def review_lane(preamble: str, diff: str, *, max_tokens: int = 1024) -> LaneResu
                           usage=None, detail=f"local_call_failed: {e!r}", gated=False)
 
     findings = result.answer.strip()
-    # treat an unknown/missing finish_reason as "not confirmed complete" (Codex xval finding 2):
+    # treat an unknown/missing finish_reason as "not confirmed complete" (cross-validation):
     # only an explicit "stop" is a clean finish; anything else may be cut off.
     truncated = result.finish_reason != "stop"
     # gated=False: review is a recall pre-filter with 1/5 precision — no correctness gate runs, so

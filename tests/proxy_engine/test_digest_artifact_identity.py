@@ -59,7 +59,7 @@ def _policy_with_enabled_cell(digest: str) -> PolicyVersion:
     ).sealed()
 
 
-# 0 — transform_digest FAILS CLOSED on an unreadable/zip/absent origin (Codex xval #4): it must NOT
+# 0 — transform_digest FAILS CLOSED on an unreadable/zip/absent origin (cross-validation): it must NOT
 # escape a raw OSError into load_verified, and must NOT return a value matching a real sealed
 # digest. It returns a distinctive UNREADABLE sentinel that a real 16-hex digest can never equal, so
 # an enabled cell mismatches → refused. (Absent module → "" is separately refused as unsigned.)
@@ -103,8 +103,7 @@ def test_roundtrip_loads_when_compile_and_serve_share_the_artifact():
     assert loaded.rules["json"]["xl"].enabled is True
 
 
-# 2 — the gate CATCHES a genuine artifact CHANGE between seal-time and load-time (Codex xval #1:
-# the old version used a static stand-in in ONE process = tautological). This ACTUALLY preserves a
+# 2 — the gate CATCHES a genuine artifact CHANGE between seal-time and load-time (cross-validation). This ACTUALLY preserves a
 # digest sealed against form-A, then makes transform_digest return a DIFFERENT value at load
 # (form-B, the obfuscation), and asserts refusal — the real cross-artifact failure mode.
 def test_gate_refuses_when_the_artifact_changes_between_seal_and_load(monkeypatch):

@@ -116,7 +116,7 @@ def test_resolve_provenance_table():
 
 
 # --------------------------------------------------------------------------- #
-# Regression — confirmed by Codex cross-validation (2026-07-31). The 'strict
+# Regression — confirmed by Codex cross-validation (the reference window). The 'strict
 # superset of defaults' guarantee must hold at EVERY boundary: any surprise
 # resolves to a valid model default, never a crash or an unvalidated route.
 # --------------------------------------------------------------------------- #
@@ -238,7 +238,7 @@ def test_h7_static_map_is_snapshotted_against_reader_mutation():
 # Regression — Codex PASS 2 + the known_models gate (the cross-machine safety)
 # --------------------------------------------------------------------------- #
 def test_p2_1_routed_model_must_be_known_else_static():
-    # BUG (Codex pass2 #1): any string from the reader was routed with no check it is an
+    # BUG (cross-validation#1): any string from the reader was routed with no check it is an
     # actually-runnable model. When known_models is given, a routed model NOT in it falls
     # back to the static default.
     clf = _fixed_classifier("debug", 0.9)
@@ -294,7 +294,7 @@ def test_p2_1_static_default_also_validated_against_known():
 
 
 def test_p2_3_broken_static_map_degrades_gracefully_and_still_routes():
-    # BUG (Codex pass2 #3): a static_default_map that raises on copy escaped. It must be
+    # BUG (cross-validation#3): a static_default_map that raises on copy escaped. It must be
     # tolerated (degrade to an empty map) — a broken FALLBACK must not block a valid table
     # route, and it must never crash. Here the table route 'haiku' is known -> routed.
     clf = _fixed_classifier("debug", 0.9)
@@ -320,7 +320,7 @@ def test_p2_3_broken_map_and_declining_reader_yields_safe_default():
 
 
 def test_p2_4_out_of_range_confidence_abstains():
-    # BUG (Codex pass2 #4): confidence=-0.5 (floor -1) or 1.5 consulted the table.
+    # BUG (cross-validation#4): confidence=-0.5 (floor -1) or 1.5 consulted the table.
     # Confidence must be validated to [0,1]; out-of-range -> abstain.
     from apex_router import classify
     for bad in (-0.5, 1.5, 10 ** 1000):

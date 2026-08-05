@@ -164,11 +164,11 @@ def test_no_partition_keys_preserves_prior_behavior():
     assert m.is_new is False and m.event == "extend"
 
 
-# ── Codex F3: the REAL sqlite store persists + exposes the partition columns ──
+# ── cross-validation: the REAL sqlite store persists + exposes the partition columns ──
 
 
 def test_real_store_persists_and_exposes_partition_keys(tmp_path):
-    """Codex F3: passing project_id to identify() must not turn every follow-up into a NEW session —
+    """cross-validation: passing project_id to identify() must not turn every follow-up into a NEW session —
     the real Store schema now carries project_id/client_session_id and create_session persists them,
     so candidate_sessions exposes them and a same-project extension still merges."""
     from apex_router.proxy_engine.session.store import Store

@@ -1,4 +1,4 @@
-"""Per-entry-position R — the stock-vs-flow fix (Fable, 2026-07-15).
+"""Per-entry-position R — the stock-vs-flow fix (Fable, the reference window).
 
 The compiler prices `saving(R)` and `retrieval_cost(R)` with R = `_requests_for_regime(band)`, a
 session-AGGREGATE (e.g. 13 at the band-min). But a frontier block entering at turn 95 of a 100-request

@@ -18,7 +18,7 @@ measurement-over-attribution) is built into the mechanism, not asserted after it
                          including one absent from the new input entirely.
   - Default            — anything short of ALL conditions routes to the parent incumbent.
 
-KNOWN LIMIT (Codex pass2 #5): the single confirmation-split bootstrap p-value is not
+KNOWN LIMIT (cross-validation#5): the single confirmation-split bootstrap p-value is not
 perfectly calibrated under a heavily skewed null at small n (e.g. a zero-mean mixture
 that lands all-positive with non-trivial probability). This is an inherent small-sample
 bootstrap limitation, not fixable in the estimator. The gate does NOT rely on that one
@@ -27,7 +27,7 @@ capture windows are the layers that contain a single anti-conservative p. Cells 
 small confirmation n should carry a larger K (raise the sample floor) where skew is a
 concern.
 
-Hardened after Codex adversarial cross-validation (2026-07-31): family membership no
+Hardened after Codex adversarial cross-validation (the reference window): family membership no
 longer depends on the confirmation outcome (F1); NaN/inf evidence is rejected (F2);
 the winner is chosen on the promotion split without peeking at confirmation
 availability (F3); the confirmation p-value imposes the null (F4, in stats.py); BH
@@ -61,7 +61,7 @@ class CellEvidence:
 
     confirm_windows maps each candidate model -> the set of distinct capture-window
     ids ITS confirmation deltas were drawn from (per-candidate, so one candidate's
-    windows can't satisfy another's replication requirement — Codex F7). For backward
+    windows can't satisfy another's replication requirement — cross-validation). For backward
     convenience a single set may be passed and is treated as shared across candidates.
     """
     cell_id: str
@@ -83,12 +83,12 @@ class CellEvidence:
         An explicit {model: windows} dict is the safe form and is always honored. A
         bare collection is AMBIGUOUS about which candidate each window belongs to;
         sharing it across candidates would let a winner borrow another candidate's
-        windows to fake replication (Codex pass2 #2). So a bare set is honored ONLY
+        windows to fake replication (cross-validation#2). So a bare set is honored ONLY
         when the cell has a single candidate (nothing to borrow from); with multiple
         candidates it grants NO windows, forcing per-candidate provenance.
 
         A blank/empty window id ("" or whitespace) is NOT a real capture window and is
-        dropped, so it can never count toward the replication requirement (Codex pass2
+        dropped, so it can never count toward the replication requirement (cross-validation
         #3)."""
         cw = self.confirm_windows
         if isinstance(cw, dict):
@@ -127,7 +127,7 @@ def _effective_floor(k: int, provenance) -> int:
 
     Fails CLOSED: match is case-insensitive, and any UNKNOWN provenance (typo, None,
     bytes, unexpected value) gets the stricter judge floor (2*k) — an invalid label
-    must never silently weaken the gate (Codex pass2 #3). Only an explicit, recognized
+    must never silently weaken the gate (cross-validation#3). Only an explicit, recognized
     'objective' earns the lighter floor.
     """
     try:
@@ -159,7 +159,7 @@ def _mean_is_finite(xs) -> bool:
 def _independently_promotable(cell: CellEvidence, model: str, floor: int, m_windows: int):
     """Would `model` pass the FULL gate on its OWN evidence? Returns (ok, pvalue).
 
-    This is the sound basis for the §5.4 cost tiebreak (Codex pass2 #1/#2/#3): a candidate
+    This is the sound basis for the §5.4 cost tiebreak (cross-validation#1/#2/#3): a candidate
     is eligible to win on cost ONLY if it independently clears every promotion criterion —
     positive promotion mean, finite confirmation data at floor, positive confirmation
     mean, replication across >= m_windows — and we use ITS OWN confirmation p-value (never
@@ -188,7 +188,7 @@ def _independently_promotable(cell: CellEvidence, model: str, floor: int, m_wind
 def _cost_key(cell: CellEvidence, model: str):
     """Sort key for the cost tiebreak: (cost, latency, name). A non-numeric/non-finite
     cost or latency sinks to the most-expensive end (treated as unknown) rather than
-    raising (Codex pass2 #6)."""
+    raising (cross-validation#6)."""
     def num(d, m):
         v = d.get(m)
         return v if isinstance(v, (int, float)) and not isinstance(v, bool) \
@@ -216,8 +216,8 @@ def evaluate_cell(cell: CellEvidence, *, k: int, m_windows: int) -> CellVerdict:
 
     # (2a) Choose the winner on the PROMOTION split ONLY. The candidate pool is those
     # whose PROMOTION data clears the floor and is finite — confirmation length/values
-    # are NEVER consulted to pick the winner (Codex F3). Finiteness is required up
-    # front so NaN/inf can't leak into any comparison (Codex F2).
+    # are NEVER consulted to pick the winner (cross-validation). Finiteness is required up
+    # front so NaN/inf can't leak into any comparison (cross-validation).
     promo_eligible = [
         m for m in cell.promo_deltas
         if m != incumbent
@@ -234,7 +234,7 @@ def evaluate_cell(cell: CellEvidence, *, k: int, m_windows: int) -> CellVerdict:
     # From here the WINNER is fixed. If the winner lacks adequate confirmation data the
     # cell is simply not promotable — we do NOT fall back to a different candidate.
     # A non-finite AGGREGATE (finite elements whose sum/mean overflows, e.g. 1e308)
-    # is also disqualifying (Codex pass2 #4): elementwise-finite is necessary but not
+    # is also disqualifying (cross-validation#4): elementwise-finite is necessary but not
     # sufficient.
     cd = cell.confirm_deltas.get(winner)
     if cd is None or not _all_finite(cd) or len(cd) < floor:
@@ -249,7 +249,7 @@ def evaluate_cell(cell: CellEvidence, *, k: int, m_windows: int) -> CellVerdict:
     # (2b) Out-of-sample test: the null-imposed one-sided bootstrap p-value that the
     # winner still beats the incumbent on the held-out confirmation split. Reaching
     # this point means the cell is TESTED and joins the BH family regardless of the
-    # p-value or the sign of the confirmation mean (Codex F1 — family membership must
+    # p-value or the sign of the confirmation mean (cross-validation — family membership must
     # not depend on the confirmation outcome).
     winner_pval = stats.paired_bootstrap_pvalue(cd, n_boot=_N_BOOT, seed=_SEED,
                                                  alternative="greater")
@@ -259,7 +259,7 @@ def evaluate_cell(cell: CellEvidence, *, k: int, m_windows: int) -> CellVerdict:
         return CellVerdict(cell.cell_id, True, False, incumbent, winner, 1.0,
                            "winner's advantage evaporates out-of-sample")
 
-    # §5.4 cost tiebreak — SOUND version (Codex pass2 #1/#2/#3). With no cost data, route
+    # §5.4 cost tiebreak — SOUND version (cross-validation#1/#2/#3). With no cost data, route
     # the pure paired-quality winner. With cost data, choose the CHEAPEST candidate that
     # INDEPENDENTLY passes the whole gate on its own evidence, and report ITS OWN p-value
     # for FDR — so the promotion decision and the routed model are always the same model.
@@ -297,8 +297,8 @@ def run_gate(cells, *, k: int, m_windows: int, alpha: float = 0.05,
 
     # The BH family is every cell that reached the confirmation test — including
     # confirmation-null cells (p forced to 1.0) — so membership is independent of the
-    # confirmation outcome (Codex F1). Decisions are aligned POSITIONALLY, not by
-    # cell_id, so duplicate ids can't overwrite each other (Codex F5).
+    # confirmation outcome (cross-validation). Decisions are aligned POSITIONALLY, not by
+    # cell_id, so duplicate ids can't overwrite each other (cross-validation).
     family_idx = [i for i, v in enumerate(verdicts) if v.tested]
     fam_pvals = [verdicts[i].pvalue for i in family_idx]
     fam_reject = stats.benjamini_hochberg(fam_pvals, alpha=alpha) if fam_pvals else []
@@ -314,7 +314,7 @@ def run_gate(cells, *, k: int, m_windows: int, alpha: float = 0.05,
                       for i in range(len(verdicts))]
     # An id counts as promoted this run if ANY of its (possibly duplicate) rows promoted;
     # such an id must NOT also heal — that would tear down its own re-promotion
-    # (Codex pass2 #1).
+    # (cross-validation#1).
     promoted_ids = {verdicts[i].cell_id for i in range(len(verdicts)) if promoted_flags[i]}
 
     results = []

@@ -80,7 +80,7 @@ def emit_route_table(gate_results, rankings: dict, *, venue: str, generated_from
 
         # An absent-cell heal (run_gate emits these with an empty parent) has no cell to
         # route — it only signals "tear down this stale route". Record it as a dropped
-        # route and DON'T reject the whole batch (Codex pass2 #4).
+        # route and DON'T reject the whole batch (cross-validation#4).
         if healed and not (isinstance(parent_default, str) and parent_default.strip()):
             dropped_routes.append(gr.cell_id)
             continue
@@ -91,7 +91,7 @@ def emit_route_table(gate_results, rankings: dict, *, venue: str, generated_from
                 f"(fallback would be unroutable): {parent_default!r}")
 
         ranking = rankings.get(gr.cell_id, [])
-        # Only NON-EMPTY model names count as supporting a route (Codex pass2 #5).
+        # Only NON-EMPTY model names count as supporting a route (cross-validation#5).
         ranked_models = {r["model"] for r in ranking
                          if isinstance(r.get("model"), str) and r["model"].strip()}
 
@@ -138,7 +138,7 @@ def read_route(path, *, cell_id: str, parent_task_type: str) -> str:
     try:
         p = Path(path)
     except TypeError:
-        return parent_task_type            # None / invalid path type -> default (Codex pass2 #5)
+        return parent_task_type            # None / invalid path type -> default (cross-validation#5)
     if not p.is_file():
         return parent_task_type
     try:
@@ -159,7 +159,7 @@ def read_route(path, *, cell_id: str, parent_task_type: str) -> str:
     if cell.get("promoted") is True:
         chosen = cell.get("chosen_model")
         # The chosen model must be a non-empty string AND supported by the persisted
-        # ranking (Codex pass2 #5) — a promoted-but-unranked route is not trusted.
+        # ranking (cross-validation#5) — a promoted-but-unranked route is not trusted.
         ranked = {r.get("model") for r in cell.get("ranking", [])
                   if isinstance(r, dict) and isinstance(r.get("model"), str) and r["model"].strip()}
         if isinstance(chosen, str) and chosen.strip() and chosen in ranked:

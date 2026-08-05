@@ -25,7 +25,7 @@ from apex_router.ornith.offload_telemetry import (  # noqa: E402
 
 class TestUsageTokens(unittest.TestCase):
     def test_extracts_all_three_counts_including_completion(self):
-        # The exact usage shape the live MLX server returns (verified 2026-08-03).
+        # The exact usage shape the live MLX server returns (verified the reference window).
         usage = {
             "prompt_tokens": 98,
             "completion_tokens": 40,
@@ -82,8 +82,7 @@ class TestWriteAndAggregate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"
             # codegen: 2 ok(gated), 1 failed+escalated. The failed call carries completion=99 so a
-            # naive sum-all impl would be CAUGHT (Codex xval #5: the old test gave it 0 and proved
-            # nothing).
+            # naive sum-all impl would be CAUGHT (cross-validation).
             write_offload(log, self._rec("codegen", True, 30, 20, 0))
             write_offload(log, self._rec("codegen", True, 30, 20, 10))
             write_offload(log, self._rec("codegen", False, 30, 99, 0, escalated=True))
@@ -100,13 +99,13 @@ class TestWriteAndAggregate(unittest.TestCase):
             # saved = gated AND ok AND not escalated -> 20+20 only; the failed call's 99 excluded.
             self.assertEqual(cg["frontier_completion_tokens_saved"], 40)
             self.assertEqual(cg["cached_tokens"], 10)
-            # review saved nothing despite ok=True, because it escalated (Codex xval #4).
+            # review saved nothing despite ok=True, because it escalated (cross-validation).
             rv = agg["by_lane"]["review"]
             self.assertEqual(rv["frontier_completion_tokens_saved"], 0)
 
     def test_ungated_completion_never_counts_as_saved(self):
         # a raw worker completion (gated=False, ok=False) must save nothing even with big completion
-        # tokens — the worker runs no correctness gate (Codex xval #6).
+        # tokens — the worker runs no correctness gate (cross-validation).
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"
@@ -117,7 +116,7 @@ class TestWriteAndAggregate(unittest.TestCase):
 
     def test_malformed_records_are_skipped_not_fatal(self):
         # null token counts, a bare JSON scalar, and a good record on the same log — aggregation must
-        # survive and still count the good one (Codex xval #11).
+        # survive and still count the good one (cross-validation).
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"
@@ -132,7 +131,7 @@ class TestWriteAndAggregate(unittest.TestCase):
             self.assertEqual(agg["by_lane"]["codegen"]["frontier_completion_tokens_saved"], 7)
 
     def test_string_boolean_does_not_inflate_saved_tokens(self):
-        # Codex xval-2 #3: {"gated":"false","ok":"false"} are truthy under bool() but must NOT count.
+        # cross-validation,"ok":"false"} are truthy under bool() but must NOT count.
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"
@@ -147,7 +146,7 @@ class TestWriteAndAggregate(unittest.TestCase):
             self.assertEqual(agg["by_lane"]["codegen"]["gated"], 1)
 
     def test_invalid_utf8_log_does_not_crash_aggregation(self):
-        # Codex xval-2 #5: a stray non-UTF-8 byte in the log must not abort the report.
+        # cross-validation.
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"
@@ -157,13 +156,13 @@ class TestWriteAndAggregate(unittest.TestCase):
             self.assertEqual(agg["by_lane"]["codegen"]["frontier_completion_tokens_saved"], 5)
 
     def test_non_numeric_token_value_does_not_raise(self):
-        # Codex xval-2 #5: usage_tokens must coerce "bad" -> 0, never raise ValueError.
+        # cross-validation, never raise ValueError.
         p, c, cached = usage_tokens({"prompt_tokens": "bad", "completion_tokens": 3})
         self.assertEqual((p, c, cached), (0, 3, 0))
 
     def test_two_arg_form_with_none_record_is_fail_open(self):
         # write_offload(path, None) must NOT be mistaken for the single-arg form and must not raise
-        # (Codex xval #9).
+        # (cross-validation).
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "offload.jsonl"

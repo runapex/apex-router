@@ -49,7 +49,7 @@ def test_decompose_fail_open_on_garbage():
 
 
 def test_decompose_includes_anthropic_system_in_X_not_frontier():
-    # Codex F1: the top-level `system` field is billed input (R1's X) but is NOT the addressable
+    # cross-validation: the top-level `system` field is billed input (R1's X) but is NOT the addressable
     # frontier (it's cached prefix). It must appear in all_blocks, never in frontier.
     body = json.dumps({
         "model": "claude-opus-4-8",
@@ -72,7 +72,7 @@ def test_decompose_system_as_block_list():
 
 
 def test_decompose_openai_responses_input():
-    # Codex F1: the OpenAI Responses API puts the turn under `input`, not `messages`.
+    # cross-validation: the OpenAI Responses API puts the turn under `input`, not `messages`.
     body = json.dumps({"model": "gpt-x", "input": "summarize the following data set"}).encode()
     all_blocks, frontier = decompose(body)
     assert len(frontier) == 1 and "summarize" in frontier[0].text
@@ -80,7 +80,7 @@ def test_decompose_openai_responses_input():
 
 
 def test_decompose_includes_tool_schemas_in_X_not_frontier():
-    # Codex F1 (v2): top-level `tools` are billed input (render order tools→system→messages) — they
+    # cross-validation (v2): top-level `tools` are billed input (render order tools→system→messages) — they
     # belong in X (bytes_by_class) but never the frontier (stable prefix, not the addressable turn).
     body = json.dumps({
         "model": "claude-opus-4-8",
@@ -96,7 +96,7 @@ def test_decompose_includes_tool_schemas_in_X_not_frontier():
 
 
 def test_decompose_responses_structured_input_blocks():
-    # Codex F2: Responses `input` can be structured items with input_text content — must flatten to
+    # cross-validation: Responses `input` can be structured items with input_text content — must flatten to
     # the text, not serialize the wrapper (which would misclassify prose as json).
     body = json.dumps({
         "model": "gpt-x",
@@ -137,7 +137,7 @@ def test_requested_model_extracts_and_is_totally_fail_open():
 
 
 def test_requested_model_fails_open_on_recursion_bomb():
-    # Codex cross-validation lead (2026-07-13): a deeply-nested body makes json.loads raise
+    # Codex cross-validation lead (the reference window): a deeply-nested body makes json.loads raise
     # RecursionError — a RuntimeError, NOT a ValueError/TypeError. The helper runs on the hot path
     # BEFORE the shadow-compute try/except, so a raise here would break the live request. It must
     # catch broadly and return None (the handler's "a parse failure drops the prediction, never the
@@ -250,7 +250,7 @@ def test_usage_scanner_cache_fields_distinct_for_read_write_ratio():
 
 
 def test_usage_scanner_openai_responses_nested():
-    # Codex F2: the Responses API nests usage under `response` with input/output_tokens.
+    # cross-validation: the Responses API nests usage under `response` with input/output_tokens.
     scanner = UsageScanner("")
     sse = (
         b'data: {"type":"response.completed","response":{"usage":'
@@ -263,7 +263,7 @@ def test_usage_scanner_openai_responses_nested():
 
 
 def test_usage_scanner_responses_cached_tokens():
-    # Codex F3: Responses usage carries cache reads under input_tokens_details.cached_tokens (NOT
+    # cross-validation: Responses usage carries cache reads under input_tokens_details.cached_tokens (NOT
     # cache_read_input_tokens). Routing it through the Anthropic branch dropped it → read:write
     # silently 0 for Codex Responses. The three-way _wire_of routing must capture it.
     scanner = UsageScanner("")
@@ -297,7 +297,7 @@ def test_usage_scanner_gzip_roundtrip():
 
 
 def test_usage_scanner_brotli_roundtrip():
-    # POSITIVE control for the brotli fix (2026-07-16 3-day mine root-cause): a br-encoded Anthropic
+    # POSITIVE control for the brotli fix (the reference window 3-day mine root-cause): a br-encoded Anthropic
     # message_start, fed in two splits, must now DECODE and capture — the previously-censored path.
     brotli = pytest.importorskip("brotli")
     payload = (
@@ -368,7 +368,7 @@ def test_heartbeat_line_shape():
 
 
 def test_both_handlers_populate_agent_id_and_upstream_ttfb():
-    # Codex F1/F2 on Step 2: agent_id + t_upstream_ttfb_ms are handler-agnostic contract fields, so
+    # cross-validation/F2 on Step 2: agent_id + t_upstream_ttfb_ms are handler-agnostic contract fields, so
     # BOTH passthrough (default mode) and shadow must capture them — a contract one handler silently
     # violates isn't hardened. Drive each handler against a mock upstream, assert the fields land.
     import asyncio
@@ -431,8 +431,8 @@ def test_both_handlers_populate_agent_id_and_upstream_ttfb():
 
     # passthrough (default mode)
     ev_pt = asyncio.run(_drive(lambda t: passthrough.handle(_Req(), _Up(), t)))
-    assert ev_pt.agent_id == "agent-9"  # Codex F1: was null in passthrough
-    assert ev_pt.t_upstream_ttfb_ms >= 0.0  # Codex F2: recorded, not left 0-by-omission
+    assert ev_pt.agent_id == "agent-9"  # cross-validation: was null in passthrough
+    assert ev_pt.t_upstream_ttfb_ms >= 0.0  # cross-validation: recorded, not left 0-by-omission
     assert ev_pt.endpoint_id == "anthropic"  # derived from upstream, handler-agnostic contract field
     # shadow mode
     ev_sh = asyncio.run(_drive(lambda t: shadow_h.handle(_Req(), _Up(), t, None)))
@@ -441,7 +441,7 @@ def test_both_handlers_populate_agent_id_and_upstream_ttfb():
 
 
 def test_endpoint_id_follows_the_resolved_upstream_not_a_constant():
-    # Codex cross-validation (2026-07-13): a static endpoint_id="anthropic" mislabels codex rows,
+    # Codex cross-validation (the reference window): a static endpoint_id="anthropic" mislabels codex rows,
     # which route to openai_upstream, not the gateway. The label must be DERIVED from the same
     # client→upstream routing as base_for. Pin both wires so a regression to a constant fails here.
     from apex_router.proxy_engine.config import CONFIG

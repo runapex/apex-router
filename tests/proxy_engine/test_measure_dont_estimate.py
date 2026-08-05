@@ -84,7 +84,7 @@ def test_compression_decision_is_not_re_derived_as_a_byte_ratio():
                  and _has_len_over_len_ratio(fn) and _mentions_ratio_floor(fn)]
     assert not offenders, (
         f"a byte/char-ratio compression gate leaked into {sorted(set(offenders))} — only "
-        "emit_decision may derive the gate; other paths must call it (Codex M5a.1 round 3).")
+        "emit_decision may derive the gate; other paths must call it (cross-validation round 3).")
 
 
 def test_compiler_refuses_to_sign_without_an_exact_tokenizer():
