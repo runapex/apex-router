@@ -22,7 +22,7 @@ What the compiler decides, per content class, priced in DOLLARS only:
 
 Why one ceiling covers the band. `break_even(R) = saving(R) / retrieval_cost(R)` where
 `saving = (1−f)·B·p_read·R` grows linearly in R = remaining REQUESTS (a cached prefix is re-read
-once per subsequent request, never per block — unit-audited 2026-07-13) and `retrieval_cost` grows
+once per subsequent request, never per block — unit-audited the reference window) and `retrieval_cost` grows
 in R with an R-independent floor (context read + write + output). So break_even INCREASES
 monotonically in R (→(1−f)/2 as R→∞, →0 as R→0); its minimum over the band is at the smallest R
 (the 6:1 regime). Set ceiling = SAFETY · break_even(R_min): at any deeper regime R>R_min,
@@ -128,7 +128,7 @@ def emit_decision(
     min_bytes: int,
     token_floor: float = MIN_TOKEN_REDUCTION,
 ) -> tuple[bool, str]:
-    """THE single COMPILE-TIME compression decision, shared by every offline path (Codex M5a.1:
+    """THE single COMPILE-TIME compression decision, shared by every offline path (cross-validation.1:
     block_econs, the freeze pipeline, and retrieval-spend must decide "does this block compress"
     IDENTICALLY, or the compiler enables a cell one path won't emit → a dollar-negative signed
     policy). Returns (compresses, emitted_text).
@@ -164,7 +164,7 @@ def _requests_for_regime(ratio: float) -> int:
 
 
 # back-compat alias (the name carried "turns"; the value was always request-denominated — see the
-# 2026-07-13 unit audit). New call sites use `_requests_for_regime`.
+# the reference window unit audit). New call sites use `_requests_for_regime`.
 _turns_for_regime = _requests_for_regime
 
 
@@ -263,7 +263,7 @@ def block_econs(
         if classify(text) != content_class:
             continue
         # THE single compression decision — the same one the freeze pipeline and retrieval-spend
-        # use (Codex M5a.1: divergent gates → enable-but-emit-raw → dollar-negative policy). Decided
+        # use (cross-validation.1: divergent gates → enable-but-emit-raw → dollar-negative policy). Decided
         # in tokens, min_bytes vs UTF-8 bytes. `emitted` is returned so no caller re-derives it.
         block_bytes = len(fr.block)
         if enabled and has_transform:
@@ -590,7 +590,7 @@ def build_freeze_pipeline(corpus: list[Request], rules: dict[str, dict[str, Clas
                 if rule and rule.enabled and rule.transform:
                     # the SAME token-gated decision block_econs used — the OFFLINE token floor, NOT
                     # rule.ratio_floor (which is now the runtime's compiled BYTE floor). Passing the
-                    # byte floor here would re-create the char-gate/token-gate drift (Codex M5a.1:
+                    # byte floor here would re-create the char-gate/token-gate drift (cross-validation.1:
                     # admission enables a cell the replay emits raw → dollar-negative policy.
                     _c, out = emit_decision(cls, text, len(fr.block), rule.min_bytes)
                 emitted_block = out.encode("utf-8")
@@ -625,9 +625,9 @@ def build_freeze_pipeline(corpus: list[Request], rules: dict[str, dict[str, Clas
 
 
 # NOTE: the freeze-replay pricing path (`_stratum_costs`, `_streaming_freeze_costs`) and the separate
-# `_expected_retrieval_spend` were DELETED (2026-07-15). They computed the signed by_stratum as a
+# `_expected_retrieval_spend` were DELETED (a measurement window). They computed the signed by_stratum as a
 # gross-freeze saving minus a separately-priced retrieval spend — two machineries with incommensurable
-# saving definitions that produced the terminal/l = -3513 artifact (witness six). The signed report is
+# saving definitions that produced the a spurious negative saving artifact (a prior calibration bug). The signed report is
 # now the SINGLE per-block pricing source `net_by_stratum` (Σ admission per-block net, in compile_policy).
 # A dormant second pricing path is exactly how that divergence class re-enters; if a future diagnostic
 # needs a per-stratum cost view, it re-aggregates the per-block BlockEcon terms — it does NOT keep its
@@ -891,7 +891,7 @@ def compile_policy(
     # quantity the jackknife admitted on, so the signed expected can never disagree with admission
     # (the -3513 residual came from a SECOND machinery — freeze-replay gross saving minus a separately
     # computed expected retrieval spend — whose three incommensurable saving definitions and (until
-    # witness six) mismatched strata produced a number no admitted cell owned). Retrieval is priced,
+    # a prior calibration bug) mismatched strata produced a number no admitted cell owned). Retrieval is priced,
     # never a free safety valve (§6): it is the `ceiling·retrieval_cost` term already inside each net.
     by_stratum = dict(net_by_stratum)
     total_delta = sum(by_stratum.values())

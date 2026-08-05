@@ -86,7 +86,7 @@ async def handle(
         event.is_error = True
         # apex's OWN cost is pre_forward_ms (matches the success path + the field's contract); the
         # upstream wait-until-failure goes to upstream_error_wait_ms, not apex_added_ms — else a
-        # 600s read-timeout is mis-billed as apex latency (2026-07-19 finding, 42/127 errors).
+        # 600s read-timeout is mis-billed as apex latency (the reference window finding, 42/127 errors).
         event.apex_added_ms = pre_forward_ms
         event.upstream_error_wait_ms = (time.perf_counter() - t_send) * 1000.0
         telemetry.emit(event)
@@ -94,7 +94,7 @@ async def handle(
                         media_type="application/json")
 
     # model_resolved: prefer the upstream's x-model header; fall back to the client-requested model
-    # when the upstream omits it (the Anthropic gateway returns no x-model → the field was 100% null on the 3-day
+    # when the upstream omits it (the anthropic wire returns no x-model → the field was 100% null on a measurement window
     # shadow window, blinding per-model attribution). A real x-model still wins, so a future
     # multi-endpoint world isn't masked by the guess.
     event.model_resolved = response.headers.get("x-model") or event.model_requested

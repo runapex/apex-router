@@ -8,14 +8,14 @@ never feed any expected/predicted quantity that the enforcement gate G grades �
 the doctor and drift logging, nowhere else. The AST plane guard prevents pipeline/tuner imports
 structurally; this sentence makes the boundary semantic so a future contributor knows why.
 
-WIRE-SEMANTICS PIN (witness 9) is load-bearing here: y is FRESH input tokens, extracted by the SAME
+WIRE-SEMANTICS PIN (a prior calibration bug) is load-bearing here: y is FRESH input tokens, extracted by the SAME
 helper the doctor uses post-fix (`apex_router.proxy_engine.readout.doctor._fresh_input`) — r1 does NOT re-derive the
 Anthropic-vs-OpenAI field semantics. A test asserts r1's y equals the doctor's on a shared fixture.
 
 The fit REFUSES (emits no number, states why) rather than report a bad one when the physical
 constraints fail — every class coefficient positive and in the plausible band, and r² above the
 floor. This relationship is near-mechanical; a weak fit means a population or semantics problem, not
-noise, and refusing IS the finding (the same posture the compiler took on launch night).
+noise, and refusing IS the finding (the same posture the compiler took on first deployment).
 
 ACTIVATION CONDITION (do NOT read "refuses" as "needs more rows"): on the current Anthropic wire the
 fit refuses because X is WHOLE-FRONTIER bytes while y is FRESH-only tokens, and at ~97.9%
@@ -40,9 +40,9 @@ from apex_router.proxy_engine.readout.doctor import _fresh_input, is_generative
 # the classifier's other buckets at the byte level; these five are what bytes_by_class emits.
 FEATURE_CLASSES = ("prose", "file_read", "json", "terminal", "diff")
 
-# Recognized wires whose fresh-token semantics `_fresh_input` knows (witness 9). An unknown/None
+# Recognized wires whose fresh-token semantics `_fresh_input` knows (a prior calibration bug). An unknown/None
 # endpoint must NEVER be fit — it would silently get one wire's field semantics (the Anthropic
-# default), the exact mis-read witness 9 was. cross-validation.
+# default), the exact mis-read a prior calibration bug was. cross-validation.
 RECOGNIZED_WIRES = ("anthropic", "openai")
 
 # Plausible tokens-per-byte band for a class coefficient. Derivation (bound, not policy): measured
@@ -77,7 +77,7 @@ def extract_xy(rows: list[dict], endpoint: str | None):
     if endpoint is not None and endpoint not in RECOGNIZED_WIRES:
         raise ValueError(
             f"R1 fit needs a recognized wire {RECOGNIZED_WIRES} (fresh-token semantics differ per "
-            f"wire — witness 9); got {endpoint!r}, whose y-semantics are unknown"
+            f"wire — a prior calibration bug); got {endpoint!r}, whose y-semantics are unknown"
         )
     if endpoint is None:
         endpoints = {_row_endpoint(d) for d in gen}
@@ -85,7 +85,7 @@ def extract_xy(rows: list[dict], endpoint: str | None):
         if unknown:
             raise ValueError(
                 f"R1 fit needs a recognized wire; rows carry unknown/absent endpoints {unknown} "
-                "whose fresh-token semantics are undefined (witness 9)"
+                "whose fresh-token semantics are undefined (a prior calibration bug)"
             )
         if len(endpoints) > 1:
             raise ValueError(

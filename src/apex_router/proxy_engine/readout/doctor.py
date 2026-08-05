@@ -23,9 +23,9 @@ from apex_router.proxy_engine.readout.pricing import Rates
 SUPPORTED_SCHEMA = {2, 3, 4}  # v4 added upstream_error_wait_ms; doctor's fields are v2-compatible
 
 # Cache-served floor below which a large session is flagged for prefix instability. A BOUND, not a
-# policy: derived from CORRECTED two-wire data (2026-07-19, served = read/(read+FRESH), wire-aware —
+# policy: derived from CORRECTED two-wire data (the reference window, served = read/(read+FRESH), wire-aware —
 # re-confirmed after the witness-9 fix). Anthropic per-session cache-served was min 0.939 / p10 0.96
-# (n=21, unchanged by the fix: the Anthropic branch was never mis-read), so the healthy floor is
+# (a sample, unchanged by the fix: the Anthropic branch was never mis-read), so the healthy floor is
 # ~0.94. The one flagged OpenAI session sits at 0.445 (was mis-reported 0.308 pre-fix). The cutoff
 # 0.700 sits cleanly BETWEEN them (0.445 < 0.700 < 0.939): a flag means "materially worse than any
 # healthy Anthropic session AND clearly separated from the observed low-cache case", not "low end of
@@ -59,7 +59,7 @@ _BURST_WINDOW_S = 600  # 10-minute window
 # (scattered long-turn timeouts, not a burst). K=5 sits just above that observed non-bursty ceiling —
 # "between observed-normal and a real anomaly", the same discipline as the 0.939 cache floor. Records
 # the baseline so the choice is auditable. Re-derive if the traffic's normal scatter changes.
-_BURST_OBSERVED_MAX_NONBURSTY = 4  # measured 2026-07-25 (102h window); K must exceed this
+_BURST_OBSERVED_MAX_NONBURSTY = 4  # measured on the reference window); K must exceed this
 _BURST_K = 5
 # K must sit strictly above the observed non-bursty ceiling (else it fires on normal scatter). This
 # assertion documents the derivation IN CODE and trips loudly if someone lowers K into the noise.
@@ -67,7 +67,7 @@ assert _BURST_K > _BURST_OBSERVED_MAX_NONBURSTY, "burst K must exceed the observ
 
 
 def classify_error(d: dict) -> str:
-    """OBSERVED-signature class for one error row — NO causal inference (Codex xval 2026-07-25).
+    """OBSERVED-signature class for one error row — NO causal inference (cross-validation).
     Classifies ONLY by what the telemetry directly records; it does NOT claim WHY (whether the
     request reached upstream, whether the client vs the backend gave up — the fields can't tell us).
 
@@ -120,8 +120,8 @@ def error_panel(rows: list[dict], total_requests: int) -> dict:
             "by_endpoint": dict(by_endpoint),
             "by_model": dict(by_model),
         },
-        # Burst is detected PER ENDPOINT (Codex xval F3): 5 independent timeouts split across
-        # the Anthropic gateway+openai are not one backend degrading. Returns the first endpoint that bursts, or None.
+        # Burst is detected PER ENDPOINT (cross-validation): 5 independent timeouts split across
+        # anthropic+openai are not one backend degrading. Returns the first endpoint that bursts, or None.
         "burst_alarm": timeout_burst_alarm(timeouts),
     }
 
@@ -129,7 +129,7 @@ def error_panel(rows: list[dict], total_requests: int) -> dict:
 def timeout_burst_alarm(timeout_rows: list[dict]) -> dict | None:
     """Fire iff >= _BURST_K timeouts START within any _BURST_WINDOW_S window ON A SINGLE ENDPOINT — a
     per-backend cluster signalling that endpoint's degradation, NOT the scattered long-turn timeouts
-    that are normal, and NOT a coincidental mix across endpoints (Codex xval F3). Returns None on
+    that are normal, and NOT a coincidental mix across endpoints (cross-validation). Returns None on
     scattered/mixed timeouts. The cause names the ACTUAL bursting endpoint, not a hardcoded one."""
     from collections import Counter, defaultdict
     by_ep = defaultdict(list)
@@ -198,7 +198,7 @@ APEX_ADDED_MS_SPLIT_SCHEMA = 4
 def latency_safe_rows(rows: list[dict]) -> list[dict]:
     """Rows whose `apex_added_ms` carries ONE consistent definition — for any latency aggregation.
     Drops PRE-v4 ERROR rows (there apex_added_ms wrongly includes the upstream stall — the
-    2026-07-19 finding), keeps everything else (pre-v4 SUCCESS rows are unaffected; post-v4 rows are
+    the reference window finding), keeps everything else (pre-v4 SUCCESS rows are unaffected; post-v4 rows are
     already clean). Without this, a p99 over error rows spanning the v3→v4 boundary mixes a
     ~600,000ms old-definition tail with milliseconds — the estimand trap applied to the migration.
     Use this before pooling apex_added_ms; a future latency panel must not skip it."""
@@ -241,7 +241,7 @@ def _fresh_input(d: dict) -> int:
       - OpenAI/Responses (`endpoint_id == "openai"`): `input_tokens` is the TOTAL prompt and
         `cache_read` (input_tokens_details.cached_tokens) is a SUBSET of it → fresh = total − read.
         Real row: tokens_in=14986, cache_read=14208 → fresh=778 (NOT 14986).
-      - Anthropic/the Anthropic gateway: `input_tokens` is ALREADY the fresh remainder; `cache_read`/`cache_write`
+      - Anthropic (anthropic wire): `input_tokens` is ALREADY the fresh remainder; `cache_read`/`cache_write`
         are DISJOINT sibling pools → fresh = input_tokens unchanged. Real row: tokens_in=2,
         cache_read=17490.
 
@@ -345,7 +345,7 @@ def session_health(rows: list[dict]) -> dict:
         # and to prevent a cross-endpoint bucket from being priced by one endpoint's first row (latent
         # today: 0 live cross-endpoint buckets).
         #
-        # A2c (2026-07-26): the key includes agent_id, because sub-agents carry SEPARATE prefixes and
+        # A2c (a measurement window): the key includes agent_id, because sub-agents carry SEPARATE prefixes and
         # SEPARATE provider caches (events.py: the freeze/CCR key is (session_id, agent_id)). Pooling
         # main-thread + sub-agent turns into one bucket mixes distinct cache populations, so hit_rate /
         # r:w / the alarm would be computed over the wrong population (Codex A2-F2). This is the
@@ -375,7 +375,7 @@ def session_health(rows: list[dict]) -> dict:
 # ---------- cold-turn attribution (A1', measure-only) ----------
 
 def cold_turn_attribution(rows: list[dict]) -> dict:
-    """OBSERVATIONAL split of cold generative turns — NO cause is attributed (Codex xval 2026-07-25).
+    """OBSERVATIONAL split of cold generative turns — NO cause is attributed (cross-validation).
     A cold turn's cause is NOT identifiable from measure-only telemetry: distinguishing an idle TTL
     eviction from a client edit / rerender / transform needs the previously-cached prefix BYTES, which
     apex does not store. So this reports only what IS observable — was a cold turn preceded by a
@@ -383,7 +383,7 @@ def cold_turn_attribution(rows: list[dict]) -> dict:
 
     Grouped by the FULL cache identity `(session_id, agent_id, endpoint, model)` — agent_id is
     included because sub-agents carry SEPARATE prefixes/caches (events.py); omitting it lets one
-    agent's timestamp corrupt another's inter-turn gap (Codex xval). Turns sorted by ts per bucket:
+    agent's timestamp corrupt another's inter-turn gap (cross-validation). Turns sorted by ts per bucket:
 
       - warm                : cache_read > 0 (the prefix was served).
       - first_observed_cold : the bucket's first OBSERVED turn is cold. NOT necessarily the first
@@ -469,7 +469,7 @@ def prefix_instability_alarm(h: SessionHealth, rates: Rates) -> dict | None:
     `served` = read/(read + FRESH) — deliberately EXCLUDING cache_write, because the 0.939 healthy
     floor was measured on exactly this denominator (real healthy Anthropic sessions run as low as
     0.33 once creation writes are included, so folding writes in would false-alarm on normal cache
-    CREATION — verified 2026-07-19). `served` uses wire-aware fresh input, so a fully-cached OpenAI
+    CREATION — verified the reference window). `served` uses wire-aware fresh input, so a fully-cached OpenAI
     session reads as ~100%, not ~50% (cross-validation).
 
     `recoverable_ceiling_dollars` is an UPPER BOUND, not a realized overpay: it prices the fresh
@@ -653,7 +653,7 @@ def format_report(report: dict) -> str:
     # cold-turn OBSERVATION (A1'): purely observational — cold turns split by whether a >=TTL idle
     # gap preceded them. NO cause is named and NONE is called benign: a >=TTL gap only proves
     # eviction was POSSIBLE, not that it happened (a client edit in the same gap is identical on the
-    # wire); the split is a triage hint, not a diagnosis (Codex xval 2026-07-25).
+    # wire); the split is a triage hint, not a diagnosis (cross-validation).
     ct = report.get("cold_turns")
     if ct and (ct["cold_after_ttl_gap"] or ct["cold_no_ttl_gap"] or ct["first_observed_cold"]):
         parts = []
@@ -665,7 +665,7 @@ def format_report(report: dict) -> str:
             parts.append(f"{ct['first_observed_cold']} first-observed (may predate the window)")
         L.append("cold prefixes (cause NOT attributable — observational): " + " · ".join(parts))
     # ALARMS render UNCONDITIONALLY on their own presence — NOT gated on cold turns (the cold-prefix
-    # block above must never swallow the alarm block; regression caught by Codex xval 2026-07-25).
+    # block above must never swallow the alarm block; regression caught by cross-validation-07-25).
     if report["alarms"]:
         L.append("")
         L.append("ALARMS — prefix instability (cacheable prefix re-sent uncached):")
@@ -680,7 +680,7 @@ def format_report(report: dict) -> str:
         L.append("")
         rate = f"{100*e['rate']:.1f}%" if e["rate"] is not None else "n/a"
         L.append(f"ERRORS (this window): {e['total']} / {e['denominator']:,} requests = {rate}")
-        # OBSERVED classes only — no causal labels (Codex xval: the fields can't attribute a cause).
+        # OBSERVED classes only — no causal labels (cross-validation).
         _notes = {
             "upstream_timeout": "(blocked on upstream > 300s, then raised — the ~600s ceiling)",
             "stream_failed": "(first byte arrived, then the stream errored — incl. mid-stream)",

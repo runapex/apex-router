@@ -214,7 +214,7 @@ class ShadowBlock:
 
 # Observation budget — a DECISION, not an apologetic cap. `run_shadow`'s decompose/classify cost is
 # ~linear in body size; on this machine the measured curve is `ms ≈ 17.7·MB + 0.36` (single-block
-# frontier, 2026-07-19 benchmark). A multi-MB single block blows the G3 25ms gate. Above this
+# frontier, the reference window benchmark). A multi-MB single block blows the G3 25ms gate. Above this
 # threshold we SKIP decompose and LABEL it (`oversize_skipped` + `frontier_bytes`) so telemetry
 # COUNTS what it didn't inspect rather than silently thinning `bytes_by_class` (R1's X).
 #

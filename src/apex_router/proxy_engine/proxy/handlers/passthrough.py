@@ -28,7 +28,7 @@ def detect_client(request: Request) -> str:
 
     The Anthropic wire ends in `/messages`; the OpenAI/Codex wire ends in `/chat/completions`,
     `/completions`, `/responses`. Matched as a path SEGMENT SUFFIX, not a `/v1/` prefix, because the
-    real deployments carry a service prefix: Codex→a gateway `/<your-openai-path>` (2026-07-17
+    real deployments carry a service prefix: Codex→a gateway `/<your-openai-path>` (the reference window
     wiring) and Anthropic→`/claude/v1/messages`, neither of which starts with `/v1/`. The suffix is
     the deterministic signal; headers only disambiguate an ambiguous non-endpoint probe (e.g. root,
     `/v1/models`). `/completions` is checked so that `/chat/completions` (which also ends in it) is
@@ -123,7 +123,7 @@ async def handle(
         event.is_error = True
         # apex's OWN cost is pre_forward_ms (matches the success path + the field's contract); the
         # time blocked on the upstream before it raised goes to upstream_error_wait_ms, NOT to
-        # apex_added_ms — else a 600s read-timeout is mis-billed as apex latency (2026-07-19).
+        # apex_added_ms — else a 600s read-timeout is mis-billed as apex latency (a measurement window).
         event.apex_added_ms = pre_forward_ms
         event.upstream_error_wait_ms = (time.perf_counter() - t_send) * 1000.0
         telemetry.emit(event)
@@ -131,7 +131,7 @@ async def handle(
         return Response(b'{"error":"apex upstream unreachable"}', status_code=502,
                         media_type="application/json")
 
-    # model_resolved: x-model header, or fall back to the client-requested model (the Anthropic gateway omits
+    # model_resolved: x-model header, or fall back to the client-requested model (the anthropic wire omits
     # x-model → the field was 100% null on the shadow window). Same as the shadow handler.
     event.model_resolved = response.headers.get("x-model") or event.model_requested
 

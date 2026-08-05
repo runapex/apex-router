@@ -88,7 +88,7 @@ class Emission:
 
 def _utf8_len(s: str) -> int:
     """UTF-8 byte length, tolerant of lone surrogates (a transform emitting `\\ud800` from a
-    surrogate in the source must not crash the hot path — Codex M5a.1: `surrogatepass` so the
+    surrogate in the source must not crash the hot path — cross-validation.1: `surrogatepass` so the
     encode can't raise UnicodeEncodeError; fail-open depends on this never throwing)."""
     return len(s.encode("utf-8", "surrogatepass"))
 
@@ -154,7 +154,7 @@ def decide(
 
     # The whole transform+floor sequence is inside fail-open (§6 step 7): ANY exception — the
     # transform raising, or a byte-length compare on surrogate content — ships RAW, never crashes
-    # the hot path (Codex M5a.1: a lone surrogate must not take down the proxy).
+    # the hot path (cross-validation.1: a lone surrogate must not take down the proxy).
     block = Block(content=content, tool_name=tool_name, meta=block_meta or {})
     try:
         if not module.applies(block):

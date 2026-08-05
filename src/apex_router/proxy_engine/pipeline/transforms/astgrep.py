@@ -117,7 +117,7 @@ def run(block: Block, knobs: Snapshot) -> Rendering:
     # nested def (a method inside a class, a closure inside a function). Eliding the outer def
     # already elides the nested one — and its recover marker records the FULL span, so re-Reading
     # recovers everything including the nested def. Outlining a nested def separately would
-    # double-elide or corrupt (Codex M3: `outer` [0-3] swallows `inner`'s signature). We sort by
+    # double-elide or corrupt (cross-validation: `outer` [0-3] swallows `inner`'s signature). We sort by
     # (start asc, end desc) and drop any def whose [start,end] is inside the previous kept def.
     defs.sort(key=lambda d: (d["start"], -d["end"]))
     outer: list[dict] = []

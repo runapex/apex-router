@@ -10,7 +10,7 @@ enterprise rate overrides via a config file; the regime label makes the substitu
 Rates are $ per 1,000,000 tokens. `input` = fresh (uncached) input; `cache_read` = cached-prefix
 read
 (the discounted tier); `cache_write` = cache creation (Anthropic's write premium; OpenAI has none —
-its caching is automatic with no separate write line, verified on the wire 2026-07-17); `output` =
+its caching is automatic with no separate write line, verified on the wire); `output` =
 generated tokens. Unknown (model, endpoint) → a labeled `unknown` regime with zeros, so a dollar
 figure
 on unpriced traffic reads as `$0 [pricing_regime=unknown:...]` — visibly un-priced, never a fake
@@ -36,22 +36,20 @@ class Rates:
 # List-price table. Keys are (model_substring, endpoint_id). Model matched by SUBSTRING (the wire
 # sends `<gateway>-claude-opus-x` etc.; we match `opus`/`haiku`/`gpt-5`). Endpoint is the
 # telemetry
-# `endpoint_id` (`the Anthropic gateway` = Anthropic wire, `openai` = Codex/OpenAI wire). Update as list prices
+# `endpoint_id` (`anthropic` = Anthropic wire, `openai` = Codex/OpenAI wire). Update as list prices
 # move;
 # the regime string carries the date so a stale table is visible.
 _LIST_PRICE_DATE = "2026-07-list"
 
 _TABLE: tuple[tuple[str, str, Rates], ...] = (
-    # Anthropic (the Anthropic gateway) — opus tier: input 15 / cache-read 1.5 (0.1×) / cache-write 18.75 (1.25×)
-    # / output 75
-    ("opus", "anthropic", Rates(15.0, 1.5, 18.75, 75.0, f"list:opus/the Anthropic gateway:{_LIST_PRICE_DATE}")),
-    ("sonnet", "anthropic", Rates(3.0, 0.3, 3.75, 15.0, f"list:sonnet/the Anthropic gateway:{_LIST_PRICE_DATE}")),
-    ("haiku", "anthropic", Rates(0.8, 0.08, 1.0, 4.0, f"list:haiku/the Anthropic gateway:{_LIST_PRICE_DATE}")),
+    # Anthropic — opus tier: input 15 / cache-read 1.5 (0.1×) / cache-write 18.75 (1.25×) / output 75
+    ("opus", "anthropic", Rates(15.0, 1.5, 18.75, 75.0, f"list:opus/anthropic:{_LIST_PRICE_DATE}")),
+    ("sonnet", "anthropic", Rates(3.0, 0.3, 3.75, 15.0, f"list:sonnet/anthropic:{_LIST_PRICE_DATE}")),
+    ("haiku", "anthropic", Rates(0.8, 0.08, 1.0, 4.0, f"list:haiku/anthropic:{_LIST_PRICE_DATE}")),
     # OpenAI (Codex) — gpt-5 tier: input 15 / cache-read 1.5 / NO cache-write (automatic caching) /
     # output 60.
     # cache_write=0.0 is STRUCTURAL, not unknown: the OpenAI Responses usage carries no write field
-    # (verified raw-wire dump 2026-07-17), so there is nothing to price and no write premium is
-    # paid.
+    # (verified from a raw-wire capture), so there is nothing to price and no write premium is paid.
     ("gpt-5", "openai", Rates(15.0, 1.5, 0.0, 60.0, f"list:gpt-5/openai:{_LIST_PRICE_DATE}")),
 )
 

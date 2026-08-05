@@ -72,7 +72,7 @@ class _Decoder:
     that visible rather than silent). Errors on a chunk stop decoding permanently (fail-open: the
     forwarded bytes are unaffected — this decoder only ever touches a COPY of the chunk).
 
-    Brotli: the 3-day shadow mine (2026-07-16) found ~16.7% of requests logged `usage=null`,
+    Brotli: the a measurement window) found ~16.7% of requests logged `usage=null`,
     root-caused to this class self-disabling on `br` because brotli wasn't installed — Claude Code
     negotiates `br` per pooled connection, so those responses were silently uncaptured.
     `brotli.Decompressor().process()` is the streaming analogue of zlib's
