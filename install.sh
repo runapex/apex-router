@@ -16,6 +16,10 @@
 #
 # Flags:  --no-ornith   skip the large MLX model download
 #         --no-embed    skip ollama / nomic-embed
+#         --watch       install the background watchers (drain worker + daily report)
+#         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
+#         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
+#         --skills-marketplace URL  print /plugin commands for a private team skill marketplace
 #         --dir PATH    install location (default: ~/.apex-router)
 #         --repo URL    git repo to clone (default: the public apex-router repo)
 #         --verify-only re-run the self-check against an existing install
@@ -30,6 +34,7 @@ REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
 DO_EMBED=1
 DO_WATCH=0
+DO_PROXY=0
 VERIFY_ONLY=0
 ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
 # Private team skill marketplace (Claude Code plugin repo). Public apex-router hardcodes NO private
@@ -44,6 +49,7 @@ while [ $# -gt 0 ]; do
     --no-ornith) DO_ORNITH=0 ;;
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
+    --proxy)     DO_PROXY=1 ;;
     --skills-marketplace) SKILLS_MARKETPLACE="$2"; shift ;;
     --proxy-config) PROXY_CONFIG="$2"; shift ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
@@ -104,9 +110,12 @@ install_package() {
 
   say "creating venv + installing the package"
   uv venv "$INSTALL_DIR/.venv" >/dev/null
-  # Core is dependency-free; add the ornith extra only where MLX can run.
+  # Core is dependency-free; add extras only for the tiers the user opted into.
   local extras="dev"
-  [ "$DO_ORNITH" = "1" ] && [ "$IS_APPLE_SILICON" = "1" ] && extras="dev,ornith"
+  [ "$DO_ORNITH" = "1" ] && [ "$IS_APPLE_SILICON" = "1" ] && extras="$extras,ornith"
+  # The measuring proxy pulls starlette/uvicorn/httpx/brotli/numpy (+scipy/tiktoken for the tuner);
+  # only with --proxy so a plain install stays lean.
+  [ "$DO_PROXY" = "1" ] && extras="$extras,proxy,tuner"
   uv pip install --python "$INSTALL_DIR/.venv/bin/python" -e "$INSTALL_DIR[$extras]" >/dev/null
   ok "apex-router package installed (extras: $extras)"
 }
@@ -197,6 +206,24 @@ verify() {
 # --------------------------------------------------------------------------- #
 # team skill marketplace (optional) — print the /plugin wiring, never hardcode a private URL
 # --------------------------------------------------------------------------- #
+install_proxy() {
+  # The measuring proxy is a LIVE data plane on your request path — we install it (via the
+  # [proxy] extra above) but never auto-start it. Print how to run it + verify it imports.
+  [ "$DO_PROXY" = "1" ] || {
+    echo "  measuring proxy NOT installed (re-run with --proxy to add the [proxy] extra)."
+    return 0
+  }
+  say "measuring proxy installed ([proxy] extra)"
+  if "$INSTALL_DIR/.venv/bin/python" -c "import apex_router.proxy_engine.proxy.app" >/dev/null 2>&1; then
+    ok "proxy imports OK — start it with:  apex-router serve   (defaults to 127.0.0.1:8788)"
+    echo "     point Claude Code at it:      apex-router setup-proxy   (or --proxy-config <file>)"
+    echo "     cost report from telemetry:   apex-router proxy doctor"
+    echo "     NOTE: the proxy keeps a local SQLite store with request content — treat ~/.apex/ as sensitive."
+  else
+    warn "proxy extra did not import cleanly — check 'pip install apex-router[proxy]'"
+  fi
+}
+
 setup_proxy() {
   # Merge proxy/Foundry client env into ~/.claude/settings.json IF the user provided config.
   # Values come from --proxy-config file or the environment; apex-router hardcodes none.
@@ -255,6 +282,7 @@ main() {
   install_ornith
   check_clients_and_table
   install_watchers
+  install_proxy
   setup_proxy
   verify
   skills_hint
