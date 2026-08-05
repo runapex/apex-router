@@ -22,6 +22,36 @@ from pathlib import Path
 
 LABEL_DRAIN = "com.apex-router.drain"
 LABEL_DAILY = "com.apex-router.daily"
+LABEL_SERVE = "com.apex-router.serve"   # the measuring proxy — a LIVE data plane, opt-in only
+
+# Server-side proxy config the serve unit must carry (env doesn't propagate to launchd/systemd).
+# Read from the environment at install time and baked into the unit so the gateway is reproducible.
+_SERVE_ENV_KEYS = (
+    "APEX_ANTHROPIC_UPSTREAM",  # the upstream/gateway the proxy forwards to (may be internal)
+    "APEX_OPENAI_UPSTREAM",
+    "APEX_PORT",
+    "APEX_HOST",
+    "APEX_HOME",
+)
+
+
+def _serve_env() -> dict:
+    """Collect the serve-unit env: the known proxy keys from the environment, plus PYTHONPATH if the
+    package isn't importable by the unit's interpreter (a source/dev checkout — a pip install needs
+    none). Baked into the unit because env from the installing shell does not reach launchd/systemd."""
+    env = {k: os.environ[k] for k in _SERVE_ENV_KEYS if os.environ.get(k)}
+    import importlib.util
+    if importlib.util.find_spec("apex_router") is None:
+        # not pip-visible here; but if WE can import it, our sys.path[0] locates the src root
+        pass
+    else:
+        # pinned so a dev/source run (not `pip install`ed into the venv) still resolves the package.
+        import apex_router
+        pkg_parent = str(Path(apex_router.__file__).resolve().parents[1])  # .../src
+        env.setdefault("PYTHONPATH",
+                       pkg_parent + (os.pathsep + os.environ["PYTHONPATH"]
+                                     if os.environ.get("PYTHONPATH") else ""))
+    return env
 
 
 def _py() -> str:
@@ -40,7 +70,7 @@ def _is_linux() -> bool:
 # --------------------------------------------------------------------------- macOS (launchd)
 
 def _launchd_plist(label: str, args: list[str], *, keepalive: bool,
-                   calendar: tuple[int, int] | None) -> str:
+                   calendar: tuple[int, int] | None, extra_env: dict | None = None) -> str:
     prog = "".join(f"\n        <string>{a}</string>" for a in args)
     if calendar is not None:
         hour, minute = calendar
@@ -52,6 +82,15 @@ def _launchd_plist(label: str, args: list[str], *, keepalive: bool,
     ka = "    <key>KeepAlive</key><true/>\n" if keepalive else ""
     home = str(Path.home())
     logdir = f"{home}/.apex-router/logs"
+    # Baked env: PATH + HOME always, plus any caller-supplied keys (e.g. the proxy's upstream) so a
+    # managed service carries its config — env from the installing shell does NOT propagate to launchd.
+    env_lines = [
+        '        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>',
+        f'        <key>HOME</key><string>{home}</string>',
+    ]
+    for k, v in (extra_env or {}).items():
+        env_lines.append(f"        <key>{_xml(k)}</key><string>{_xml(v)}</string>")
+    env_block = "\n".join(env_lines)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -65,14 +104,18 @@ def _launchd_plist(label: str, args: list[str], *, keepalive: bool,
     <key>ProcessType</key><string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>HOME</key><string>{home}</string>
+{env_block}
     </dict>
     <key>StandardOutPath</key><string>{logdir}/{label}.log</string>
     <key>StandardErrorPath</key><string>{logdir}/{label}.err</string>
 </dict>
 </plist>
 """
+
+
+def _xml(s: str) -> str:
+    """Minimal XML-escape for values baked into a plist."""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _launchd_install() -> list[str]:
@@ -108,6 +151,33 @@ def _launchd_uninstall() -> list[str]:
             plist.unlink()
             done.append(label)
     return done
+
+
+def _launchd_install_serve() -> list[str]:
+    """Install ONLY the proxy-serve daemon (opt-in — it routes live traffic)."""
+    agents = Path.home() / "Library/LaunchAgents"
+    logs = Path.home() / ".apex-router/logs"
+    agents.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=True)
+    uid = os.getuid()
+    plist = agents / f"{LABEL_SERVE}.plist"
+    plist.write_text(_launchd_plist(
+        LABEL_SERVE, [_py(), "-m", "apex_router.cli", "serve"], keepalive=True, calendar=None,
+        extra_env=_serve_env()))   # bake the upstream/port so the gateway is reproducible
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SERVE}"], capture_output=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+    return [LABEL_SERVE]
+
+
+def _launchd_uninstall_serve() -> list[str]:
+    agents = Path.home() / "Library/LaunchAgents"
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SERVE}"], capture_output=True)
+    plist = agents / f"{LABEL_SERVE}.plist"
+    if plist.exists():
+        plist.unlink()
+        return [LABEL_SERVE]
+    return []
 
 
 # --------------------------------------------------------------------------- Linux (systemd --user)
@@ -178,6 +248,45 @@ def _systemd_uninstall() -> list[str]:
     return done
 
 
+def _systemd_serve_unit() -> dict[str, str]:
+    py = _py()
+    # bake the proxy env into the unit (Environment= lines) so the gateway config is carried.
+    env_lines = "".join(f"Environment={k}={v}\n" for k, v in _serve_env().items())
+    return {"apex-router-serve.service": f"""[Unit]
+Description=apex-router measuring proxy (serve)
+[Service]
+Type=simple
+{env_lines}ExecStart={py} -m apex_router.cli serve
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target
+"""}
+
+
+def _systemd_install_serve() -> list[str]:
+    d = _systemd_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for name, body in _systemd_serve_unit().items():
+        (d / name).write_text(body)
+    _systemctl("daemon-reload")
+    _systemctl("enable", "--now", "apex-router-serve.service")
+    return ["apex-router-serve.service"]
+
+
+def _systemd_uninstall_serve() -> list[str]:
+    d = _systemd_dir()
+    _systemctl("disable", "--now", "apex-router-serve.service")
+    done = []
+    for name in _systemd_serve_unit():
+        f = d / name
+        if f.exists():
+            f.unlink()
+            done.append(name)
+    _systemctl("daemon-reload")
+    return done
+
+
 # --------------------------------------------------------------------------- public API
 
 def install() -> list[str]:
@@ -194,6 +303,25 @@ def uninstall() -> list[str]:
         return _launchd_uninstall()
     if _is_linux():
         return _systemd_uninstall()
+    raise SystemExit(f"unsupported OS: {platform.system()}")
+
+
+def install_serve() -> list[str]:
+    """Install the measuring proxy as an always-on managed service (opt-in — it routes live
+    traffic). The proxy's upstream/port come from the environment (APEX_ANTHROPIC_UPSTREAM,
+    APEX_PORT, …) at launch, so point it at your gateway via those before/at install."""
+    if _is_macos():
+        return _launchd_install_serve()
+    if _is_linux():
+        return _systemd_install_serve()
+    raise SystemExit(f"unsupported OS for serve: {platform.system()}")
+
+
+def uninstall_serve() -> list[str]:
+    if _is_macos():
+        return _launchd_uninstall_serve()
+    if _is_linux():
+        return _systemd_uninstall_serve()
     raise SystemExit(f"unsupported OS: {platform.system()}")
 
 
@@ -231,7 +359,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="apex-router watch",
                                  description="Install/manage apex-router background watchers.")
     ap.add_argument("action", nargs="?", default="status",
-                    choices=["install", "uninstall", "status"])
+                    choices=["install", "uninstall", "status", "install-serve", "uninstall-serve"])
     ap.add_argument("--run-daily", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.run_daily:
@@ -240,6 +368,12 @@ def main(argv=None) -> int:
         print("installed watchers:", ", ".join(install()))
     elif a.action == "uninstall":
         print("removed watchers:", ", ".join(uninstall()) or "(none)")
+    elif a.action == "install-serve":
+        print("installed proxy service:", ", ".join(install_serve()))
+        print("  the proxy is now always-on; its upstream/port come from the environment "
+              "(APEX_ANTHROPIC_UPSTREAM / APEX_PORT). Point Claude Code at it with 'apex-router setup-proxy'.")
+    elif a.action == "uninstall-serve":
+        print("removed proxy service:", ", ".join(uninstall_serve()) or "(none)")
     else:
         print(status())
     return 0

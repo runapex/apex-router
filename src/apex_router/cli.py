@@ -41,9 +41,11 @@ def main(argv=None) -> int:
     sub.add_parser("status", help="report which components are live")
     verify = sub.add_parser("verify", help="self-check: import + report; exit 0 if routing works")
     verify.add_argument("--json", action="store_true")
-    watch = sub.add_parser("watch", help="install/manage background watchers (drain + daily)")
+    watch = sub.add_parser("watch",
+                           help="manage background services (watchers: drain+daily; proxy: serve)")
     watch.add_argument("action", nargs="?", default="status",
-                       choices=["install", "uninstall", "status"])
+                       choices=["install", "uninstall", "status",
+                                "install-serve", "uninstall-serve"])
     setup_proxy = sub.add_parser(
         "setup-proxy",
         help="merge proxy client env into ~/.claude/settings.json (from --config/env)")
