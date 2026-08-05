@@ -1,8 +1,9 @@
 # apex-router
 
-Adaptive model routing — measured, per-task-class model selection — plus a local
-offload subsystem (review / codegen / code-Q&A on a local model) and the freshness
-toolkit the routing evidence is built from.
+Adaptive model routing — measured, per-task-class model selection — plus a measuring
+**proxy**, a local **offload** subsystem (review / codegen / code-Q&A on a local model),
+and the freshness toolkit the routing evidence is built from. Adopt any layer alone; the
+routing core stays **pure-stdlib** and every heavy piece is an optional extra.
 
 Instead of a hand-authored "use model X for task Y" table, `apex-router` learns which
 model is actually best for each kind of task from evidence, behind a statistically
@@ -18,8 +19,11 @@ choice on any uncertainty.
 - [Architecture](#architecture)
 - [Design decisions](#design-decisions)
 - [Install](#install)
+- [The measuring proxy](#the-measuring-proxy-optional-proxy-extra)
 - [The offload subsystem](#the-offload-subsystem)
 - [Background watchers](#background-watchers)
+- [Proxy client setup](#proxy-client-setup)
+- [Team skills (private marketplace)](#team-skills-private-marketplace)
 - [Telemetry — reading and sharing it](#telemetry--reading-and-sharing-it)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -30,13 +34,18 @@ choice on any uncertainty.
 
 ## Architecture
 
-Three layers, deliberately decoupled — you can adopt any one without the others.
+Four layers, deliberately decoupled — you can adopt any one without the others. Only the
+routing core is required and pure-stdlib; the proxy and its tuner are optional extras.
 
 ```
-┌─ routing core (pure stdlib, zero deps) ──────────────────────────────────────┐
+┌─ routing core (pure stdlib, zero deps — the only required layer) ─────────────┐
 │  task → classify → cell → route table → resolve (fallback to static) → model  │
 │                              ▲                                                 │
 │   corpus steps → replay bench → gate (out-of-sample, FDR-corrected) → table   │
+└───────────────────────────────────────────────────────────────────────────────┘
+┌─ measuring proxy  [proxy] extra ─────────────────────────────────────────────┐
+│  client → proxy (byte-identical forward) → provider; tees usage → telemetry   │
+│           offline tuner compiles a signed policy from the captured corpus      │
 └───────────────────────────────────────────────────────────────────────────────┘
 ┌─ offload subsystem (local model does the work, measured) ────────────────────┐
 │  queue_task → jobs/inbox → worker → dispatch(lane) → local model → telemetry  │
@@ -136,7 +145,7 @@ Flags: `--no-ornith` (skip the large model download), `--no-embed`, `--watch` (i
 watchers at first run), `--skills-marketplace <git-url>` (print the wiring for a private
 team skill marketplace — see below), `--dir PATH`, `--verify-only`.
 
-No Foundry required — the target uses its own Claude + Codex subscriptions.
+No model gateway required — the target uses its own Claude + Codex subscriptions.
 
 ### Verify
 
@@ -200,7 +209,41 @@ auto-starts a daemon without that consent.
 
 ---
 
-## Proxy / Foundry client setup
+## The measuring proxy (optional `[proxy]` extra)
+
+apex-router bundles a measuring **proxy** (`apex_router.proxy_engine`) that fronts your model
+provider, forwards every request **byte-identically**, and measures composition/usage for an
+offline policy tuner — a strict superset of a plain passthrough. It is **opt-in and isolated**:
+the routing core stays pure-stdlib, and the proxy's heavy deps ship only in the extra.
+
+```bash
+pip install 'apex-router[proxy]'        # starlette, uvicorn, httpx, brotli, numpy
+pip install 'apex-router[proxy,tuner]'  # + the offline tuner (scipy, tiktoken)
+
+apex-router serve                        # run the proxy (127.0.0.1:8788 by default)
+apex-router proxy doctor                 # cache-cost report from telemetry
+apex-router proxy --help                 # serve / doctor / compile / readout / ask
+```
+
+Point it at your provider (or a gateway) via env — nothing internal is hardcoded:
+
+```bash
+export APEX_ANTHROPIC_UPSTREAM=https://api.anthropic.com   # default; set to your gateway if any
+export APEX_OPENAI_UPSTREAM=https://api.openai.com
+export APEX_PORT=8788
+```
+
+Without the extra, `apex-router serve` prints a one-line install hint instead of a traceback,
+and the pure-stdlib routing core is completely unaffected.
+
+> ⚠️ **Local data persistence.** The proxy keeps a local SQLite store (under `~/.apex/` by
+> default, `APEX_HOME` to relocate) that persists **request/response content bytes** for
+> cache-freeze and divergence analysis. This never leaves your machine — there is no telemetry
+> egress, and the emitted JSONL records only token counts, byte-class sizes, and timing (no prompt
+> text). But the on-disk store DOES contain plaintext content; treat `~/.apex/` as sensitive,
+> and set a short `APEX_RETENTION_DAYS` (default 14) if you don't want it retained.
+
+## Proxy client setup
 
 If your machine routes Claude Code through a local proxy (e.g. a measuring/routing proxy in
 front of your model backend), apex-router can **replicate that client wiring** into
