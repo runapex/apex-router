@@ -140,10 +140,13 @@ Arch-aware and idempotent:
 | Ornith MLX server | **Apple Silicon only** | local bench / codegen / review; skipped elsewhere with a notice |
 | starter route table | always | empty → resolves to your static defaults until a bench fills it |
 | background watchers | **only with `--watch`** | drain worker + daily report (see below) |
+| measuring proxy | **only with `--proxy`** | the `[proxy]`/`[tuner]` extras; installed, not auto-started |
 
 Flags: `--no-ornith` (skip the large model download), `--no-embed`, `--watch` (install
-watchers at first run), `--skills-marketplace <git-url>` (print the wiring for a private
-team skill marketplace — see below), `--dir PATH`, `--verify-only`.
+watchers at first run), `--proxy` (install the measuring proxy + its extra),
+`--proxy-config <file>` (wire Claude Code through a proxy), `--skills-marketplace <git-url>`
+(print the wiring for a private team skill marketplace — see below), `--dir PATH`,
+`--verify-only`.
 
 No model gateway required — the target uses its own Claude + Codex subscriptions.
 
