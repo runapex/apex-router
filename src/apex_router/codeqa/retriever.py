@@ -19,13 +19,18 @@ the embedding-model dependency for the common case.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-REPOS_DIR = Path(__file__).resolve().parent / "repos"
+# Repo configs live here. Default is the package's own `repos/`; CODEQA_REPOS overrides so the
+# PACKAGED engine can read PRIVATE repo configs kept outside the repo (internal repo paths must not
+# ship in the public package). `~` is expanded.
+_repos_env = (os.environ.get("CODEQA_REPOS") or "").strip()
+REPOS_DIR = Path(_repos_env).expanduser() if _repos_env else Path(__file__).resolve().parent / "repos"
 
 # Identifier-ish tokens we extract from a question to drive symbol search.
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
