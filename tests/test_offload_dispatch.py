@@ -87,6 +87,14 @@ class TestDispatch(unittest.TestCase):
         self.assertFalse(res.gated)
         self.assertEqual(self.s.calls, [])       # never reached the model
 
+    def test_adhoc_default_chat_tolerates_truncation(self):
+        # regression: adhoc jobs were failing ~43% on finish_reason=length because _default_chat
+        # let the truncation exception propagate. It must pass raise_on_truncation=False.
+        import inspect
+        from apex_router.ornith import dispatch
+        src = inspect.getsource(dispatch._default_chat)
+        self.assertIn("raise_on_truncation=False", src)
+
     def test_adhoc_honors_explicit_thinking_opt_in(self):
         self._run({"lane": "adhoc", "messages": [{"role": "user", "content": "hi"}],
                    "enable_thinking": True})

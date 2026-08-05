@@ -17,7 +17,10 @@ from .offload_lanes import LaneResult
 
 def _default_chat(messages, *, max_tokens, enable_thinking):
     from . import ornith_client as oc
-    return oc.chat_messages(messages, max_tokens=max_tokens, enable_thinking=enable_thinking)
+    # adhoc output is advisory — a truncated answer is still partially usable, so keep it rather than
+    # discarding the whole job (measured: adhoc jobs were failing ~43% on finish_reason=length).
+    return oc.chat_messages(messages, max_tokens=max_tokens, enable_thinking=enable_thinking,
+                            raise_on_truncation=False)
 
 
 def _default_codegen(spec, tests, *, max_tokens=1200, timeout_s=30):
