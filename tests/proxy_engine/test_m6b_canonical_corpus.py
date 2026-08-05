@@ -105,7 +105,7 @@ def test_build_corpus_stamps_canonical_flag():
 
 
 def test_corpus_stats_defaults_fail_closed():
-    # Codex F1 (closure review): canonical is authority-side (it gates signing) → it must default
+    # cross-validation (closure review): canonical is authority-side (it gates signing) → it must default
     # to False (fail-closed, the F5 plane invariant). An ad-hoc CorpusStats with no stated
     # provenance must NOT silently authorize an evidence-grade sign.
     from fixtures.build_replay_corpus import CorpusStats

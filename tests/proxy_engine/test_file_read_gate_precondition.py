@@ -44,7 +44,7 @@ def test_registering_gate_evidence_unlocks_signing(monkeypatch):
         compiler._LOSSY_CAPABILITIES,
         "file_read_strip",
         {"validator_id": "gutter_floor_v1", "validator_version": "1",
-         "evidence": "delta14://file_read/2026-07-14/wrong_without_retrieving=0"},
+         "evidence": "delta14://file_read/the reference window/wrong_without_retrieving=0"},
     )
     cap = compiler._LOSSY_CAPABILITIES.get("file_read_strip")
     assert cap and cap["validator_id"] and cap["evidence"]  # now signable per the gate predicate

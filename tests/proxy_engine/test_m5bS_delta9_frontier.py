@@ -69,7 +69,7 @@ def test_mid_history_insert_does_not_slice_mid_message():
     assert f.block.decode("utf-8").count("B") % 40 == 0  # no split B
     # and it diverged (the cached prefix past A changed) — so the replay resets, not appends
     assert f.diverged is True
-    # Codex F2: on divergence the freeze pipeline RESETS, so the frontier is the WHOLE content
+    # cross-validation: on divergence the freeze pipeline RESETS, so the frontier is the WHOLE content
     # (matching _byte_frontier) — NOT just the changed suffix, which would drop the shared A and
     # undercount cost. Pin that the diverged block equals the full request content.
     assert f.block == corpus[1].content

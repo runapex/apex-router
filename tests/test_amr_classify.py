@@ -107,7 +107,7 @@ def test_classify_task_types_are_the_canonical_five():
 
 
 # --------------------------------------------------------------------------- #
-# Regression — confirmed by Codex cross-validation (2026-07-31)
+# Regression — confirmed by Codex cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
 def test_fusion_lone_survivor_with_low_cosine_does_not_override():
     # BUG (Codex): when only ONE class's exemplars survive scoring, runner-up was

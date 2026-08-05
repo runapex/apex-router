@@ -52,7 +52,7 @@ class TestCodegenGate(unittest.TestCase):
         self.assertTrue(ok, detail)
 
     def test_systemexit_zero_in_code_is_failure_not_pass(self):
-        # Codex xval #1: `raise SystemExit(0)` exits the harness 0 -> old code returned True.
+        # cross-validation: `raise SystemExit(0)` exits the harness 0 -> old code returned True.
         code = "raise SystemExit(0)\n"
         tests = "def test_x():\n    assert True\n"
         ok, detail = run_python_tests(code, tests)
@@ -74,7 +74,7 @@ class TestCodegenGate(unittest.TestCase):
         self.assertFalse(ok, "a real failing caller test must not be masked by code's own test_")
 
     def test_os_exit_zero_in_code_is_failure_not_pass(self):
-        # Codex xval-2 #1: os._exit(0) exits the harness 0 WITHOUT raising -> return-code trust would
+        # cross-validation._exit(0) exits the harness 0 WITHOUT raising -> return-code trust would
         # false-pass. The parent-controlled sentinel must not be written, so this fails.
         code = "import os\nos._exit(0)\n"
         tests = "def test_x():\n    assert True\n"
@@ -82,7 +82,7 @@ class TestCodegenGate(unittest.TestCase):
         self.assertFalse(ok, "os._exit(0) must not count as a pass (sentinel not written)")
 
     def test_same_named_caller_test_overrides_code_test_and_runs(self):
-        # Codex xval-2 #2: code defines test_add (passing); caller ALSO defines test_add (failing on
+        # cross-validation); caller ALSO defines test_add (failing on
         # a wrong function). The caller's test must run and fail — not be dropped as a dup.
         code = "def test_add():\n    pass\ndef add(a, b):\n    return a - b\n"
         tests = "def test_add():\n    assert add(2, 3) == 5\n"
@@ -116,7 +116,7 @@ class TestReviewTruncation(unittest.TestCase):
         self.assertIn("truncated", res.detail)
 
     def test_review_unknown_finish_reason_marked_truncated(self):
-        # Codex xval finding 2: a None/unknown finish_reason must be treated as NOT-confirmed-complete.
+        # cross-validation.
         import apex_router.ornith.offload_lanes as offload_lanes
         import apex_router.ornith.ornith_client as oc
 

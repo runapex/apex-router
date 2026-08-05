@@ -1,6 +1,6 @@
 """Capability routing for local inference: one always-on Ornith HTTP endpoint.
 
-Qwen is RETIRED for chat (see docs/superpowers/specs/2026-07-13-ornith-server-design.md).
+Qwen is RETIRED for chat (see docs/superpowers/specs/the reference window-ornith-server-design.md).
 This module now (1) hands out the single Ornith Route, (2) keeps the proven
 workload-envelope guardrails, and (3) guards the 52 GB ceiling against a second
 resident model (SSM pipeline) while Ornith is up.

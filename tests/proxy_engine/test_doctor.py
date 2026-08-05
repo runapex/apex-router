@@ -243,7 +243,7 @@ def test_no_session_id_branch_still_keys_by_endpoint_and_model():
 
 
 def test_model_switch_cold_start_does_not_false_alarm_on_realistic_shape():
-    # Ground-truth-derived (2026-07-25): real sessions are Opus-dominant + a TINY Haiku bucket. The
+    # Ground-truth-derived (the reference window): real sessions are Opus-dominant + a TINY Haiku bucket. The
     # split-off Haiku bucket has served=0 but must NOT alarm — the existing guards absorb it
     # (n<2 cold-start exemption, or below _MIN_INPUT_FOR_ALARM). Splitting introduces ZERO new alarms.
     from apex_router.proxy_engine.readout.doctor import prefix_instability_alarm
@@ -322,7 +322,7 @@ def test_pricing_total_is_unchanged_by_agent_id_split():
 
 
 def test_subagent_in_gray_band_does_not_alarm_but_is_not_masked():
-    # Ground-truth-derived (2026-07-26): the ONE live sub-0.939 bucket is a sub-agent at served
+    # Ground-truth-derived (the reference window): the ONE live sub-0.939 bucket is a sub-agent at served
     # 0.9332 (2 turns here reproducing the same served ratio). It sits in the 0.700–0.939 GRAY BAND:
     # below the historical healthy reference (0.939) but above the 0.700 ALARM floor → it must NOT
     # alarm, AND (post-A2c) it is no longer masked inside a warm main-thread bucket — it's its own row.
@@ -385,9 +385,7 @@ def test_agent_id_emitted_in_report_rows_and_alarm(tmp_path=None):
 
 
 # ---------- A2b: error / timeout panel ----------
-# No HTTP status is emitted, so failures classify by OBSERVED signature — NOT a cause (Codex xval
-# 2026-07-25: `tokens_in==0` is the pre-dispatch DEFAULT, not evidence of "no dispatch"; the fields
-# cannot attribute WHY). Classes are observed-only: upstream_timeout / stream_failed / slow_first_byte
+# No HTTP status is emitted, so failures classify by OBSERVED signature — NOT a cause (cross-validation). Classes are observed-only: upstream_timeout / stream_failed / slow_first_byte
 # / no_usage_captured. The only alarm is a PER-ENDPOINT burst detector (>= K timeouts in W min on one
 # endpoint), not a rate floor — a lone ~600s timeout on a long agentic turn is compulsory, not a fault.
 
@@ -463,7 +461,7 @@ def test_burst_boundary_k_minus_one_does_not_fire():
 
 
 def test_scattered_timeouts_do_not_burst_alarm_ground_truth_shape():
-    # Ground-truth-derived (2026-07-25): 41 live timeouts, max 4 in any 10-min window (scattered).
+    # Ground-truth-derived (the reference window): 41 live timeouts, max 4 in any 10-min window (scattered).
     # The same count spread far apart must NOT alarm — the burst catches the NEXT degradation, not
     # today's normal long-turn timeouts.
     from apex_router.proxy_engine.readout.doctor import timeout_burst_alarm
@@ -587,7 +585,7 @@ def test_cold_observation_renders_without_a_causal_or_benign_claim():
     assert rep["cold_turns"]["cold_no_ttl_gap"] == 1
     text = format_report(rep)
     assert "cold prefixes" in text
-    # the render must NOT launder a cause or a verdict (Codex xval)
+    # the render must NOT launder a cause or a verdict (cross-validation)
     assert "benign" not in text
     assert "cause NOT attributable" in text
 

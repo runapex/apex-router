@@ -10,7 +10,7 @@ captured context — it is NOT a full-trajectory counterfactual. Variance/stabil
 from FRESH corpus steps over time, never from re-running the same frozen step
 (pseudo-replication, finding #2).
 
-Hardened after Codex adversarial cross-validation (2026-07-31):
+Hardened after Codex adversarial cross-validation (the reference window):
 - pairing is CELL-LOCAL (keyed on cell_id+step_id), so rows from different cells or runs
   that happen to share a step_id can never cross-pair (Codex #1/#2);
 - a SCORER contract violation raises (never a silent, biasing dropped row); only a
@@ -53,7 +53,7 @@ class Step:
 
     def __post_init__(self):
         # A blank window_id must never reach the gate as if it were a real capture
-        # window — the gate counts distinct windows for replication (Codex pass2 #3).
+        # window — the gate counts distinct windows for replication (cross-validation#3).
         if not (isinstance(self.window_id, str) and self.window_id.strip()):
             raise ValueError(f"window_id must be a non-empty string, got {self.window_id!r}")
 
@@ -87,7 +87,7 @@ def _validate_outcome(outcome, step, model):
             f"model={model!r}: {sc!r}")
     # Guard values that are numeric but not representable as a finite float — e.g. a
     # huge Python int (10**10000) passes isinstance but OverflowErrors when the gate
-    # converts it via math.isfinite (Codex pass2 #6). Force the float conversion here.
+    # converts it via math.isfinite (cross-validation#6). Force the float conversion here.
     try:
         f = float(sc)
     except (OverflowError, ValueError):
@@ -122,7 +122,7 @@ def run_bench(steps, *, candidate_set, replay_fn, score_fn, bench_run_id,
     candidates = list(candidate_set)   # materialize once — a generator would drain (Codex #6)
     rows = []
     # Build + validate ALL rows first; persist only after the whole run validates, so a
-    # scorer failure mid-run cannot leave a partially-persisted run on disk (Codex pass2
+    # scorer failure mid-run cannot leave a partially-persisted run on disk (cross-validation
     # #4). A genuine replay/infra failure still just drops its row (not fatal).
     for step in steps:
         for model in candidates:
@@ -226,7 +226,7 @@ def deltas_from_rows(rows, *, incumbent, split, cell_id,
 def cell_evidence_from_rows(rows, *, cell_id, parent_task_type, incumbent,
                             bench_run_id=None, corpus_snapshot=None):
     """Assemble a gate CellEvidence directly from bench rows — no hand-fed windows or
-    provenance (Codex pass2 #2). Reconstructs, for `cell_id`:
+    provenance (cross-validation#2). Reconstructs, for `cell_id`:
       - promo_deltas / confirm_deltas   (candidate-vs-incumbent, via deltas_from_rows)
       - confirm_windows                 (per-candidate set of window_ids on the
                                          CONFIRMATION split, so replication is measured

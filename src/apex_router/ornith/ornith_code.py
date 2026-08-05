@@ -1,6 +1,6 @@
 """Code generation on local Ornith — offload well-specified small coding tasks off Opus/Codex.
 
-MEASURED 2026-07-21: on well-specified small functions with executable ground-truth tests,
+MEASURED the reference window: on well-specified small functions with executable ground-truth tests,
 Ornith writes CORRECT code at 4/4 pass, ~1.5s/task — but ONLY with thinking OFF. With thinking
 ON it hangs: 0/3, every task burned its whole token budget inside <think> and returned no
 answer (OrnithProtocolError). So code-gen here is thinking-OFF by hard default; turning it on is

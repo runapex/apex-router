@@ -50,7 +50,7 @@ def benjamini_hochberg(pvalues: List[float], alpha: float = 0.05) -> List[bool]:
     
     # Find the largest rank k where p(k) <= (k/m)*alpha. Compare cross-multiplied
     # (p*m <= i*alpha) so an exact mathematical boundary doesn't flip on a 1-ULP
-    # difference between equivalent float forms of the threshold (Codex xval).
+    # difference between equivalent float forms of the threshold (cross-validation).
     k_max = 0
     for i in range(1, m + 1):
         p_sorted = indexed_pvalues[i - 1][0]
@@ -106,7 +106,7 @@ def bradley_terry(pairwise: Dict, max_iter: int = 1000, tol: float = 1e-9) -> Di
     # Iterate to convergence (Hunter 2004 MM). NORMALIZE inside every iteration so
     # the convergence test compares stationary quantities — without this the raw
     # p_i drift and the loop stops early on an unnormalized max-change, producing a
-    # budget-dependent (wrong) ranking (Codex empirical xval, 2026-07-31).
+    # budget-dependent (wrong) ranking (Codex empirical xval, the reference window).
     for _iteration in range(max_iter):
         p_new = {}
 
@@ -171,7 +171,7 @@ def paired_bootstrap_ci(deltas: List[float], n_boot: int = 2000,
     # Symmetric percentile indices via nearest-rank on (n_boot-1); using the same
     # rounding rule for both ends guarantees lower_index <= upper_index for any
     # alpha (the earlier asymmetric int() truncation could invert the interval at
-    # extreme alpha / small n_boot — Codex xval).
+    # extreme alpha / small n_boot — cross-validation).
     def _percentile_index(q: float) -> int:
         idx = int(round(q * (n_boot - 1)))
         return max(0, min(idx, n_boot - 1))
@@ -208,7 +208,7 @@ def paired_bootstrap_pvalue(deltas: List[float], n_boot: int = 2000,
     obs_mean = sum(deltas) / n
     # Elementwise finiteness is not enough: finite-but-huge magnitudes (e.g. 1e308)
     # sum/average to +/-inf, which then centers to +/-inf and floors the p to a false
-    # maximum significance (Codex pass2 #4). Require the aggregate to be finite too.
+    # maximum significance (cross-validation#4). Require the aggregate to be finite too.
     if obs_mean != obs_mean or obs_mean in (float("inf"), float("-inf")):
         raise ValueError("deltas mean is non-finite (overflow); cannot compute p-value")
 
@@ -216,7 +216,7 @@ def paired_bootstrap_pvalue(deltas: List[float], n_boot: int = 2000,
     # observed mean, so the bootstrap population has mean exactly 0) and ask how often
     # a null-resample mean is at least as extreme as the observed mean. This is the
     # calibrated bootstrap hypothesis test; resampling the RAW sample and taking its
-    # tail beyond zero is NOT a p-value and is anti-conservative on skew (Codex F4).
+    # tail beyond zero is NOT a p-value and is anti-conservative on skew (cross-validation).
     centered = [x - obs_mean for x in deltas]
     rng = random.Random(seed)
 

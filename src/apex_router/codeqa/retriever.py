@@ -125,7 +125,7 @@ def _rg(cfg: RepoConfig, pattern: str, *, fixed: bool, max_count: int) -> list[t
     # parallel and returns them in nondeterministic completion order, so with --max-count caps the
     # surviving "top N" chunks vary run-to-run — the same question yields different answers, and the
     # impact A/B's retrieval-identity control (correctly) voids the run. --sort path serializes the
-    # search (slower, but retrieval must be reproducible). Found via the A/B identity control, 2026-07-27.
+    # search (slower, but retrieval must be reproducible). Found via the A/B identity control, the reference window.
     cmd = ["rg", "--line-number", "--no-heading", "--color", "never", "--sort", "path",
            "--max-count", str(max_count), "--max-columns", "400"]
     if fixed:

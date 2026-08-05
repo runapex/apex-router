@@ -1,4 +1,4 @@
-"""Pricing precision + schema exclusion — two Codex-xval findings.
+"""Pricing precision + schema exclusion — two cross-validation.
 
 F8: substring matching (`"gpt-5" in model`) silently priced EVERY variant at the flagship rate —
 `gpt-5-mini`/`gpt-5-nano` (much cheaper SKUs) would be billed as full gpt-5 (~60× overprice), and
@@ -46,7 +46,7 @@ def test_variant_marker_only_refuses_a_delimited_token_not_a_substring():
     # The denylist must match `mini`/`nano`/… as a DELIMITED TOKEN, not an arbitrary substring, or a
     # legitimate flagship routed through a proxy whose name merely CONTAINS the letters is wrongly
     # unpriced. `litellm-gpt-5` (contains "lite") and `satellite-gpt-5` (contains "lite") are real
-    # flagship deployments and MUST price at gpt-5, not fall to unknown. (Codex pass-2 P2.)
+    # flagship deployments and MUST price at gpt-5, not fall to unknown. (cross-validation.)
     for alias in ("litellm-gpt-5", "satellite-gpt-5", "gpt-5-nanotech-eval"):
         r = rates_for(alias, "openai")
         assert not r.pricing_regime.startswith("unknown:"), f"{alias} is a flagship, must be priced"
@@ -90,7 +90,7 @@ def test_session_health_ignores_unknown_schema_rows():
 def test_unknown_schema_error_is_not_counted_in_the_errors_denominator():
     # An error row on an UNKNOWN schema must not increment the `errors` denominator either — the
     # report says unknown schemas are "not analyzed", so NO metric (gen/aux/err) may include them.
-    # (Codex pass-2 P1.)
+    # (cross-validation.)
     supported_err = {"schema_version": 3, "is_error": True, "usage": None, "tokens_out": 0}
     unknown_err = {"schema_version": 99, "is_error": True, "usage": None, "tokens_out": 0}
     rep = build_report([supported_err, unknown_err])

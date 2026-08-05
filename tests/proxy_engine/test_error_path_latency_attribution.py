@@ -1,6 +1,6 @@
 """Error-path latency attribution — `apex_added_ms` must mean what its name says on EVERY path.
 
-Live-telemetry finding (2026-07-19): 42 of 127 upstream errors recorded `apex_added_ms ≈ 600_000`
+Live-telemetry finding (the reference window): 42 of 127 upstream errors recorded `apex_added_ms ≈ 600_000`
 — the full 600s read-timeout wait billed to apex, though apex added ~30ms of real work and spent the
 rest BLOCKED on the upstream. Same class as the doctor wire-asymmetry bug: a field whose recorded
 value contradicts its name. The schema already documents the contract (events.py: apex_added_ms is

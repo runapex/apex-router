@@ -95,7 +95,7 @@ def test_partial_byte_prefix_match():
     assert r.cache_write_tokens == 2000  # 3000 total - 1000 read
 
 
-# ---- Codex M4 xval regressions ----
+# ---- cross-validation xval regressions ----
 
 def test_read_tokens_never_exceed_request_tokens():
     """xval #2: a byte-dense cached prefix vs a token-sparse incoming request must not report

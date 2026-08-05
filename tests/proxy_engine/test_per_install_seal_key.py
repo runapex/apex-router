@@ -135,7 +135,7 @@ def test_concurrent_writer_in_the_race_window_is_adopted(tmp_path, monkeypatch):
     )
 
 
-# 2e — partial/short key file is REFUSED, not adopted as the HMAC key (Codex xval #3). A crash-
+# 2e — partial/short key file is REFUSED, not adopted as the HMAC key (cross-validation). A crash-
 # truncated or 1-byte file must fail closed, not become a weak predictable key.
 def test_partial_key_file_is_refused(tmp_path, monkeypatch):
     monkeypatch.delenv("APEX_POLICY_KEY", raising=False)
@@ -147,7 +147,7 @@ def test_partial_key_file_is_refused(tmp_path, monkeypatch):
 
 
 # 2f — an explicit empty key argument to compute_seal must NOT silently fall back to the resolved
-# key (Codex xval #7): `key or resolve()` truthiness treats b"" as "no key given". A caller passing
+# key (cross-validation): `key or resolve()` truthiness treats b"" as "no key given". A caller passing
 # b"" is asserting an (invalid) empty key — reject it rather than substitute a different one.
 def test_explicit_empty_key_arg_does_not_fall_back(tmp_path, monkeypatch):
     monkeypatch.setenv("APEX_HOME", str(tmp_path / "inst"))

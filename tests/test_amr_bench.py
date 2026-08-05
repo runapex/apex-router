@@ -168,7 +168,7 @@ def test_deltas_duplicate_step_model_raises():
 
 
 # --------------------------------------------------------------------------- #
-# Regression — confirmed by Codex adversarial cross-validation (2026-07-31)
+# Regression — confirmed by Codex adversarial cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
 def test_p1_deltas_are_cell_local_no_cross_cell_contamination():
     # BUG (Codex #1/#2): pairing keyed only on step_id let rows from DIFFERENT cells
@@ -277,7 +277,7 @@ def _row2(step_id, model, score, split="promotion", cell="c1", run="r1", snap="s
 
 
 def test_p2f1_no_cross_run_or_snapshot_pairing():
-    # BUG (Codex pass2 #1): pairing scoped cell+split but NOT bench_run_id/corpus_snapshot,
+    # BUG (cross-validation#1): pairing scoped cell+split but NOT bench_run_id/corpus_snapshot,
     # so an incumbent from run r1/snapA paired with a candidate from run r2/snapB. With no
     # explicit run/snapshot, mixed-run rows must REFUSE (not silently guess a pairing).
     rows = [_row2("s1", "opus", 0.2, run="r1", snap="snapA"),
@@ -304,7 +304,7 @@ def test_p2f1_same_run_and_snapshot_pairs():
 
 
 def test_p2f2_cell_evidence_assembled_from_rows_not_fabricated():
-    # BUG (Codex pass2 #2): deltas_from_rows dropped window_id/provenance, so the gate's
+    # BUG (cross-validation#2): deltas_from_rows dropped window_id/provenance, so the gate's
     # CellEvidence (windows, provenance) had to be hand-fabricated. An assembler must
     # build CellEvidence straight from bench rows — windows and provenance included.
     rows = []
@@ -327,7 +327,7 @@ def test_p2f2_cell_evidence_assembled_from_rows_not_fabricated():
 
 
 def test_p2f3_empty_window_id_is_rejected_by_step():
-    # BUG (Codex pass2 #3): Step.window_id defaulted to "" and the gate counted "" as a
+    # BUG (cross-validation#3): Step.window_id defaulted to "" and the gate counted "" as a
     # real window. A blank window id must be rejected at Step construction.
     with pytest.raises(ValueError):
         bench.Step("s1", "proxy", "c1", "promotion", {}, window_id="")
@@ -344,7 +344,7 @@ def test_p2f3_gate_ignores_empty_window_ids():
 
 
 def test_p2f4_scorer_failure_persists_no_rows(tmp_path):
-    # BUG (Codex pass2 #4): a scorer failure mid-run left earlier rows already persisted.
+    # BUG (cross-validation#4): a scorer failure mid-run left earlier rows already persisted.
     # Validation must happen BEFORE any persistence — a failed run writes nothing.
     from apex_router import store
     p = tmp_path / "o.jsonl"
@@ -358,7 +358,7 @@ def test_p2f4_scorer_failure_persists_no_rows(tmp_path):
 
 
 def test_p2f5_candidate_key_order_is_deterministic():
-    # BUG (Codex pass2 #5): candidate KEY order followed row order, so gate tie-break
+    # BUG (cross-validation#5): candidate KEY order followed row order, so gate tie-break
     # picked different equal-mean winners. deltas_from_rows must order candidates
     # deterministically regardless of row order.
     rows_fwd = [_row2("s1", "opus", 0.4), _row2("s1", "sonnet", 0.9), _row2("s1", "haiku", 0.9)]
@@ -369,7 +369,7 @@ def test_p2f5_candidate_key_order_is_deterministic():
 
 
 def test_p2f6_overflowing_int_score_is_rejected(tmp_path):
-    # BUG (Codex pass2 #6): 10**10000 passed validation, then OverflowError'd in the gate.
+    # BUG (cross-validation#6): 10**10000 passed validation, then OverflowError'd in the gate.
     def score(step, model, replay):
         return {"score": 10 ** 10000}
     with pytest.raises(ValueError):
@@ -404,7 +404,7 @@ def test_bench_to_gate_end_to_end_promotes_a_genuine_winner(tmp_path):
                                 now_fn=lambda: "2026-07-31T00:00:00Z")
     assert len(rows) == 48                                   # 24 steps x 2 models
     # Assemble gate evidence straight from the rows — windows/provenance reconstructed,
-    # nothing fabricated at the call site (Codex pass2 #2).
+    # nothing fabricated at the call site (cross-validation#2).
     cell = bench.cell_evidence_from_rows(rows, cell_id="c1", parent_task_type="generate",
                                          incumbent="opus")
     assert cell.windows_for("sonnet") == {"wA", "wB"}        # 2 real windows from rows

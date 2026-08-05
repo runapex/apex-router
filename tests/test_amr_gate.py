@@ -198,10 +198,10 @@ def test_previously_promoted_cell_heals_when_effect_gone():
 
 
 # --------------------------------------------------------------------------- #
-# Regression — confirmed by Codex adversarial cross-validation (2026-07-31)
+# Regression — confirmed by Codex adversarial cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
 def test_f1_confirmation_null_cells_stay_in_the_bh_family():
-    # BUG (Codex F1): cells with a nonpositive confirmation mean were excluded from
+    # BUG (cross-validation): cells with a nonpositive confirmation mean were excluded from
     # the BH family, so a lone marginal winner became a "family of one" and promoted
     # with no multiplicity penalty. Null cells that STRUCTURALLY reached the
     # confirmation test must remain in the family (as p~1.0), diluting it.
@@ -220,7 +220,7 @@ def test_f1_confirmation_null_cells_stay_in_the_bh_family():
 
 
 def test_f2_nan_evidence_never_promotes():
-    # BUG (Codex F2): NaN comparisons are all-false, so a NaN cell returned p=0.0005
+    # BUG (cross-validation): NaN comparisons are all-false, so a NaN cell returned p=0.0005
     # and promoted. NaN/inf evidence must be treated as no-signal, never promoted.
     c = gate.CellEvidence("nan", "generate", "opus",
                           {"sonnet": [float("nan")] * 10},
@@ -232,7 +232,7 @@ def test_f2_nan_evidence_never_promotes():
 
 
 def test_f3_winner_is_promotion_split_only_ignoring_confirmation_length():
-    # BUG (Codex F3): the candidate filter required BOTH splits to clear the floor
+    # BUG (cross-validation): the candidate filter required BOTH splits to clear the floor
     # BEFORE choosing the winner, so a promotion-split winner (A) missing one
     # confirmation sample was discarded and the runner-up (B) promoted. The winner
     # must be chosen on the promotion split alone.
@@ -243,13 +243,13 @@ def test_f3_winner_is_promotion_split_only_ignoring_confirmation_length():
     v = gate.evaluate_cell(c, k=8, m_windows=2)
     # A is the true promotion winner but is confirmation-under-floor -> the cell is
     # NOT promotable, and it must NOT silently promote B instead.
-    assert v.promotable is False              # (Codex pass2: assert non-promotable explicitly)
+    assert v.promotable is False              # (cross-validation: assert non-promotable explicitly)
     assert v.candidate_tested in ("A", None)
     assert v.chosen_model != "B"
 
 
 def test_f5_duplicate_cell_ids_do_not_corrupt_bh():
-    # BUG (Codex F5): rejection decisions keyed by cell_id overwrote duplicates, so a
+    # BUG (cross-validation): rejection decisions keyed by cell_id overwrote duplicates, so a
     # high-p duplicate could inherit a low-p sibling's promotion. Positional mapping
     # must keep each verdict's own decision.
     strong = _cell("dup", "generate", "opus",
@@ -268,7 +268,7 @@ def test_f5_duplicate_cell_ids_do_not_corrupt_bh():
 
 
 def test_f6_absent_previously_promoted_cell_is_healed():
-    # BUG (Codex F6): a previously-promoted cell missing from the new input produced
+    # BUG (cross-validation): a previously-promoted cell missing from the new input produced
     # NO result, so a consumer left the route active. It must emit a healed result.
     results = gate.run_gate([], k=8, m_windows=2, alpha=0.05,
                             previously_promoted={"gone": "sonnet"})
@@ -280,7 +280,7 @@ def test_f6_absent_previously_promoted_cell_is_healed():
 
 
 def test_f7_provenance_case_insensitive_uses_judge_floor():
-    # BUG (Codex F7): only exact 'judge' got the 2x floor; 'Judge'/'JUDGE' fell through
+    # BUG (cross-validation): only exact 'judge' got the 2x floor; 'Judge'/'JUDGE' fell through
     # to the objective floor. With K=8 judge-floor=16, a 10-sample judge cell must be
     # below floor regardless of case.
     c = gate.CellEvidence("j", "review", "opus",
@@ -292,7 +292,7 @@ def test_f7_provenance_case_insensitive_uses_judge_floor():
 
 
 def test_f7_nonpositive_k_or_windows_rejected():
-    # BUG (Codex F7): negative k / nonpositive m_windows allowed one-sample zero-window
+    # BUG (cross-validation): negative k / nonpositive m_windows allowed one-sample zero-window
     # promotion. They must be rejected.
     c = _cell("c", "generate", "opus",
               promo={"sonnet": _strong(10, 0.3)}, confirm={"sonnet": _strong(10, 0.3)},
@@ -307,7 +307,7 @@ def test_f7_nonpositive_k_or_windows_rejected():
 # Regression — Codex PASS 2 (validating the pass-1 fixes; found rework defects)
 # --------------------------------------------------------------------------- #
 def test_p2_duplicate_id_promoted_is_not_also_healed():
-    # BUG (Codex pass2 #1): a dup id with one strong (promoted) and one weak row, where
+    # BUG (cross-validation#1): a dup id with one strong (promoted) and one weak row, where
     # the id was previously promoted, emitted BOTH a promoted row and a healed row —
     # the healed row could tear down the legitimate re-promotion. If ANY row for the id
     # promoted this run, NO row for that id may be marked healed.
@@ -325,7 +325,7 @@ def test_p2_duplicate_id_promoted_is_not_also_healed():
 
 
 def test_p2_windows_cannot_be_borrowed_across_candidates():
-    # BUG (Codex pass2 #2): a legacy bare window set let winner A (confirmed only in wA)
+    # BUG (cross-validation#2): a legacy bare window set let winner A (confirmed only in wA)
     # borrow B's window wB to satisfy replication. Per-candidate windows must be used;
     # A confirmed in a single window fails m_windows=2.
     c = gate.CellEvidence(
@@ -340,7 +340,7 @@ def test_p2_windows_cannot_be_borrowed_across_candidates():
 
 
 def test_p2_unknown_provenance_fails_closed_to_judge_floor():
-    # BUG (Codex pass2 #3): provenance != exact 'judge' fell OPEN to the objective
+    # BUG (cross-validation#3): provenance != exact 'judge' fell OPEN to the objective
     # floor, so 'judeg'/None/bytes weakened the gate. Unknown provenance must fail
     # CLOSED to the stricter judge floor (2*k). 10 samples < 16 -> not promotable.
     for bad in ("judeg", None, "Objectivee", "xyz"):
@@ -360,7 +360,7 @@ def test_p2_known_objective_provenance_still_uses_objective_floor():
     assert v.promotable is True
 
 def test_p2_overflow_magnitude_deltas_do_not_promote():
-    # BUG (Codex pass2 #4): [1e308]*8 passes the elementwise finite check but its mean
+    # BUG (cross-validation#4): [1e308]*8 passes the elementwise finite check but its mean
     # overflows to inf; centered values become -inf and the p floored to 0.0005. A
     # non-finite mean must make the p-value raise / the cell not promote.
     c = gate.CellEvidence("c", "generate", "opus",
@@ -371,7 +371,7 @@ def test_p2_overflow_magnitude_deltas_do_not_promote():
 
 
 # --------------------------------------------------------------------------- #
-# §5.4 cost tiebreak — SOUND version (Codex pass2): cost/latency break ties ONLY
+# §5.4 cost tiebreak — SOUND version (cross-validation): cost/latency break ties ONLY
 # among candidates that EACH independently pass the full gate; promotion uses the
 # CHOSEN model's OWN p-value. No "not-different => tied" fallacy, no wrong-p promotion.
 # --------------------------------------------------------------------------- #
@@ -391,7 +391,7 @@ def test_cost_tiebreak_prefers_cheaper_independently_passing_candidate():
 
 
 def test_cost_tiebreak_pvalue_is_for_the_chosen_model():
-    # BUG (Codex pass2 #1): promotion used the winner's p while routing 'chosen'. The
+    # BUG (cross-validation#1): promotion used the winner's p while routing 'chosen'. The
     # verdict's p-value MUST be the chosen model's own confirmation p-value.
     c = gate.CellEvidence(
         "c", "generate", "opus",
@@ -409,7 +409,7 @@ def test_cost_tiebreak_pvalue_is_for_the_chosen_model():
 
 
 def test_cost_tiebreak_does_not_pick_candidate_that_fails_gate_alone():
-    # BUG (Codex pass2 #2): a cheaper candidate with a ZERO promotion mean (fails the
+    # BUG (cross-validation#2): a cheaper candidate with a ZERO promotion mean (fails the
     # gate on its own) must NOT win the tiebreak. Only independently-promotable candidates
     # are eligible.
     c = gate.CellEvidence(
@@ -452,7 +452,7 @@ def test_cost_tiebreak_absent_costs_keeps_quality_winner():
 
 
 def test_cost_tiebreak_invalid_cost_value_ignored_not_crash():
-    # BUG (Codex pass2 #6): a non-numeric cost (None) raised TypeError in the sort key.
+    # BUG (cross-validation#6): a non-numeric cost (None) raised TypeError in the sort key.
     # An invalid cost must be treated as unknown (sinks to most-expensive), never crash.
     c = gate.CellEvidence(
         "c", "generate", "opus",

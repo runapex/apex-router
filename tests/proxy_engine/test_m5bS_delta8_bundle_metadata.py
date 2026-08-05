@@ -134,7 +134,7 @@ def test_missing_corpus_fingerprint_rejected():
         PolicyVersion.load_verified(_policy(corpus_hash="").to_dict())
 
 
-# ── Codex F5: empty sealed fields on an ENABLED rule fail CLOSED, not open ──
+# ── cross-validation: empty sealed fields on an ENABLED rule fail CLOSED, not open ──
 
 def _policy_with_json_rule(rule):
     strata = ("xs", "s", "m", "l", "xl")
@@ -149,7 +149,7 @@ def _policy_with_json_rule(rule):
 
 
 def test_enabled_rule_with_empty_transform_version_rejected():
-    """Codex F5: an enabled rule that names a transform but seals NO transform_version is forged/
+    """cross-validation: an enabled rule that names a transform but seals NO transform_version is forged/
     malformed (the compiler always seals the digest) — it must be refused, not silently skip the
     digest gate (fail-closed provenance)."""
     rule = ClassRule(transform="json_crush", enabled=True, min_bytes=200, ratio_floor=0.1,
@@ -159,7 +159,7 @@ def test_enabled_rule_with_empty_transform_version_rejected():
 
 
 def test_enabled_rule_with_empty_fidelity_class_rejected():
-    """Codex F5: likewise an enabled transform rule with an empty fidelity_class is refused — the
+    """cross-validation: likewise an enabled transform rule with an empty fidelity_class is refused — the
     capability/taxonomy gate must not be bypassable by leaving the field blank."""
     from apex_router.proxy_engine.policy import transform_digest
     rule = ClassRule(transform="json_crush", enabled=True, min_bytes=200, ratio_floor=0.1,

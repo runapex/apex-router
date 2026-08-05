@@ -1,4 +1,4 @@
-"""Proxy/Foundry setup — merge env keys into ~/.claude/settings.json safely.
+"""Proxy/anthropic setup — merge env keys into ~/.claude/settings.json safely.
 
 The load-bearing property: merging the proxy keys must PRESERVE every other setting
 (permissions, hooks, enabledPlugins, unrelated env keys). A blind overwrite would wipe the

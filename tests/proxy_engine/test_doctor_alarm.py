@@ -3,7 +3,7 @@
 Fires when a session's cache-served fraction is MATERIALLY below what stable prefixes achieve, on a
 LARGE-input session (small sessions can't cache — sub-min-prefix — and mustn't false-alarm). The
 threshold is a BOUND derived from the two-wire data, not a round number: Anthropic per-session
-cache-served is min 0.939 / p10 0.963 (2026-07-19 snapshot), so the healthy floor is ~0.94; the alarm
+cache-served is min 0.939 / p10 0.963 (the reference window snapshot), so the healthy floor is ~0.94; the alarm
 fires below 0.70 — comfortably below the worst healthy Anthropic session, so a flagged session is
 materially worse than healthy, not merely at the low end of normal. The alarm names the overpay $ and
 points at the divergence report (WP3); it never dresses inference as diagnosis (static cause list).
@@ -62,6 +62,6 @@ def test_recoverable_ceiling_is_the_fresh_mass_at_full_minus_read_rate():
 
 def test_single_turn_cold_start_does_not_alarm_even_if_large():
     # A lone first request (n_generative=1) has no prior prefix — 0% served is compulsory, not
-    # instability. The alarm must require >= 2 generative turns (Codex F3).
+    # instability. The alarm must require >= 2 generative turns (cross-validation).
     h = _health(cache_read=0, input_uncached=200_000, n=1)
     assert prefix_instability_alarm(h, rates_for("gpt-5", "openai")) is None

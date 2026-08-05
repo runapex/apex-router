@@ -2,7 +2,7 @@
 
 The fit proves apex's byte accounting predicts the provider's billed tokens: per-class
 tokens-per-byte coefficients from live capture + a calibration statement. Analytics plane only (no
-wire, no pipeline import). It CONSUMES the wire-semantics pin (witness 9) — y is fresh input tokens,
+wire, no pipeline import). It CONSUMES the wire-semantics pin (a calibration invariant) — y is fresh input tokens,
 extracted by the SAME helper the doctor uses post-fix, never re-derived.
 
 Controls (spec):
@@ -57,7 +57,7 @@ def _synthetic_rows(coefs: dict, intercept: float, n: int, endpoint="anthropic",
 def test_y_extraction_shares_the_doctor_wire_semantics_pin():
     from apex_router.proxy_engine.readout.doctor import _fresh_input
     # OpenAI row: tokens_in is TOTAL, cache_read a subset → fresh must be total − cached, matching
-    # the doctor exactly (r1 must NOT re-derive the semantics — witness 9).
+    # the doctor exactly (r1 must NOT re-derive the semantics — a calibration invariant).
     row = _row({c: 1000 for c in _CLASSES}, fresh_input=800, endpoint="openai", cache_read=200)
     X, y, _ = extract_xy([row], endpoint="openai")
     assert y[0] == _fresh_input(row) == 800
@@ -149,10 +149,10 @@ def test_population_label_states_wire_and_n():
     assert fit.n_rows == 200
 
 
-# ---------- Codex-xval findings (all CONFIRMED at ground truth), fixed ----------
+# ---------- cross-validation (all CONFIRMED at ground truth), fixed ----------
 
 def test_rank_deficient_collinear_columns_refuse():
-    # Codex F1: if the feature columns are collinear (identical), lstsq returns a min-norm solution
+    # cross-validation: if the feature columns are collinear (identical), lstsq returns a min-norm solution
     # with high r² but the per-class coefficients are NOT identifiable. Must refuse, not report them.
     true = {"prose": 0.25, "file_read": 0.30, "json": 0.22, "terminal": 0.28, "diff": 0.26}
     rng = random.Random(3)
@@ -168,7 +168,7 @@ def test_rank_deficient_collinear_columns_refuse():
 
 
 def test_large_negative_intercept_refuses():
-    # Codex F2: a fit can absorb a population mismatch into an unconstrained NEGATIVE intercept
+    # cross-validation: a fit can absorb a population mismatch into an unconstrained NEGATIVE intercept
     # (predicting negative tokens for small prompts). The intercept must be constrained / predictions
     # non-negative; a large negative intercept refuses.
     rng = random.Random(5)
@@ -183,7 +183,7 @@ def test_large_negative_intercept_refuses():
 
 
 def test_unknown_endpoint_label_refuses_not_anthropic_default():
-    # Codex F4: an unknown singleton endpoint (e.g. "codex") must NOT silently get Anthropic
+    # cross-validation: an unknown singleton endpoint (e.g. "codex") must NOT silently get Anthropic
     # _fresh_input semantics. Require a RECOGNIZED wire; else refuse (the witness-9 lesson: never
     # apply one wire's field semantics to an unrecognized wire).
     import pytest
@@ -195,7 +195,7 @@ def test_unknown_endpoint_label_refuses_not_anthropic_default():
 
 
 def test_mape_coverage_is_reported_when_zero_targets_excluded():
-    # Codex F3: MAPE excludes y==0 rows; when it does, the fit must state the nonzero-target coverage
+    # cross-validation: MAPE excludes y==0 rows; when it does, the fit must state the nonzero-target coverage
     # so "median error N%" isn't silently conditional on a subset while reporting full n.
     true = {"prose": 0.25, "file_read": 0.30, "json": 0.22, "terminal": 0.28, "diff": 0.26}
     rows = _synthetic_rows(true, 40.0, 200, endpoint="anthropic", noise=0.01)

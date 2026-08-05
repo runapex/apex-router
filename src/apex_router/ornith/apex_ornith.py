@@ -85,7 +85,7 @@ def _git_diff(staged: bool, base: str | None) -> str:
 
 # Module-level constructs that execute arbitrary effects at IMPORT time (before any test verdict).
 # pytest imports the draft, so these run unsandboxed during verification — refuse before executing.
-# NOTE: this is a GUARD, not a sandbox (Codex xval #1). It blocks the obvious module-scope hazards;
+# NOTE: this is a GUARD, not a sandbox (cross-validation). It blocks the obvious module-scope hazards;
 # it does not contain a determined adversary. Ornith output is low-trust, not hostile — but the
 # guard means a fluke `os.system(...)` at module scope is refused rather than run.
 _DANGER = re.compile(
@@ -107,7 +107,7 @@ def _looks_dangerous(code: str) -> str | None:
 
 def _test_is_meaningful(test_src: str, module_name: str) -> str | None:
     """Return a reason if the test won't meaningfully verify the module, else None. Guards the
-    vacuous-pass hole (Codex xval #4): the test must import the module under test AND contain a
+    vacuous-pass hole (cross-validation): the test must import the module under test AND contain a
     test_* function that asserts."""
     if module_name not in test_src:
         return f"test file does not reference the module under test ({module_name!r})"

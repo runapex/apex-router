@@ -185,7 +185,7 @@ def test_telemetry_event_emitted_per_request(app_with_mock_upstream):
     assert ev["bust"] is False and ev["transforms"] == []  # M0: no transforms yet
 
 
-# ---- byte-fidelity regressions (Codex xval #1/#3/#4/#5) ----
+# ---- byte-fidelity regressions (cross-validation) ----
 
 def test_query_string_preserved(app_with_mock_upstream):
     """xval #1: ?query params must reach the upstream, not be dropped."""
