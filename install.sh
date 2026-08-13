@@ -155,6 +155,14 @@ install_ornith() {
   fi
   # mlx-lm was installed as the 'ornith' extra in step 2. Download the model (resumable
   # via huggingface cache) and leave a launch helper — we don't auto-start a 20GB server.
+  #
+  # RECOMMENDED: export a Hugging Face token before running so this ~20GB pull isn't
+  # throttled by anonymous rate limits (and to reach any gated repo). snapshot_download
+  # reads it from the environment automatically — no flag needed:
+  #     export HF_TOKEN=hf_xxx      # https://huggingface.co/settings/tokens (read scope)
+  # Never hardcode the token here or commit it; it stays in your shell/secret store only.
+  [ -n "${HF_TOKEN:-}" ] && say "using HF_TOKEN from environment for the model download" \
+    || warn "no HF_TOKEN set — the ~20GB pull may be rate-limited; export HF_TOKEN to speed it up"
   say "downloading Ornith MLX model ($ORNITH_MODEL, ~20GB, resumable) — this can take a while"
   "$INSTALL_DIR/.venv/bin/python" - "$ORNITH_MODEL" <<'PY' || { warn "Ornith model download failed; local bench unavailable (re-run to resume)"; return 0; }
 import sys
