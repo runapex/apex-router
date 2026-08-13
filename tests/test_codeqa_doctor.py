@@ -77,6 +77,40 @@ class TestRepoHealth(unittest.TestCase):
             self.assertEqual(r["code_files"], 0)
             self.assertFalse(r["ok"])           # no code to answer over = not usable
 
+    def test_exclude_globs_that_remove_all_code_is_unhealthy(self):
+        # Codex xval: doctor must count what the retriever (ripgrep) ACTUALLY reaches. If
+        # exclude_globs removes every file, retrieval finds nothing → doctor must say BAD,
+        # not report healthy from a naive include-only walk.
+        import shutil
+        if not shutil.which("rg"):
+            self.skipTest("ripgrep not installed; exclude semantics are rg-specific")
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            repos = d / "repos"; repos.mkdir()
+            root = d / "r"; (root / "src").mkdir(parents=True)
+            (root / "src" / "a.py").write_text("x=1\n")
+            cfg = {"name": "r", "root": str(root), "language": "python",
+                   "search_globs": ["src/**"], "exclude_globs": ["src/**"],  # excludes all
+                   "code_exts": [".py"]}
+            (repos / "r.json").write_text(json.dumps(cfg))
+            r = doctor.repo_health(repos_dir=repos)[0]
+            self.assertEqual(r["code_files"], 0)
+            self.assertFalse(r["ok"])
+
+    def test_null_code_exts_does_not_crash(self):
+        # Codex xval: a config with code_exts:null must not raise (retriever had this bug too).
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            repos = d / "repos"; repos.mkdir()
+            root = d / "r"; root.mkdir(); (root / "a.py").write_text("x=1\n")
+            cfg = {"name": "r", "root": str(root), "language": "python",
+                   "search_globs": ["**"], "code_exts": None}
+            (repos / "r.json").write_text(json.dumps(cfg))
+            r = doctor.repo_health(repos_dir=repos)[0]   # must not raise
+            self.assertTrue(r["config_ok"])
+
     def test_any_unhealthy_makes_all_healthy_false(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

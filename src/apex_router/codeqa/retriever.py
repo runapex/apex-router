@@ -149,7 +149,7 @@ def _rg(cfg: RepoConfig, pattern: str, *, fixed: bool, max_count: int) -> list[t
     # rg exit 1 == no matches (normal); >1 == real error.
     if proc.returncode > 1:
         raise RetrievalError(f"ripgrep failed ({proc.returncode}): {proc.stderr.strip()[:200]}")
-    exts = tuple(cfg.code_exts)
+    exts = tuple(cfg.code_exts or ())   # code_exts may be absent/None -> no extension filter
     hits: list[tuple[str, int, str]] = []
     for line in proc.stdout.splitlines():
         # format: ./rel/path:LINENO:content  (relative because we searched ".")
