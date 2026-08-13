@@ -67,7 +67,10 @@ def _count_code_files_pathlib(root: Path, globs, exts, *, cap: int = 1) -> int:
             for p in root.glob(pattern):
                 if not p.is_file() or p in seen:
                     continue
-                if exts and p.suffix not in exts:
+                # Match the retriever's extension test: full-path str.endswith(exts), NOT
+                # Path.suffix — so code_exts like ["py"] (no dot) or multi-part suffixes agree
+                # with ask-time behavior (Codex xval #6).
+                if exts and not str(p).endswith(tuple(exts)):
                     continue
                 seen.add(p)
                 n += 1
@@ -86,18 +89,31 @@ def repo_health(*, repos_dir: Path) -> list[dict]:
                "digest_ok": False, "code_files": 0, "ok": False, "error": ""}
         try:
             d = json.loads(cfg_path.read_text())
-            row["name"] = d.get("name", cfg_path.stem)
+            # `name` and `root` are REQUIRED and must be non-empty strings — RepoConfig.load
+            # indexes d["name"]/d["root"] directly (KeyError otherwise) and rejects a missing
+            # root. A missing/empty/non-string root must NOT silently become "" -> cwd -> a
+            # false OK (Codex xval #3/#8).
+            name = d.get("name")
+            if not isinstance(name, str) or not name.strip():
+                row["error"] = f"config missing/invalid 'name' (got {name!r})"
+                rows.append(row); continue
+            row["name"] = name
+            root_raw = d.get("root")
+            if not isinstance(root_raw, str) or not root_raw.strip():
+                row["config_ok"] = True
+                row["error"] = f"config missing/invalid 'root' (got {root_raw!r})"
+                rows.append(row); continue
             row["config_ok"] = True
-            root = Path(str(d.get("root", ""))).expanduser()
+            root = Path(root_raw).expanduser()
             row["root"] = str(root)
             row["root_exists"] = root.is_dir()
             dig = d.get("digest")
-            row["digest_ok"] = bool(dig) and Path(str(dig)).expanduser().is_file()
+            row["digest_ok"] = bool(dig) and isinstance(dig, str) and Path(dig).expanduser().is_file()
             if row["root_exists"]:
                 row["code_files"] = _count_code_files(
                     root, d.get("search_globs") or ["**"],
                     d.get("code_exts") or [], d.get("exclude_globs") or [])
-            # Healthy = parses + root present + at least one reachable code file.
+            # Healthy = parses + required keys + root present + at least one reachable code file.
             row["ok"] = row["config_ok"] and row["root_exists"] and row["code_files"] > 0
         except Exception as e:  # noqa: BLE001
             row["error"] = str(e)
