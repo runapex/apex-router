@@ -15,6 +15,8 @@
 #                            with a clear notice on any other arch — never a hard failure
 #
 # Flags:  --no-ornith   skip the large MLX model download
+#         --ornith-serve  (macOS) install the Ornith stack as always-on launchd agents
+#                         (server + queue worker + nightly cycle), not just the run helper
 #         --no-embed    skip ollama / nomic-embed
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
@@ -33,6 +35,7 @@ REPO_URL_DEFAULT="https://github.com/runapex/apex-router.git"
 INSTALL_DIR="${APEX_ROUTER_DIR:-$HOME/.apex-router}"
 REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
+DO_ORNITH_SERVE=0
 DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
@@ -50,6 +53,7 @@ PROXY_CONFIG="${APEX_PROXY_CONFIG:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ornith) DO_ORNITH=0 ;;
+    --ornith-serve) DO_ORNITH_SERVE=1 ;;   # macOS: install the Ornith stack as launchd agents
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
@@ -174,11 +178,91 @@ except Exception as e:
 PY
   cat > "$INSTALL_DIR/serve-ornith.sh" <<EOF
 #!/usr/bin/env bash
-# start the local Ornith MLX server on :8080
-exec "$INSTALL_DIR/.venv/bin/python" -m mlx_lm.server --model "$ORNITH_MODEL" --port 8080
+# start the local Ornith MLX server on :8080. Model + tuning come from env (overridable)
+# so the launchd unit and a manual run share one definition.
+# Only flags supported across mlx-lm>=0.19.0 (the pyproject floor) are used here —
+# --decode-concurrency/--prompt-concurrency arrived later and would make an older-but-valid
+# mlx-lm exit on unknown args, which KeepAlive would then restart-loop (Codex #7).
+exec "\${ORNITH_PYTHON:-$INSTALL_DIR/.venv/bin/python}" -m mlx_lm.server \\
+  --model "\${ORNITH_MODEL:-$ORNITH_MODEL}" --host "\${ORNITH_HOST:-127.0.0.1}" --port "\${ORNITH_PORT:-8080}" \\
+  --temp 0.0 --top-p 1.0
 EOF
   chmod +x "$INSTALL_DIR/serve-ornith.sh"
   ok "Ornith MLX model ready — start it with: $INSTALL_DIR/serve-ornith.sh"
+  # NB: a bare `[ … ] && fn` returns 1 when the test is false, which under `set -e`
+  # would abort the whole installer after ornith (Codex #1). Use an if-block.
+  if [ "$DO_ORNITH_SERVE" = "1" ]; then
+    install_ornith_service
+  fi
+}
+
+# Install the local Ornith stack as always-on launchd agents (macOS): the MLX server
+# (com.ornith.server, RunAtLoad+KeepAlive), the job-queue worker (com.ornith.worker), and
+# the nightly maintenance cycle (com.ornith.overnight, 01:30). All three run apex-router's
+# OWN venv python and derive every path from $INSTALL_DIR — nothing machine-specific is
+# hardcoded. The server Label is exactly 'com.ornith.server' because apex_router.ornith.
+# model_router keys its readiness check off that label.
+install_ornith_service() {
+  if [ "$OS" != "Darwin" ]; then
+    warn "Ornith launchd service is macOS-only; run $INSTALL_DIR/serve-ornith.sh manually on $OS"
+    return 0
+  fi
+  local agents="$HOME/Library/LaunchAgents" logs="$INSTALL_DIR/logs" uid; uid="$(id -u)"
+  local py="$INSTALL_DIR/.venv/bin/python"
+  mkdir -p "$agents" "$logs"
+
+  _ornith_plist() {  # name  program-args-xml  keepalive-xml  schedule-xml
+    cat > "$agents/$1.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$1</string>
+<key>ProgramArguments</key><array>$2</array>
+<key>WorkingDirectory</key><string>$INSTALL_DIR</string>
+<key>EnvironmentVariables</key><dict><key>ORNITH_MODEL</key><string>$ORNITH_MODEL</string><key>APEX_ORNITH_QUEUE</key><string>${APEX_ORNITH_QUEUE:-$INSTALL_DIR/queue}</string></dict>
+$3
+$4
+<key>StandardOutPath</key><string>$logs/$1.out</string>
+<key>StandardErrorPath</key><string>$logs/$1.err</string>
+</dict></plist>
+PLIST
+  }
+
+  _ornith_plist com.ornith.server \
+    "<string>/bin/bash</string><string>$INSTALL_DIR/serve-ornith.sh</string>" \
+    '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>' ''
+  # Worker: NOT RunAtLoad — if it starts with the server it would drain the queue while the
+  # 35B model is still loading and fail those jobs (POSTs aren't retried) (Codex #3). KeepAlive
+  # keeps it up once launched; kick it off after the server is confirmed ready (see note printed
+  # at the end). A future readiness-gated start can replace the manual kick.
+  _ornith_plist com.ornith.worker \
+    "<string>$py</string><string>-m</string><string>apex_router.ornith.ornith_worker</string>" \
+    '<key>KeepAlive</key><true/>' ''
+  _ornith_plist com.ornith.overnight \
+    "<string>$py</string><string>-m</string><string>apex_router.ornith.overnight_cycle</string>" \
+    '' '<key>StartCalendarInterval</key><dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>30</integer></dict>'
+
+  local n
+  for n in com.ornith.server com.ornith.worker com.ornith.overnight; do
+    plutil -lint "$agents/$n.plist" >/dev/null || { warn "  $n.plist failed lint — skipping"; continue; }
+    # bootout the old label, then retry bootstrap a couple of times: an immediate re-bootstrap
+    # can race a not-yet-finished bootout (Codex #4). We DON'T use `bootout --wait` — it can
+    # block indefinitely; a short retry loop is safer for an installer and reports honestly if
+    # the label is still stuck rather than falsely claiming success.
+    launchctl bootout "gui/$uid/$n" >/dev/null 2>&1
+    local tries=0 loaded=0
+    while [ "$tries" -lt 3 ]; do
+      if launchctl bootstrap "gui/$uid" "$agents/$n.plist" >/dev/null 2>&1; then loaded=1; break; fi
+      tries=$((tries+1)); sleep 1
+    done
+    [ "$loaded" = "1" ] && ok "  loaded $n" \
+      || warn "  failed to load $n — old instance may still be unloading; re-run: launchctl bootstrap gui/$uid $agents/$n.plist"
+  done
+  ok "Ornith server + overnight cycle loaded. The model takes ~1-3min to load on first start."
+  echo "    The WORKER is intentionally NOT auto-started (it would drain the queue before the"
+  echo "    model is ready). Once the server answers, start it with:"
+  echo "        launchctl kickstart gui/$uid/com.ornith.worker"
+  echo "    Verify:  launchctl print gui/$uid/com.ornith.server | grep -i state"
 }
 
 # --------------------------------------------------------------------------- #
