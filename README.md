@@ -137,16 +137,28 @@ Arch-aware and idempotent:
 | Python ≥3.11, uv | if missing | required |
 | `apex-router` package | always | pure stdlib, near-instant |
 | ollama + `nomic-embed-text` | if missing | embedding-refinement classifier (optional) |
-| Ornith MLX server | **Apple Silicon only** | local bench / codegen / review; skipped elsewhere with a notice |
+| Ornith MLX server | **Apple Silicon only** | local bench / codegen / review; skipped elsewhere with a notice. Run helper written; add `--ornith-serve` for always-on launchd agents |
 | starter route table | always | empty → resolves to your static defaults until a bench fills it |
 | background watchers | **only with `--watch`** | drain worker + daily report (see below) |
 | measuring proxy | **only with `--proxy`** | the `[proxy]`/`[tuner]` extras; installed, not auto-started |
 
-Flags: `--no-ornith` (skip the large model download), `--no-embed`, `--watch` (install
-watchers at first run), `--proxy` (install the measuring proxy + its extra),
-`--proxy-config <file>` (wire Claude Code through a proxy), `--skills-marketplace <git-url>`
-(print the wiring for a private team skill marketplace — see below), `--dir PATH`,
-`--verify-only`.
+Flags: `--no-ornith` (skip the large model download), `--ornith-serve` (macOS: install the
+Ornith stack — server + queue worker + nightly cycle — as always-on launchd agents, not just
+the run helper), `--no-embed`, `--watch` (install watchers at first run), `--proxy` (install
+the measuring proxy + its extra), `--proxy-config <file>` (wire Claude Code through a proxy),
+`--skills-marketplace <git-url>` (print the wiring for a private team skill marketplace — see
+below), `--dir PATH`, `--verify-only`.
+
+**Persistent local Ornith (macOS).** By default the installer downloads the model and writes
+`~/.apex-router/serve-ornith.sh` (a manual start helper) — it does **not** keep a 20GB server
+running. Pass `--ornith-serve` to install three launchd agents instead:
+`com.ornith.server` (the MLX server, restarts on crash/login), `com.ornith.worker` (the
+offload queue), and `com.ornith.overnight` at 01:30 (nightly maintenance; a no-op unless you've
+queued training data). All paths derive from the install dir and apex-router's own venv — nothing
+machine-specific. The **worker is not auto-started** (it would drain the queue while the 35B model
+is still loading); once the server answers, kick it off once with
+`launchctl kickstart gui/$(id -u)/com.ornith.worker`. Manage: `launchctl kickstart -k` (restart) /
+`bootout` (stop) any `com.ornith.*` label.
 
 No model gateway required — the target uses its own Claude + Codex subscriptions.
 
@@ -162,6 +174,8 @@ apex-router verify     # exits 0 if routing works
 - **Routing core + codeqa + offload client:** macOS and Linux.
 - **Local model server (Ornith MLX):** Apple Silicon only. On Linux/Intel the routing,
   embedding, and codeqa-retrieval tiers still install; local bench/codegen/review are skipped.
+  Add `--ornith-serve` (macOS) to run it as an always-on launchd service instead of the manual
+  `serve-ornith.sh` helper.
 - **Watchers:** launchd on macOS, systemd `--user` on Linux.
 
 ---
