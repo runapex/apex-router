@@ -62,6 +62,11 @@ def main(argv=None) -> int:
     route_log_p.add_argument("--outcome", required=True,
                              help="ok = cheap succeeded; escalated = re-dispatched heavy")
     route_log_p.add_argument("--note", default="")
+    # Readout: aggregate the outcome log into per-task-type escalation rates — the
+    # Phase-1 payoff ("when we start explore cheap, how often does it bounce to opus?").
+    readout_p = sub.add_parser(
+        "route-readout", help="show per-task-type escalation rate from the outcome log")
+    readout_p.add_argument("--json", action="store_true")
     # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
     # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
     sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
@@ -99,6 +104,21 @@ def main(argv=None) -> int:
                       "log unwritable)", file=sys.stderr)
             except Exception:
                 pass  # a broken stderr must not turn a swallowed failure into a raise
+        return 0
+
+    if args.cmd == "route-readout":
+        from . import route_log
+        rates = route_log.read_rates()
+        if args.json:
+            print(json.dumps(rates, indent=2, sort_keys=True))
+        elif not rates:
+            print("route-readout: no outcomes logged yet "
+                  "(start cheap-eligible subtasks and run route-log)")
+        else:
+            print(f"{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7}")
+            for tt in sorted(rates):
+                r = rates[tt]
+                print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
         return 0
 
     if args.cmd == "setup-proxy":
