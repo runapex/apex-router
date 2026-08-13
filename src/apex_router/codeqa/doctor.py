@@ -12,18 +12,50 @@ whether each declared root exists on THIS machine; it never rewrites them.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 
-def _count_code_files(root: Path, globs: list[str], exts: list[str], *, cap: int = 1) -> int:
-    """Count files under `root` matching any search glob and (if given) any code ext.
-    Stops at `cap` — callers only need 'is there at least one', so we don't walk a huge tree."""
+def _count_code_files(root: Path, globs: list[str], exts: list[str], excludes=None,
+                      *, cap: int = 1) -> int:
+    """Count code files codeqa would ACTUALLY reach, using the SAME mechanism as the real
+    retriever: ripgrep with the config's --glob patterns, run with cwd=root (rg anchors
+    relative globs to the CWD), then the extension filter applied in Python — a true
+    path ∧ extension AND. This keeps `doctor` honest: a repo passes here iff retrieval can
+    find files at ask-time (rg's .gitignore/glob semantics differ from pathlib's, so we must
+    not reimplement the globbing). Falls back to a pathlib walk only if ripgrep is absent.
+
+    Stops at `cap` — callers only need 'is there at least one reachable file'."""
+    rg = shutil.which("rg")
+    exts_t = tuple(exts or ())
+    if rg:
+        cmd = [rg, "--files", "--no-messages"]
+        for g in (globs or ["**"]):
+            cmd += ["--glob", g]
+        for g in (excludes or []):
+            cmd += ["--glob", f"!{g}"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(root),
+                                  timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return _count_code_files_pathlib(root, globs, exts_t, cap=cap)
+        n = 0
+        for line in proc.stdout.splitlines():
+            if exts_t and not line.endswith(exts_t):
+                continue
+            n += 1
+            if n >= cap:
+                return n
+        return n
+    return _count_code_files_pathlib(root, globs, exts_t, cap=cap)
+
+
+def _count_code_files_pathlib(root: Path, globs, exts, *, cap: int = 1) -> int:
+    """Fallback when ripgrep isn't installed. Best-effort; rg is the source of truth."""
     n = 0
     seen = set()
     for g in (globs or ["**"]):
-        # Normalize to a FILE-matching recursive pattern. A bare "**" (or a trailing "/**")
-        # matches only directories on Python <3.13, so always end in "/*" to catch files
-        # across versions. "app/**" -> "app/**/*"; "**" -> "**/*"; an explicit "*.py" is kept.
         gg = g.rstrip("/")
         if gg.endswith("**"):
             pattern = f"{gg}/*"
@@ -63,7 +95,8 @@ def repo_health(*, repos_dir: Path) -> list[dict]:
             row["digest_ok"] = bool(dig) and Path(str(dig)).expanduser().is_file()
             if row["root_exists"]:
                 row["code_files"] = _count_code_files(
-                    root, d.get("search_globs", ["**"]), d.get("code_exts", []))
+                    root, d.get("search_globs") or ["**"],
+                    d.get("code_exts") or [], d.get("exclude_globs") or [])
             # Healthy = parses + root present + at least one reachable code file.
             row["ok"] = row["config_ok"] and row["root_exists"] and row["code_files"] > 0
         except Exception as e:  # noqa: BLE001
