@@ -117,14 +117,25 @@ install_package() {
   fi
 
   say "creating venv + installing the package"
-  uv venv "$INSTALL_DIR/.venv" >/dev/null
   # Core is dependency-free; add extras only for the tiers the user opted into.
   local extras="dev"
   [ "$DO_ORNITH" = "1" ] && [ "$IS_APPLE_SILICON" = "1" ] && extras="$extras,ornith"
   # The measuring proxy pulls starlette/uvicorn/httpx/brotli/numpy (+scipy/tiktoken for the tuner);
   # only with --proxy so a plain install stays lean.
   [ "$DO_PROXY" = "1" ] && extras="$extras,proxy,tuner"
-  uv pip install --python "$INSTALL_DIR/.venv/bin/python" -e "$INSTALL_DIR[$extras]" >/dev/null
+
+  # Idempotent + self-healing. Re-running the installer (e.g. to adopt --ornith-serve on an
+  # existing install) must NOT abort on uv's "venv already exists" guard, so don't recreate a
+  # usable venv up front — reuse it for a fast reinstall. Create one only when missing/broken
+  # (--clear also wipes a present-but-broken dir). If the reinstall then fails because the
+  # existing venv is incompatible (e.g. its Python predates pyproject's requires-python), rebuild
+  # once with --clear and retry — react to the actual failure instead of guessing the version.
+  [ -x "$INSTALL_DIR/.venv/bin/python" ] || uv venv --clear "$INSTALL_DIR/.venv" >/dev/null
+  if ! uv pip install --python "$INSTALL_DIR/.venv/bin/python" -e "$INSTALL_DIR[$extras]" >/dev/null 2>&1; then
+    warn "existing venv unusable for this build — rebuilding it"
+    uv venv --clear "$INSTALL_DIR/.venv" >/dev/null
+    uv pip install --python "$INSTALL_DIR/.venv/bin/python" -e "$INSTALL_DIR[$extras]" >/dev/null
+  fi
   ok "apex-router package installed (extras: $extras)"
 }
 
@@ -286,8 +297,20 @@ check_clients_and_table() {
 # --------------------------------------------------------------------------- #
 verify() {
   say "verifying install"
-  "$INSTALL_DIR/.venv/bin/python" -m pytest "$INSTALL_DIR/tests" -q >/dev/null 2>&1 \
-    && ok "test suite passed" || warn "test suite did not fully pass (routing may still work)"
+  # The proxy_engine subtree needs the [proxy] extra (starlette/httpx/numpy/...) even to
+  # COLLECT — pytest aborts the whole run on its import errors. Gate on the INTENT flag,
+  # not an import probe: with --proxy the extra was installed (uv pip install ran under
+  # `set -e`, so the deps are complete), so run the full suite; otherwise skip that subtree
+  # so a lean install doesn't emit a false "did not pass".
+  # (if/else, not an `--ignore=$var` array, so it stays correct under quoting and bash 3.2.)
+  local tests_ok=0
+  if [ "$DO_PROXY" = "1" ]; then
+    "$INSTALL_DIR/.venv/bin/python" -m pytest "$INSTALL_DIR/tests" -q >/dev/null 2>&1 && tests_ok=1
+  else
+    "$INSTALL_DIR/.venv/bin/python" -m pytest "$INSTALL_DIR/tests" \
+      --ignore="$INSTALL_DIR/tests/proxy_engine" -q >/dev/null 2>&1 && tests_ok=1
+  fi
+  [ "$tests_ok" = 1 ] && ok "test suite passed" || warn "test suite did not fully pass (routing may still work)"
   "$INSTALL_DIR/.venv/bin/apex-router" status
   ok "apex-router installed at $INSTALL_DIR"
   echo
