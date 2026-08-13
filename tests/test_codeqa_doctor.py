@@ -111,6 +111,73 @@ class TestRepoHealth(unittest.TestCase):
             r = doctor.repo_health(repos_dir=repos)[0]   # must not raise
             self.assertTrue(r["config_ok"])
 
+    def test_missing_root_key_is_not_a_false_ok(self):
+        # Codex xval #3: a config with NO "root" must not become Path("")==cwd and pass.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repos = Path(d) / "repos"; repos.mkdir()
+            (repos / "noroot.json").write_text(json.dumps({"name": "noroot"}))
+            r = doctor.repo_health(repos_dir=repos)[0]
+            self.assertFalse(r["ok"])
+            self.assertIn("root", r["error"])
+
+    def test_missing_name_key_is_not_a_false_ok(self):
+        # Codex xval #3/#8: no "name" -> loader KeyErrors at ask-time; doctor must flag it.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repos = Path(d) / "repos"; repos.mkdir()
+            (repos / "x.json").write_text(json.dumps({"root": d}))
+            r = doctor.repo_health(repos_dir=repos)[0]
+            self.assertFalse(r["ok"])
+
+    def test_extension_without_dot_matches_like_retriever(self):
+        # Codex xval #6: code_exts ["py"] (no dot) must count files (retriever uses endswith),
+        # not report a false BAD from Path.suffix (which is ".py").
+        import shutil
+        if not shutil.which("rg"):
+            self.skipTest("ripgrep not installed")
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            repos = d / "repos"; repos.mkdir()
+            root = d / "r"; root.mkdir(); (root / "a.py").write_text("x=1\n")
+            cfg = {"name": "r", "root": str(root), "language": "python",
+                   "search_globs": ["**"], "code_exts": ["py"]}   # no leading dot
+            (repos / "r.json").write_text(json.dumps(cfg))
+            r = doctor.repo_health(repos_dir=repos)[0]
+            self.assertGreater(r["code_files"], 0)
+            self.assertTrue(r["ok"])
+
+    def test_doctor_verdict_agrees_with_retriever(self):
+        # Codex xval #9: the production contract — doctor OK iff the REAL retriever finds code.
+        import shutil
+        if not shutil.which("rg"):
+            self.skipTest("ripgrep not installed")
+        import tempfile, importlib, os
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            repos = d / "repos"; repos.mkdir()
+            root = d / "r"; (root / "src").mkdir(parents=True)
+            (root / "src" / "a.py").write_text("class Foo: pass\n")
+            cfg = {"name": "r", "root": str(root), "language": "python",
+                   "search_globs": ["src/**"], "code_exts": [".py"],
+                   "definition_patterns": ["class\\s+{sym}"]}
+            (repos / "r.json").write_text(json.dumps(cfg))
+            drow = doctor.repo_health(repos_dir=repos)[0]
+
+            os.environ["CODEQA_REPOS"] = str(repos)
+            import apex_router.codeqa.retriever as rmod
+            try:
+                rmod = importlib.reload(rmod)
+                cfg_obj = rmod.RepoConfig.load("r")
+                hits = rmod._rg(cfg_obj, "Foo", fixed=True, max_count=3)
+                # doctor says OK  <=>  retriever actually finds the code
+                self.assertEqual(drow["ok"], len(hits) > 0)
+                self.assertTrue(drow["ok"])
+            finally:
+                os.environ.pop("CODEQA_REPOS", None)
+                importlib.reload(rmod)
+
     def test_any_unhealthy_makes_all_healthy_false(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
