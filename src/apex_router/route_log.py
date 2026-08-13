@@ -30,6 +30,38 @@ def default_log_path() -> Path:
     return Path.home() / ".apex-router" / "route_log.jsonl"
 
 
+def read_rates(*, log_path=None) -> dict:
+    """Aggregate the log into per-task-type escalation rates — the Phase-1 payoff.
+
+    Returns `{task_type: {"n": int, "escalated": int, "rate": float}}`. Fail-safe like
+    the writer: a missing/unreadable log yields `{}`, and an individual malformed line
+    (e.g. a partial trailing record from a disk-full append) is skipped, not fatal.
+    """
+    rates: dict = {}
+    try:
+        p = Path(log_path) if log_path is not None else default_log_path()
+        if not p.is_file():
+            return {}
+        text = p.read_text()
+    except Exception:
+        return {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            tt = rec["task_type"]
+            escalated = bool(rec["escalated"])
+        except Exception:
+            continue  # skip a corrupt/partial line, keep aggregating the rest
+        cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0})
+        cell["n"] += 1
+        cell["escalated"] += 1 if escalated else 0
+        cell["rate"] = cell["escalated"] / cell["n"]
+    return rates
+
+
 def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -> bool:
     """Append one outcome record to the log. Returns True on success, False on ANY
     failure (never raises). `outcome` is "ok" (cheap succeeded) or "escalated"

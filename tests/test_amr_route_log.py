@@ -131,6 +131,54 @@ class TestLogOutcomeHardening(unittest.TestCase):
             self.assertFalse(p.exists())
 
 
+class TestReadRates(unittest.TestCase):
+    """The readout side: aggregate the write-only log into per-task-type escalation
+    rates — the honest Phase-1 payoff. Fail-safe like the writer: a missing/garbled
+    log yields empty rates, never a raise."""
+
+    def _write(self, path, rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+
+    def test_rate_counts_n_and_escalations_per_task_type(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self._write(p, [
+                {"task_type": "explore", "escalated": False},
+                {"task_type": "explore", "escalated": True},
+                {"task_type": "explore", "escalated": False},
+                {"task_type": "generate", "escalated": True},
+            ])
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(rates["explore"]["n"], 3)
+            self.assertEqual(rates["explore"]["escalated"], 1)
+            self.assertAlmostEqual(rates["explore"]["rate"], 1 / 3)
+            self.assertEqual(rates["generate"]["n"], 1)
+            self.assertAlmostEqual(rates["generate"]["rate"], 1.0)
+
+    def test_missing_log_yields_empty_rates_no_raise(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "nope.jsonl"
+            self.assertEqual(route_log.read_rates(log_path=p), {})
+
+    def test_malformed_lines_are_skipped_not_fatal(self):
+        # A corrupt/partial trailing line (disk-full mid-append) must not sink the read.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            p.write_text(
+                json.dumps({"task_type": "explore", "escalated": False}) + "\n"
+                + "{ partial broken line\n"
+                + json.dumps({"task_type": "explore", "escalated": True}) + "\n")
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(rates["explore"]["n"], 2)
+            self.assertEqual(rates["explore"]["escalated"], 1)
+
+
 class TestRouteLogCLI(unittest.TestCase):
     def _read(self, path):
         return [json.loads(ln) for ln in Path(path).read_text().splitlines() if ln.strip()]
@@ -170,6 +218,54 @@ class TestRouteLogCLI(unittest.TestCase):
                  "--outcome", "bogus"], p)
             self.assertEqual(rc, 0)
             self.assertFalse(p.exists())
+
+
+class TestRouteReadoutCLI(unittest.TestCase):
+    def _run_capture(self, args, log_path):
+        import io
+        import os
+        from contextlib import redirect_stdout
+        old = os.environ.get("APEX_ROUTER_LOG")
+        os.environ["APEX_ROUTER_LOG"] = str(log_path)
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                rc = amr_cli.main(args)
+            return rc, buf.getvalue()
+        finally:
+            if old is None:
+                os.environ.pop("APEX_ROUTER_LOG", None)
+            else:
+                os.environ["APEX_ROUTER_LOG"] = old
+
+    def test_readout_prints_rate_per_task_type(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            route_log.log_outcome("explore", "sonnet", "ok", log_path=p)
+            route_log.log_outcome("explore", "sonnet", "escalated", log_path=p)
+            rc, out = self._run_capture(["route-readout"], p)
+            self.assertEqual(rc, 0)
+            self.assertIn("explore", out)
+            self.assertIn("2", out)  # n=2 appears in the output
+
+    def test_readout_json_shape(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            route_log.log_outcome("generate", "sonnet", "escalated", log_path=p)
+            rc, out = self._run_capture(["route-readout", "--json"], p)
+            self.assertEqual(rc, 0)
+            data = json.loads(out)
+            self.assertEqual(data["generate"]["n"], 1)
+            self.assertAlmostEqual(data["generate"]["rate"], 1.0)
+
+    def test_readout_empty_log_exits_zero(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"  # never created
+            rc, out = self._run_capture(["route-readout"], p)
+            self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":
