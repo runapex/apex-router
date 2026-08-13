@@ -29,6 +29,31 @@ def _cmd_repos(_args) -> int:
     return 0
 
 
+def _cmd_doctor(args) -> int:
+    """Post-install validation: per-repo health of everything in CODEQA_REPOS.
+    Exits nonzero with --check if any repo is unhealthy (root missing / no reachable code)."""
+    from .retriever import REPOS_DIR
+    from . import doctor
+    rows = doctor.repo_health(repos_dir=REPOS_DIR)
+    if not rows:
+        print(f"  no repo configs in {REPOS_DIR} "
+              f"(set CODEQA_REPOS to your configs dir)")
+        return 1 if args.check else 0
+    for r in rows:
+        mark = "OK " if r["ok"] else "BAD"
+        bits = []
+        bits.append("root✓" if r["root_exists"] else "root✗MISSING")
+        bits.append(f"code={r['code_files']}" if r["root_exists"] else "code=?")
+        bits.append("digest✓" if r["digest_ok"] else "digest✗")
+        detail = r["error"] or " ".join(bits)
+        print(f"  [{mark}] {r['name']:14} {detail}   {r.get('root','')}")
+    healthy = doctor.all_healthy(rows)
+    n_bad = sum(1 for r in rows if not r["ok"])
+    print(f"  {'all repos healthy' if healthy else f'{n_bad} repo(s) unhealthy'} "
+          f"({len(rows)} total)")
+    return (0 if healthy else 1) if args.check else 0
+
+
 def _cmd_retrieve(args) -> int:
     from .retriever import RepoConfig, retrieve
     cfg = RepoConfig.load(args.repo)
@@ -439,6 +464,12 @@ def main(argv: list[str] | None = None) -> int:
 
     pl = sub.add_parser("repos", help="list registered repos")
     pl.set_defaults(func=_cmd_repos)
+
+    pd = sub.add_parser("doctor", help="post-install validation: per-repo health "
+                                       "(config parses, root exists, code reachable, digest)")
+    pd.add_argument("--check", action="store_true",
+                    help="exit nonzero if any repo is unhealthy (for install/CI gating)")
+    pd.set_defaults(func=_cmd_doctor)
 
     pv = sub.add_parser("validate", help="freshness gate: check a memory/digest's claims against a "
                                          "repo's live code (+ runtime oracle) and flag the stale ones")

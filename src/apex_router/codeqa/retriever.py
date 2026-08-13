@@ -71,18 +71,22 @@ class RepoConfig:
             avail = ", ".join(sorted(q.stem for q in REPOS_DIR.glob("*.json"))) or "(none)"
             raise RetrievalError(f"No repo config {name!r} in {REPOS_DIR} (have: {avail})")
         d = json.loads(p.read_text())
-        root = Path(d["root"])
+        # expanduser so a config using ~ (e.g. "~/Desktop/repo") resolves the same way
+        # `codeqa doctor` validates it — otherwise doctor OKs it but load fails here.
+        root = Path(str(d["root"])).expanduser()
         if not root.exists():
             raise RetrievalError(f"Repo root does not exist: {root}")
-        digest = Path(d["digest"]) if d.get("digest") else None
+        digest = Path(str(d["digest"])).expanduser() if d.get("digest") else None
         return cls(
             name=d["name"], root=root, language=d.get("language", "unknown"),
             digest=digest if (digest and digest.exists()) else None,
             index=d.get("index", {"kind": "none"}),
-            search_globs=d.get("search_globs", ["**"]),
-            exclude_globs=d.get("exclude_globs", []),
-            code_exts=d.get("code_exts", []),
-            definition_patterns=d.get("definition_patterns", []),
+            # Treat null/missing as the empty default (a JSON `null` must not become None and
+            # crash the search/tuple below).
+            search_globs=d.get("search_globs") or ["**"],
+            exclude_globs=d.get("exclude_globs") or [],
+            code_exts=d.get("code_exts") or [],
+            definition_patterns=d.get("definition_patterns") or [],
             raw=d,
         )
 
@@ -149,7 +153,7 @@ def _rg(cfg: RepoConfig, pattern: str, *, fixed: bool, max_count: int) -> list[t
     # rg exit 1 == no matches (normal); >1 == real error.
     if proc.returncode > 1:
         raise RetrievalError(f"ripgrep failed ({proc.returncode}): {proc.stderr.strip()[:200]}")
-    exts = tuple(cfg.code_exts)
+    exts = tuple(cfg.code_exts or ())   # code_exts may be absent/None -> no extension filter
     hits: list[tuple[str, int, str]] = []
     for line in proc.stdout.splitlines():
         # format: ./rel/path:LINENO:content  (relative because we searched ".")
