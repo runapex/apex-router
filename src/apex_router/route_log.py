@@ -42,24 +42,40 @@ def read_rates(*, log_path=None) -> dict:
         p = Path(log_path) if log_path is not None else default_log_path()
         if not p.is_file():
             return {}
-        text = p.read_text()
+        # Stream line-by-line (a huge log must not double-allocate) with tolerant
+        # decoding (one bad byte must not discard the whole log — Codex readout #5/#6).
+        with p.open("r", errors="replace") as f:
+            for line in f:
+                _accumulate(rates, line)
     except Exception:
         return {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-            tt = rec["task_type"]
-            escalated = bool(rec["escalated"])
-        except Exception:
-            continue  # skip a corrupt/partial line, keep aggregating the rest
-        cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0})
-        cell["n"] += 1
-        cell["escalated"] += 1 if escalated else 0
-        cell["rate"] = cell["escalated"] / cell["n"]
     return rates
+
+
+def _accumulate(rates: dict, line: str) -> None:
+    """Fold one raw log line into `rates`. A malformed line (bad JSON, wrong shape,
+    non-str task_type, non-bool escalated) is SKIPPED, never fatal — the reader trusts
+    field TYPES, not just presence, so a hand-edited/garbled record can't crash the
+    aggregation or alias distinct keys (Codex readout #1/#3/#4)."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        rec = json.loads(line)
+    except Exception:
+        return
+    if not isinstance(rec, dict):
+        return
+    tt = rec.get("task_type")
+    escalated = rec.get("escalated")
+    # Strict types: task_type must be a str (so it's a safe, non-aliasing dict key) and
+    # escalated must be a real bool (so bool("false")/1/0 can't inflate the rate).
+    if not isinstance(tt, str) or not isinstance(escalated, bool):
+        return
+    cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0})
+    cell["n"] += 1
+    cell["escalated"] += 1 if escalated else 0
+    cell["rate"] = cell["escalated"] / cell["n"]
 
 
 def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -> bool:

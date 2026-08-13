@@ -107,18 +107,24 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "route-readout":
+        # Read-only observability — must never break a caller. read_rates is fail-safe
+        # (str-only keys, so sort/format can't choke); the prints are wrapped so a
+        # broken/closed stdout can't turn a readout into a nonzero exit either.
         from . import route_log
-        rates = route_log.read_rates()
-        if args.json:
-            print(json.dumps(rates, indent=2, sort_keys=True))
-        elif not rates:
-            print("route-readout: no outcomes logged yet "
-                  "(start cheap-eligible subtasks and run route-log)")
-        else:
-            print(f"{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7}")
-            for tt in sorted(rates):
-                r = rates[tt]
-                print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
+        try:
+            rates = route_log.read_rates()
+            if args.json:
+                print(json.dumps(rates, indent=2, sort_keys=True))
+            elif not rates:
+                print("route-readout: no outcomes logged yet "
+                      "(start cheap-eligible subtasks and run route-log)")
+            else:
+                print(f"{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7}")
+                for tt in sorted(rates):
+                    r = rates[tt]
+                    print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
+        except Exception:
+            pass
         return 0
 
     if args.cmd == "setup-proxy":

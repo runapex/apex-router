@@ -159,6 +159,25 @@ class TestReadRates(unittest.TestCase):
             self.assertEqual(rates["generate"]["n"], 1)
             self.assertAlmostEqual(rates["generate"]["rate"], 1.0)
 
+    def test_wrong_shape_lines_are_skipped_not_fatal(self):
+        # Valid JSON but wrong shape (unhashable/None task_type, non-bool escalated,
+        # missing fields) must be SKIPPED, never crash the aggregation (Codex readout
+        # #1/#3/#4). Only the two well-formed records count.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            p.write_text(
+                json.dumps({"task_type": "explore", "escalated": False}) + "\n"
+                + json.dumps({"task_type": ["weird"], "escalated": True}) + "\n"   # unhashable
+                + json.dumps({"task_type": None, "escalated": True}) + "\n"        # None key
+                + json.dumps({"task_type": "explore"}) + "\n"                      # missing escalated
+                + json.dumps({"task_type": "explore", "escalated": "false"}) + "\n"  # str, not bool
+                + json.dumps({"task_type": "explore", "escalated": True}) + "\n")
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(set(rates), {"explore"})
+            self.assertEqual(rates["explore"]["n"], 2)
+            self.assertEqual(rates["explore"]["escalated"], 1)
+
     def test_missing_log_yields_empty_rates_no_raise(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -259,6 +278,20 @@ class TestRouteReadoutCLI(unittest.TestCase):
             data = json.loads(out)
             self.assertEqual(data["generate"]["n"], 1)
             self.assertAlmostEqual(data["generate"]["rate"], 1.0)
+
+    def test_readout_with_malformed_log_exits_zero(self):
+        # A hand-garbled log (None/list task_type, non-bool escalated) must not make
+        # route-readout crash or exit nonzero (Codex readout #1/#2).
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            p.write_text(
+                json.dumps({"task_type": None, "escalated": True}) + "\n"
+                + "{ broken\n"
+                + json.dumps({"task_type": "explore", "escalated": True}) + "\n")
+            rc, out = self._run_capture(["route-readout"], p)
+            self.assertEqual(rc, 0)
+            self.assertIn("explore", out)
 
     def test_readout_empty_log_exits_zero(self):
         import tempfile
