@@ -51,6 +51,22 @@ def main(argv=None) -> int:
         help="merge proxy client env into ~/.claude/settings.json (from --config/env)")
     setup_proxy.add_argument("--config", type=Path)
     setup_proxy.add_argument("--dry-run", action="store_true")
+    # Phase-1 escalation outcome log (fail-safe, write-only). Records whether a
+    # cheap-started subtask succeeded or escalated — the measurement half of the
+    # escalation on-ramp. NOT a router.
+    route_log_p = sub.add_parser(
+        "route-log", help="record a cheap-start subtask outcome (ok|escalated)")
+    route_log_p.add_argument("--task-type", required=True)
+    route_log_p.add_argument("--start-tier", required=True,
+                             help="the model the cheap attempt ran on")
+    route_log_p.add_argument("--outcome", required=True,
+                             help="ok = cheap succeeded; escalated = re-dispatched heavy")
+    route_log_p.add_argument("--note", default="")
+    # Readout: aggregate the outcome log into per-task-type escalation rates — the
+    # Phase-1 payoff ("when we start explore cheap, how often does it bounce to opus?").
+    readout_p = sub.add_parser(
+        "route-readout", help="show per-task-type escalation rate from the outcome log")
+    readout_p.add_argument("--json", action="store_true")
     # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
     # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
     sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
@@ -75,6 +91,41 @@ def main(argv=None) -> int:
             print("the proxy engine needs the [proxy] extra: "
                   f"pip install 'apex-router[proxy]'  (missing: {e.name or e})")
             return 1
+
+    if args.cmd == "route-log":
+        # Fail-safe by contract: logging must never break a dispatch, so this always
+        # exits 0 — a rejected/failed write is reported on stderr, not via exit code.
+        from . import route_log
+        ok = route_log.log_outcome(args.task_type, args.start_tier, args.outcome,
+                                   note=args.note)
+        if not ok:
+            try:
+                print(f"route-log: not recorded (outcome={args.outcome!r} invalid or "
+                      "log unwritable)", file=sys.stderr)
+            except Exception:
+                pass  # a broken stderr must not turn a swallowed failure into a raise
+        return 0
+
+    if args.cmd == "route-readout":
+        # Read-only observability — must never break a caller. read_rates is fail-safe
+        # (str-only keys, so sort/format can't choke); the prints are wrapped so a
+        # broken/closed stdout can't turn a readout into a nonzero exit either.
+        from . import route_log
+        try:
+            rates = route_log.read_rates()
+            if args.json:
+                print(json.dumps(rates, indent=2, sort_keys=True))
+            elif not rates:
+                print("route-readout: no outcomes logged yet "
+                      "(start cheap-eligible subtasks and run route-log)")
+            else:
+                print(f"{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7}")
+                for tt in sorted(rates):
+                    r = rates[tt]
+                    print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
+        except Exception:
+            pass
+        return 0
 
     if args.cmd == "setup-proxy":
         from . import proxy_setup
