@@ -283,8 +283,8 @@ The keys it manages are non-secret client wiring (`CLAUDE_CODE_USE_FOUNDRY`,
 
 ## Team skills (private marketplace)
 
-apex-router ships **no skills** and hardcodes no private URL. Internal skills (internal
-ops, team workflows) belong in a **private** Claude Code plugin marketplace — a separate
+apex-router ships **no skills** and hardcodes no private URL. Internal skills (team
+ops, workflows) belong in a **private** Claude Code plugin marketplace — a separate
 git repo you control — so they never land in this public repo.
 
 Point the installer at yours (URL taken from a flag/env, never baked in):
