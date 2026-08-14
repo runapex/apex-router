@@ -32,7 +32,35 @@ _SERVE_ENV_KEYS = (
     "APEX_PORT",
     "APEX_HOST",
     "APEX_HOME",
+    # Azure-AD auth injection (opt-in) — the daemon has no interactive shell to carry a token, so if
+    # injection is enabled these MUST ride in the unit. APEX_AZ_BIN pins az's absolute path because a
+    # launchd/systemd unit runs with a minimal PATH. See proxy_engine.proxy.az_auth.
+    "APEX_INJECT_AZURE_TOKEN",
+    "APEX_AZURE_TOKEN_RESOURCE",
+    "APEX_AZ_BIN",
+    # Shadow posture, if the operator runs the managed proxy in shadow mode.
+    "APEX_SHADOW",
+    "APEX_POLICY_PATH",
 )
+
+
+def _is_loopback_url(url: str) -> bool:
+    """True if the URL's host is loopback. Deriving the proxy upstream from a loopback URL would
+    point the proxy at itself — the client-facing proxy URL (ANTHROPIC_FOUNDRY_BASE_URL) is loopback
+    in 'proxy mode', so it must NOT be reused as the upstream. Uses `ipaddress` so the whole 127.0.0.0/8
+    range and ::1 are caught (not just the literal 127.0.0.1), and strips a trailing FQDN dot."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if host in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _serve_env() -> dict:
@@ -40,6 +68,16 @@ def _serve_env() -> dict:
     package isn't importable by the unit's interpreter (a source/dev checkout — a pip install needs
     none). Baked into the unit because env from the installing shell does not reach launchd/systemd."""
     env = {k: os.environ[k] for k in _SERVE_ENV_KEYS if os.environ.get(k)}
+    # Restart survival: the managed proxy reads APEX_ANTHROPIC_UPSTREAM, but a machine wired for
+    # Claude Code sets Claude Code's own ANTHROPIC_FOUNDRY_BASE_URL instead. Derive the proxy upstream
+    # from it when the apex key isn't set explicitly — BUT only when it names a real gateway, not the
+    # proxy itself. In "proxy mode" ANTHROPIC_FOUNDRY_BASE_URL points at http://localhost:8788 (THIS
+    # proxy); baking that as the upstream makes the proxy forward to itself (an infinite loop). A
+    # loopback foundry URL means "can't derive the upstream" — skip it and leave the config default.
+    if "APEX_ANTHROPIC_UPSTREAM" not in env:
+        foundry = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL", "").strip()
+        if foundry and not _is_loopback_url(foundry):
+            env["APEX_ANTHROPIC_UPSTREAM"] = foundry
     import importlib.util
     if importlib.util.find_spec("apex_router") is None:
         # not pip-visible here; but if WE can import it, our sys.path[0] locates the src root
@@ -51,7 +89,10 @@ def _serve_env() -> dict:
         env.setdefault("PYTHONPATH",
                        pkg_parent + (os.pathsep + os.environ["PYTHONPATH"]
                                      if os.environ.get("PYTHONPATH") else ""))
-    return env
+    # A value baked into a unit must never carry a newline/CR: it would inject extra plist keys or
+    # systemd directives (these values are URLs/ports/paths, so a control char means a malformed
+    # value anyway). Drop any offender rather than emit a corrupt/injectable unit.
+    return {k: v for k, v in env.items() if "\n" not in v and "\r" not in v}
 
 
 def _py() -> str:

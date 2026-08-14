@@ -86,6 +86,9 @@ def _make_upstream(content_encoding: str | None):
         def endpoint_id(self, client_kind):
             return "anthropic"
 
+        async def inject_auth(self, headers, client_kind, *, raw_headers=None):
+            return headers  # injection disabled by default → passthrough no-op
+
         async def send_stream(self, m, u, *, headers, content):
             return Resp()
 

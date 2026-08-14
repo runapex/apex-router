@@ -20,6 +20,13 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _env_bool(name: str, default: str = "0") -> bool:
+    """Parse a boolean env var robustly: ONLY affirmative tokens enable it, so 'FALSE'/'no'/'off'/a
+    typo all read as False. An opt-in flag must fail SAFE (disabled) when mis-set — a naive
+    `value not in ('0','false')` would treat 'FALSE' as truthy and silently enable the feature."""
+    return _env(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Config:
     # Wire
@@ -53,6 +60,15 @@ class Config:
     # Telemetry heartbeat interval (§Step 2): a heartbeat line every N s so a consumer (the TUI)
     # can tell an idle proxy from a dead one. Off the request path.
     heartbeat_s: float = float(_env("APEX_HEARTBEAT_S", "15"))
+
+    # Azure-AD auth injection (opt-in). When an Azure API Management gateway fronts the provider, it
+    # authenticates with a short-lived Azure AD token. Off by default → the proxy stays pure
+    # passthrough. When on, the proxy mints a token via `az` and injects it ONLY when the client sent
+    # no auth of its own (strict superset); a fresh mint after `az login` needs no restart. See
+    # proxy.az_auth. `az_bin` lets a managed unit pin an absolute path (its PATH is minimal).
+    inject_azure_token: bool = _env_bool("APEX_INJECT_AZURE_TOKEN")
+    azure_token_resource: str = _env("APEX_AZURE_TOKEN_RESOURCE", "https://cognitiveservices.azure.com")
+    az_bin: str = _env("APEX_AZ_BIN", "az")
 
     @property
     def db_path(self) -> Path:

@@ -22,6 +22,23 @@ _HOP_BY_HOP = frozenset({
 })
 
 
+# Public provider endpoints an Azure-AD gateway token must never be sent to (credential disclosure).
+_PUBLIC_PROVIDER_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
+
+# Header names that mean "the client already authenticated itself" — Authorization/x-api-key plus the
+# Azure APIM alternatives. Checked against RAW inbound headers so a `Connection:`-stripped auth header
+# can't fool the injector into overriding a client's own credential.
+_CLIENT_AUTH_HEADERS = frozenset({
+    b"authorization", b"x-api-key", b"ocp-apim-subscription-key", b"api-key",
+})
+
+
+def _client_has_auth(raw_headers: list[tuple[bytes, bytes]]) -> bool:
+    # A NON-EMPTY value is required: an empty/whitespace `authorization:`/`x-api-key:` is not a real
+    # credential, so it must not suppress injection (else the client 401s with the proxy standing by).
+    return any(k.lower() in _CLIENT_AUTH_HEADERS and v.strip() for k, v in raw_headers)
+
+
 def _connection_named(raw_headers: list[tuple[bytes, bytes]]) -> set[str]:
     """Headers named in a `Connection:` header are connection-scoped and must be dropped
     (RFC 7230 §6.1), else a client can leak connection headers upstream (cross-validation)."""
@@ -75,6 +92,65 @@ class Upstream:
 
     def base_for(self, client_kind: str) -> str:
         return self._cfg.openai_upstream if client_kind == "codex" else self._cfg.anthropic_upstream
+
+    async def inject_auth(
+        self,
+        headers: list[tuple[bytes, bytes]],
+        client_kind: str,
+        *,
+        raw_headers: list[tuple[bytes, bytes]],
+    ) -> list[tuple[bytes, bytes]]:
+        """Opt-in Azure-AD auth injection — a STRICT SUPERSET of passthrough.
+
+        Returns `headers` UNCHANGED unless ALL hold. Only then is a freshly-minted
+        `Authorization: Bearer` appended, so an already-authed request is byte-identical to before:
+
+          1. injection is enabled (`cfg.inject_azure_token`);
+          2. this is the Anthropic wire (the codex/OpenAI wire has its own auth);
+          3. the target upstream is NOT a public provider endpoint — an Azure AD token minted for
+             `cognitiveservices.azure.com` must NEVER be sent to api.anthropic.com/api.openai.com
+             (that would DISCLOSE the credential to an unrelated host — the whole feature only makes
+             sense in front of an internal gateway, so we refuse to attach it to the public default);
+          4. the client sent NO auth of its own. This is checked against the RAW inbound headers, not
+             the hop-by-hop-filtered set: a client that sends `Connection: authorization` + its own
+             `Authorization` would have that stripped by `filter_request_headers`, and a post-filter
+             check would then wrongly inject over it. Reading the raw headers closes that bypass. The
+             recognized schemes include the Azure/APIM alternatives (subscription key, api-key), so a
+             client authed by any of them is left untouched.
+
+        A mint/encode failure is swallowed (fail-open): forward unchanged and let the upstream return
+        its own 401, never a proxy-invented 500. The appended header lands in the raw list BEFORE
+        `send_stream`'s scrub, so it survives (send_stream keeps the client-provided keys + host/len).
+        """
+        if not self._cfg.inject_azure_token or client_kind == "codex":
+            return headers
+        # (3) never attach the Azure bearer to a public provider host. Parse DEFENSIVELY: a malformed
+        # configured upstream must not become a 500 (this runs before the handler's upstream try), and
+        # if the host can't be determined we skip injection (the safe direction). Strip a trailing
+        # FQDN dot so `api.anthropic.com.` can't slip past the denylist.
+        from urllib.parse import urlsplit
+        try:
+            host = (urlsplit(self.base_for(client_kind)).hostname or "").lower().rstrip(".")
+        except ValueError:
+            return headers
+        if not host or host in _PUBLIC_PROVIDER_HOSTS:
+            return headers
+        # (4) client-auth check on the RAW headers (pre-filter), across all recognized schemes.
+        if _client_has_auth(raw_headers):
+            return headers  # client already authed — never override (passthrough for authed reqs)
+        try:
+            from apex_router.proxy_engine.proxy.az_auth import get_provider
+            provider = get_provider(self._cfg.azure_token_resource, self._cfg.az_bin)
+            token = await provider.token_async()
+            if not isinstance(token, str):  # malformed CLI output → fail-open, not a 500
+                raise TypeError(f"az token is not a string: {type(token).__name__}")
+            auth_value = b"Bearer " + token.encode("latin-1")  # inside the guard (finding: encode)
+        except Exception as e:  # noqa: BLE001 — fail-open: forward unauthed, upstream returns 401
+            import sys
+            print(f"apex: azure token injection failed, forwarding without auth: {e!r}",
+                  file=sys.stderr)
+            return headers
+        return [*headers, (b"authorization", auth_value)]
 
     def endpoint_id(self, client_kind: str) -> str:
         """A stable telemetry label for the endpoint a wire is reached through — derived from the
