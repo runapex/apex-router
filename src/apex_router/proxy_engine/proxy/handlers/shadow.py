@@ -74,7 +74,12 @@ async def handle(
     if isinstance(raw_path, bytes):
         raw_path = raw_path.split(b"?", 1)[0].decode("latin-1")
     url = upstream.build_url(client_kind, raw_path, request.scope.get("query_string", b""))
-    fwd_headers = filter_request_headers(request.scope.get("headers", []))
+    raw_req_headers = request.scope.get("headers", [])
+    fwd_headers = filter_request_headers(raw_req_headers)
+    # Opt-in Azure-AD auth injection (strict superset): adds Authorization ONLY when enabled AND the
+    # client sent none (checked on the RAW pre-filter headers); a no-op passthrough otherwise. Same
+    # call the active handler makes. See upstream.inject_auth.
+    fwd_headers = await upstream.inject_auth(fwd_headers, client_kind, raw_headers=raw_req_headers)
     pre_forward_ms = (time.perf_counter() - t0) * 1000.0
 
     t_send = time.perf_counter()  # AROUND the upstream call — for t_upstream_ttfb_ms at first byte

@@ -54,6 +54,92 @@ class TestServeUnit(unittest.TestCase):
             os.environ.clear()
             os.environ.update(orig)
 
+    def test_serve_env_derives_upstream_from_foundry_base_url(self):
+        # Restart-survival regression: a box wired for Claude Code sets ANTHROPIC_FOUNDRY_BASE_URL,
+        # not APEX_ANTHROPIC_UPSTREAM. _serve_env must derive the proxy upstream from it, or the
+        # daemon silently falls back to api.anthropic.com after every reboot.
+        import os
+        orig = dict(os.environ)
+        for k in ("APEX_ANTHROPIC_UPSTREAM", "ANTHROPIC_FOUNDRY_BASE_URL"):
+            os.environ.pop(k, None)
+        os.environ["ANTHROPIC_FOUNDRY_BASE_URL"] = "https://foundry.example/claude"
+        try:
+            env = watch._serve_env()
+            self.assertEqual(env.get("APEX_ANTHROPIC_UPSTREAM"),
+                             "https://foundry.example/claude")
+        finally:
+            os.environ.clear()
+            os.environ.update(orig)
+
+    def test_explicit_apex_upstream_wins_over_foundry(self):
+        # An explicit APEX_ANTHROPIC_UPSTREAM must NOT be overridden by the Foundry fallback.
+        import os
+        orig = dict(os.environ)
+        os.environ["APEX_ANTHROPIC_UPSTREAM"] = "https://explicit.example/claude"
+        os.environ["ANTHROPIC_FOUNDRY_BASE_URL"] = "https://foundry.example/claude"
+        try:
+            env = watch._serve_env()
+            self.assertEqual(env["APEX_ANTHROPIC_UPSTREAM"], "https://explicit.example/claude")
+        finally:
+            os.environ.clear()
+            os.environ.update(orig)
+
+    def test_serve_env_skips_loopback_foundry_url(self):
+        # proxy-mode: ANTHROPIC_FOUNDRY_BASE_URL points at the LOCAL proxy itself; deriving the
+        # upstream from it would make the proxy forward to itself (infinite loop) — so it must be
+        # skipped, leaving no APEX_ANTHROPIC_UPSTREAM baked.
+        import os
+        orig = dict(os.environ)
+        for k in ("APEX_ANTHROPIC_UPSTREAM", "ANTHROPIC_FOUNDRY_BASE_URL"):
+            os.environ.pop(k, None)
+        for loopback in ("http://localhost:8788", "http://127.0.0.1:8788"):
+            os.environ["ANTHROPIC_FOUNDRY_BASE_URL"] = loopback
+            try:
+                self.assertNotIn("APEX_ANTHROPIC_UPSTREAM", watch._serve_env(), loopback)
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_loopback_guard_covers_127_range_ipv6_and_trailing_dot(self):
+        # the self-loop guard must catch more than literal 127.0.0.1: the whole 127/8 range, ::1,
+        # and a trailing-dot FQDN all point back at this host.
+        import os
+        orig = dict(os.environ)
+        for k in ("APEX_ANTHROPIC_UPSTREAM", "ANTHROPIC_FOUNDRY_BASE_URL"):
+            os.environ.pop(k, None)
+        for lb in ("http://127.0.0.2:8788", "http://[::1]:8788", "http://localhost.:8788"):
+            os.environ["ANTHROPIC_FOUNDRY_BASE_URL"] = lb
+            try:
+                self.assertNotIn("APEX_ANTHROPIC_UPSTREAM", watch._serve_env(), lb)
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_serve_env_drops_values_with_newlines(self):
+        # A newline in a baked value could inject an extra plist key / systemd directive — drop it.
+        import os
+        orig = dict(os.environ)
+        os.environ["APEX_ANTHROPIC_UPSTREAM"] = "https://gw.example/claude\nExecStart=/bin/evil"
+        try:
+            self.assertNotIn("APEX_ANTHROPIC_UPSTREAM", watch._serve_env())
+        finally:
+            os.environ.clear()
+            os.environ.update(orig)
+
+    def test_az_injection_keys_are_baked_when_set(self):
+        # If auth injection is enabled, the daemon (no interactive shell) needs these in the unit.
+        import os
+        orig = dict(os.environ)
+        os.environ["APEX_INJECT_AZURE_TOKEN"] = "1"
+        os.environ["APEX_AZ_BIN"] = "/opt/homebrew/bin/az"
+        try:
+            env = watch._serve_env()
+            self.assertEqual(env["APEX_INJECT_AZURE_TOKEN"], "1")
+            self.assertEqual(env["APEX_AZ_BIN"], "/opt/homebrew/bin/az")
+        finally:
+            os.environ.clear()
+            os.environ.update(orig)
+
     def test_xml_escaping_in_plist_env(self):
         # a value with & or < must not break the plist XML
         p = watch._launchd_plist("x", ["/py"], keepalive=True, calendar=None,

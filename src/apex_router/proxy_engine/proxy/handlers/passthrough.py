@@ -107,7 +107,13 @@ async def handle(
     if isinstance(raw_path, bytes):
         raw_path = raw_path.split(b"?", 1)[0].decode("latin-1")
     url = upstream.build_url(client_kind, raw_path, request.scope.get("query_string", b""))
-    fwd_headers = filter_request_headers(request.scope.get("headers", []))
+    raw_req_headers = request.scope.get("headers", [])
+    fwd_headers = filter_request_headers(raw_req_headers)
+    # Opt-in Azure-AD auth injection (strict superset): mints a fresh token and adds Authorization
+    # ONLY when enabled AND the client sent none. No-op (passthrough) otherwise. The client-auth check
+    # uses the RAW (pre-filter) headers so a Connection-stripped auth can't be overridden. See
+    # upstream.inject_auth.
+    fwd_headers = await upstream.inject_auth(fwd_headers, client_kind, raw_headers=raw_req_headers)
 
     # Time apex's own request-path work (detect + header filter + body read) BEFORE the
     # upstream forward. Named pre_forward, not "overhead": it excludes connect/pool/upstream
