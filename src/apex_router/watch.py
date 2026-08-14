@@ -346,10 +346,38 @@ def run_daily() -> int:
         report = offload_report.format_report(agg)
     except Exception as e:  # noqa: BLE001
         report = f"(offload report unavailable: {e!r})"
+    # Fold the per-task-type escalation rate into the daily digest so it surfaces without
+    # anyone running `route-readout` by hand (and so the collected digest carries it).
+    # Build the escalation section SEPARATELY so its Markdown heading lands OUTSIDE the code
+    # fence the offload `report` is wrapped in (Codex #7 — a heading inside ``` renders as
+    # literal text). Fail-open like the rest of run_daily — a bad/empty log never breaks the timer.
+    def _clean(tt) -> str:
+        # task_type is arbitrary user text; strip anything that could break the fence or a line.
+        s = str(tt).replace("`", "").replace("\n", " ").replace("\r", " ").strip()
+        return (s[:40] or "(blank)")
+    esc = "\n## escalation (per task-type: n | escalated | rate)\n"
+    try:
+        from . import route_log
+        rates = route_log.read_rates()
+        if rates:
+            esc += "```\n"
+            for tt in sorted(rates, key=lambda k: str(k)):
+                r = rates[tt]
+                esc += f"  {_clean(tt):<12} n={r['n']:<4} escalated={r['escalated']:<4} rate={r['rate']:.2f}\n"
+            esc += "```\n"
+        else:
+            esc += "  (no cheap-start outcomes logged yet)\n"
+    except Exception as e:  # noqa: BLE001
+        esc += f"  (unavailable: {type(e).__name__})\n"
+
     out = Path.home() / ".apex-router" / "offload_daily.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "a", encoding="utf-8") as f:
-        f.write("\n## daily run\n```\n" + report + "\n```\n")
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "a", encoding="utf-8") as f:
+            # offload report inside its own fence; escalation section OUTSIDE it.
+            f.write("\n## daily run\n```\n" + report + "\n```\n" + esc)
+    except Exception as e:  # noqa: BLE001 — a write failure must not error out the scheduled timer
+        print(f"(daily digest write failed: {type(e).__name__})")
     print(report)
     return 0
 
