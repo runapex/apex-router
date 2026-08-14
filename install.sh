@@ -137,6 +137,31 @@ install_package() {
     uv pip install --python "$INSTALL_DIR/.venv/bin/python" -e "$INSTALL_DIR[$extras]" >/dev/null
   fi
   ok "apex-router package installed (extras: $extras)"
+
+  # Expose the `apex-router` CLI on PATH (~/.local/bin) via a uv tool install, so bare
+  # `apex-router …` works from any shell — the model-routing skill's `route-log`/`route-readout`
+  # assume it's on PATH, not just inside the venv.
+  #
+  # Install the tool WITH THE SAME EXTRAS the user chose (not the bare core), so the PATH
+  # binary is a SUPERSET of the venv one — otherwise a `--proxy` user's bare `apex-router serve`
+  # would resolve to a lean tool env missing starlette/uvicorn and report "needs the [proxy]
+  # extra" despite having asked for it (Codex #1). `--force` reinstalls in place (idempotent);
+  # it re-points any existing `apex-router` tool at THIS install, which is intended — the
+  # installer is the source of truth for the command.
+  # Best-effort: a failure here doesn't fail the install (the venv binary still works).
+  if uv tool install --force "$INSTALL_DIR[$extras]" >/dev/null 2>&1; then
+    tool_bin="$(command -v apex-router 2>/dev/null || true)"
+    if [ -n "$tool_bin" ]; then
+      ok "apex-router on PATH: $tool_bin"
+    else
+      warn "apex-router installed as a uv tool but its bin dir is not on PATH — run"
+      warn "  'uv tool update-shell' (or add uv's tool-bin dir to PATH) so bare 'apex-router' resolves"
+    fi
+  else
+    warn "could not put apex-router on PATH via uv tool — the venv binary still works at"
+    warn "  $INSTALL_DIR/.venv/bin/apex-router ; add it to PATH or alias it so the skill's"
+    warn "  'route-log'/'route-readout' calls resolve"
+  fi
 }
 
 # --------------------------------------------------------------------------- #
