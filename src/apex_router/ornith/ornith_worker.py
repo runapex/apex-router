@@ -91,7 +91,13 @@ def main() -> None:
             continue
         src = jobs[0]
         run = RUNNING / src.name
-        src.replace(run)
+        try:
+            src.replace(run)
+        except FileNotFoundError:
+            # Another drainer claimed this job first. The claim (os.rename) is atomic, so at most
+            # one worker wins; the loser must NOT crash (KeepAlive would restart-loop it) — just
+            # re-poll. Lets a second worker coexist safely if one is ever running.
+            continue
         _process_one(run)
 
 
