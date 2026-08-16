@@ -73,17 +73,20 @@ def _break_even(cost_ratio: float) -> float:
     return 1.0 - 1.0 / cost_ratio
 
 
-def _one_sided_p(escalated: int, n: int, break_even: float, *, upper: bool) -> float:
-    """Normal-approximation one-sided p-value for the measured rate vs the fixed break-even null.
-    `upper=True` tests rate > break_even (the heavy-start direction); else rate < break_even. Used
-    only to feed the Benjamini-Hochberg multiplicity correction — the Wilson CI is the primary gate.
-    Variance uses the NULL proportion (standard one-sample proportion test)."""
+def _two_sided_p(escalated: int, n: int, break_even: float) -> float:
+    """Normal-approximation TWO-SIDED p-value for the measured rate vs the fixed break-even null.
+
+    Two-sided on purpose (Codex pass-2): choosing the tail from the observed rate and using that
+    one-sided p is picking the smaller of two tails post-hoc, which understates p and makes the BH
+    correction anti-conservative. A direction-agnostic two-sided p is the honest family input; the
+    Wilson CI (in advise_one) supplies the DIRECTION separately. Variance uses the NULL proportion
+    (standard one-sample proportion test)."""
     se = math.sqrt(break_even * (1.0 - break_even) / n) if 0.0 < break_even < 1.0 else 0.0
     if se == 0.0:
-        return 0.0 if ((escalated / n > break_even) == upper) else 1.0
-    z = (escalated / n - break_even) / se
-    # upper tail P(Z > z) = 0.5*erfc(z/√2); lower tail is the mirror.
-    return 0.5 * math.erfc((z if upper else -z) / math.sqrt(2.0))
+        return 0.0 if escalated / n != break_even else 1.0
+    z = abs(escalated / n - break_even) / se
+    # two-sided p = 2·P(Z > |z|) = erfc(|z|/√2).
+    return math.erfc(z / math.sqrt(2.0))
 
 
 def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
@@ -95,15 +98,17 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
     `significant` here reflects only the per-cell CI-vs-break_even test; the multiplicity (BH) gate is
     applied in `advise()` across task-types (a lone `advise_one` has no family to correct against).
     """
-    # Input validation — an independent review showed z<=0 gives a zero-width "always significant" CI
-    # and min_n<1 / cost_ratio<=1 defeat the guards. Reject rather than emit a spurious verdict.
+    # Input validation — an independent review showed z<=0 gives a zero-width "always significant" CI,
+    # min_n<1 / cost_ratio<=1 defeat the guards, and a non-finite z/cost_ratio (argparse accepts
+    # `nan`/`inf`) sails past the comparisons into a NaN break-even + a non-JSON `NaN` token. Reject
+    # anything non-finite or out of range rather than emit a spurious verdict.
     if n <= 0 or escalated < 0 or escalated > n:
         return _rec(INCONCLUSIVE, 0.0, 0.0, 0.0, 0.0, max(n, 0), False, 1.0, "", "no or invalid samples")
-    if z <= 0:
-        return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "", f"invalid z={z} (must be > 0)")
-    if cost_ratio <= 1.0:
+    if not math.isfinite(z) or z <= 0:
+        return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "", f"invalid z={z} (must be finite and > 0)")
+    if not math.isfinite(cost_ratio) or cost_ratio <= 1.0:
         return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "",
-                    f"invalid cost_ratio={cost_ratio} (must be > 1: heavy must cost more than cheap)")
+                    f"invalid cost_ratio={cost_ratio} (must be finite and > 1: heavy must cost more than cheap)")
     if min_n < 1:
         min_n = 1
 
@@ -114,16 +119,19 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
     if n < min_n:
         return _rec(INCONCLUSIVE, rate, lo, hi, be, n, False, 1.0, "",
                     f"n={n} < min_n={min_n} (insufficient evidence)")
+    # The Wilson CI supplies the DIRECTION; the two-sided p feeds the multiplicity correction. n>=min_n
+    # cells that don't clear the CI are still "tested" (part of the BH family) — advise() decides that.
+    p = _two_sided_p(escalated, n, be)
     if lo > be:
-        p = _one_sided_p(escalated, n, be, upper=True)
         return _rec(COST_FAVORS_HEAVY_START, rate, lo, hi, be, n, True, p, _ASSUMES,
-                    f"escalation CI lower {lo:.2f} > cost break-even {be:.2f}: cheap-first costs more on average")
+                    f"escalation CI lower {lo:.2f} > cost break-even {be:.2f}: cheap-first costs more on average",
+                    tested=True)
     if hi < be:
-        p = _one_sided_p(escalated, n, be, upper=False)
         return _rec(COST_FAVORS_CHEAP_START, rate, lo, hi, be, n, True, p, _ASSUMES,
-                    f"escalation CI upper {hi:.2f} < cost break-even {be:.2f}: cheap-first is cheaper")
-    return _rec(INCONCLUSIVE, rate, lo, hi, be, n, False, 1.0, "",
-                f"CI [{lo:.2f},{hi:.2f}] straddles cost break-even {be:.2f}")
+                    f"escalation CI upper {hi:.2f} < cost break-even {be:.2f}: cheap-first is cheaper",
+                    tested=True)
+    return _rec(INCONCLUSIVE, rate, lo, hi, be, n, False, p, "",
+                f"CI [{lo:.2f},{hi:.2f}] straddles cost break-even {be:.2f}", tested=True)
 
 
 def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _DEFAULT_COST_RATIO,
@@ -132,8 +140,10 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
 
     Applies a Benjamini-Hochberg multiplicity correction across task-types: testing many task-types
     inflates the chance of at least one spurious flag, so a cell that clears its per-cell CI test is
-    demoted to INCONCLUSIVE unless its one-sided p-value also survives BH at `alpha`. `rates` may be
-    injected (from `route_log.read_rates`) for testing; else read fresh.
+    demoted to INCONCLUSIVE unless its two-sided p-value also survives BH at `alpha`. The BH FAMILY is
+    every cell that met min_n (i.e. was actually tested), NOT just the cells that crossed the CI —
+    selecting the family by significance would itself be anti-conservative (Codex pass-2). `rates` may
+    be injected (from `route_log.read_rates`) for testing; else read fresh.
     """
     try:
         if rates is None:
@@ -150,24 +160,33 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
                 continue
             out[tt] = advise_one(n, esc, min_n=min_n, cost_ratio=cost_ratio, z=z)
 
-        # Pass 2: BH multiplicity correction across the cells that passed the per-cell CI test.
-        flagged = [tt for tt, r in out.items() if r["significant"]]
-        if len(flagged) > 1:
-            pvals = [out[tt]["p_value"] for tt in flagged]
+        # Pass 2: BH multiplicity correction. The FAMILY is every TESTED cell (met min_n), so family
+        # membership is independent of the outcome — building it from only the CI-significant cells
+        # would filter the family by the same data used to test, inflating the false-action rate
+        # (Codex pass-2 P1). BH ranks over the whole family; only cells that BOTH crossed the CI AND
+        # survive BH keep an actionable verdict.
+        family = [tt for tt, r in out.items() if r["tested"]]
+        if len(family) > 1:
+            pvals = [out[tt]["p_value"] for tt in family]
             keep = stats.benjamini_hochberg(pvals, alpha=alpha)
-            for tt, survives in zip(flagged, keep):
-                if not survives:
-                    r = out[tt]
+            survivors = {tt for tt, s in zip(family, keep) if s}
+            for tt in family:
+                r = out[tt]
+                if r["significant"] and tt not in survivors:
                     out[tt] = _rec(INCONCLUSIVE, r["rate"], r["ci_low"], r["ci_high"], r["break_even"],
                                    r["n"], False, r["p_value"], "",
-                                   f"per-cell significant but did not survive BH across {len(flagged)} "
-                                   f"task-types (multiplicity) — keep the default")
+                                   f"per-cell significant but did not survive BH across {len(family)} "
+                                   f"tested task-types (multiplicity) — keep the default", tested=True)
         return out
     except Exception:
         return {}
 
 
-def _rec(verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, assumes, reason) -> dict:
+def _rec(verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, assumes, reason,
+         tested=False) -> dict:
+    # `tested` = this cell met min_n and produced a real p-value, so it is a member of the BH family
+    # regardless of whether it crossed the CI. `significant` = it crossed the per-cell Wilson gate.
+    # Keeping them distinct is the fix for selecting the hypothesis family by significance.
     return {
         "verdict": verdict,
         "rate": rate,
@@ -176,6 +195,7 @@ def _rec(verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, as
         "break_even": break_even,
         "n": n,
         "significant": significant,
+        "tested": tested,
         "p_value": p_value,
         "assumes": assumes,
         "reason": reason,

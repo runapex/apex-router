@@ -22,10 +22,13 @@
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
-#         --skills-marketplace URL  print /plugin commands for a private team skill marketplace
+#         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The public
+#                                   apex-router-skills marketplace is added by default.
+#         --no-skills   skip the default public skill marketplace (also APEX_NO_SKILLS=1)
 #         --dir PATH    install location (default: ~/.apex-router)
 #         --repo URL    git repo to clone (default: the public apex-router repo)
 #         --verify-only re-run the self-check against an existing install
+#         --skills-only (re)wire Claude Code skill marketplaces only (update path for an existing install)
 set -euo pipefail
 
 # --------------------------------------------------------------------------- #
@@ -40,12 +43,25 @@ DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
 VERIFY_ONLY=0
+SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
+NL='
+'               # a literal newline — the internal separator for the repeatable --skills-marketplace
 ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
 # Repos to install the review post-commit hook into (space-separated; user-supplied, none hardcoded).
 HOOK_REPOS="${APEX_HOOK_REPOS:-}"
-# Private team skill marketplace (Claude Code plugin repo). Public apex-router hardcodes NO private
-# URL — pass --skills-marketplace <git-url> or set APEX_SKILLS_MARKETPLACE to wire your team's.
-SKILLS_MARKETPLACE="${APEX_SKILLS_MARKETPLACE:-}"
+# Skill marketplaces (Claude Code plugin repos), wired via the `claude plugin` CLI.
+# apex-router ships ONE public marketplace by DEFAULT (workflow-discipline skills), and supports
+# ADDING MORE: --skills-marketplace can be passed repeatedly, and APEX_SKILLS_MARKETPLACE may hold a
+# space-separated list. The default plugin (apex-workflow) is installed from the public marketplace;
+# extra marketplaces are added and their plugins are left for the user to `claude plugin install`.
+# --no-skills / APEX_NO_SKILLS=1 opts out of the default public marketplace entirely.
+APEX_PUBLIC_MARKETPLACE="runapex/apex-router-skills"   # public default (github owner/repo)
+APEX_DEFAULT_PLUGIN="apex-workflow@apex-router-skills" # plugin@marketplace to install by default
+# Extra marketplaces, stored NEWLINE-separated internally so a source path with spaces stays intact.
+# The env var (back-compat) is space-separated; normalize it to newlines up front. The repeatable
+# --skills-marketplace flag appends newline-separated (so a quoted spacey path is preserved verbatim).
+SKILLS_MARKETPLACES="$(printf '%s' "${APEX_SKILLS_MARKETPLACE:-}" | tr ' ' '\n')"
+DO_SKILLS="${APEX_NO_SKILLS:+0}"; DO_SKILLS="${DO_SKILLS:-1}"  # 1 = install default public marketplace
 # Proxy client wiring merged into ~/.claude/settings.json. Values come from a --proxy-config
 # file or your environment — NOTHING is hardcoded here. Empty = skip (routing still installs).
 PROXY_CONFIG="${APEX_PROXY_CONFIG:-}"
@@ -58,11 +74,17 @@ while [ $# -gt 0 ]; do
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
     --install-hooks) HOOK_REPOS="$2"; shift ;;
-    --skills-marketplace) SKILLS_MARKETPLACE="$2"; shift ;;
+    # Accumulate NEWLINE-separated (not space) so a local marketplace path containing spaces stays
+    # one argument through the consumption loop (Codex pass-2). The env-var form stays space-separated
+    # for back-compat and is normalized to newlines before the loop. NL holds a literal newline
+    # (command substitution would strip a trailing one, collapsing the separator).
+    --skills-marketplace) SKILLS_MARKETPLACES="${SKILLS_MARKETPLACES:+$SKILLS_MARKETPLACES$NL}$2"; shift ;;
+    --no-skills) DO_SKILLS=0 ;;
     --proxy-config) PROXY_CONFIG="$2"; shift ;;
     --dir)       INSTALL_DIR="$2"; shift ;;
     --repo)      REPO_URL="$2"; shift ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --skills-only) SKILLS_ONLY=1 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -409,22 +431,61 @@ setup_proxy() {
     || warn "proxy setup did not complete (routing still works)"
 }
 
-skills_hint() {
-  local url="$SKILLS_MARKETPLACE"
-  echo
-  say "team skills (Claude Code plugin marketplace)"
-  if [ -n "$url" ]; then
-    echo "  add your team's private skill marketplace and install its plugins:"
-    echo "    (in Claude Code)"
-    echo "    /plugin marketplace add $url"
-    echo "    /plugin install <plugin>@<marketplace-name>   # e.g. team-ops@skills-bundler"
+# Register one marketplace via the non-interactive `claude plugin marketplace add` CLI. Idempotent:
+# `add` on an already-registered marketplace is a no-op that returns 0, so re-running the installer
+# (or installing when apex-router is already present) just refreshes it. Prints the manual command
+# as a fallback when the claude CLI isn't on PATH.
+_marketplace_add() {  # <source> (github owner/repo, git URL, or local path)
+  local src="$1"
+  if have claude; then
+    if claude plugin marketplace add "$src" >/dev/null 2>&1; then
+      ok "  marketplace added: $src"
+    else
+      # already-registered is fine; a real failure is worth surfacing with the manual command.
+      claude plugin marketplace list 2>/dev/null | grep -qiF "$src" \
+        && ok "  marketplace already registered: $src" \
+        || warn "  could not add $src automatically — in Claude Code: /plugin marketplace add $src"
+    fi
   else
-    echo "  apex-router ships no skills. To share team skills (internal ops, workflows) via a PRIVATE"
-    echo "  Claude Code marketplace, re-run with --skills-marketplace <git-url> (or set"
-    echo "  APEX_SKILLS_MARKETPLACE), then in Claude Code:"
-    echo "    /plugin marketplace add <your-private-git-url>"
-    echo "    /plugin install <plugin>@<marketplace-name>"
-    echo "  (kept out of this public repo on purpose — internal skills stay in your private repo.)"
+    echo "    /plugin marketplace add $src"
+  fi
+}
+
+# Wire Claude Code skill marketplaces. apex-router ships ONE public marketplace by default
+# (workflow-discipline skills) and supports MULTIPLE: any --skills-marketplace / APEX_SKILLS_MARKETPLACE
+# entries are added alongside it. Everything goes through the `claude plugin` CLI (non-interactive);
+# if that CLI is absent, the exact commands are printed instead.
+install_skills_marketplaces() {
+  echo
+  say "Claude Code skill marketplaces"
+  have claude || echo "  (claude CLI not found — run these in Claude Code yourself:)"
+
+  # 1) Public default marketplace + its plugin (unless opted out).
+  if [ "$DO_SKILLS" = "1" ]; then
+    _marketplace_add "$APEX_PUBLIC_MARKETPLACE"
+    if have claude; then
+      claude plugin install "$APEX_DEFAULT_PLUGIN" --scope user >/dev/null 2>&1 \
+        && ok "  installed $APEX_DEFAULT_PLUGIN (verify-claims, cross-validate, disciplined-execution)" \
+        || warn "  could not install $APEX_DEFAULT_PLUGIN — in Claude Code: /plugin install $APEX_DEFAULT_PLUGIN"
+    else
+      echo "    /plugin install $APEX_DEFAULT_PLUGIN"
+    fi
+  else
+    echo "  (default public skills skipped: --no-skills / APEX_NO_SKILLS)"
+  fi
+
+  # 2) Any extra marketplaces (e.g. a private team repo). Added, not auto-installed — the user picks
+  #    which plugins to install from them (their names aren't known here). Iterate NEWLINE-delimited
+  #    (via read, not word-splitting) so a source path with spaces survives as one argument.
+  if [ -n "$SKILLS_MARKETPLACES" ]; then
+    # SKILLS_MARKETPLACES is already newline-separated (env normalized at init; flag appends newlines),
+    # so read line-by-line — a source path containing spaces stays one argument.
+    printf '%s\n' "$SKILLS_MARKETPLACES" | while IFS= read -r url; do
+      [ -n "$url" ] || continue
+      _marketplace_add "$url"
+    done
+    echo "  then install plugins from the added marketplace(s):"
+    echo "    (in Claude Code)  /plugin install <plugin>@<marketplace-name>"
   fi
 }
 
@@ -445,6 +506,9 @@ install_watchers() {
 main() {
   say "apex-router installer  ($OS/$ARCH; apple-silicon=$IS_APPLE_SILICON)"
   if [ "$VERIFY_ONLY" = "1" ]; then verify; exit 0; fi
+  # Update path (Option B): (re)wire skill marketplaces only, for a machine that already has
+  # apex-router. Idempotent — `claude plugin marketplace add` on an existing one is a no-op.
+  if [ "$SKILLS_ONLY" = "1" ]; then install_skills_marketplaces; exit 0; fi
   ensure_prereqs
   install_package
   install_embed
@@ -455,6 +519,6 @@ main() {
   install_proxy
   setup_proxy
   verify
-  skills_hint
+  install_skills_marketplaces
 }
 main

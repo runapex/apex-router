@@ -108,6 +108,28 @@ class TestAdviseAggregate(unittest.TestCase):
                    if not r["significant"] and "BH" in r["reason"]]
         self.assertTrue(demoted, "expected at least one BH-demoted cell under a tight alpha")
 
+    def test_bh_family_is_all_tested_cells_not_just_significant(self):
+        # Codex pass-2 P1: the BH family must be every cell that met min_n (was tested), not only the
+        # cells that crossed the CI. One clear signal among 99 tested-but-inconclusive cells must face
+        # a family size of 100 for BH ranking, not a family of 1 (which would skip BH entirely).
+        rates = {"hot": {"n": 100, "escalated": 89}}                       # crosses CI (p≈.012)
+        rates.update({f"mid{i}": {"n": 100, "escalated": 78} for i in range(99)})  # tested, straddle
+        out = ra.advise(rates=rates, alpha=0.05)
+        # All 100 are 'tested'; the lone significant cell's p≈.012 must beat the rank-1 BH cutoff
+        # alpha/m = .0005 to survive — it does not, so it is demoted.
+        self.assertEqual(out["hot"]["verdict"], ra.INCONCLUSIVE)
+        self.assertIn("BH", out["hot"]["reason"])
+        # sanity: every cell is marked tested (family membership independent of significance)
+        self.assertTrue(all(r["tested"] for r in out.values()))
+
+    def test_two_sided_pvalue_is_symmetric(self):
+        # Codex pass-2 P1b: the p-value feeding BH must be direction-agnostic. Symmetric deviations
+        # from break-even (0.80 at cost_ratio 5) get equal p: 90/100 (0.10 above) and 70/100 (0.10
+        # below) should have ~equal two-sided p.
+        hi = ra.advise_one(100, 90)["p_value"]
+        lo = ra.advise_one(100, 70)["p_value"]
+        self.assertAlmostEqual(hi, lo, places=6)
+
     def test_malformed_rows_skipped(self):
         rates = {"ok": {"n": 100, "escalated": 95}, 123: {"n": 100, "escalated": 95},
                  "bad": {"n": "x", "escalated": 1}}
