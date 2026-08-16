@@ -198,12 +198,15 @@ def _emit_metrics(repo, file, result, *, cached, routed, local_only, runtime):
     # it's local), so it reports everything as n_frontier. But NO paid frontier call happened → report
     # it as local so est_frontier_tokens is honest.
     n_local, n_frontier = result.n_local, result.n_frontier
+    tier_calls = dict(result.tier_calls)
     if local_only:
         n_local, n_frontier = result.n_checked, 0
+        tier_calls = {}                                # no paid frontier call happened → no tier split
     metrics_record(_METRICS_PATH, {
         "repo": repo, "file": str(file),               # Codex P2-6: full path, not basename (collision)
         "n_checked": result.n_checked, "n_struck": result.n_struck,
         "n_local": n_local, "n_frontier": n_frontier, "n_skipped": result.n_skipped,
+        "tier_calls": tier_calls,                      # frontier model-picker split (haiku/sonnet/opus)
         "struck": [c[:120] for c in result.struck_claims],
         "cached": cached, "routed": routed, "local_only": local_only, "runtime": runtime,
     }, ts=ts)

@@ -261,6 +261,16 @@ def route_verifier(claim_type: "ClaimType", *, local=None, frontier=None):
     return frontier if frontier is not None else local  # INFERENCE / RUNTIME prefer frontier
 
 
+# Claim-kind → tier_router task-kind (the SECOND axis: which frontier tier decides the claim). VALUE
+# lookups are cheap (haiku); INFERENCE needs a reasoner (sonnet); RUNTIME is the hardest (opus). Only
+# reached for claims that actually go to the frontier verifier (VALUE-on-frontier when no local model).
+_CTYPE_TASK = {
+    ClaimType.VALUE: "value",
+    ClaimType.INFERENCE: "inference",
+    ClaimType.RUNTIME: "runtime",
+}
+
+
 _STATUS_READ_CAP = 4096  # bytes — cap the status read so a faulty endpoint can't exhaust memory/hang
 _CMD_OUTPUT_CAP = 800     # chars — cap command output so a runaway command can't flood the prompt
 
@@ -379,16 +389,23 @@ def frontier_verifier(claim: str, code: str) -> str:
     the endpoint needs them, come from the env — never embedded. Returns a raw verdict word."""
     # Single source of truth for config + HTTP handling so judge/verifier never diverge.
     from .judge import _judge_config, _http_post_json, _extract_text, JudgeProtocolError
-    base, model = _judge_config()
+    from . import tier_router
+    base, _ = _judge_config()      # endpoint (base); model + effort come from the tier router
     prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
 
     if base is None:
         return ""      # no frontier endpoint configured -> CANNOT-DECIDE (use --local)
 
-    body = json.dumps({
-        "model": model, "max_tokens": 8, "system": _VERIFIER_SYS,
+    # Tier by claim-kind: VALUE→haiku (cheap lookup), INFERENCE→sonnet, RUNTIME→opus (see _CTYPE_TASK).
+    route = tier_router.resolve(_CTYPE_TASK.get(classify_claim(claim), "value"))
+    max_tokens = max(8, tier_router.min_max_tokens(route))
+    timeout = max(60, tier_router.timeout_for(route))
+    body_obj = {
+        "model": route.model, "max_tokens": max_tokens, "system": _VERIFIER_SYS,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode()
+    }
+    body_obj.update(tier_router.request_extras(route))   # effort + adaptive thinking (sonnet/opus)
+    body = json.dumps(body_obj).encode()
     headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
     auth = os.environ.get("CODEQA_JUDGE_AUTH")
     if auth:
@@ -397,7 +414,7 @@ def frontier_verifier(claim: str, code: str) -> str:
     if key:
         headers["Ocp-Apim-Subscription-Key"] = key
     try:
-        payload = _http_post_json(base.rstrip("/") + "/v1/messages", body, headers, timeout=60)
+        payload = _http_post_json(base.rstrip("/") + "/v1/messages", body, headers, timeout=timeout)
     except (JudgeProtocolError, OSError):
         return ""      # unreachable/malformed -> CANNOT-DECIDE
     return _extract_text(payload)
@@ -461,6 +478,7 @@ class ValidationResult:
     skipped_claims: list[str] = field(default_factory=list)  # so a mis-skip is VISIBLE, not silent (Codex #5)
     n_local: int = 0                            # claims routed to the LOCAL verifier (free) — the cost split
     n_frontier: int = 0                         # claims routed to the FRONTIER verifier (paid tokens)
+    tier_calls: dict = field(default_factory=dict)  # frontier tier → count (haiku/sonnet/opus) — the model-picker split
 
 
 _STRIKE = "  ~~[STALE: contradicted by live code — removed by freshness gate]~~"
@@ -531,7 +549,9 @@ def validate_memory(text: str, root: Path, *,
         results = [_run(j) for j in jobs]
 
     # PASS 3 (serial, deterministic): fold results back in original order — counts + strike markers.
+    from . import tier_router
     n_checked = n_struck = n_local = n_frontier = 0
+    tier_calls: dict[str, int] = {}                      # frontier tier → count (the model-picker split)
     struck: list[str] = []
     strike_at: dict[int, str] = {}                       # line_idx → replacement marker line
     for (i, s, _chosen, ctype), (verdict, ran) in zip(jobs, results):
@@ -541,6 +561,9 @@ def validate_memory(text: str, root: Path, *,
                 n_local += 1
             else:
                 n_frontier += 1
+                # Same deterministic route the frontier verifier used → tally which tier decided it.
+                tier = tier_router.resolve(_CTYPE_TASK.get(ctype, "value")).tier
+                tier_calls[tier] = tier_calls.get(tier, 0) + 1
         if verdict is Verdict.CONTRADICTED:
             n_struck += 1
             struck.append(s)
@@ -552,7 +575,7 @@ def validate_memory(text: str, root: Path, *,
     return ValidationResult(text="\n".join(out_lines), n_checked=n_checked,
                             n_struck=n_struck, struck_claims=struck,
                             n_skipped=n_skipped, skipped_claims=skipped,
-                            n_local=n_local, n_frontier=n_frontier)
+                            n_local=n_local, n_frontier=n_frontier, tier_calls=tier_calls)
 
 
 # ---------- metrics: a differentiable, benchmarkable record per validation run ----------

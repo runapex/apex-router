@@ -41,6 +41,25 @@ def main(path=None):
     print(f"  est. frontier tokens: ~{tokens:,}  (≈ ${tokens * 15 / 1_000_000:.4f} at Opus list in-rate)")
     print(f"  routing saved       : {saved}% of calls kept off the paid tier")
 
+    # SECOND axis — which frontier tier decided each paid claim (the model-picker split). Per-tier
+    # input list-rate ($/MTok) so the cost readout reflects that a haiku call ≠ an opus call.
+    from collections import Counter as _Counter
+    tier_calls = _Counter()
+    for r in recs:
+        tc = r.get("tier_calls")
+        if isinstance(tc, dict):
+            tier_calls.update({k: v for k, v in tc.items() if isinstance(v, int)})
+    if tier_calls:
+        _RATE = {"haiku": 1.0, "sonnet": 3.0, "opus": 5.0}   # input $/MTok; unknown/fixed → opus rate
+        _TOK = 276                                            # ≈ tokens per frontier call (see freshness)
+        total_cost = 0.0
+        print("\n  frontier by tier (model picker):")
+        for tier, c in tier_calls.most_common():
+            cost = c * _TOK * _RATE.get(tier, 5.0) / 1_000_000
+            total_cost += cost
+            print(f"    {tier:8} {c:>5}  ≈ ${cost:.4f}")
+        print(f"    {'total':8} {sum(tier_calls.values()):>5}  ≈ ${total_cost:.4f}")
+
     # which digests drift most
     from collections import Counter
     by_repo = Counter()

@@ -223,7 +223,8 @@ def parse_judge_score(raw: str) -> float:
     return score_f
 
 
-def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> str:
+def _call_opus(prompt: str, *, task: str = "judge", max_tokens: int = 256,
+               timeout: float = 60.0) -> str:
     """Grade one blinded prompt with a frontier model over a user-configured HTTP endpoint.
 
     The frontier judge is OPT-IN: the user sets CODEQA_JUDGE_BASE to an Anthropic-messages
@@ -233,10 +234,16 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
     config, so codeqa never does it. Without CODEQA_JUDGE_BASE, use the LOCAL verifier
     (`--local`) or the grounded local-Ornith ASK path instead.
 
+    The model + reasoning effort come from tier_router.resolve(task) (judging is a
+    `judge`-tier task → Opus at high effort by default); an explicit CODEQA_JUDGE_MODEL still
+    forces a single model. `max_tokens`/`timeout` are floored per effort so adaptive thinking
+    doesn't starve the answer.
+
     Credentials, if the endpoint needs them, come from the environment
     (CODEQA_JUDGE_AUTH / CODEQA_JUDGE_APIM_KEY) — never embedded.
     """
-    base, model = _judge_config()               # resolved fresh each call
+    from . import tier_router
+    base, _ = _judge_config()                   # endpoint (base); model comes from the router
     system_prompt = _RUBRIC
     if base is None:
         raise JudgeConfigError(
@@ -244,16 +251,22 @@ def _call_opus(prompt: str, *, max_tokens: int = 256, timeout: float = 60.0) -> 
             "messages endpoint, or use the local verifier (--local). codeqa does NOT route "
             "grading through an agentic CLI.")
 
+    route = tier_router.resolve(task)
+    max_tokens = max(max_tokens, tier_router.min_max_tokens(route))
+    timeout = max(timeout, tier_router.timeout_for(route))
+
     # User-configured HTTP messages endpoint.
     if base.lower().startswith("http://"):
         import warnings
         warnings.warn("CODEQA_JUDGE_BASE uses plaintext http:// — credential and prompt "
                       "are sent unencrypted; prefer https://", stacklevel=2)
-    body = json.dumps({
-        "model": model, "max_tokens": max_tokens,
+    body_obj = {
+        "model": route.model, "max_tokens": max_tokens,
         "system": system_prompt,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode()
+    }
+    body_obj.update(tier_router.request_extras(route))   # effort + adaptive thinking (sonnet/opus)
+    body = json.dumps(body_obj).encode()
     headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
     auth = os.environ.get("CODEQA_JUDGE_AUTH")
     if auth:
