@@ -67,6 +67,17 @@ def main(argv=None) -> int:
     readout_p = sub.add_parser(
         "route-readout", help="show per-task-type escalation rate from the outcome log")
     readout_p.add_argument("--json", action="store_true")
+    # Advise: turn the escalation rates into an evidence-backed routing recommendation per
+    # task-type, gated on statistical significance (Wilson CI + a sample floor). Recommends only;
+    # it never mutates a config or a skill — the caller reads the advice and decides.
+    advise_p = sub.add_parser(
+        "route-advise",
+        help="cost-efficiency verdict per task-type (cheap-start vs heavy-start) when significant")
+    advise_p.add_argument("--json", action="store_true")
+    advise_p.add_argument("--min-n", type=int, default=None,
+                          help="minimum samples before a verdict (default 30)")
+    advise_p.add_argument("--cost-ratio", type=float, default=None,
+                          help="C_heavy / C_cheap; sets the cost break-even escalation rate (default 5.0)")
     # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
     # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
     sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
@@ -123,6 +134,38 @@ def main(argv=None) -> int:
                 for tt in sorted(rates):
                     r = rates[tt]
                     print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
+        except Exception:
+            pass
+        return 0
+
+    if args.cmd == "route-advise":
+        # Read-only, fail-safe (same contract as route-readout): never break a caller. Emits a
+        # per-task-type recommendation gated on significance; HOLD (keep the static default) is the
+        # safe common case. Exit is always 0 — this is advice, not a gate.
+        from . import route_advise
+        try:
+            kw = {}
+            if getattr(args, "min_n", None) is not None:
+                kw["min_n"] = args.min_n
+            if getattr(args, "cost_ratio", None) is not None:
+                kw["cost_ratio"] = args.cost_ratio
+            recs = route_advise.advise(**kw)
+            if args.json:
+                print(json.dumps(recs, indent=2, sort_keys=True))
+            elif not recs:
+                print("route-advise: no outcomes logged yet "
+                      "(start cheap-eligible subtasks and run route-log)")
+            else:
+                be = next(iter(recs.values()))["break_even"]
+                print(f"cost break-even escalation rate = {be:.2f} "
+                      f"(cheap-first cheaper below it). COST-ONLY — assumes kept cheap output is acceptable.")
+                print(f"{'task_type':<12} {'n':>5} {'rate':>6} {'95% CI':>13}  verdict")
+                for tt in sorted(recs):
+                    r = recs[tt]
+                    ci = f"[{r['ci_low']:.2f},{r['ci_high']:.2f}]"
+                    tag = r["verdict"].upper() + ("" if r["significant"] else " (keep default)")
+                    print(f"{tt:<12} {r['n']:>5} {r['rate']:>6.2f} {ci:>13}  {tag}")
+                    print(f"{'':<12} {'':>5} {'':>6} {'':>13}  ↳ {r['reason']}")
         except Exception:
             pass
         return 0
