@@ -42,7 +42,13 @@ def main(path=None):
     print(f"  routing saved       : {saved}% of calls kept off the paid tier")
 
     # SECOND axis — which frontier tier decided each paid claim (the model-picker split). Per-tier
-    # input list-rate ($/MTok) so the cost readout reflects that a haiku call ≠ an opus call.
+    # INPUT list-rate ($/MTok) so the readout reflects that a haiku call ≠ an opus call.
+    #
+    # HONEST-SCOPE (Codex xval P2): this is an INPUT-ONLY floor. The metrics record carries no
+    # output-token field, so we can't price the OUTPUT side — and the sonnet/opus routes now enable
+    # adaptive thinking, whose thinking tokens bill as OUTPUT at ~5× the input rate. The true paid
+    # cost is therefore HIGHER than shown, by an amount we did not measure. We label it a lower bound
+    # rather than invent an output estimate the data can't support (measurement-over-attribution).
     from collections import Counter as _Counter
     tier_calls = _Counter()
     for r in recs:
@@ -50,15 +56,16 @@ def main(path=None):
         if isinstance(tc, dict):
             tier_calls.update({k: v for k, v in tc.items() if isinstance(v, int)})
     if tier_calls:
-        _RATE = {"haiku": 1.0, "sonnet": 3.0, "opus": 5.0}   # input $/MTok; unknown/fixed → opus rate
-        _TOK = 276                                            # ≈ tokens per frontier call (see freshness)
+        _RATE = {"haiku": 1.0, "sonnet": 3.0, "opus": 5.0}   # INPUT $/MTok; unknown/fixed → opus rate
+        _TOK = 276                                            # ≈ INPUT tokens per frontier call (see freshness)
         total_cost = 0.0
-        print("\n  frontier by tier (model picker):")
+        print("\n  frontier by tier (model picker) — INPUT-token cost only, excludes thinking output:")
         for tier, c in tier_calls.most_common():
             cost = c * _TOK * _RATE.get(tier, 5.0) / 1_000_000
             total_cost += cost
-            print(f"    {tier:8} {c:>5}  ≈ ${cost:.4f}")
-        print(f"    {'total':8} {sum(tier_calls.values()):>5}  ≈ ${total_cost:.4f}")
+            print(f"    {tier:8} {c:>5}  ≥ ${cost:.4f}")
+        print(f"    {'total':8} {sum(tier_calls.values()):>5}  ≥ ${total_cost:.4f}  (lower bound;"
+              " sonnet/opus thinking bills as output at ~5× input rate, not counted)")
 
     # which digests drift most
     from collections import Counter

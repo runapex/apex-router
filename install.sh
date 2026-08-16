@@ -36,6 +36,11 @@ INSTALL_DIR="${APEX_ROUTER_DIR:-$HOME/.apex-router}"
 REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
 DO_ORNITH_SERVE=0
+# Set to 1 ONLY when install_ornith_service actually installs the launchd worker (macOS + not
+# short-circuited). install_watchers gates --no-drain on THIS, not on the requested --ornith-serve:
+# on Linux/Intel-mac / --no-ornith / a bootstrap that never ran, no worker exists, so the watcher
+# drainer must stay or the queue is never drained (Codex xval P1).
+ORNITH_WORKER_INSTALLED=0
 DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
@@ -302,6 +307,7 @@ PLIST
     [ "$loaded" = "1" ] && ok "  loaded $n" \
       || warn "  failed to load $n — old instance may still be unloading; re-run: launchctl bootstrap gui/$uid $agents/$n.plist"
   done
+  ORNITH_WORKER_INSTALLED=1   # the drain-owning worker is now installed → watchers may skip drain
   ok "Ornith server + overnight cycle loaded. The model takes ~1-3min to load on first start."
   echo "    The WORKER is intentionally NOT auto-started (it would drain the queue before the"
   echo "    model is ready). Once the server answers, start it with:"
@@ -448,8 +454,12 @@ install_watchers() {
   # queue drainer (com.ornith.worker) on the SAME inbox; installing the drain watcher too would run
   # two daemons on one single-GPU queue. Pass --no-drain so the watcher contributes only the daily
   # report and the Ornith worker owns draining.
+  # Skip the watcher drainer ONLY when the Ornith worker actually installed (macOS, not
+  # short-circuited) — not merely when --ornith-serve was requested. Otherwise a Linux/Intel-mac /
+  # --no-ornith / failed-bootstrap run would strip the drainer with nothing to replace it, leaving
+  # the queue undrained while the installer reports success (Codex xval P1).
   local no_drain=""
-  [ "$DO_ORNITH_SERVE" = "1" ] && no_drain="--no-drain"
+  [ "$ORNITH_WORKER_INSTALLED" = "1" ] && no_drain="--no-drain"
   "$INSTALL_DIR/.venv/bin/apex-router" watch install $no_drain \
     && ok "watchers installed${no_drain:+ (drain skipped — Ornith worker drains the queue)} (apex-router watch status to check; watch uninstall to remove)" \
     || warn "watcher install did not complete (routing still works; try 'apex-router watch install')"
