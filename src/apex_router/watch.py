@@ -159,7 +159,7 @@ def _xml(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def _launchd_install() -> list[str]:
+def _launchd_install(no_drain: bool = False) -> list[str]:
     agents = Path.home() / "Library/LaunchAgents"
     logs = Path.home() / ".apex-router/logs"
     agents.mkdir(parents=True, exist_ok=True)
@@ -170,6 +170,13 @@ def _launchd_install() -> list[str]:
         (LABEL_DRAIN, [_py(), "-m", "apex_router.ornith.ornith_worker"], True, None),
         (LABEL_DAILY, [_py(), "-m", "apex_router.watch", "--run-daily"], False, (9, 0)),
     ]
+    if no_drain:
+        # The Ornith launchd stack (--ornith-serve) already installs com.ornith.worker draining the
+        # SAME queue; running the drain watcher too puts two daemons on one single-GPU inbox. Skip
+        # drain here and remove any drain unit a prior (non--ornith-serve) install left behind.
+        units = [u for u in units if u[0] != LABEL_DRAIN]
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_DRAIN}"], capture_output=True)
+        (agents / f"{LABEL_DRAIN}.plist").unlink(missing_ok=True)
     for label, args, keepalive, cal in units:
         plist = agents / f"{label}.plist"
         plist.write_text(_launchd_plist(label, args, keepalive=keepalive, calendar=cal))
@@ -264,15 +271,25 @@ def _systemctl(*args) -> None:
     subprocess.run(["systemctl", "--user", *args], capture_output=True)
 
 
-def _systemd_install() -> list[str]:
+def _systemd_install(no_drain: bool = False) -> list[str]:
     d = _systemd_dir()
     d.mkdir(parents=True, exist_ok=True)
-    for name, body in _systemd_units().items():
+    units = _systemd_units()
+    if no_drain:
+        # Ornith stack owns queue draining — don't also run the drain service on the same inbox.
+        _systemctl("disable", "--now", "apex-router-drain.service")
+        units.pop("apex-router-drain.service", None)
+        (d / "apex-router-drain.service").unlink(missing_ok=True)
+    for name, body in units.items():
         (d / name).write_text(body)
     _systemctl("daemon-reload")
-    _systemctl("enable", "--now", "apex-router-drain.service")
+    installed = []
+    if not no_drain:
+        _systemctl("enable", "--now", "apex-router-drain.service")
+        installed.append("apex-router-drain.service")
     _systemctl("enable", "--now", "apex-router-daily.timer")
-    return ["apex-router-drain.service", "apex-router-daily.timer"]
+    installed.append("apex-router-daily.timer")
+    return installed
 
 
 def _systemd_uninstall() -> list[str]:
@@ -330,12 +347,15 @@ def _systemd_uninstall_serve() -> list[str]:
 
 # --------------------------------------------------------------------------- public API
 
-def install() -> list[str]:
-    """Install both watchers for the current OS. Returns the unit labels installed."""
+def install(no_drain: bool = False) -> list[str]:
+    """Install the watchers for the current OS. Returns the unit labels installed.
+    With no_drain=True the always-on drain worker is skipped (and any existing one removed) —
+    used when the Ornith launchd stack (--ornith-serve) already provides the queue drainer, so
+    two daemons don't poll the same single-GPU inbox."""
     if _is_macos():
-        return _launchd_install()
+        return _launchd_install(no_drain=no_drain)
     if _is_linux():
-        return _systemd_install()
+        return _systemd_install(no_drain=no_drain)
     raise SystemExit(f"unsupported OS for watchers: {platform.system()}")
 
 
@@ -430,11 +450,13 @@ def main(argv=None) -> int:
     ap.add_argument("action", nargs="?", default="status",
                     choices=["install", "uninstall", "status", "install-serve", "uninstall-serve"])
     ap.add_argument("--run-daily", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--no-drain", action="store_true",
+                    help="skip the always-on drain worker (the Ornith stack drains the queue instead)")
     a = ap.parse_args(argv)
     if a.run_daily:
         return run_daily()
     if a.action == "install":
-        print("installed watchers:", ", ".join(install()))
+        print("installed watchers:", ", ".join(install(no_drain=a.no_drain)))
     elif a.action == "uninstall":
         print("removed watchers:", ", ".join(uninstall()) or "(none)")
     elif a.action == "install-serve":

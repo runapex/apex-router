@@ -36,6 +36,11 @@ INSTALL_DIR="${APEX_ROUTER_DIR:-$HOME/.apex-router}"
 REPO_URL="$REPO_URL_DEFAULT"
 DO_ORNITH=1
 DO_ORNITH_SERVE=0
+# Set to 1 ONLY when install_ornith_service actually installs the launchd worker (macOS + not
+# short-circuited). install_watchers gates --no-drain on THIS, not on the requested --ornith-serve:
+# on Linux/Intel-mac / --no-ornith / a bootstrap that never ran, no worker exists, so the watcher
+# drainer must stay or the queue is never drained (Codex xval P1).
+ORNITH_WORKER_INSTALLED=0
 DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
@@ -267,13 +272,17 @@ PLIST
   _ornith_plist com.ornith.server \
     "<string>/bin/bash</string><string>$INSTALL_DIR/serve-ornith.sh</string>" \
     '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>' ''
-  # Worker: NOT RunAtLoad — if it starts with the server it would drain the queue while the
-  # 35B model is still loading and fail those jobs (POSTs aren't retried) (Codex #3). KeepAlive
-  # keeps it up once launched; kick it off after the server is confirmed ready (see note printed
-  # at the end). A future readiness-gated start can replace the manual kick.
+  # Worker: must NOT start at bootstrap — if it starts with the server it would drain the queue
+  # while the 35B model is still loading and fail those jobs (POSTs aren't retried) (Codex #3).
+  # There is NO launchd keepalive form that both stays idle at load AND self-restarts: a bare
+  # <key>KeepAlive</key><true/> starts immediately at load (regardless of RunAtLoad), and a KeepAlive
+  # *dict* (e.g. SuccessfulExit=false) also runs once at load — launchd must run a job to ever observe
+  # its exit. So install the worker with NEITHER RunAtLoad NOR KeepAlive: it loads IDLE and is started
+  # on demand by the `launchctl kickstart` the installer prints once the server is ready. (Trade-off:
+  # no automatic crash-restart; a future readiness-gated supervisor is the intended replacement.)
   _ornith_plist com.ornith.worker \
     "<string>$py</string><string>-m</string><string>apex_router.ornith.ornith_worker</string>" \
-    '<key>KeepAlive</key><true/>' ''
+    '' ''
   _ornith_plist com.ornith.overnight \
     "<string>$py</string><string>-m</string><string>apex_router.ornith.overnight_cycle</string>" \
     '' '<key>StartCalendarInterval</key><dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>30</integer></dict>'
@@ -285,7 +294,11 @@ PLIST
     # can race a not-yet-finished bootout (Codex #4). We DON'T use `bootout --wait` — it can
     # block indefinitely; a short retry loop is safer for an installer and reports honestly if
     # the label is still stuck rather than falsely claiming success.
-    launchctl bootout "gui/$uid/$n" >/dev/null 2>&1
+    # bootout is best-effort cleanup of a prior instance; on a fresh machine the label
+    # isn't loaded and bootout exits 3 ("No such process"). Under `set -e` an unguarded
+    # failure here aborts the whole installer before ANY agent is bootstrapped (and before
+    # watchers/proxy/verify run), so swallow it — the retry-bootstrap below is what matters.
+    launchctl bootout "gui/$uid/$n" >/dev/null 2>&1 || true
     local tries=0 loaded=0
     while [ "$tries" -lt 3 ]; do
       if launchctl bootstrap "gui/$uid" "$agents/$n.plist" >/dev/null 2>&1; then loaded=1; break; fi
@@ -294,6 +307,7 @@ PLIST
     [ "$loaded" = "1" ] && ok "  loaded $n" \
       || warn "  failed to load $n — old instance may still be unloading; re-run: launchctl bootstrap gui/$uid $agents/$n.plist"
   done
+  ORNITH_WORKER_INSTALLED=1   # the drain-owning worker is now installed → watchers may skip drain
   ok "Ornith server + overnight cycle loaded. The model takes ~1-3min to load on first start."
   echo "    The WORKER is intentionally NOT auto-started (it would drain the queue before the"
   echo "    model is ready). Once the server answers, start it with:"
@@ -436,8 +450,18 @@ install_watchers() {
   }
   say "installing background watchers ($OS)"
   # launchd on macOS, systemd --user on Linux — the CLI picks the right one.
-  "$INSTALL_DIR/.venv/bin/apex-router" watch install \
-    && ok "watchers installed (apex-router watch status to check; watch uninstall to remove)" \
+  # When the Ornith launchd stack (--ornith-serve) is also being installed, it already provides a
+  # queue drainer (com.ornith.worker) on the SAME inbox; installing the drain watcher too would run
+  # two daemons on one single-GPU queue. Pass --no-drain so the watcher contributes only the daily
+  # report and the Ornith worker owns draining.
+  # Skip the watcher drainer ONLY when the Ornith worker actually installed (macOS, not
+  # short-circuited) — not merely when --ornith-serve was requested. Otherwise a Linux/Intel-mac /
+  # --no-ornith / failed-bootstrap run would strip the drainer with nothing to replace it, leaving
+  # the queue undrained while the installer reports success (Codex xval P1).
+  local no_drain=""
+  [ "$ORNITH_WORKER_INSTALLED" = "1" ] && no_drain="--no-drain"
+  "$INSTALL_DIR/.venv/bin/apex-router" watch install $no_drain \
+    && ok "watchers installed${no_drain:+ (drain skipped — Ornith worker drains the queue)} (apex-router watch status to check; watch uninstall to remove)" \
     || warn "watcher install did not complete (routing still works; try 'apex-router watch install')"
 }
 

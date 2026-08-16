@@ -46,6 +46,8 @@ def main(argv=None) -> int:
     watch.add_argument("action", nargs="?", default="status",
                        choices=["install", "uninstall", "status",
                                 "install-serve", "uninstall-serve"])
+    watch.add_argument("--no-drain", action="store_true",
+                       help="on 'install', skip the drain worker (Ornith stack drains instead)")
     setup_proxy = sub.add_parser(
         "setup-proxy",
         help="merge proxy client env into ~/.claude/settings.json (from --config/env)")
@@ -77,7 +79,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "watch":
         from . import watch as watch_mod
-        return watch_mod.main([args.action])
+        return watch_mod.main([args.action] + (["--no-drain"] if args.no_drain else []))
 
     if args.cmd in ("serve", "proxy"):
         # `serve` is shorthand for `proxy serve`; `proxy <sub> …` forwards the rest verbatim.
