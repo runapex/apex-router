@@ -7,6 +7,7 @@ Importing this module has NO side effects (no mkdir, no polling loop) — the da
 lives in main() behind the __main__ guard so the package imports cleanly.
 """
 import json
+import os
 import time
 import traceback
 from datetime import datetime, timezone
@@ -15,6 +16,11 @@ from pathlib import Path
 from .dispatch import run_job
 from .offload_telemetry import OffloadRecord, usage_tokens, write_offload
 from .queue_paths import queue_root
+
+# The model label recorded in offload telemetry. Defaults to the historical Ornith 35B value so
+# existing telemetry is unchanged; set APEX_OFFLOAD_MODEL_LABEL when the worker drains a different
+# backend (e.g. qwen3.8 via the proxy) so the rows are labelled accurately, not as ornith-35b.
+MODEL_LABEL = os.environ.get("APEX_OFFLOAD_MODEL_LABEL", "ornith-35b")
 
 # CODE_ROOT (the package dir) is watched by the version-guard — it must NOT move with the queue.
 # QUEUE_ROOT (jobs/state) is config-driven (APEX_ORNITH_QUEUE, default ~/.apex-router/queue) so the
@@ -52,7 +58,7 @@ def _process_one(run: Path) -> None:
         done = True
         run.unlink(missing_ok=True)
         p, c, cached = usage_tokens(res.usage)
-        write_offload(OffloadRecord(ts=time.time(), lane=res.lane, model='ornith-35b',
+        write_offload(OffloadRecord(ts=time.time(), lane=res.lane, model=MODEL_LABEL,
             ok=res.ok, gated=res.gated, escalated=res.escalate, prompt_tokens=p,
             completion_tokens=c, cached_tokens=cached, latency_ms=int((time.time() - t0) * 1000)))
     except Exception as e:  # noqa: BLE001
@@ -63,7 +69,7 @@ def _process_one(run: Path) -> None:
             except OSError:
                 pass
             run.unlink(missing_ok=True)
-            write_offload(OffloadRecord(ts=time.time(), lane=lane, model='ornith-35b', ok=False,
+            write_offload(OffloadRecord(ts=time.time(), lane=lane, model=MODEL_LABEL, ok=False,
                 gated=False, prompt_tokens=None, completion_tokens=None, cached_tokens=None,
                 latency_ms=int((time.time() - t0) * 1000), escalated=True))
 
