@@ -17,9 +17,13 @@ export CODEQA_REPOS=~/.apex-router/codeqa/repos    # where codeqa reads repo con
 mkdir -p "$CODEQA_REPOS"
 ```
 
-Ornith server up (needed only for `ask`, not for `doctor`/`retrieve`):
+Local model reachable (needed only for `ask`/`ground`, not for `doctor`/`retrieve`). codeqa reaches
+the model at `ORNITH_URL` (default `http://127.0.0.1:8080`); this works whether that endpoint is a
+direct model server or a proxy fronting an OpenAI-compatible backend:
 ```bash
-curl -s http://127.0.0.1:8080/v1/models | grep -qi ornith && echo "ornith up" || echo "ornith DOWN"
+BASE="${ORNITH_URL:-http://127.0.0.1:8080}"
+curl -s -m 3 -o /dev/null -w '%{http_code}\n' "$BASE/v1/models" | grep -q 200 \
+  && echo "model up" || echo "model DOWN"
 ```
 
 ## 1. Register each repo (root = YOUR checkout path)
@@ -77,13 +81,18 @@ $PY -m apex_router.codeqa.cli doctor --check ; echo "exit=$?"
 ## 3. End-to-end smoke (per repo)
 
 ```bash
-# retrieval only — proves globs/root find code, NO Ornith needed:
+# retrieval only — proves globs/root find code, NO model needed:
 $PY -m apex_router.codeqa.cli retrieve webapp "where is policy computed"
 
-# full grounded answer — needs the Ornith server up:
-$PY -m apex_router.codeqa.cli ask webapp "what does the policy service do" --max-tokens 1500
-$PY -m apex_router.codeqa.cli ask qa-suite  "how are regression suites structured" --max-tokens 1500
-$PY -m apex_router.codeqa.cli ask apex    "what does the proxy shadow handler do" --max-tokens 1500
+# full grounded answer — needs the local model reachable (see the readiness check above).
+# --max-tokens is optional: omit it to use the repo config's max_tokens, else the 1200 default.
+$PY -m apex_router.codeqa.cli ask webapp "what does the policy service do"
+$PY -m apex_router.codeqa.cli ask qa-suite  "how are regression suites structured"
+$PY -m apex_router.codeqa.cli ask apex    "what does the proxy shadow handler do"
+
+# ground a finding's file:line citations against live code — NO model needed (deterministic).
+# exits 2 if any citation is 'stale' (file exists but the cited line is past end-of-file).
+echo "the bug is at webapp/app/policy.rb:42" | $PY -m apex_router.codeqa.cli ground --check
 ```
 
 ## 4. apex-router package validation (separate from repos)
