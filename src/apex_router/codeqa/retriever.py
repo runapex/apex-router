@@ -62,6 +62,7 @@ class RepoConfig:
     exclude_globs: list[str]
     code_exts: list[str]
     definition_patterns: list[str]
+    max_tokens: int | None = None   # per-repo answer budget override (None -> caller default)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -77,6 +78,9 @@ class RepoConfig:
         if not root.exists():
             raise RetrievalError(f"Repo root does not exist: {root}")
         digest = Path(str(d["digest"])).expanduser() if d.get("digest") else None
+        mt = d.get("max_tokens")
+        if mt is not None and (not isinstance(mt, int) or isinstance(mt, bool) or mt <= 0):
+            raise RetrievalError(f"{name}: max_tokens must be a positive int, got {mt!r}")
         return cls(
             name=d["name"], root=root, language=d.get("language", "unknown"),
             digest=digest if (digest and digest.exists()) else None,
@@ -87,6 +91,7 @@ class RepoConfig:
             exclude_globs=d.get("exclude_globs") or [],
             code_exts=d.get("code_exts") or [],
             definition_patterns=d.get("definition_patterns") or [],
+            max_tokens=mt,
             raw=d,
         )
 

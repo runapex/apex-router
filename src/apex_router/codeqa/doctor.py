@@ -113,6 +113,18 @@ def repo_health(*, repos_dir: Path) -> list[dict]:
                 row["code_files"] = _count_code_files(
                     root, d.get("search_globs") or ["**"],
                     d.get("code_exts") or [], d.get("exclude_globs") or [])
+            # Contract check: the config must also survive the PRODUCTION loader, so doctor can't OK
+            # a config that every runtime command rejects (validator-matches-production; e.g. an
+            # invalid max_tokens is rejected by RepoConfig.load but is invisible to the parsing above).
+            if row["root_exists"]:
+                from .retriever import REPOS_DIR as _RD, RepoConfig as _RC
+                if Path(_RD).resolve() == Path(repos_dir).resolve():
+                    try:
+                        _RC.load(name)
+                    except Exception as le:  # noqa: BLE001
+                        row["config_ok"] = False
+                        row["error"] = f"RepoConfig.load rejected: {le}"
+                        rows.append(row); continue
             # Healthy = parses + required keys + root present + at least one reachable code file.
             row["ok"] = row["config_ok"] and row["root_exists"] and row["code_files"] > 0
         except Exception as e:  # noqa: BLE001

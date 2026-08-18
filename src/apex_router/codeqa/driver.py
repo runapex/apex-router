@@ -74,9 +74,13 @@ def _format_context(chunks: list[Chunk]) -> str:
     return "\n\n".join(parts)
 
 
-def ask(repo: str, question: str, *, max_chunks: int = 10, max_tokens: int = 1200,
+def ask(repo: str, question: str, *, max_chunks: int = 10, max_tokens: int | None = None,
         enable_thinking: bool = False) -> Answer:
-    """Answer ONE question about `repo` with Ornith, grounded in retrieved chunks.
+    """Answer ONE question about `repo` with the local model, grounded in retrieved chunks.
+
+    max_tokens resolution: explicit arg > the repo config's `max_tokens` > 1200 default. A repo
+    whose answers get truncated (e.g. a repo of larger source files) can raise its own budget in
+    its config JSON without changing the global default.
 
     `enable_thinking=False` by default: extraction/synthesis over provided context is the
     fidelity lane, where thinking is the runaway-budget vector (an under-budgeted thinking
@@ -84,6 +88,8 @@ def ask(repo: str, question: str, *, max_chunks: int = 10, max_tokens: int = 120
     questions, with a generous max_tokens.
     """
     cfg = RepoConfig.load(repo)
+    if max_tokens is None:
+        max_tokens = cfg.max_tokens if cfg.max_tokens is not None else 1200
 
     # Honest capability gate: this is a single 'extract/synthesis' item. Report a
     # mis-route rather than silently push a bad task at dense Ornith.
@@ -111,7 +117,7 @@ def ask(repo: str, question: str, *, max_chunks: int = 10, max_tokens: int = 120
 
 
 def ask_many(repo: str, questions: list[str], *, max_chunks: int = 10,
-             max_tokens: int = 1200) -> list[Answer]:
+             max_tokens: int | None = None) -> list[Answer]:
     """Answer several questions, reusing the frozen digest preamble across them.
 
     Each question is sent as its own [frozen_preamble, per-question context] request.
