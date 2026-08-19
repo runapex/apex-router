@@ -59,6 +59,17 @@ def run_job(job: dict, *, chat=_default_chat, codegen=_default_codegen,
         preamble = job.get("preamble") or _DEFAULT_REVIEW_PREAMBLE
         return review(preamble, diff, max_tokens=min(max_tokens, 1024))
 
+    if lane in ("citation", "search", "extraction"):
+        # Retrieval-style sub-task: the local model answers with file:line citations; the GROUNDING
+        # verifier (not an in-lane gate) decides acceptance. ok=True means "produced an answer to
+        # verify", NOT "verified" — gated=False, so the composed adjudicator gates it via the type
+        # verifier. Thinking-OFF (extraction/citation is the fidelity lane).
+        messages = job.get("messages") or [{"role": "user", "content": job.get("task", "")}]
+        r = chat(messages, max_tokens=max_tokens, enable_thinking=False)
+        return LaneResult(lane, ok=True, escalate=False, output=getattr(r, "answer", ""),
+                          usage=getattr(r, "usage", None), gated=False,
+                          detail="citation lane; gate is the grounding verifier")
+
     # adhoc / unknown lane -> raw chat, thinking-OFF unless the job explicitly opts in.
     messages = job.get("messages") or [{"role": "user", "content": job.get("task", "")}]
     r = chat(messages, max_tokens=max_tokens,

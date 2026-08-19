@@ -70,6 +70,25 @@ class TestDispatch(unittest.TestCase):
         self.assertFalse(res.ok)                 # raw completion is never an earned pass
         self.assertEqual(self.s.calls[0], ("chat", False))   # thinking-OFF default
 
+    def test_citation_lane_produces_verifiable_result(self):
+        # Stage 2.5 (Codex xval F2): a citation sub-task must reach a real lane (not fall to adhoc),
+        # so its grounding VERIFIER can gate it. ok=True means "produced an answer to verify", NOT
+        # "verified"; gated=False because there's no in-lane correctness gate — the verifier is the gate.
+        res = self._run({"lane": "citation", "task": "where is X"})
+        self.assertEqual(res.lane, "citation")
+        self.assertEqual(res.output, "raw answer")
+        self.assertTrue(res.ok)                  # produced an answer; verifier decides acceptance
+        self.assertFalse(res.escalate)
+        self.assertFalse(res.gated)              # no in-lane gate; grounding verifier is the gate
+        self.assertEqual(self.s.calls[0], ("chat", False))   # thinking-OFF
+
+    def test_search_and_extraction_route_like_citation(self):
+        for lane in ("search", "extraction"):
+            res = self._run({"lane": lane, "task": "q"})
+            self.assertEqual(res.lane, lane)
+            self.assertTrue(res.ok)
+            self.assertFalse(res.gated)
+
     def test_missing_lane_defaults_to_adhoc(self):
         res = self._run({"messages": [{"role": "user", "content": "hi"}]})
         self.assertEqual(res.lane, "adhoc")
