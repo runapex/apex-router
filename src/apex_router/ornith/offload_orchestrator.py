@@ -65,6 +65,19 @@ def _default_adjudicate(subtask: SubTask, lane_result) -> bool:
     return ok and gated and not escalate
 
 
+def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None) -> bool:
+    """Stage 2 default adjudicator: accept iff BOTH necessary gates pass — the lane contract
+    (`ok ∧ gated ∧ not escalate`, Stage 1) AND the sub-task type's verifier (applicable AND passed).
+    Either failing -> escalate. A type with no verifier, or a verifier that can't judge this result
+    (not applicable), is NOT accepted. Both gates are NECESSARY, neither sufficient: cross-validation
+    downstream remains the semantic trust gate for whatever this accepts (spec F1/F7)."""
+    if not _default_adjudicate(subtask, lane_result):
+        return False
+    from .verifiers import verify
+    v = verify(subtask.type, lane_result, ground_fn=ground_fn)
+    return v.applicable and v.passed
+
+
 def _default_log(task_type: str, outcome: str) -> None:
     from ..route_log import log_outcome
     log_outcome(task_type, "qwen3.8", outcome)   # outcome ∈ {"ok","escalated"}
@@ -72,7 +85,7 @@ def _default_log(task_type: str, outcome: str) -> None:
 
 def orchestrate(subtask: SubTask, *, advise_fn: Callable = _default_advise,
                 dispatch_fn: Callable = _default_dispatch,
-                adjudicate_fn: Callable = _default_adjudicate,
+                adjudicate_fn: Callable = composed_adjudicate,
                 log_fn: Callable = _default_log) -> dict:
     """Run one sub-task through the loop. Returns
     {routed: "local"|"frontier", accepted: bool, escalated: bool, output: str}.

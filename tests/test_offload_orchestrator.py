@@ -13,7 +13,9 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from apex_router.ornith.offload_orchestrator import orchestrate, SubTask  # noqa: E402
+from apex_router.ornith.offload_orchestrator import (  # noqa: E402
+    orchestrate, SubTask, composed_adjudicate,
+)
 
 
 class _LR:  # stand-in LaneResult
@@ -109,6 +111,45 @@ class TestOrchestrator(unittest.TestCase):
         )
         self.assertFalse(r["accepted"])                 # ungated + escalate → NOT accepted
         self.assertEqual(logged, [("review", "escalated")])
+
+
+def _fake_ground(applicable, has_problem, has_grounded):
+    return lambda text: type("G", (), {"applicable": applicable, "has_problem": has_problem,
+                                       "has_grounded": has_grounded})()
+
+
+class TestComposedAdjudicator(unittest.TestCase):
+    def test_accept_needs_both_lane_contract_and_verifier(self):
+        # codegen: passed the lane gate (ok∧gated∧not-escalate) AND its verifier -> accepted.
+        lr = _LR(ok=True, escalate=False, output="ok"); lr.gated = True
+        self.assertTrue(composed_adjudicate(SubTask(type="codegen", payload={}), lr))
+
+    def test_reject_when_lane_contract_fails(self):
+        lr = _LR(ok=False, escalate=True, output=""); lr.gated = True
+        self.assertFalse(composed_adjudicate(SubTask(type="codegen", payload={}), lr))
+
+    def test_reject_when_verifier_fails_even_if_lane_ok(self):
+        # citation: lane says gated-ok, but the cited code doesn't ground -> verifier fails -> reject.
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/gone.py:999"); lr.gated = True
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=True, has_grounded=False))
+        self.assertFalse(r)
+
+    def test_accept_citation_when_grounds_and_lane_ok(self):
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/mod.py:1"); lr.gated = True
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=False, has_grounded=True))
+        self.assertTrue(r)
+
+    def test_reject_when_no_verifier_for_type(self):
+        lr = _LR(ok=True, escalate=False); lr.gated = True
+        self.assertFalse(composed_adjudicate(SubTask(type="subjective", payload={}), lr))
+
+    def test_reject_when_verifier_not_applicable(self):
+        lr = _LR(ok=True, escalate=False, output="prose"); lr.gated = True
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(False, has_problem=False, has_grounded=False))
+        self.assertFalse(r)
 
 
 if __name__ == "__main__":
