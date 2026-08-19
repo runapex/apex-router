@@ -77,13 +77,12 @@ class TestVerifiers(unittest.TestCase):
         self.assertIn("search", HAS_VERIFIER)
         self.assertIn("extraction", HAS_VERIFIER)
 
-    def test_dispatchable_types_is_the_honest_end_to_end_set(self):
-        # Codex xval F2: a verifier only gates real traffic if run_job produces that lane. Only
-        # codegen does today; citation/search/extraction are defined but pending dispatch wiring.
+    def test_dispatchable_types_cover_all_verifiers_after_stage_2_5(self):
+        # Stage 2.5 closes Codex xval F2: run_job now produces citation/search/extraction lanes, so
+        # every HAS_VERIFIER type gates live traffic and PENDING_DISPATCH is empty.
         from apex_router.ornith.verifiers import DISPATCHABLE_TYPES, PENDING_DISPATCH
-        self.assertEqual(DISPATCHABLE_TYPES, frozenset({"codegen"}))
-        self.assertEqual(PENDING_DISPATCH, HAS_VERIFIER - DISPATCHABLE_TYPES)
-        self.assertIn("citation", PENDING_DISPATCH)
+        self.assertEqual(DISPATCHABLE_TYPES, HAS_VERIFIER)
+        self.assertEqual(PENDING_DISPATCH, frozenset())
 
     def test_all_citations_must_ground_via_real_verdict(self):
         # Codex xval F3: a result mixing a grounded cite with an unverified/advisory one must NOT pass.

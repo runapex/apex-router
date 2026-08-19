@@ -151,6 +151,33 @@ class TestComposedAdjudicator(unittest.TestCase):
                                 ground_fn=_fake_ground(False, has_problem=False, has_grounded=False))
         self.assertFalse(r)
 
+    def test_accept_verifier_gated_citation_lane(self):
+        # Stage 2.5: a citation lane result (ok=True, gated=False, not escalate) whose grounding
+        # verifier passes must be ACCEPTED — the verifier is its gate, so the lane's gated=False must
+        # not block it via the lane-contract check.
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/mod.py:1"); lr.gated = False
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=False, has_grounded=True))
+        self.assertTrue(r)
+
+    def test_verifier_gated_citation_that_fails_grounding_is_rejected(self):
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/gone.py:999"); lr.gated = False
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=True, has_grounded=False))
+        self.assertFalse(r)
+
+    def test_citation_lane_that_escalates_is_rejected(self):
+        lr = _LR(ok=True, escalate=True, output="x"); lr.gated = False
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=False, has_grounded=True))
+        self.assertFalse(r)
+
+    def test_codegen_still_needs_lane_gated(self):
+        # codegen's gate is its tests; an ungated codegen result (gated=False) never earned
+        # acceptance and must still be rejected — the verifier-gated relaxation is citation-only.
+        lr = _LR(ok=True, escalate=False, output="code"); lr.gated = False
+        self.assertFalse(composed_adjudicate(SubTask(type="codegen", payload={}), lr))
+
     def test_xval_seam_can_reject_a_necessary_gate_pass(self):
         # Codex xval F1: a result that passes the necessary gates but is SEMANTICALLY false (real cite,
         # wrong claim) must be rejectable by the cross-validation seam for committed work.

@@ -60,15 +60,15 @@ _REGISTRY: dict[str, Callable[..., VerifierResult]] = {
     "extraction": _verify_citations,
 }
 
-# ⚠ DISPATCH GAP (Codex xval F2): a verifier only gates REAL traffic if `dispatch.run_job` actually
-# produces that lane. Today run_job routes only "codegen" and "review" (everything else falls to
-# "adhoc" with ok=False/gated=False, which the lane contract rejects BEFORE any verifier runs). So the
-# citation/search/extraction verifiers are defined and unit-tested, but do NOT yet gate live traffic —
-# wiring their dispatch lanes is a required companion change (tracked as follow-up, NOT silently
-# assumed working). DISPATCHABLE_TYPES is the honest set of types that reach their verifier end-to-end.
-DISPATCHABLE_TYPES = frozenset({"codegen"})
-HAS_VERIFIER = frozenset(_REGISTRY)                       # verifiers that EXIST (some not yet dispatchable)
-PENDING_DISPATCH = HAS_VERIFIER - DISPATCHABLE_TYPES      # defined but not yet wired into run_job
+# DISPATCH WIRING (Stage 2.5, closes Codex xval F2): a verifier only gates REAL traffic if
+# `dispatch.run_job` produces that lane. run_job now routes codegen (in-lane test gate) AND
+# citation/search/extraction (verifier-gated: no in-lane gate, the grounding verifier is the gate,
+# applied by offload_orchestrator.composed_adjudicate). So every HAS_VERIFIER type reaches its verifier
+# end-to-end; PENDING_DISPATCH is empty. Keep this in lock-step with dispatch.run_job's lanes and
+# offload_orchestrator._VERIFIER_GATED.
+DISPATCHABLE_TYPES = frozenset({"codegen", "citation", "search", "extraction"})
+HAS_VERIFIER = frozenset(_REGISTRY)
+PENDING_DISPATCH = HAS_VERIFIER - DISPATCHABLE_TYPES      # now empty — all verifiers gate live traffic
 
 
 def verify(task_type: str, lane_result, *, ground_fn: Callable | None = None) -> VerifierResult:
