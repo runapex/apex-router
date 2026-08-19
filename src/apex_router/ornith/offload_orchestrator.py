@@ -65,17 +65,27 @@ def _default_adjudicate(subtask: SubTask, lane_result) -> bool:
     return ok and gated and not escalate
 
 
-def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None) -> bool:
-    """Stage 2 default adjudicator: accept iff BOTH necessary gates pass — the lane contract
-    (`ok ∧ gated ∧ not escalate`, Stage 1) AND the sub-task type's verifier (applicable AND passed).
-    Either failing -> escalate. A type with no verifier, or a verifier that can't judge this result
-    (not applicable), is NOT accepted. Both gates are NECESSARY, neither sufficient: cross-validation
-    downstream remains the semantic trust gate for whatever this accepts (spec F1/F7)."""
+def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None, xval_fn=None) -> bool:
+    """Stage 2 default adjudicator: accept iff ALL applicable necessary gates pass:
+      1. the lane contract (`ok ∧ gated ∧ not escalate`, Stage 1),
+      2. the sub-task type's verifier (applicable AND passed), and
+      3. — when provided — the SEMANTIC cross-validation gate `xval_fn(subtask, lane_result) -> bool`.
+
+    The verifier is NECESSARY-not-sufficient (the grounding oracle is semantic-blind — a real-but-
+    unrelated cite still grounds; spec F7). So for a COMMITTED result the caller passes `xval_fn` (the
+    cross-validate-codex semantic gate) and it must ALSO pass — this is what actually prevents a
+    semantically-false-but-grounded result being accepted (Codex xval F1). For a NON-committed
+    sub-result the caller omits `xval_fn` and the necessary gates are final, per the spec. Either an
+    absent verifier or an inapplicable verifier means NOT accepted (escalate)."""
     if not _default_adjudicate(subtask, lane_result):
         return False
     from .verifiers import verify
     v = verify(subtask.type, lane_result, ground_fn=ground_fn)
-    return v.applicable and v.passed
+    if not (v.applicable and v.passed):
+        return False
+    if xval_fn is not None and not bool(xval_fn(subtask, lane_result)):
+        return False   # semantic cross-validation rejected a necessary-gate pass
+    return True
 
 
 def _default_log(task_type: str, outcome: str) -> None:

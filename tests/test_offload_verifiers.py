@@ -77,6 +77,29 @@ class TestVerifiers(unittest.TestCase):
         self.assertIn("search", HAS_VERIFIER)
         self.assertIn("extraction", HAS_VERIFIER)
 
+    def test_dispatchable_types_is_the_honest_end_to_end_set(self):
+        # Codex xval F2: a verifier only gates real traffic if run_job produces that lane. Only
+        # codegen does today; citation/search/extraction are defined but pending dispatch wiring.
+        from apex_router.ornith.verifiers import DISPATCHABLE_TYPES, PENDING_DISPATCH
+        self.assertEqual(DISPATCHABLE_TYPES, frozenset({"codegen"}))
+        self.assertEqual(PENDING_DISPATCH, HAS_VERIFIER - DISPATCHABLE_TYPES)
+        self.assertIn("citation", PENDING_DISPATCH)
+
+    def test_all_citations_must_ground_via_real_verdict(self):
+        # Codex xval F3: a result mixing a grounded cite with an unverified/advisory one must NOT pass.
+        # Use a real GroundVerdict-shaped object exposing a per-citation list.
+        def _cite(verdict):
+            return type("C", (), {"verdict": verdict})()
+        def ground_mixed(text):
+            return type("G", (), {"applicable": True,
+                                  "citations": [_cite("grounded"), _cite("unverified")]})()
+        r = verify("citation", _LR(output="mixed"), ground_fn=ground_mixed)
+        self.assertFalse(r.passed)   # one unverified cite -> not a pass
+        def ground_all(text):
+            return type("G", (), {"applicable": True,
+                                  "citations": [_cite("grounded"), _cite("grounded")]})()
+        self.assertTrue(verify("citation", _LR(output="all"), ground_fn=ground_all).passed)
+
 
 if __name__ == "__main__":
     unittest.main()

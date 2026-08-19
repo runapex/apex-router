@@ -39,9 +39,17 @@ def _verify_citations(lane_result, *, ground_fn: Callable | None = None, **_) ->
     g = gf(getattr(lane_result, "output", "") or "")
     if not getattr(g, "applicable", False):
         return VerifierResult(passed=False, applicable=False, detail="no groundable citation")
-    passed = bool(getattr(g, "has_grounded", False)) and not bool(getattr(g, "has_problem", False))
+    # Require EVERY citation to be 'grounded' — not merely "at least one grounded and none stale"
+    # (Codex xval F3: that laxer check passed a result mixing a real cite with an unverified/advisory
+    # one). A single stale/unverified cite means the result cited something the oracle can't confirm.
+    cites = getattr(g, "citations", None)
+    if cites is not None:
+        passed = bool(cites) and all(getattr(c, "verdict", "") == "grounded" for c in cites)
+    else:
+        # fall back to the aggregate flags when a fake verdict object exposes no citation list.
+        passed = bool(getattr(g, "has_grounded", False)) and not bool(getattr(g, "has_problem", False))
     return VerifierResult(passed=passed, applicable=True,
-                          detail="citations grounded" if passed else "stale/hallucinated/ungrounded cite")
+                          detail="all citations grounded" if passed else "stale/unverified/ungrounded cite")
 
 
 # task_type -> verifier fn. Types absent here are un-offloadable (auto-escalate).
@@ -52,7 +60,15 @@ _REGISTRY: dict[str, Callable[..., VerifierResult]] = {
     "extraction": _verify_citations,
 }
 
-HAS_VERIFIER = frozenset(_REGISTRY)
+# ⚠ DISPATCH GAP (Codex xval F2): a verifier only gates REAL traffic if `dispatch.run_job` actually
+# produces that lane. Today run_job routes only "codegen" and "review" (everything else falls to
+# "adhoc" with ok=False/gated=False, which the lane contract rejects BEFORE any verifier runs). So the
+# citation/search/extraction verifiers are defined and unit-tested, but do NOT yet gate live traffic —
+# wiring their dispatch lanes is a required companion change (tracked as follow-up, NOT silently
+# assumed working). DISPATCHABLE_TYPES is the honest set of types that reach their verifier end-to-end.
+DISPATCHABLE_TYPES = frozenset({"codegen"})
+HAS_VERIFIER = frozenset(_REGISTRY)                       # verifiers that EXIST (some not yet dispatchable)
+PENDING_DISPATCH = HAS_VERIFIER - DISPATCHABLE_TYPES      # defined but not yet wired into run_job
 
 
 def verify(task_type: str, lane_result, *, ground_fn: Callable | None = None) -> VerifierResult:

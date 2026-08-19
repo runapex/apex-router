@@ -19,11 +19,16 @@ def measure_false_accept(cases: list[dict]) -> dict:
     out: dict[str, dict] = {}
     for c in cases:
         tt = c["type"]
+        # is_wrong MUST be an explicit bool label (Codex xval F4/F5): string-truthiness ("false" is
+        # truthy) or a missing label would silently mis-bucket a case and skew the rate. A case without
+        # a real bool label is a harness error, not a silent "correct".
+        if not isinstance(c.get("is_wrong"), bool):
+            raise ValueError(f"case for {tt!r} must set is_wrong to a bool, got {c.get('is_wrong')!r}")
         cell = out.setdefault(tt, {"n": 0, "wrong": 0, "false_accepts": 0, "false_accept_rate": None})
         cell["n"] += 1
         v = verify(tt, c["lane_result"], ground_fn=c.get("ground_fn"))
         accepted = v.applicable and v.passed
-        if c.get("is_wrong"):
+        if c["is_wrong"]:
             cell["wrong"] += 1
             if accepted:
                 cell["false_accepts"] += 1

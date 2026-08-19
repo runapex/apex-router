@@ -151,6 +151,20 @@ class TestComposedAdjudicator(unittest.TestCase):
                                 ground_fn=_fake_ground(False, has_problem=False, has_grounded=False))
         self.assertFalse(r)
 
+    def test_xval_seam_can_reject_a_necessary_gate_pass(self):
+        # Codex xval F1: a result that passes the necessary gates but is SEMANTICALLY false (real cite,
+        # wrong claim) must be rejectable by the cross-validation seam for committed work.
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/mod.py:1"); lr.gated = True
+        gf = _fake_ground(True, has_problem=False, has_grounded=True)
+        # necessary gates pass, but xval says the claim is wrong -> reject.
+        self.assertFalse(composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                             ground_fn=gf, xval_fn=lambda st, r: False))
+        # xval agrees -> accept.
+        self.assertTrue(composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                            ground_fn=gf, xval_fn=lambda st, r: True))
+        # no xval seam (non-committed sub-result) -> necessary gates are final.
+        self.assertTrue(composed_adjudicate(SubTask(type="citation", payload={}), lr, ground_fn=gf))
+
 
 if __name__ == "__main__":
     unittest.main()

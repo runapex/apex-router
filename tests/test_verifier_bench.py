@@ -61,6 +61,14 @@ class TestVerifierBench(unittest.TestCase):
         out = format_bench(res)
         self.assertNotIn("cross-validation", out.lower())
 
+    def test_non_bool_label_is_rejected(self):
+        # Codex xval F4/F5: a string "false" is truthy and a missing label is silent — both must be
+        # a hard error, not a silent mis-bucket.
+        with self.assertRaises(ValueError):
+            measure_false_accept([{"type": "codegen", "lane_result": _LR(), "is_wrong": "false"}])
+        with self.assertRaises(ValueError):
+            measure_false_accept([{"type": "codegen", "lane_result": _LR()}])   # missing label
+
 
 if __name__ == "__main__":
     unittest.main()
