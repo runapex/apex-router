@@ -9,18 +9,37 @@ never retrieve its own correction.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..embed import cosine, embed
 
 
+def _parse_ts(v) -> datetime | None:
+    """ISO-8601 -> timezone-aware UTC datetime, or None if unparseable (naive is treated as UTC).
+    Fail-closed: a garbage/missing timestamp returns None so it can't slip past a cutoff by lexical
+    string ordering (e.g. '2026-08-09T20:30:00-04:00' is really 2026-08-10 00:30 UTC, AFTER a
+    '2026-08-10T00:00:00+00:00' cutoff, but sorts BEFORE it as a string)."""
+    if not isinstance(v, str) or not v.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(v.strip())
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
 def load_corrections(path: Path, *, before: str | None = None) -> list[dict]:
     """Read approved corrections from a jsonl file. When `before` (an ISO timestamp) is given, keep
-    only corrections with `created_at < before` — the SNAPSHOT cutoff (F5-b) so a measurement only
-    retrieves corpus captured before the eval set was frozen. Skips unapproved/malformed rows."""
+    only corrections whose PARSED created_at is strictly before the parsed cutoff — the SNAPSHOT
+    cutoff (F5-b). Timestamps are compared as timezone-aware UTC datetimes, NOT strings; a correction
+    with a missing/invalid created_at is DROPPED (fail-closed). Skips unapproved/malformed rows."""
     p = Path(path)
     if not p.exists():
         return []
+    cutoff = _parse_ts(before) if before is not None else None
+    if before is not None and cutoff is None:
+        raise ValueError(f"`before` is not a valid ISO timestamp: {before!r}")
     out: list[dict] = []
     for line in p.read_text().splitlines():
         line = line.strip()
@@ -32,8 +51,10 @@ def load_corrections(path: Path, *, before: str | None = None) -> list[dict]:
             continue
         if not r.get("approved_for_training"):
             continue
-        if before is not None and str(r.get("created_at", "")) >= before:
-            continue    # captured at/after the snapshot cutoff -> excluded
+        if cutoff is not None:
+            ts = _parse_ts(r.get("created_at"))
+            if ts is None or ts >= cutoff:
+                continue    # unparseable or at/after the cutoff -> excluded (fail-closed)
         out.append(r)
     return out
 

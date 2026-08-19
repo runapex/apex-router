@@ -46,6 +46,26 @@ class TestExemplars(unittest.TestCase):
     def test_missing_file_is_empty(self):
         self.assertEqual(load_corrections(Path("/no/such/approved.jsonl")), [])
 
+    def test_snapshot_cutoff_is_tz_aware_not_string_compare(self):
+        # Codex xval F1: '2026-08-09T20:30:00-04:00' is 2026-08-10 00:30 UTC — AFTER a
+        # '2026-08-10T00:00:00+00:00' cutoff, but sorts BEFORE it as a string. Must be excluded.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "approved.jsonl"
+            p.write_text("\n".join(json.dumps(r) for r in [
+                _rec("j1", "before", "2026-08-09T00:00:00+00:00"),
+                _rec("j2", "post-but-lexically-early", "2026-08-09T20:30:00-04:00"),
+                _rec("j3", "no-ts", None),          # missing/invalid ts -> fail-closed exclude
+            ]))
+            got = load_corrections(p, before="2026-08-10T00:00:00+00:00")
+            self.assertEqual([r["source_job_id"] for r in got], ["j1"])
+
+    def test_invalid_before_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "approved.jsonl"
+            p.write_text(json.dumps(_rec("j1", "x", "2026-08-01T00:00:00+00:00")))
+            with self.assertRaises(ValueError):
+                load_corrections(p, before="garbage")
+
     def test_retrieve_returns_k_nearest_by_cosine(self):
         corr = [_rec("j1", "auth login", "t"), _rec("j2", "flow summary", "t"),
                 _rec("j3", "auth token", "t")]

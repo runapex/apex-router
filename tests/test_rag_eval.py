@@ -73,6 +73,69 @@ class TestRagEval(unittest.TestCase):
                             k=2, embed_fn=_fake_embed)
         self.assertEqual(corr, before)              # no append/mutation during eval
 
+    # --- Codex refute-pass regressions (hardening) ---
+
+    def test_callback_cannot_inject_corpus_between_passes(self):
+        # Codex xval F2: an ask_fn that APPENDS to the corrections list must not affect the inject
+        # pass — the corpus is deep-copied per condition, so a hostile callback can't manufacture the
+        # improvement. (The old test used inert callbacks and missed this.)
+        cases = [{"query": "auth", "lineage": "cX"}]
+        corr = []   # start empty; a leak callback would add the case's own correction
+        def leaky_ask(messages):
+            injected = len(messages) > 2
+            if not injected:
+                corr.append(_corr("cX", "auth"))   # try to poison the corpus for the inject pass
+            return {"injected": injected}
+        r = measure_improvement(cases, corr, ask_fn=leaky_ask, judge_fn=_judge,
+                                snapshot_before=None, k=2, embed_fn=_fake_embed)
+        # the inject pass sees a deep copy taken at call time (empty), so no exemplar -> still escalates
+        # -> no fabricated improvement.
+        self.assertFalse(r["improved"])
+
+    def test_snapshot_is_enforced_with_tz_aware_compare(self):
+        # Codex xval F1: a post-freeze correction that sorts lexically BEFORE the cutoff must still be
+        # excluded (tz-aware parse), and snapshot_before must be APPLIED inside measure_improvement.
+        cases = [{"query": "auth", "lineage": "cX"}]
+        post = {"source_job_id": "j2", "created_at": "2026-08-09T20:30:00-04:00",  # = 08-10 00:30 UTC
+                "messages": [{"role": "user", "content": "auth"}], "corrected_answer": "x"}
+        r = measure_improvement(cases, [post], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before="2026-08-10T00:00:00+00:00", k=2, embed_fn=_fake_embed)
+        # the only correction is post-freeze -> excluded -> nothing to inject -> no improvement.
+        self.assertEqual(r["inject_rate"], 1.0)
+
+    def test_invalid_snapshot_timestamp_raises(self):
+        with self.assertRaises(ValueError):
+            measure_improvement([{"query": "q", "lineage": "c"}], [], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before="not-a-date", embed_fn=_fake_embed)
+
+    def test_missing_or_invalid_lineage_fails_closed(self):
+        # Codex xval F4: a case with no valid string lineage must NOT retrieve exemplars (could be its
+        # own correction) — it runs bare. Corpus text matches, but nothing is injected.
+        for bad in ({"query": "auth"}, {"query": "auth", "lineage": None},
+                    {"query": "auth", "lineage": ""}):
+            r = run_condition([bad], [_corr("j1", "auth")], inject=True, ask_fn=_ask,
+                              judge_fn=_judge, snapshot_before=None, k=2, embed_fn=_fake_embed)
+            self.assertEqual(r["escalated"], 1, f"lineage {bad.get('lineage')!r} should fail closed")
+
+    def test_negative_noise_floor_rejected(self):
+        # Codex xval F5: a negative floor would credit a WORSE result as improved.
+        with self.assertRaises(ValueError):
+            measure_improvement([{"query": "q", "lineage": "c"}], [], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before=None, noise_floor=-0.1, embed_fn=_fake_embed)
+
+    def test_empty_confirmation_set_rejected(self):
+        with self.assertRaises(ValueError):
+            measure_improvement([], [], ask_fn=_ask, judge_fn=_judge, snapshot_before=None,
+                                embed_fn=_fake_embed)
+
+    def test_dev_confirmation_overlap_rejected(self):
+        # Codex xval F3: a number tuned on the dev set can't be reported as held-out.
+        cases = [{"query": "auth", "lineage": "c1", "id": "case-7"}]
+        with self.assertRaises(ValueError):
+            measure_improvement(cases, [_corr("j1", "auth")], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before=None, embed_fn=_fake_embed,
+                                dev_case_ids=frozenset({"case-7"}))
+
 
 if __name__ == "__main__":
     unittest.main()
