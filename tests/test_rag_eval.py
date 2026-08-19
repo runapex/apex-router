@@ -136,6 +136,49 @@ class TestRagEval(unittest.TestCase):
                                 snapshot_before=None, embed_fn=_fake_embed,
                                 dev_case_ids=frozenset({"case-7"}))
 
+    # --- Codex refute-pass 2 regressions ---
+
+    def test_callback_cannot_poison_via_nested_mutation(self):
+        # Codex xval pass 2 F1: a callback that mutates a NESTED dict of the corpus during baseline
+        # must not affect the inject pass — each pass gets its own deep-copy of the frozen snapshot.
+        cases = [{"query": "auth", "lineage": "cX"}]
+        corr = [_corr("j1", "irrelevant")]   # doesn't match 'auth'
+        def poison_ask(messages):
+            injected = len(messages) > 2
+            if not injected:
+                corr[0]["messages"][0]["content"] = "auth"   # try to make it match for inject pass
+            return {"injected": injected}
+        r = measure_improvement(cases, corr, ask_fn=poison_ask, judge_fn=_judge,
+                                snapshot_before=None, k=2, embed_fn=_fake_embed)
+        self.assertFalse(r["improved"])
+
+    def test_correction_without_string_lineage_is_not_retrievable(self):
+        # Codex xval pass 2 F2: a correction with source_job_id None/non-string is unattributable —
+        # it could be the case's own correction — so it must never be injected.
+        cases = [{"query": "auth", "lineage": "cX"}]
+        no_sid = {"created_at": "2026-08-01T00:00:00+00:00",
+                  "messages": [{"role": "user", "content": "auth"}], "corrected_answer": "x"}
+        r = run_condition(cases, [no_sid], inject=True, ask_fn=_ask, judge_fn=_judge,
+                          snapshot_before=None, k=2, embed_fn=_fake_embed)
+        self.assertEqual(r["escalated"], 1)   # nothing retrievable -> escalates
+
+    def test_naive_timestamp_is_rejected_from_snapshot(self):
+        # Codex xval pass 2 F4: a naive (offset-less) created_at is ambiguous -> fail closed (dropped).
+        cases = [{"query": "auth", "lineage": "cX"}]
+        naive = {"source_job_id": "j1", "created_at": "2026-08-01T00:00:00",   # no offset
+                 "messages": [{"role": "user", "content": "auth"}], "corrected_answer": "x"}
+        r = measure_improvement(cases, [naive], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before="2026-09-01T00:00:00+00:00", k=2, embed_fn=_fake_embed)
+        self.assertEqual(r["inject_rate"], 1.0)   # naive-ts correction dropped -> nothing to inject
+
+    def test_idless_confirmation_case_rejected_when_dev_ids_given(self):
+        # Codex xval pass 2 F3: an id-less confirmation case would bypass disjointness -> rejected.
+        cases = [{"query": "auth", "lineage": "c1"}]   # no "id"
+        with self.assertRaises(ValueError):
+            measure_improvement(cases, [_corr("j1", "auth")], ask_fn=_ask, judge_fn=_judge,
+                                snapshot_before=None, embed_fn=_fake_embed,
+                                dev_case_ids=frozenset({"dev-7"}))
+
 
 if __name__ == "__main__":
     unittest.main()

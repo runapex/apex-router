@@ -27,16 +27,18 @@ _EPS = 1e-9   # guard the float boundary at exactly noise_floor
 
 
 def _parse_ts(v) -> datetime | None:
-    """Parse an ISO-8601 timestamp to a timezone-aware UTC datetime, or None if unparseable. A naive
-    timestamp (no tzinfo) is treated as UTC. Returns None (fail-closed at the call site) on anything
-    invalid — so a missing/garbage created_at is EXCLUDED from a snapshot, never lexically slipped in."""
+    """ISO-8601 with an EXPLICIT offset -> timezone-aware UTC datetime, or None. Fail-closed on
+    non-string, garbage, AND naive (offset-less) timestamps — a naive value could be a post-freeze
+    local time silently admitted if assumed UTC (Codex xval). Mirror of exemplars._parse_ts."""
     if not isinstance(v, str) or not v.strip():
         return None
     try:
         dt = datetime.fromisoformat(v.strip())
     except ValueError:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(timezone.utc)
 
 
 def _apply_snapshot(corrections: list[dict], snapshot_before) -> list[dict]:
@@ -59,31 +61,38 @@ def _apply_snapshot(corrections: list[dict], snapshot_before) -> list[dict]:
 
 
 def run_condition(cases: list[dict], corrections: list[dict], *, inject: bool, ask_fn, judge_fn,
-                  snapshot_before=None, k: int = 3, embed_fn=None) -> dict:
-    """Run every case once. When `inject`, retrieve exemplars from the SNAPSHOT-enforced, deep-copied
-    corpus (excluding the case's own lineage) and prepend them; else run the bare prompt. The corpus
-    is isolated per call, so callbacks cannot mutate the corrections used by a later pass."""
+                  snapshot_before=None, k: int = 3, embed_fn=None, _prefrozen: bool = False) -> dict:
+    """Run every case once. When `inject`, retrieve exemplars from the SNAPSHOT-enforced corpus
+    (excluding the case's own lineage) and prepend them; else run the bare prompt.
+
+    Isolation (Codex xval F1): the corpus AND each case's fields consumed here (query, lineage) are
+    read from FROZEN copies taken at the top of the call, so an `ask_fn`/`judge_fn` callback that
+    mutates the caller's `corrections`/`cases` mid-run cannot change what a later case (or the inject
+    pass, when called via measure_improvement with `_prefrozen`) sees. `_prefrozen` skips the
+    re-snapshot when measure_improvement already froze the inputs ONCE for both passes."""
     from ..embed import embed as _embed
     ef = embed_fn or _embed
-    corpus = _apply_snapshot(corrections, snapshot_before)
+    corpus = corrections if _prefrozen else _apply_snapshot(corrections, snapshot_before)
+    frozen_cases = cases if _prefrozen else copy.deepcopy(cases)
     escalated = 0
-    for case in cases:
+    for case in frozen_cases:
+        query = case.get("query", "")
         if inject:
             lineage = case.get("lineage")
             if not isinstance(lineage, str) or not lineage:
                 # F5-c: without a valid string lineage we cannot guarantee a case won't retrieve its
                 # own correction, so we fail closed — no injection for this case.
-                messages = build_messages_with_exemplars(_SYS, case["query"], [])
+                messages = build_messages_with_exemplars(_SYS, query, [])
             else:
-                ex = retrieve_exemplars(case["query"], corpus, k=k, embed_fn=ef,
+                ex = retrieve_exemplars(query, corpus, k=k, embed_fn=ef,
                                         exclude_lineage=frozenset({lineage}))
-                messages = build_messages_with_exemplars(_SYS, case["query"], ex)
+                messages = build_messages_with_exemplars(_SYS, query, ex)
         else:
-            messages = build_messages_with_exemplars(_SYS, case["query"], [])
+            messages = build_messages_with_exemplars(_SYS, query, [])
         ans = ask_fn(messages)
         if judge_fn(ans, case):
             escalated += 1
-    n = len(cases)
+    n = len(frozen_cases)
     return {"n": n, "escalated": escalated, "escalation_rate": (escalated / n) if n else None}
 
 
@@ -104,15 +113,25 @@ def measure_improvement(confirmation_cases: list[dict], corrections: list[dict],
     if not math.isfinite(noise_floor) or noise_floor < 0:
         raise ValueError(f"noise_floor must be finite and >= 0, got {noise_floor!r}")
     if dev_case_ids:
-        conf_ids = {c.get("id") for c in confirmation_cases if c.get("id") is not None}
-        overlap = conf_ids & {i for i in dev_case_ids if i is not None}
+        # F5-d (Codex xval pass 2 F3): every confirmation case must carry a valid id, else an
+        # id-less copy of a dev case would silently bypass the disjointness check.
+        conf_ids = [c.get("id") for c in confirmation_cases]
+        if any(cid is None or cid == "" for cid in conf_ids):
+            raise ValueError("with dev_case_ids set, every confirmation case must have a non-empty id")
+        overlap = set(conf_ids) & {i for i in dev_case_ids if i is not None}
         if overlap:
             raise ValueError(f"confirmation set overlaps the dev set (not held-out): {sorted(overlap)}")
 
-    base = run_condition(confirmation_cases, corrections, inject=False, ask_fn=ask_fn,
-                         judge_fn=judge_fn, snapshot_before=snapshot_before, k=k, embed_fn=embed_fn)
-    inj = run_condition(confirmation_cases, corrections, inject=True, ask_fn=ask_fn,
-                        judge_fn=judge_fn, snapshot_before=snapshot_before, k=k, embed_fn=embed_fn)
+    # Snapshot the corpus ONCE (so the two passes measure against the SAME corpus), then give EACH
+    # pass its OWN fresh deep-copy of both corpus and cases (Codex xval pass 2 F1): a callback that
+    # mutates its pass's copy during the baseline run cannot poison the inject pass — the inject pass
+    # gets an untouched copy of the same frozen snapshot.
+    snap_corpus = _apply_snapshot(corrections, snapshot_before)   # deep-copies + applies the cutoff
+
+    base = run_condition(copy.deepcopy(confirmation_cases), copy.deepcopy(snap_corpus), inject=False,
+                         ask_fn=ask_fn, judge_fn=judge_fn, k=k, embed_fn=embed_fn, _prefrozen=True)
+    inj = run_condition(copy.deepcopy(confirmation_cases), copy.deepcopy(snap_corpus), inject=True,
+                        ask_fn=ask_fn, judge_fn=judge_fn, k=k, embed_fn=embed_fn, _prefrozen=True)
     b = base["escalation_rate"] or 0.0
     i = inj["escalation_rate"] or 0.0
     delta = b - i

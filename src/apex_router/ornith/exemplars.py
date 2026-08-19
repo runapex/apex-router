@@ -16,17 +16,20 @@ from ..embed import cosine, embed
 
 
 def _parse_ts(v) -> datetime | None:
-    """ISO-8601 -> timezone-aware UTC datetime, or None if unparseable (naive is treated as UTC).
-    Fail-closed: a garbage/missing timestamp returns None so it can't slip past a cutoff by lexical
-    string ordering (e.g. '2026-08-09T20:30:00-04:00' is really 2026-08-10 00:30 UTC, AFTER a
-    '2026-08-10T00:00:00+00:00' cutoff, but sorts BEFORE it as a string)."""
+    """ISO-8601 with an EXPLICIT offset -> timezone-aware UTC datetime, or None if unparseable.
+    Fail-closed on: non-string, garbage, and NAIVE timestamps (no offset). A naive '2026-08-09T20:30'
+    could be local -04:00 (= 00:30Z, post-freeze) yet be silently admitted if assumed UTC — so we
+    REJECT offset-less timestamps rather than guess (Codex xval). This also stops the lexical-ordering
+    slip ('...-04:00' sorts before a '+00:00' cutoff as a string but is later in real time)."""
     if not isinstance(v, str) or not v.strip():
         return None
     try:
         dt = datetime.fromisoformat(v.strip())
     except ValueError:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+    if dt.tzinfo is None:
+        return None    # no explicit offset -> ambiguous -> fail closed
+    return dt.astimezone(timezone.utc)
 
 
 def load_corrections(path: Path, *, before: str | None = None) -> list[dict]:
@@ -74,7 +77,12 @@ def retrieve_exemplars(query: str, corrections: list[dict], k: int = 3, *,
     qv = embed_fn(query)
     scored: list[tuple[float, dict]] = []
     for r in corrections:
-        if r.get("source_job_id") in exclude_lineage:
+        sid = r.get("source_job_id")
+        # A correction with no canonical, non-empty string lineage is UNATTRIBUTABLE — we cannot prove
+        # it isn't the querying case's own correction, so we drop it (fail-closed, Codex xval).
+        if not isinstance(sid, str) or not sid:
+            continue
+        if sid in exclude_lineage:
             continue
         try:
             sim = cosine(qv, embed_fn(_query_text(r)))
