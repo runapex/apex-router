@@ -17,8 +17,9 @@ from apex_router.ornith.offload_orchestrator import orchestrate, SubTask  # noqa
 
 
 class _LR:  # stand-in LaneResult
-    def __init__(self, ok, escalate, output="", usage=None):
+    def __init__(self, ok, escalate, output="", usage=None, gated=True):
         self.ok, self.escalate, self.output, self.usage = ok, escalate, output, usage
+        self.gated = gated
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -81,7 +82,7 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(logged, [("codegen", "ok")])
 
     def test_default_adjudicate_is_the_gate_verdict(self):
-        # With no adjudicate_fn injected, the default authority is the lane's own gate (lr.ok).
+        # With no adjudicate_fn injected, the default authority is the lane's own gate.
         logged = []
         r = orchestrate(
             SubTask(type="codegen", payload={}),
@@ -91,6 +92,23 @@ class TestOrchestrator(unittest.TestCase):
         )
         self.assertFalse(r["accepted"])
         self.assertEqual(logged, [("codegen", "escalated")])
+
+    def test_default_adjudicate_honors_lane_escalate_and_gated(self):
+        # Codex xval: a lane may return ok=True WHILE marking escalate=True / gated=False (the review
+        # pre-filter does exactly this — findings=True → ok=True, but it always escalates for triage
+        # and runs no correctness gate). The default adjudicator must NOT accept such a result on
+        # `ok` alone; accept only ok ∧ gated ∧ not escalate.
+        logged = []
+        lr = _LR(ok=True, escalate=True, output="findings")
+        lr.gated = False
+        r = orchestrate(
+            SubTask(type="review", payload={}),
+            advise_fn=lambda tt: {"verdict": "cost_favors_cheap_start"},
+            dispatch_fn=lambda st: lr,
+            log_fn=lambda tt, outcome: logged.append((tt, outcome)),
+        )
+        self.assertFalse(r["accepted"])                 # ungated + escalate → NOT accepted
+        self.assertEqual(logged, [("review", "escalated")])
 
 
 if __name__ == "__main__":

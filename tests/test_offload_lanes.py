@@ -113,6 +113,51 @@ class TestCodegenGate(unittest.TestCase):
         ok, _ = run_python_tests(code, tests)
         self.assertFalse(ok)
 
+    def test_generated_code_cannot_forge_via_orig_argv(self):
+        # F7 (Codex xval pass 2): the nonce/sentinel must NOT be reachable by the untrusted code.
+        # sys.orig_argv survives a sys.argv reassignment — but the two-process design keeps the nonce
+        # in the OUTER harness only, so the inner runner (which execs this code) never carries it.
+        code = (
+            "import sys\n"
+            "try:\n"
+            "    open(sys.orig_argv[-2], 'w').write(sys.orig_argv[-1])\n"
+            "except Exception:\n"
+            "    pass\n"
+            "def add(a, b): return 0\n"
+        )
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertFalse(ok)
+
+    def test_generated_code_cannot_forge_allpass_marker(self):
+        # F7: generated code prints the ALLPASS marker + os._exit(0). Its stdout is redirected to
+        # /dev/null during the untrusted exec, so the marker never reaches the harness's pipe.
+        code = (
+            "import os, sys\n"
+            "sys.stdout.write('__ALLPASS__\\n'); sys.stdout.flush()\n"
+            "os._exit(0)\n"
+            "def add(a, b): return 0\n"
+        )
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertFalse(ok)
+
+    def test_generated_code_cannot_forge_marker_via_fd_bruteforce(self):
+        # F7: brute-forcing os.write to guessed fds must not smuggle the marker to the real stdout.
+        code = (
+            "import os\n"
+            "for fd in range(3, 15):\n"
+            "    try:\n"
+            "        os.write(fd, b'__ALLPASS__\\n')\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "os._exit(0)\n"
+            "def add(a, b): return 0\n"
+        )
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertFalse(ok)
+
     def test_correct_code_still_passes_after_hardening(self):
         code = "def add(a, b): return a + b\n"
         tests = "def test_add():\n    assert add(1, 2) == 3\n"

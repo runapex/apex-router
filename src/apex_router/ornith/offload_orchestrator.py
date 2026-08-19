@@ -50,10 +50,19 @@ def _default_dispatch(subtask: SubTask):
 
 
 def _default_adjudicate(subtask: SubTask, lane_result) -> bool:
-    """Stage 1: the gate verdict is final. Stage 2 injects a cross-validation-aware adjudicator here
-    WITHOUT changing the orchestrator — this is the seam that keeps the label-after-adjudication
-    invariant (F1) intact as the pipeline grows."""
-    return bool(getattr(lane_result, "ok", False))
+    """Stage 1: acceptance follows the lane's OWN contract — accept only a result that passed a real
+    correctness gate AND is not itself asking to escalate: `ok ∧ gated ∧ not escalate` (Codex xval).
+
+    `ok` alone is NOT sufficient: a lane may set `ok=True` while `escalate=True, gated=False` — the
+    review pre-filter does exactly this (findings→ok=True, but it runs no correctness gate and always
+    escalates for triage). Accepting on `ok` alone would log an ungated result 'ok' and train the
+    routing prior toward local on work that never earned acceptance — the two-authority corruption
+    the design forbids. Stage 2 injects a cross-validation-aware adjudicator here WITHOUT changing the
+    orchestrator; this seam keeps the label-after-adjudication invariant (F1) intact as it grows."""
+    ok = bool(getattr(lane_result, "ok", False))
+    gated = bool(getattr(lane_result, "gated", False))
+    escalate = bool(getattr(lane_result, "escalate", False))
+    return ok and gated and not escalate
 
 
 def _default_log(task_type: str, outcome: str) -> None:

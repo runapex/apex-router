@@ -50,26 +50,37 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
     so the caller escalates instead of crashing. On timeout the whole process GROUP is killed so a
     grandchild the generated code spawned cannot outlive the gate (cross-validation).
     """
-    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (cross-validation): the harness writes a PARENT-GENERATED NONCE to argv[3] only when every caller test passed.
-    # `os._exit(0)` or a replaced `sys.exit` in generated code exits 0 WITHOUT writing the sentinel ->
-    # the parent reads no matching nonce and fails. Return code alone is not trusted.
+    # Acceptance is decided by a PARENT-CONTROLLED SENTINEL carrying a PARENT-GENERATED NONCE — never
+    # the child's exit code, and never a secret the untrusted code can reach (spec F7 / three Codex
+    # passes). THREAT (why earlier fixes failed): the generated code is exec'd IN-PROCESS with the test
+    # runner. A fixed "PASS" constant let it write the sentinel directly; passing a nonce on argv did
+    # NOT help — argv is recoverable via `sys.orig_argv`/`/proc/self/cmdline` even after reassigning
+    # `sys.argv`; env leaks the same way via `/proc/self/environ`. So the secret is DELIVERED OVER A
+    # PIPE and CONSUMED before any untrusted code runs (see below), and the runner echoes it back on a
+    # result pipe only after every caller test passed. `os._exit(0)` in generated code exits without
+    # that echo -> harness reads nothing -> rejects. The full design + accepted residual are documented
+    # at the `runner`/`harness` definitions.
+    # The secret is delivered to the runner over a PIPE and CONSUMED (read + fd closed) BEFORE any
+    # untrusted code runs — a value read off a pipe and closed is not in argv/orig_argv/env/cmdline,
+    # so the generated code (exec'd in-process) has nothing to recover. The runner echoes it back on a
+    # RESULT pipe only after every caller test passed; a bare os._exit(0) in generated code never
+    # reaches that write, so the harness reads nothing and rejects. Residual (accepted under the
+    # current threat model — the local model is our own qwen3.8, not an adversary): a deliberately
+    # hostile program could still read the consumed nonce out of live frames via sys._current_frames()
+    # or brute-force the result-pipe fd; defeating that needs OS-level sandboxing (follow-up), and
+    # cross-validation is the real trust gate downstream. `close_fds=True` (Popen default) leaves only
+    # the two pipe ends we pass explicitly.
     #
-    # NONCE, not a constant (spec F7 / Codex xval): the old harness wrote a fixed "PASS", which the
-    # GENERATED CODE could write to the sentinel path (reachable via argv[3]) BEFORE the caller tests
-    # run — forging acceptance. The parent now generates an unguessable nonce, the harness reads it
-    # from argv[4] and SCRUBS it from argv before running any generated code, and the parent accepts
-    # only sentinel == nonce. Generated code cannot forge an unknown nonce.
-    #
-    # Caller tests always win over same-named code tests (cross-validation): before running the tests
-    # we DELETE every `test_*` name the generated code defined, so a caller `test_add` is never
-    # shadowed or dropped by a code `test_add`.
+    # Caller tests always win over same-named code tests: the runner DELETES every `test_*` the
+    # generated code defined before loading the caller tests, so a caller `test_add` is never shadowed.
     nonce = secrets.token_hex(16)
-    harness = (
-        "import sys\n"
+    result_nonce = secrets.token_hex(16)
+    runner = (
+        "import sys, os\n"
         "sys.dont_write_bytecode = True\n"
-        "sentinel = sys.argv[3]\n"
-        "_nonce = sys.argv[4]\n"           # parent-generated token
-        "sys.argv = sys.argv[:3]\n"        # scrub the nonce slot before any generated code runs
+        "_in_r = int(sys.argv[3]); _out_w = int(sys.argv[4])\n"   # secret-in pipe, result-out pipe
+        "sys.argv = sys.argv[:3]\n"
+        "_rn = os.read(_in_r, 64); os.close(_in_r)\n"             # CONSUME the secret pre-exec
         "code_ns = {}\n"
         "with open(sys.argv[1]) as f: code = f.read()\n"
         "with open(sys.argv[2]) as f: tests = f.read()\n"
@@ -77,7 +88,6 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
         "    exec(compile(code, '<gen>', 'exec'), code_ns)\n"
         "except BaseException as e:\n"
         "    print('CODE_ERROR:', repr(e)); sys.exit(1)\n"
-        # strip the code's own test_* so only CALLER tests are ever collected/run.
         "for k in [k for k in code_ns if k.startswith('test_')]: del code_ns[k]\n"
         "try:\n"
         "    exec(compile(tests, '<tests>', 'exec'), code_ns)\n"
@@ -93,8 +103,26 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
         "    except BaseException as e:\n"
         "        failed += 1; print('FAIL', fn.__name__, repr(e))\n"
         "if failed == 0:\n"
-        "    open(sentinel, 'w').write(_nonce)\n"   # only an all-pass run writes the nonce
+        "    os.write(_out_w, _rn)\n"                 # only an all-pass echoes the result nonce
+        "os.close(_out_w)\n"
         "sys.exit(1 if failed else 0)\n"
+    )
+    harness = (
+        "import sys, os, subprocess\n"
+        "sys.dont_write_bytecode = True\n"
+        "sentinel, nonce, result_nonce, py, runner, gen, tst = sys.argv[1:8]\n"
+        "in_r, in_w = os.pipe()\n"           # harness -> runner: the secret
+        "out_r, out_w = os.pipe()\n"         # runner -> harness: the echoed result
+        "os.set_inheritable(in_r, True); os.set_inheritable(out_w, True)\n"
+        "os.write(in_w, result_nonce.encode()); os.close(in_w)\n"   # secret in the pipe, not argv
+        "p = subprocess.run([py, runner, gen, tst, str(in_r), str(out_w)],\n"
+        "                   capture_output=True, text=True, pass_fds=(in_r, out_w))\n"
+        "os.close(in_r); os.close(out_w)\n"
+        "got = os.read(out_r, 64).decode(errors='replace'); os.close(out_r)\n"
+        "sys.stdout.write(p.stdout); sys.stderr.write(p.stderr)\n"
+        "if got == result_nonce:\n"
+        "    open(sentinel, 'w').write(nonce)\n"
+        "sys.exit(p.returncode)\n"
     )
     proc = None
     try:
@@ -102,11 +130,13 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
             dp = Path(d)
             (dp / "_gen.py").write_text(code)
             (dp / "_tests.py").write_text(tests)
+            (dp / "_runner.py").write_text(runner)
             (dp / "_harness.py").write_text(harness)
             sentinel = dp / "_sentinel"
             proc = subprocess.Popen(
                 [sys.executable, str(dp / "_harness.py"),
-                 str(dp / "_gen.py"), str(dp / "_tests.py"), str(sentinel), nonce],
+                 str(sentinel), nonce, result_nonce, sys.executable,
+                 str(dp / "_runner.py"), str(dp / "_gen.py"), str(dp / "_tests.py")],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 cwd=str(dp), env={"PATH": os.environ.get("PATH", "")},
                 start_new_session=True,  # own process group -> killpg reaches descendants on timeout
