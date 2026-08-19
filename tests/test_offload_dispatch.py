@@ -72,12 +72,14 @@ class TestDispatch(unittest.TestCase):
 
     def test_citation_lane_produces_verifiable_result(self):
         # Stage 2.5 (Codex xval F2): a citation sub-task must reach a real lane (not fall to adhoc),
-        # so its grounding VERIFIER can gate it. ok=True means "produced an answer to verify", NOT
-        # "verified"; gated=False because there's no in-lane correctness gate — the verifier is the gate.
+        # so its grounding VERIFIER can gate it. ok=False AND gated=False (Codex xval P1b): the lane
+        # ran no correctness gate, so it has no EARNED verdict — an ungated ok would corrupt telemetry
+        # and let the async worker record an unverified citation as a pass. The grounding verifier is
+        # the gate, applied by the orchestrator's composed_adjudicate.
         res = self._run({"lane": "citation", "task": "where is X"})
         self.assertEqual(res.lane, "citation")
         self.assertEqual(res.output, "raw answer")
-        self.assertTrue(res.ok)                  # produced an answer; verifier decides acceptance
+        self.assertFalse(res.ok)                 # ungated -> no earned ok; verifier decides acceptance
         self.assertFalse(res.escalate)
         self.assertFalse(res.gated)              # no in-lane gate; grounding verifier is the gate
         self.assertEqual(self.s.calls[0], ("chat", False))   # thinking-OFF
@@ -86,7 +88,7 @@ class TestDispatch(unittest.TestCase):
         for lane in ("search", "extraction"):
             res = self._run({"lane": lane, "task": "q"})
             self.assertEqual(res.lane, lane)
-            self.assertTrue(res.ok)
+            self.assertFalse(res.ok)             # ungated: no earned verdict
             self.assertFalse(res.gated)
 
     def test_missing_lane_defaults_to_adhoc(self):

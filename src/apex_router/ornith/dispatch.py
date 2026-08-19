@@ -66,9 +66,15 @@ def run_job(job: dict, *, chat=_default_chat, codegen=_default_codegen,
         # verifier. Thinking-OFF (extraction/citation is the fidelity lane).
         messages = job.get("messages") or [{"role": "user", "content": job.get("task", "")}]
         r = chat(messages, max_tokens=max_tokens, enable_thinking=False)
-        return LaneResult(lane, ok=True, escalate=False, output=getattr(r, "answer", ""),
+        # ok=False, gated=False: the lane ran NO correctness gate, so it has no EARNED verdict (Codex
+        # xval P1b — OffloadRecord.ok means "passed its gate"; an ungated pass would corrupt telemetry
+        # and let the async worker record an unverified citation as ok). The GROUNDING verifier is the
+        # gate, applied by the orchestrator's composed_adjudicate. On the fire-and-forget WORKER path
+        # (no adjudicator), a citation stays ungated (never an earned ok) — offload of citations is an
+        # orchestrator-path capability.
+        return LaneResult(lane, ok=False, escalate=False, output=getattr(r, "answer", ""),
                           usage=getattr(r, "usage", None), gated=False,
-                          detail="citation lane; gate is the grounding verifier")
+                          detail="citation lane; gate is the grounding verifier (orchestrator path)")
 
     # adhoc / unknown lane -> raw chat, thinking-OFF unless the job explicitly opts in.
     messages = job.get("messages") or [{"role": "user", "content": job.get("task", "")}]

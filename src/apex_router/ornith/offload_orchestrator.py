@@ -46,7 +46,8 @@ def _default_advise(task_type: str) -> dict:
 
 def _default_dispatch(subtask: SubTask):
     from .dispatch import run_job
-    return run_job({"lane": subtask.type, **subtask.payload})
+    # the sub-task TYPE is authoritative for the lane; payload must not override it (Codex xval P1a).
+    return run_job({**subtask.payload, "lane": subtask.type})
 
 
 # Types whose GATE is their type verifier (grounding oracle), not an in-lane correctness gate. A
@@ -57,19 +58,29 @@ _VERIFIER_GATED = frozenset({"citation", "search", "extraction"})
 
 
 def _default_adjudicate(subtask: SubTask, lane_result) -> bool:
-    """Lane-contract check: accept only a result that is `ok ∧ not escalate` AND has a REAL gate —
-    either the lane ran its own correctness gate (`gated=True`, e.g. codegen tests) OR the sub-task
-    type is verifier-gated (its grounding verifier is the gate; `composed_adjudicate` applies it).
+    """Lane-contract check. Accept only when the result did not escalate, the LANE matches the
+    sub-task TYPE (no cross-type confusion — Codex xval P1a), AND a real gate exists:
+      - in-lane-gated types (codegen): require `ok ∧ gated` — the lane's own tests earned the verdict;
+      - verifier-gated types (citation/search/extraction): the lane runs NO gate and honestly reports
+        `ok=False, gated=False`; the GROUNDING verifier is the gate, applied by `composed_adjudicate`.
+        So we do NOT require the lane's `ok` here — the verifier supplies the ok signal.
 
-    `ok` alone is NOT sufficient (Codex xval): the review pre-filter returns `ok=True` while
-    `escalate=True, gated=False` — accepting it would log an ungated result 'ok' and train the routing
-    prior toward local on work that never earned acceptance. An UNGATED codegen result (gated=False,
-    not a verifier-gated type) is likewise rejected — its gate is the tests, which didn't run."""
+    `ok` alone is never sufficient (the review pre-filter returns `ok=True, escalate=True, gated=False`
+    and must be rejected); an ungated codegen result (gated=False, non-verifier-gated) is rejected —
+    its gate is the tests, which didn't run."""
+    escalate = bool(getattr(lane_result, "escalate", False))
+    if escalate:
+        return False
+    # lane must match the sub-task type: a citation SubTask carrying a codegen LaneResult (or vice
+    # versa) is a routing bug, not an acceptance (Codex xval P1a).
+    lane = getattr(lane_result, "lane", None)
+    if lane is not None and lane != getattr(subtask, "type", None):
+        return False
+    if getattr(subtask, "type", None) in _VERIFIER_GATED:
+        return True                       # gate is the verifier; composed_adjudicate applies it
     ok = bool(getattr(lane_result, "ok", False))
     gated = bool(getattr(lane_result, "gated", False))
-    escalate = bool(getattr(lane_result, "escalate", False))
-    has_gate = gated or (getattr(subtask, "type", None) in _VERIFIER_GATED)
-    return ok and not escalate and has_gate
+    return ok and gated                   # in-lane-gated: the lane's tests earned the verdict
 
 
 def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None, xval_fn=None) -> bool:

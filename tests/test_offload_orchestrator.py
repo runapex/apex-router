@@ -19,9 +19,10 @@ from apex_router.ornith.offload_orchestrator import (  # noqa: E402
 
 
 class _LR:  # stand-in LaneResult
-    def __init__(self, ok, escalate, output="", usage=None, gated=True):
+    def __init__(self, ok, escalate, output="", usage=None, gated=True, lane=None):
         self.ok, self.escalate, self.output, self.usage = ok, escalate, output, usage
         self.gated = gated
+        self.lane = lane   # None -> lane==type check is skipped (most tests don't exercise it)
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -175,8 +176,17 @@ class TestComposedAdjudicator(unittest.TestCase):
     def test_codegen_still_needs_lane_gated(self):
         # codegen's gate is its tests; an ungated codegen result (gated=False) never earned
         # acceptance and must still be rejected — the verifier-gated relaxation is citation-only.
-        lr = _LR(ok=True, escalate=False, output="code"); lr.gated = False
+        lr = _LR(ok=True, escalate=False, output="code"); lr.gated = False; lr.lane = "codegen"
         self.assertFalse(composed_adjudicate(SubTask(type="codegen", payload={}), lr))
+
+    def test_lane_type_mismatch_is_rejected(self):
+        # Codex xval P1a: a citation SubTask carrying a codegen LaneResult (lane != type) is a routing
+        # bug, not an acceptance — even if grounding would pass. The lane must match the sub-task type.
+        lr = _LR(ok=True, escalate=False, output="cites repo_a/mod.py:1"); lr.gated = False
+        lr.lane = "codegen"
+        r = composed_adjudicate(SubTask(type="citation", payload={}), lr,
+                                ground_fn=_fake_ground(True, has_problem=False, has_grounded=True))
+        self.assertFalse(r)
 
     def test_xval_seam_can_reject_a_necessary_gate_pass(self):
         # Codex xval F1: a result that passes the necessary gates but is SEMANTICALLY false (real cite,

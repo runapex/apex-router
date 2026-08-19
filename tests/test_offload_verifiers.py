@@ -84,6 +84,17 @@ class TestVerifiers(unittest.TestCase):
         self.assertEqual(DISPATCHABLE_TYPES, HAS_VERIFIER)
         self.assertEqual(PENDING_DISPATCH, frozenset())
 
+    def test_lane_sets_do_not_drift(self):
+        # Codex xval P2: the three sets that must agree — verifier registry, the orchestrator's
+        # verifier-gated set, and dispatchable types — are pinned here so forgetting one is caught.
+        from apex_router.ornith.verifiers import DISPATCHABLE_TYPES
+        from apex_router.ornith.offload_orchestrator import _VERIFIER_GATED
+        # every dispatchable type is either in-lane-gated (codegen) or verifier-gated.
+        self.assertEqual(DISPATCHABLE_TYPES, _VERIFIER_GATED | {"codegen"})
+        # verifier-gated types all have a verifier and are all dispatchable.
+        self.assertTrue(_VERIFIER_GATED <= HAS_VERIFIER)
+        self.assertTrue(_VERIFIER_GATED <= DISPATCHABLE_TYPES)
+
     def test_all_citations_must_ground_via_real_verdict(self):
         # Codex xval F3: a result mixing a grounded cite with an unverified/advisory one must NOT pass.
         # Use a real GroundVerdict-shaped object exposing a per-citation list.
