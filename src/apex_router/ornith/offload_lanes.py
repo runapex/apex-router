@@ -15,6 +15,7 @@ Design constraints, all measured (see the model-routing skill + apex telemetry a
 from __future__ import annotations
 
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -49,17 +50,26 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
     so the caller escalates instead of crashing. On timeout the whole process GROUP is killed so a
     grandchild the generated code spawned cannot outlive the gate (cross-validation).
     """
-    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (cross-validation): the harness writes "PASS" to argv[3] only when every caller test passed. `os._exit(0)` or
-    # a replaced `sys.exit` in generated code exits 0 WITHOUT writing the sentinel -> the parent
-    # reads no "PASS" and fails. Return code alone is not trusted.
+    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (cross-validation): the harness writes a PARENT-GENERATED NONCE to argv[3] only when every caller test passed.
+    # `os._exit(0)` or a replaced `sys.exit` in generated code exits 0 WITHOUT writing the sentinel ->
+    # the parent reads no matching nonce and fails. Return code alone is not trusted.
+    #
+    # NONCE, not a constant (spec F7 / Codex xval): the old harness wrote a fixed "PASS", which the
+    # GENERATED CODE could write to the sentinel path (reachable via argv[3]) BEFORE the caller tests
+    # run — forging acceptance. The parent now generates an unguessable nonce, the harness reads it
+    # from argv[4] and SCRUBS it from argv before running any generated code, and the parent accepts
+    # only sentinel == nonce. Generated code cannot forge an unknown nonce.
     #
     # Caller tests always win over same-named code tests (cross-validation): before running the tests
     # we DELETE every `test_*` name the generated code defined, so a caller `test_add` is never
     # shadowed or dropped by a code `test_add`.
+    nonce = secrets.token_hex(16)
     harness = (
         "import sys\n"
         "sys.dont_write_bytecode = True\n"
         "sentinel = sys.argv[3]\n"
+        "_nonce = sys.argv[4]\n"           # parent-generated token
+        "sys.argv = sys.argv[:3]\n"        # scrub the nonce slot before any generated code runs
         "code_ns = {}\n"
         "with open(sys.argv[1]) as f: code = f.read()\n"
         "with open(sys.argv[2]) as f: tests = f.read()\n"
@@ -83,7 +93,7 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
         "    except BaseException as e:\n"
         "        failed += 1; print('FAIL', fn.__name__, repr(e))\n"
         "if failed == 0:\n"
-        "    open(sentinel, 'w').write('PASS')\n"   # only an all-pass run writes the sentinel
+        "    open(sentinel, 'w').write(_nonce)\n"   # only an all-pass run writes the nonce
         "sys.exit(1 if failed else 0)\n"
     )
     proc = None
@@ -96,7 +106,7 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
             sentinel = dp / "_sentinel"
             proc = subprocess.Popen(
                 [sys.executable, str(dp / "_harness.py"),
-                 str(dp / "_gen.py"), str(dp / "_tests.py"), str(sentinel)],
+                 str(dp / "_gen.py"), str(dp / "_tests.py"), str(sentinel), nonce],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 cwd=str(dp), env={"PATH": os.environ.get("PATH", "")},
                 start_new_session=True,  # own process group -> killpg reaches descendants on timeout
@@ -118,8 +128,9 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
                     out, err = "", ""
             if timed_out:
                 return (False, f"timeout after {timeout_s}s")
-            # SENTINEL is the source of truth, not returncode.
-            passed = sentinel.exists() and sentinel.read_text() == "PASS"
+            # SENTINEL is the source of truth, not returncode — and it must contain the PARENT's
+            # nonce, which generated code cannot know (spec F7). A forged constant fails this check.
+            passed = sentinel.exists() and sentinel.read_text() == nonce
         detail = ((out or "") + (err or "")).strip()
         return (passed, detail)
     except Exception as e:  # noqa: BLE001 — gate must never raise

@@ -89,6 +89,36 @@ class TestCodegenGate(unittest.TestCase):
         ok, detail = run_python_tests(code, tests)
         self.assertFalse(ok, "a same-named caller test must override the code's and actually run")
 
+    def test_generated_code_cannot_forge_sentinel_via_argv(self):
+        # F7: generated code writes to the sentinel path (argv[3]) itself, then a caller test fails.
+        # A guessable constant in the sentinel must NOT be accepted — the parent checks a nonce.
+        code = (
+            "import sys\n"
+            "open(sys.argv[3], 'w').write('PASS')\n"   # forge attempt against the old constant
+            "def add(a, b): return 0\n"                 # wrong impl
+        )
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertFalse(ok)
+
+    def test_generated_code_cannot_forge_sentinel_via_env(self):
+        # F7: even if the sentinel path leaked through the environment, a written constant must fail.
+        code = (
+            "import os\n"
+            "p = os.environ.get('APEX_GATE_SENTINEL')\n"
+            "open(p, 'w').write('PASS') if p else None\n"
+            "def add(a, b): return 0\n"
+        )
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertFalse(ok)
+
+    def test_correct_code_still_passes_after_hardening(self):
+        code = "def add(a, b): return a + b\n"
+        tests = "def test_add():\n    assert add(1, 2) == 3\n"
+        ok, _ = run_python_tests(code, tests)
+        self.assertTrue(ok)
+
 
 class TestReviewTruncation(unittest.TestCase):
     def test_review_keeps_partial_findings_on_truncation(self):
