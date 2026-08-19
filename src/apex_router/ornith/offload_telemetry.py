@@ -152,6 +152,7 @@ def aggregate_offload(log_path: Path) -> dict:
         L = lanes.setdefault(lane, {
             "n": 0, "ok": 0, "escalated": 0, "gated": 0,
             "frontier_completion_tokens_saved": 0,
+            "escalated_completion_tokens": 0,   # waste: local tokens spent on calls that escalated
             "prompt_tokens": 0, "cached_tokens": 0,
         })
         L["n"] += 1
@@ -169,6 +170,9 @@ def aggregate_offload(log_path: Path) -> dict:
         if is_esc:
             escalated += 1
             L["escalated"] += 1
+            # WASTE (spec F2): local completion tokens spent on a call that still escalated. A gross
+            # "saved" number that ignores this overstates the win — surface it so net stays honest.
+            L["escalated_completion_tokens"] += _int(d.get("completion_tokens"))
         # frontier work avoided requires ALL THREE: gated, passed, and not also escalated.
         if is_gated and is_ok and not is_esc:
             L["frontier_completion_tokens_saved"] += _int(d.get("completion_tokens"))

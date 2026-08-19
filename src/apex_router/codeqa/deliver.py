@@ -102,7 +102,7 @@ def deliver(
     question: str,
     *,
     impact_log: Path | None = None,
-    max_tokens: int = 1200,
+    max_tokens: int | None = None,   # None -> resolved per-repo below, else 1200
     enable_thinking: bool = False,
     ask_fn: Callable | None = None,
     verify_fn: Callable[[Path, EmittedCite, list[Chunk]], str] | None = None,
@@ -123,6 +123,10 @@ def deliver(
     impact_log = Path(impact_log) if impact_log is not None else DEFAULT_IMPACT_LOG
 
     cfg = RepoConfig.load(repo)
+    # Resolve the budget HERE (explicit arg > repo config > 1200) so every injected ask_fn seam
+    # receives a concrete int, not None — a custom seam shouldn't have to re-implement the fallback.
+    if max_tokens is None:
+        max_tokens = cfg.max_tokens if cfg.max_tokens is not None else 1200
     t0 = clock()
     answer = ask_fn(repo, question, max_tokens=max_tokens, enable_thinking=enable_thinking)
     latency_ms = int((clock() - t0) * 1000)
@@ -155,7 +159,7 @@ def deliver(
     )
 
 
-def _default_ask(repo: str, question: str, *, max_tokens: int, enable_thinking: bool):
+def _default_ask(repo: str, question: str, *, max_tokens: int | None, enable_thinking: bool):
     from .driver import ask
     return ask(repo, question, max_tokens=max_tokens, enable_thinking=enable_thinking)
 

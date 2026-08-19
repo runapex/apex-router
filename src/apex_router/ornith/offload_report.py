@@ -77,29 +77,42 @@ def summarize_codeqa_validate(path: Path = CODEQA_VALIDATE_LOG) -> dict:
             "local_share": (n_local / routed) if routed else None}
 
 
+def format_lane_verdict(lane: dict) -> str:
+    """Honest per-lane verdict (spec F2). The `frontier_completion_tokens_saved` field is a GROSS
+    proxy — the LOCAL model's completion tokens on gated+ok calls — NOT a net saving: it does not
+    subtract escalation waste (local tokens spent on calls that still escalated), the frontier prompt
+    overhead of consuming a failed attempt, verifier/cross-validation tokens, or latency. So we NEVER
+    label it "NET-POSITIVE"; a positive gross with an unknown net is "GROSS-POSITIVE (net unknown)",
+    and the escalation waste is surfaced alongside it, not hidden."""
+    gross = lane.get("frontier_completion_tokens_saved", 0)
+    waste = lane.get("escalated_completion_tokens", 0)
+    rate = lane.get("ok_rate")
+    rate_s = "n/a" if rate is None else f"{rate*100:.0f}%"
+    if lane.get("gated", 0) == 0:
+        label = "MEASURE-ONLY (no gate)"
+    elif gross <= 0:
+        label = "NO-GROSS-GAIN"
+    elif (rate or 0) >= 0.5:
+        label = "GROSS-POSITIVE (net unknown — no matched frontier baseline)"
+    else:
+        label = "GROSS-POSITIVE but WEAK (low ok_rate)"
+    return (f"{label} — gross_avoided={gross} tok, escalation_waste={waste} tok, ok_rate={rate_s}")
+
+
 def format_report(agg: dict) -> str:
     o = agg["overall"]
     lines = [
-        "OFFLOAD ECONOMICS (measure-first)",
+        "OFFLOAD ECONOMICS (measure-first; 'saved' is GROSS, not net — see per-lane note)",
         f"  total calls={o['n']}  gated={o.get('gated', 0)}  ok={o['ok']}  escalated={o['escalated']}",
         "",
-        f"  {'lane':12s} {'n':>5s} {'gated':>6s} {'ok_rate':>8s} {'saved_tok':>10s} {'cached':>8s}  verdict",
+        f"  {'lane':12s} {'n':>5s} {'gated':>6s} {'gross_tok':>10s} {'waste_tok':>10s}  verdict",
     ]
     for lane, L in sorted(agg["by_lane"].items()):
-        rate = L.get("ok_rate")
-        rate_s = "  n/a" if rate is None else f"{rate*100:5.1f}%"
-        saved = L["frontier_completion_tokens_saved"]
-        if L.get("gated", 0) == 0:
-            verdict = "MEASURE-ONLY (no gate)"
-        elif saved > 0 and (rate or 0) >= 0.5:
-            verdict = "NET-POSITIVE"
-        elif saved > 0:
-            verdict = "WEAK (low ok_rate)"
-        else:
-            verdict = "NO SAVING"
+        gross = L["frontier_completion_tokens_saved"]
+        waste = L.get("escalated_completion_tokens", 0)
         lines.append(
-            f"  {lane:12s} {L['n']:>5d} {L.get('gated', 0):>6d} {rate_s:>8s} "
-            f"{saved:>10d} {L['cached_tokens']:>8d}  {verdict}")
+            f"  {lane:12s} {L['n']:>5d} {L.get('gated', 0):>6d} "
+            f"{gross:>10d} {waste:>10d}  {format_lane_verdict(L)}")
 
     # codeqa's own two subsystems, read in (not rewired).
     imp = summarize_codeqa_impact()

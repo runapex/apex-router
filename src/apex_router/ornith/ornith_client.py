@@ -34,6 +34,27 @@ READY_TIMEOUT = _env_num("ORNITH_READY_TIMEOUT_SECS", "30", float)
 LIVE_TIMEOUT = _env_num("ORNITH_LIVE_TIMEOUT_SECS", "5", float)
 STARTUP_RETRIES = _env_num("ORNITH_STARTUP_RETRIES", "12", int)
 
+# Backend profile. Defaults (no env) reproduce the Ornith/vLLM request body exactly, so existing
+# callers are byte-identical. Set these to speak an OpenAI-compatible backend (e.g. ollama), which
+# requires an explicit `model` and uses `reasoning_effort` to gate thinking. ORNITH_API_MODEL (the
+# API model id) is deliberately distinct from ORNITH_MODEL (the server-side MLX filesystem path),
+# so that path can never leak into the API `model` field.
+MODEL = os.environ.get("ORNITH_API_MODEL", "")
+THINKING_STYLE = os.environ.get("ORNITH_THINKING_STYLE", "chat_template")
+
+
+def _apply_backend(body: dict, *, enable_thinking: bool) -> dict:
+    """Shape the request body for the configured backend, in place. Defaults (no env) reproduce
+    today's Ornith/vLLM body exactly."""
+    if MODEL:
+        body["model"] = MODEL
+    if THINKING_STYLE == "reasoning_effort":
+        if not enable_thinking:
+            body["reasoning_effort"] = "none"
+    else:
+        body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+    return body
+
 
 class OrnithError(RuntimeError): pass
 class OrnithProtocolError(OrnithError): pass          # bad/empty/truncated answer
@@ -129,9 +150,10 @@ def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
     False to receive the truncated ChatResult instead of an exception."""
     if MAINTENANCE.exists():
         raise OrnithMaintenance("Scheduled maintenance")
-    body = {"messages": messages, "max_tokens": max_tokens,
-            "temperature": temperature, "top_p": top_p,
-            "chat_template_kwargs": {"enable_thinking": enable_thinking}}
+    body = _apply_backend(
+        {"messages": messages, "max_tokens": max_tokens,
+         "temperature": temperature, "top_p": top_p},
+        enable_thinking=enable_thinking)
     with inference_lock():
         if MAINTENANCE.exists():
             raise OrnithMaintenance("Scheduled maintenance")
@@ -156,9 +178,10 @@ def liveness() -> bool:
 def readiness() -> bool:
     """Actually generates. Thinking OFF, own short timeout, lock-free.
     Call only in startup/maintenance windows, never as a mid-load poll."""
-    body = {"messages": [{"role": "user", "content": "Reply exactly: OK"}],
-            "max_tokens": 8, "temperature": 0.0, "top_p": 1.0,
-            "chat_template_kwargs": {"enable_thinking": False}}
+    body = _apply_backend(
+        {"messages": [{"role": "user", "content": "Reply exactly: OK"}],
+         "max_tokens": 8, "temperature": 0.0, "top_p": 1.0},
+        enable_thinking=False)
     try:
         return bool(_parse(_post("/v1/chat/completions", body,
                                  timeout=READY_TIMEOUT)).answer)

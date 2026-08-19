@@ -37,29 +37,30 @@ class LaneResult:
 
 
 def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[bool, str]:
-    """Run caller-supplied `tests` against generated `code` in an isolated subprocess.
+    """Run caller-supplied `tests` against generated `code` in an isolated subprocess; pass iff every
+    caller test ran and passed. Returns (passed, detail); never raises.
 
-    The CALLER's tests are the only source of truth: only `test_*` names defined in `tests` are
-    executed (cross-validation). `code` runs first to populate the shared namespace; if it
-    raises ANYTHING — including `SystemExit`/`raise SystemExit(0)`, a BaseException that a bare
-    `except Exception` would miss and let exit 0 through — that is a failure, not a pass.
+    The CALLER's tests are the only source of truth: only `test_*` names defined in `tests` are run,
+    and any `test_*` the generated code itself defined is DELETED first so it can't shadow a caller
+    test. Any exception, assertion failure, syntax error, empty caller suite, or timeout -> (False).
 
-    Returns (passed, detail). Any exception, assertion failure, syntax error, empty caller suite, or
-    timeout -> (False, detail). Never raises — the gate turns every failure mode into a clean False
-    so the caller escalates instead of crashing. On timeout the whole process GROUP is killed so a
-    grandchild the generated code spawned cannot outlive the gate (cross-validation).
+    ISOLATION (defense-in-depth): the code+tests run in a dedicated subprocess with a minimal env
+    (PATH only) and its own process group, so a timeout kills the whole group (a spawned grandchild
+    can't outlive the gate). The verdict is the subprocess EXIT CODE (0 = every caller test passed).
+
+    ⚠ SECURITY LIMITATION — NOT forge-proof against HOSTILE code. Because the generated code runs in
+    the same interpreter as the test runner, code that WANTS to cheat can fake a clean exit
+    (`os._exit(0)`, `ctypes` C-level exit, `os.abort`, signals) before its failing tests are reported
+    — this defeats even a real `pytest` run, verified. Closing it needs OS/language sandboxing
+    (RestrictedPython, a container), a deliberately deferred follow-up. This is ACCEPTABLE under the
+    project's threat model: the local model (our own qwen3.8) is BEST-EFFORT, not adversarial — its
+    real failure mode is semantically-wrong code (`return a - b` for add), which this gate catches
+    reliably. A hostile forge is out of scope here; CROSS-VALIDATION downstream is the real trust gate
+    for anything that gets committed (spec: "offload does not bypass cross-validation").
     """
-    # Success is decided by a PARENT-CONTROLLED SENTINEL, never the child's exit code (cross-validation): the harness writes "PASS" to argv[3] only when every caller test passed. `os._exit(0)` or
-    # a replaced `sys.exit` in generated code exits 0 WITHOUT writing the sentinel -> the parent
-    # reads no "PASS" and fails. Return code alone is not trusted.
-    #
-    # Caller tests always win over same-named code tests (cross-validation): before running the tests
-    # we DELETE every `test_*` name the generated code defined, so a caller `test_add` is never
-    # shadowed or dropped by a code `test_add`.
-    harness = (
+    runner = (
         "import sys\n"
         "sys.dont_write_bytecode = True\n"
-        "sentinel = sys.argv[3]\n"
         "code_ns = {}\n"
         "with open(sys.argv[1]) as f: code = f.read()\n"
         "with open(sys.argv[2]) as f: tests = f.read()\n"
@@ -82,9 +83,7 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
         "        fn()\n"
         "    except BaseException as e:\n"
         "        failed += 1; print('FAIL', fn.__name__, repr(e))\n"
-        "if failed == 0:\n"
-        "    open(sentinel, 'w').write('PASS')\n"   # only an all-pass run writes the sentinel
-        "sys.exit(1 if failed else 0)\n"
+        "sys.exit(1 if failed else 0)\n"       # exit 0 iff every caller test passed
     )
     proc = None
     try:
@@ -92,11 +91,10 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
             dp = Path(d)
             (dp / "_gen.py").write_text(code)
             (dp / "_tests.py").write_text(tests)
-            (dp / "_harness.py").write_text(harness)
-            sentinel = dp / "_sentinel"
+            (dp / "_runner.py").write_text(runner)
             proc = subprocess.Popen(
-                [sys.executable, str(dp / "_harness.py"),
-                 str(dp / "_gen.py"), str(dp / "_tests.py"), str(sentinel)],
+                [sys.executable, str(dp / "_runner.py"),
+                 str(dp / "_gen.py"), str(dp / "_tests.py")],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 cwd=str(dp), env={"PATH": os.environ.get("PATH", "")},
                 start_new_session=True,  # own process group -> killpg reaches descendants on timeout
@@ -110,16 +108,14 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
-                # bounded drain: a detached grandchild holding the pipes must not hang us forever
-                # (cross-validation). If it still won't close, abandon the pipes.
+                # bounded drain: a detached grandchild holding the pipes must not hang us forever.
                 try:
                     out, err = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     out, err = "", ""
             if timed_out:
                 return (False, f"timeout after {timeout_s}s")
-            # SENTINEL is the source of truth, not returncode.
-            passed = sentinel.exists() and sentinel.read_text() == "PASS"
+            passed = proc.returncode == 0
         detail = ((out or "") + (err or "")).strip()
         return (passed, detail)
     except Exception as e:  # noqa: BLE001 — gate must never raise

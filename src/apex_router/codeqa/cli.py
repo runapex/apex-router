@@ -29,6 +29,32 @@ def _cmd_repos(_args) -> int:
     return 0
 
 
+def _cmd_ground(args) -> int:
+    """Grounding oracle: read a finding/report (file arg or stdin), check every file:line citation
+    against live registered-repo code, print the verdict. With --check, exit 2 if any citation is
+    'stale' (a provable factual defect) so a review can gate on it. 'unverified' is advisory and
+    never trips --check."""
+    from .ground_claims import ground_text
+    text = Path(args.file).read_text() if args.file else sys.stdin.read()
+    v = ground_text(text)
+    if getattr(args, "json", False):
+        print(_json.dumps({
+            "applicable": v.applicable, "has_problem": v.has_problem,
+            "citations": [{"file": c.file, "start": c.start, "end": c.end,
+                           "repo": c.repo, "verdict": c.verdict} for c in v.citations],
+        }, indent=2))
+    else:
+        print(v.summary())
+        for c in v.citations:
+            mark = {"grounded": "✓", "stale": "~ STALE",
+                    "unverified": "? unverified"}.get(c.verdict, "?")
+            print(f"  {mark:16} {c.repo}: {c.file}:{c.start}"
+                  + (f"-{c.end}" if c.end != c.start else ""))
+    if getattr(args, "check", False) and v.has_problem:
+        return 2
+    return 0
+
+
 def _cmd_doctor(args) -> int:
     """Post-install validation: per-repo health of everything in CODEQA_REPOS.
     Exits nonzero with --check if any repo is unhealthy (root missing / no reachable code)."""
@@ -433,17 +459,18 @@ def main(argv: list[str] | None = None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    _MT_HELP = "answer budget; default None -> repo config's max_tokens, else 1200"
     pa = sub.add_parser("ask", help="ask one question")
     pa.add_argument("repo"); pa.add_argument("question")
-    pa.add_argument("--max-tokens", type=int, default=1200)
-    pa.add_argument("--think", action="store_true", help="enable Ornith thinking (slow; synthesis only)")
+    pa.add_argument("--max-tokens", type=int, default=None, help=_MT_HELP)
+    pa.add_argument("--think", action="store_true", help="enable model thinking (slow; synthesis only)")
     pa.add_argument("--verify", action="store_true",
                     help="verify every citation against the working tree + log impact (delivery mode)")
     pa.set_defaults(func=_cmd_ask)
 
     pb = sub.add_parser("batch", help="ask questions from a file (one per line)")
     pb.add_argument("repo"); pb.add_argument("file")
-    pb.add_argument("--max-tokens", type=int, default=1200)
+    pb.add_argument("--max-tokens", type=int, default=None, help=_MT_HELP)
     pb.set_defaults(func=_cmd_batch)
 
     pr = sub.add_parser("retrieve", help="show retrieved chunks only (no Ornith call)")
@@ -495,6 +522,15 @@ def main(argv: list[str] | None = None) -> int:
     pv.add_argument("--no-cache", action="store_true",
                     help="ignore the fingerprint cache and re-validate even if unchanged")
     pv.set_defaults(func=_cmd_validate)
+
+    pg = sub.add_parser("ground", help="grounding oracle: check the file:line citations in a "
+                                       "finding/report against live registered-repo code")
+    pg.add_argument("file", nargs="?",
+                    help="finding/report text file to ground (default: read stdin)")
+    pg.add_argument("--json", action="store_true", help="emit the verdict as JSON")
+    pg.add_argument("--check", action="store_true",
+                    help="exit 2 if any citation is stale (a provable defect), for gating a review")
+    pg.set_defaults(func=_cmd_ground)
 
     args = p.parse_args(argv)
     return args.func(args)

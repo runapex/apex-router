@@ -11,7 +11,31 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from apex_router.ornith.offload_report import summarize_codeqa_impact, summarize_codeqa_validate  # noqa: E402
+from apex_router.ornith.offload_report import (  # noqa: E402
+    summarize_codeqa_impact, summarize_codeqa_validate, format_lane_verdict,
+)
+
+
+class TestLaneVerdictHonesty(unittest.TestCase):
+    def test_label_is_not_net_on_gross_tokens_alone(self):
+        # spec F2: a positive GROSS token proxy + ok_rate>=0.5 must NOT be labeled "NET-POSITIVE",
+        # and the escalation waste must be surfaced, not hidden.
+        lane = {"frontier_completion_tokens_saved": 500, "gated": 10, "ok_rate": 0.6,
+                "escalated_completion_tokens": 300}
+        verdict = format_lane_verdict(lane)
+        self.assertNotIn("NET-POSITIVE", verdict)
+        self.assertIn("gross", verdict.lower())
+        self.assertIn("300", verdict)   # escalation waste is visible
+
+    def test_no_gross_gain_when_saved_zero(self):
+        lane = {"frontier_completion_tokens_saved": 0, "gated": 10, "ok_rate": 0.6,
+                "escalated_completion_tokens": 100}
+        self.assertIn("NO-GROSS-GAIN", format_lane_verdict(lane))
+
+    def test_ungated_lane_is_measure_only(self):
+        lane = {"frontier_completion_tokens_saved": 0, "gated": 0, "ok_rate": None,
+                "escalated_completion_tokens": 0}
+        self.assertIn("MEASURE-ONLY", format_lane_verdict(lane))
 
 
 class TestCodeqaImpact(unittest.TestCase):
