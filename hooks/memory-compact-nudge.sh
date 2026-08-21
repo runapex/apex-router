@@ -40,27 +40,45 @@ index="$mem_dir/MEMORY.md"
 INDEX_BYTES_THRESHOLD="${MEMORY_COMPACT_INDEX_BYTES:-8192}"    # ~8KB index
 FILE_COUNT_THRESHOLD="${MEMORY_COMPACT_FILE_COUNT:-50}"        # or >=50 memory files
 HANDOFF_DIR="${CACHE_HANDOFF_DIR:-$HOME/.claude/handoffs}"
-# The engine ships in the apex-router install; allow an override for source checkouts.
-# Resolve the engine: honor an explicit override, else try the packaged install
-# path, else fall back to a source checkout — so the nudge never prints a command
-# that points at a file that isn't there (a dev box has no ~/.apex-router/scripts).
+# Resolve the engine location-independently — apex-router may be installed ANYWHERE
+# (not just under $HOME). Resolution order:
+#   1. MEMORY_COMPACT_ENGINE override
+#   2. an install-root recorded by install.sh (~/.config/apex-router/install_dir)
+#      or the APEX_ROUTER_DIR env — the authoritative pointer, wherever it lives
+#   3. common install/checkout locations as a best-effort fallback
+#   4. an engine already on PATH
+ENGINE=""
 if [ -n "${MEMORY_COMPACT_ENGINE:-}" ]; then
   ENGINE="$MEMORY_COMPACT_ENGINE"
 else
-  ENGINE=""
-  for cand in "$HOME/.apex-router/scripts/memory_compact.py" \
-              "$HOME/dev/apex-router/scripts/memory_compact.py"; do
-    [ -f "$cand" ] && { ENGINE="$cand"; break; }
-  done
-  [ -n "$ENGINE" ] || ENGINE="$HOME/.apex-router/scripts/memory_compact.py"  # last resort for the message
+  _roots=""
+  [ -n "${APEX_ROUTER_DIR:-}" ] && _roots="$APEX_ROUTER_DIR"
+  _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/apex-router/install_dir"
+  [ -f "$_cfg" ] && _roots="$_roots
+$(cat "$_cfg" 2>/dev/null)"
+  _roots="$_roots
+$HOME/.apex-router
+$HOME/dev/apex-router
+$HOME/src/apex-router
+/opt/apex-router
+/usr/local/apex-router"
+  while IFS= read -r _r; do
+    [ -n "$_r" ] || continue
+    if [ -f "$_r/scripts/memory_compact.py" ]; then ENGINE="$_r/scripts/memory_compact.py"; break; fi
+  done <<EOF
+$_roots
+EOF
+  # last resort: an engine on PATH
+  [ -n "$ENGINE" ] || ENGINE="$(command -v memory_compact.py 2>/dev/null || true)"
 fi
-# Pick a python that exists: explicit override → source venv → python3 → python.
+
+# Pick a python: prefer the venv that sits NEXT TO the resolved engine (works
+# wherever the install lives), then an override, then a system python.
+PYTHON=""
 if [ -n "${MEMORY_COMPACT_PYTHON:-}" ]; then
   PYTHON="$MEMORY_COMPACT_PYTHON"
-elif [ -x "$HOME/.apex-router/.venv/bin/python" ]; then
-  PYTHON="$HOME/.apex-router/.venv/bin/python"
-elif [ -x "$HOME/dev/apex-router/.venv/bin/python" ]; then
-  PYTHON="$HOME/dev/apex-router/.venv/bin/python"
+elif [ -n "$ENGINE" ] && [ -x "$(dirname "$(dirname "$ENGINE")")/.venv/bin/python" ]; then
+  PYTHON="$(dirname "$(dirname "$ENGINE")")/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PYTHON="python3"
 else

@@ -178,10 +178,21 @@ def build_report(dir_path: Path, *, min_age_days: int = 0,
                  now_date: str | None = None, multitoken: tuple[str, ...] = ()) -> dict:
     rows = scan_memory(dir_path, multitoken=multitoken)
     clusters = plan_compaction(rows, min_age_days=min_age_days, now_date=now_date)
-    proposed = render_index(clusters)
     index_path = dir_path / INDEX_NAME
     current_bytes = len(index_path.read_bytes()) if index_path.is_file() else 0
-    proposed_bytes = len(proposed.encode("utf-8"))
+    # Preview the index EXACTLY as `--apply` will produce it, so the predicted bytes
+    # match what apply writes. Two subtleties (Codex xval), both mirrored here:
+    #  - apply only drops the link for a file it will ACTUALLY move, and it SKIPS a
+    #    symlink or a name whose archive destination already exists — so the preview
+    #    must exclude those same names, not every planned-archive name.
+    #  - apply rewrites the index only when one already exists; with no index file it
+    #    writes nothing, so the "proposed" is just the (absent) current index.
+    would_move = _archivable_names_apply_would_move(dir_path, clusters)
+    if index_path.is_file():
+        proposed = compact_existing_index(index_path.read_text(encoding="utf-8"), would_move)
+    else:
+        proposed = ""  # apply writes nothing when there's no index to compact
+    proposed_bytes = len(proposed.encode("utf-8")) if index_path.is_file() else current_bytes
     n_hot = sum(len(c["hot"]) for c in clusters.values())
     n_arch = sum(len(c["archived"]) for c in clusters.values())
     return {
@@ -234,6 +245,24 @@ def _git_clean(dir_path: Path) -> tuple[bool, str]:
         return True, ""
     except FileNotFoundError:
         return False, "git not found"
+
+
+def _archivable_names_apply_would_move(dir_path: Path, clusters: dict) -> set[str]:
+    """The filenames `apply_compaction` will ACTUALLY move — applying the same skip
+    conditions apply uses, so the advisory preview and apply agree by construction:
+    skip a source that's missing or a symlink, and skip one whose archive
+    destination already exists (never overwritten)."""
+    archive_root = dir_path / "archive"
+    names: set[str] = set()
+    for name, c in clusters.items():
+        for r in c["archived"]:
+            src = dir_path / r["file"]
+            if not src.exists() or src.is_symlink():
+                continue
+            if (archive_root / name / r["file"]).exists():
+                continue
+            names.add(r["file"])
+    return names
 
 
 def compact_existing_index(index_text: str, archived_files: set[str]) -> str:

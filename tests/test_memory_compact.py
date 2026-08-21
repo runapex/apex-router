@@ -216,6 +216,61 @@ def test_xval7_nested_type_does_not_flip_tier():
     assert mc.tier_of(meta) == "hot"
 
 
+def test_advisory_preview_equals_apply_result(tmp_path):
+    # the advisory's predicted proposed_index_bytes must EQUAL what --apply writes
+    # (they diverged before: preview regenerated the index, apply edited in place).
+    _git_repo(tmp_path)
+    for i in range(5):
+        _write(tmp_path, f"cold_{i}.md", mtype="reference")
+    _write(tmp_path, "hot_a.md", mtype="feedback", desc="keep")
+    curated = ("# Memory Index\n\n## Human section\nkeep this prose.\n\n"
+               "- [hot_a.md](hot_a.md) — keep\n"
+               + "".join(f"- [cold_{i}.md](cold_{i}.md) — desc {'x'*30}\n" for i in range(5)))
+    (tmp_path / "MEMORY.md").write_text(curated)
+    _commit(tmp_path)
+
+    predicted = mc.build_report(tmp_path)["proposed_index_bytes"]
+    mc.apply_compaction(tmp_path)
+    actual = len((tmp_path / "MEMORY.md").read_bytes())
+    assert predicted == actual                      # advisory told the truth
+    assert "keep this prose." in (tmp_path / "MEMORY.md").read_text()  # prose survived
+
+
+def test_advisory_equals_apply_with_skipped_moves(tmp_path):
+    # Codex xval: preview must predict apply's SKIPS too — a collision-skipped cold
+    # file keeps its index line, so predicted bytes must match apply's actual output.
+    _git_repo(tmp_path)
+    _write(tmp_path, "grp_norm.md", mtype="reference")          # will move
+    _write(tmp_path, "grp_dup.md", mtype="reference", desc="new")  # collision → skipped
+    _write(tmp_path, "hot_a.md", mtype="feedback")
+    # pre-existing archive collision for grp_dup (cluster "grp")
+    (tmp_path / "archive" / "grp").mkdir(parents=True)
+    (tmp_path / "archive" / "grp" / "grp_dup.md").write_text("PRIOR\n")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n## keep\nnote.\n"
+        "- [hot_a.md](hot_a.md) — keep\n"
+        "- [grp_norm.md](grp_norm.md) — moves\n"
+        "- [grp_dup.md](grp_dup.md) — collision, apply skips\n")
+    _commit(tmp_path)
+
+    predicted = mc.build_report(tmp_path)["proposed_index_bytes"]
+    mc.apply_compaction(tmp_path)
+    idx = (tmp_path / "MEMORY.md").read_text()
+    assert predicted == len(idx.encode("utf-8"))    # preview predicted the skip
+    assert "grp_dup.md" in idx                       # collision-skipped line kept
+    assert "grp_norm.md" not in idx                  # moved line dropped
+    assert (tmp_path / "archive" / "grp" / "grp_dup.md").read_text() == "PRIOR\n"  # not clobbered
+
+
+def test_advisory_no_index_predicts_current(tmp_path):
+    # Codex xval #2: with no MEMORY.md, apply writes nothing → predicted == current (0).
+    _git_repo(tmp_path)
+    _write(tmp_path, "grp_cold.md", mtype="reference")
+    rep = mc.build_report(tmp_path)
+    assert rep["current_index_bytes"] == 0
+    assert rep["proposed_index_bytes"] == 0          # not a rendered index
+
+
 def test_xval8_bad_date_fails_closed_keeps_hot():
     rows = [{"file": "r.md", "stem": "r", "cluster": "r", "type": "reference",
              "modified": "not-a-date", "description": "d", "tier": "cold", "bytes": 10}]

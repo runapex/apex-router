@@ -149,6 +149,12 @@ install_package() {
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
 
+  # Record where apex-router lives so hooks/tools can find the engine wherever it
+  # was installed (not just under $HOME) — the memory-compact hook reads this.
+  local _cfgdir="${XDG_CONFIG_HOME:-$HOME/.config}/apex-router"
+  mkdir -p "$_cfgdir" 2>/dev/null && printf '%s\n' "$INSTALL_DIR" > "$_cfgdir/install_dir" 2>/dev/null \
+    && ok "recorded install dir → $_cfgdir/install_dir"
+
   say "creating venv + installing the package"
   # Core is dependency-free; add extras only for the tiers the user opted into.
   local extras="dev"
