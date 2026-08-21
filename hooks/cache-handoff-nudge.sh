@@ -77,11 +77,15 @@ PY
 fi
 
 # --- fallback signal: assistant-message count in the transcript -------------
-# Compute whenever the PRIMARY signal did NOT already cross its threshold — not
-# only when telemetry read is exactly 0. A session with a small-but-nonzero
-# telemetry total must still be checkable by transcript size (Codex xval #4).
+# ONLY when telemetry has no cache-read for this session (read == 0, i.e. no
+# apex proxy in the path). When telemetry HAS a read count, that count IS the
+# authoritative cost signal — a below-threshold read means "not expensive",
+# regardless of turn count, so the turn-count proxy must NOT fire as a second
+# trigger. (Codex xval #4 argued the opposite; e2e on a real 135M-read/1611-turn
+# session proved that fix wrong — it fired a below-cost session with a false
+# "telemetry unavailable" message. Reverted to the read-authoritative gate.)
 msg_count=0
-if [ "$read_tokens" -lt "$READ_TOKEN_THRESHOLD" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+if [ "$read_tokens" -eq 0 ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   msg_count="$(
     TRANSCRIPT="$transcript" python3 - <<'PY' 2>/dev/null || echo 0
 import json, os
