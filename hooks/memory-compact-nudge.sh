@@ -41,8 +41,31 @@ INDEX_BYTES_THRESHOLD="${MEMORY_COMPACT_INDEX_BYTES:-8192}"    # ~8KB index
 FILE_COUNT_THRESHOLD="${MEMORY_COMPACT_FILE_COUNT:-50}"        # or >=50 memory files
 HANDOFF_DIR="${CACHE_HANDOFF_DIR:-$HOME/.claude/handoffs}"
 # The engine ships in the apex-router install; allow an override for source checkouts.
-ENGINE="${MEMORY_COMPACT_ENGINE:-$HOME/.apex-router/scripts/memory_compact.py}"
-PYTHON="${MEMORY_COMPACT_PYTHON:-python3}"
+# Resolve the engine: honor an explicit override, else try the packaged install
+# path, else fall back to a source checkout — so the nudge never prints a command
+# that points at a file that isn't there (a dev box has no ~/.apex-router/scripts).
+if [ -n "${MEMORY_COMPACT_ENGINE:-}" ]; then
+  ENGINE="$MEMORY_COMPACT_ENGINE"
+else
+  ENGINE=""
+  for cand in "$HOME/.apex-router/scripts/memory_compact.py" \
+              "$HOME/dev/apex-router/scripts/memory_compact.py"; do
+    [ -f "$cand" ] && { ENGINE="$cand"; break; }
+  done
+  [ -n "$ENGINE" ] || ENGINE="$HOME/.apex-router/scripts/memory_compact.py"  # last resort for the message
+fi
+# Pick a python that exists: explicit override → source venv → python3 → python.
+if [ -n "${MEMORY_COMPACT_PYTHON:-}" ]; then
+  PYTHON="$MEMORY_COMPACT_PYTHON"
+elif [ -x "$HOME/.apex-router/.venv/bin/python" ]; then
+  PYTHON="$HOME/.apex-router/.venv/bin/python"
+elif [ -x "$HOME/dev/apex-router/.venv/bin/python" ]; then
+  PYTHON="$HOME/dev/apex-router/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON="python3"
+else
+  PYTHON="python"
+fi
 STAMP="$HANDOFF_DIR/.mem-nudged-$session_id"
 
 [ -f "$STAMP" ] && exit 0
