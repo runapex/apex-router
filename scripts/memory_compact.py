@@ -48,20 +48,44 @@ def cluster_of(stem: str, *, multitoken: tuple[str, ...] = ()) -> str:
 
 
 def parse_frontmatter(text: str) -> dict:
-    """Extract name/description/type/modified from a memory file's YAML-ish
-    frontmatter. Tolerant: missing frontmatter → {}. No YAML dependency."""
-    if not text.startswith("---"):
+    """Extract name/description/type/modified from a memory file's frontmatter.
+    No YAML dependency. Hardening (Codex xval): the opening fence must be a line
+    that is EXACTLY '---' (not just a '---' prefix), and `type` is read ONLY from
+    a nested `metadata:` block at exactly 2-space indent — a top-level or
+    deeper-nested `type:` is ignored, so a body/block-scalar line can't flip the
+    tier by shadowing the real value (xval #7)."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
         return {}
-    end = text.find("\n---", 3)
-    if end == -1:
+    # find the closing fence line (exactly '---')
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
         return {}
-    block = text[3:end]
+
     out: dict = {}
-    for line in block.splitlines():
-        m = re.match(r"\s*(name|description|type|modified)\s*:\s*(.*)$", line)
-        if m:
-            key, val = m.group(1), m.group(2).strip().strip('"').strip("'")
-            out[key] = val
+    in_metadata = False
+    for line in lines[1:end]:
+        # top-level keys we allow (name/description live at column 0)
+        m_top = re.match(r"(name|description)\s*:\s*(.*)$", line)
+        if m_top:
+            out[m_top.group(1)] = m_top.group(2).strip().strip('"').strip("'")
+            in_metadata = False
+            continue
+        if re.match(r"metadata\s*:\s*$", line):
+            in_metadata = True
+            continue
+        # only accept type/modified when nested exactly one level under metadata:
+        m_meta = re.match(r"  (type|modified)\s*:\s*(.*)$", line)
+        if m_meta and in_metadata:
+            out[m_meta.group(1)] = m_meta.group(2).strip().strip('"').strip("'")
+            continue
+        # a non-indented, non-matching line ends the metadata block
+        if line and not line.startswith(" "):
+            in_metadata = False
     return out
 
 
@@ -104,16 +128,17 @@ def _is_cold(row: dict, *, min_age_days: int, now_date: str | None) -> bool:
         return False
     if min_age_days <= 0 or not now_date or not row["modified"]:
         return True
-    # dates are ISO 'YYYY-MM-DD...'; compare lexically on the date prefix
+    # dates are ISO 'YYYY-MM-DD...'; compare on the date prefix.
     mod = row["modified"][:10]
-    # crude day diff via ordinal of the date parts (no wall clock needed)
+    # FAIL CLOSED (Codex xval #8): a malformed date/now_date must NOT archive the
+    # file — an unparseable age can't prove the file is old enough, so keep it hot.
     try:
         from datetime import date
         y1, m1, d1 = (int(x) for x in now_date[:10].split("-"))
         y2, m2, d2 = (int(x) for x in mod.split("-"))
         return (date(y1, m1, d1) - date(y2, m2, d2)).days >= min_age_days
     except Exception:
-        return True
+        return False
 
 
 def plan_compaction(rows: list[dict], *, min_age_days: int = 0,
@@ -178,42 +203,102 @@ def build_report(dir_path: Path, *, min_age_days: int = 0,
 
 
 def _git_clean(dir_path: Path) -> tuple[bool, str]:
-    """(ok, reason). Apply is allowed only inside a clean git tree so it's reversible."""
+    """(ok, reason). Apply is allowed only inside a clean, tracked git tree so every
+    change is reversible. FAIL CLOSED on any uncertainty (Codex xval #4/#5/#6):
+    - run status from the repo ROOT and match the dir's repo-relative prefix, so a
+      relative --dir can't produce a bogus `memory/memory` pathspec that reports clean;
+    - a nonzero git return code is treated as NOT clean, never as safe;
+    - `--ignored` is included so gitignored memory files (no git recovery) also block."""
+    d = dir_path.resolve()
     try:
-        top = subprocess.run(["git", "-C", str(dir_path), "rev-parse", "--show-toplevel"],
+        top = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True)
-        if top.returncode != 0:
+        if top.returncode != 0 or not top.stdout.strip():
             return False, "memory dir is not inside a git repo (apply needs git for reversibility)"
-        st = subprocess.run(["git", "-C", str(dir_path), "status", "--porcelain", str(dir_path)],
+        root = Path(top.stdout.strip()).resolve()
+        try:
+            rel = d.relative_to(root)
+        except ValueError:
+            return False, "could not locate the memory dir within its git repo"
+        st = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--ignored"],
                             capture_output=True, text=True)
-        if st.stdout.strip():
-            return False, "git tree has uncommitted changes under the memory dir — commit/stash first"
+        if st.returncode != 0:
+            return False, f"git status failed (rc={st.returncode}) — refusing to apply"
+        prefix = "" if str(rel) == "." else str(rel) + "/"
+        for line in st.stdout.splitlines():
+            # porcelain: 'XY <path>' (or '!! <path>' for ignored). Path starts at col 3.
+            path = line[3:].split(" -> ")[-1].strip().strip('"')
+            if prefix == "" or path.startswith(prefix):
+                return False, ("git tree has uncommitted or ignored changes under the memory "
+                               "dir — commit/stash and un-ignore first")
         return True, ""
     except FileNotFoundError:
         return False, "git not found"
 
 
+def compact_existing_index(index_text: str, archived_files: set[str]) -> str:
+    """Remove ONLY the lines that link to a now-archived file; preserve every other
+    line — headings, prose, ordering, hot-file links — byte-for-byte (Codex xval #3).
+    A line is dropped iff it markdown-links to `<file>` for a file in archived_files."""
+    kept = []
+    for line in index_text.splitlines():
+        m = re.search(r"\]\(([^)]+\.md)\)", line)
+        linked = m.group(1).rsplit("/", 1)[-1] if m else None
+        if linked and linked in archived_files:
+            continue  # drop only this cold-file entry
+        kept.append(line)
+    return "\n".join(kept).rstrip() + "\n"
+
+
 def apply_compaction(dir_path: Path, *, min_age_days: int = 0,
                      now_date: str | None = None, multitoken: tuple[str, ...] = ()) -> dict:
-    """MUTATING. Move archived files to archive/<cluster>/ and rewrite the index.
-    Git-guarded + idempotent."""
+    """MUTATING. Move archived files to archive/<cluster>/ and compact the index
+    IN PLACE (drop cold-file lines, keep curated prose). Git-guarded + idempotent.
+
+    Hardening (Codex xval): refuses to follow a symlinked index/archive/target (#2);
+    never overwrites an existing archived file — a same-name re-archive is skipped
+    with a warning rather than clobbering (#1); the index is edited, not regenerated
+    from scratch, so hand-curated content survives (#3)."""
     ok, reason = _git_clean(dir_path)
     if not ok:
         raise RuntimeError(reason)
+
+    index_path = dir_path / INDEX_NAME
+    if index_path.is_symlink():
+        raise RuntimeError(f"{INDEX_NAME} is a symlink — refusing to write through it")
+    archive_root = dir_path / "archive"
+    if archive_root.exists() and archive_root.is_symlink():
+        raise RuntimeError("archive/ is a symlink — refusing to move files through it")
+
     rows = scan_memory(dir_path, multitoken=multitoken)
     clusters = plan_compaction(rows, min_age_days=min_age_days, now_date=now_date)
-    moved = []
+
+    moved, skipped = [], []
     for name, c in clusters.items():
         for r in c["archived"]:
             src = dir_path / r["file"]
-            dst_dir = dir_path / "archive" / name
+            if not src.exists():
+                continue
+            if src.is_symlink():
+                skipped.append(f"{r['file']} (symlink)")
+                continue
+            dst_dir = archive_root / name
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst = dst_dir / r["file"]
-            if src.exists():
-                src.replace(dst)
-                moved.append(str(dst.relative_to(dir_path)))
-    (dir_path / INDEX_NAME).write_text(render_index(clusters), encoding="utf-8")
-    return {"moved": moved, "moved_count": len(moved)}
+            if dst.exists():
+                # NEVER overwrite an existing archived version (data-loss guard #1)
+                skipped.append(f"{r['file']} (already archived — not overwritten)")
+                continue
+            src.replace(dst)
+            moved.append(str(dst.relative_to(dir_path)))
+
+    # Compact the EXISTING index in place — preserve everything that isn't a
+    # link to a file we just archived.
+    archived_names = {Path(m).name for m in moved}
+    if index_path.is_file():
+        new_index = compact_existing_index(index_path.read_text(encoding="utf-8"), archived_names)
+        index_path.write_text(new_index, encoding="utf-8")
+    return {"moved": moved, "moved_count": len(moved), "skipped": skipped}
 
 
 def _fmt_text(rep: dict) -> str:

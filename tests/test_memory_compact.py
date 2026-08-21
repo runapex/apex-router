@@ -143,4 +143,82 @@ def test_apply_refuses_dirty_tree(tmp_path):
         mc.apply_compaction(tmp_path)
         assert False, "should refuse on a dirty tree"
     except RuntimeError as e:
-        assert "uncommitted" in str(e).lower()
+        assert "uncommitted" in str(e).lower() or "ignored" in str(e).lower()
+
+
+# ---- Codex-xval hardening regression tests --------------------------------
+def _git_repo(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+
+
+def _commit(tmp_path):
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "c"], check=True)
+
+
+def test_xval1_never_overwrites_existing_archive(tmp_path):
+    # a same-named cold file reappearing must NOT clobber the archived version
+    _git_repo(tmp_path)
+    _write(tmp_path, "alpha_dup.md", mtype="reference", desc="v1")
+    (tmp_path / "MEMORY.md").write_text("# Memory index\n")
+    _commit(tmp_path)
+    mc.apply_compaction(tmp_path)
+    archived = tmp_path / "archive" / "alpha" / "alpha_dup.md"
+    assert "v1" in archived.read_text()
+    # recreate with different content, re-apply
+    _write(tmp_path, "alpha_dup.md", mtype="reference", desc="v2")
+    _commit(tmp_path)
+    res = mc.apply_compaction(tmp_path)
+    assert "v1" in archived.read_text()          # v1 preserved, NOT clobbered
+    assert any("already archived" in s for s in res["skipped"])
+
+
+def test_xval3_preserves_curated_index_prose(tmp_path):
+    _git_repo(tmp_path)
+    _write(tmp_path, "alpha_cold.md", mtype="reference")
+    _write(tmp_path, "feedback_hot.md", mtype="feedback", desc="keep me")
+    # hand-curated index with prose + a section heading + the hot link
+    curated = ("# Memory Index\n\n## Important human note\nDo not lose this prose.\n\n"
+               "- [feedback_hot.md](feedback_hot.md) — keep me\n"
+               "- [alpha_cold.md](alpha_cold.md) — will be archived\n")
+    (tmp_path / "MEMORY.md").write_text(curated)
+    _commit(tmp_path)
+    mc.apply_compaction(tmp_path)
+    idx = (tmp_path / "MEMORY.md").read_text()
+    assert "## Important human note" in idx          # prose preserved
+    assert "Do not lose this prose." in idx
+    assert "[feedback_hot.md]" in idx                 # hot link preserved
+    assert "[alpha_cold.md]" not in idx               # only the cold line dropped
+
+
+def test_xval2_refuses_symlinked_index(tmp_path):
+    _git_repo(tmp_path)
+    real = tmp_path / "real_index.md"
+    real.write_text("# real\n")
+    (tmp_path / "MEMORY.md").symlink_to(real)
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    _commit(tmp_path)
+    try:
+        mc.apply_compaction(tmp_path)
+        assert False, "should refuse a symlinked index"
+    except RuntimeError as e:
+        assert "symlink" in str(e).lower()
+
+
+def test_xval7_nested_type_does_not_flip_tier():
+    # a top-level 'project' with a body line 'type: reference' must stay HOT
+    text = ("---\nname: x\nmetadata:\n  type: project\n  modified: 2026-08-01\n---\n\n"
+            "some body mentioning type: reference in prose\n")
+    meta = mc.parse_frontmatter(text)
+    assert meta["type"] == "project"
+    assert mc.tier_of(meta) == "hot"
+
+
+def test_xval8_bad_date_fails_closed_keeps_hot():
+    rows = [{"file": "r.md", "stem": "r", "cluster": "r", "type": "reference",
+             "modified": "not-a-date", "description": "d", "tier": "cold", "bytes": 10}]
+    clusters = mc.plan_compaction(rows, min_age_days=30, now_date="2026-08-21")
+    # unparseable date → NOT archived (fail closed)
+    assert clusters["r"]["hot"] and not clusters["r"]["archived"]
