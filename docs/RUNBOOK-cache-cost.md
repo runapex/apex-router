@@ -105,6 +105,38 @@ Tunables (env, override in the hook's settings entry or your shell):
 > per-session read distribution once ≥ 7 days of data exist — do not hard-code a high
 > value off a short window. Override per repo/task today with the env var above.
 
+## 3b. Project-memory compaction — `memory_compact.py` + `memory-compact-nudge.sh`
+
+A Claude Code project accumulates memory files plus a `MEMORY.md` index that is
+re-read into every session's prefix. `memory_compact.py` clusters the files, tiers
+them (frontmatter `type`: `feedback`/`project` = keep-hot, `reference` = cold) and
+freshness, and rolls cold files into a per-cluster archived line.
+
+```bash
+python scripts/memory_compact.py --dir ~/.claude/projects/<slug>/memory   # report (advisory)
+python scripts/memory_compact.py --dir <memory> --write-proposed /tmp/idx.md   # proposed index, no mutation
+python scripts/memory_compact.py --dir <memory> --apply    # MUTATES: archive cold files + compact index
+```
+
+**`--apply` is the only mutating path and is heavily guarded** (Codex-hardened):
+refuses outside a clean git tree (so every change is `git`-reversible), never
+overwrites an existing archived file, refuses a symlinked index/archive, and
+**compacts the existing index in place** — it drops only the cold-file link lines
+and preserves all your hand-written prose, headings, and ordering.
+
+> **Honest expectation — the index shrink is usually SMALL.** On a real 87-file /
+> 14.7 KB index, compaction reclaimed only ~0.9 KB (~6%), because a terse
+> one-line-per-file index doesn't have much to squeeze and singleton clusters don't
+> roll up. **The real value is decluttering** — moving stale `reference` files out
+> of the working set — not shrinking the every-session prefix. Don't sell it as a
+> cache-cost win; measure the actual delta (the tool prints it) before acting.
+
+The **Stop hook** (`hooks/memory-compact-nudge.sh`, opt-in via
+`install.sh --memory-compact-hook`) fires when the index ≥ ~8 KB or ≥ ~50 files,
+writes a proposed index to `~/.claude/handoffs/memory-<slug>.md`, and nudges — it
+**never mutates** the memory dir. Tunables: `MEMORY_COMPACT_INDEX_BYTES` (8192),
+`MEMORY_COMPACT_FILE_COUNT` (50).
+
 ## 4. Codex per-session cache cost — `codex_session_report.py`
 
 ```bash

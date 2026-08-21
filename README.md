@@ -343,6 +343,8 @@ guide: [`docs/RUNBOOK-cache-cost.md`](docs/RUNBOOK-cache-cost.md).
 | `scripts/prefix_budget.py` | How big is the re-read-every-turn prefix (CLAUDE.md + tool schemas)? |
 | `scripts/cache-handoff-nudge.sh` | Stop hook: nudge to start a fresh session before its prefix gets expensive. |
 | `scripts/codex_session_report.py` | Same per-session cache-cost view, for Codex sessions (reads `~/.codex/sessions`). |
+| `scripts/memory_compact.py` | Hierarchically compact a project-memory dir (cluster + tier + freshness); advisory, `--apply` is git-guarded. |
+| `scripts/memory-compact-nudge.sh` | Stop hook: nudge to compact a large project `MEMORY.md` (advisory; never mutates). |
 
 ```bash
 python scripts/cache_report.py --days 7           # weekly cost + top sessions + offload ROI
@@ -389,11 +391,13 @@ That removes everything apex-router created under its own dir. ollama and the Or
 model (if installed) are left in place — remove them with their own tooling if you want
 (`brew uninstall ollama` / delete the HF model cache).
 
-Two opt-in features write **outside** the apex-router dir, into `~/.claude/settings.json`
-(each leaves a `.apex-bak` backup): proxy client wiring (`--proxy-config` / `setup-proxy`)
-and the cache-handoff Stop hook (`--cache-handoff-hook`). If you enabled either, remove its
-entry from `~/.claude/settings.json` by hand (or restore the `.apex-bak`). The cache-handoff
-hook also writes advisory docs under `~/.claude/handoffs/` — delete that dir to clear them.
+Some opt-in features write **outside** the apex-router dir, into `~/.claude/settings.json`
+(each leaves a `.apex-bak` backup): proxy client wiring (`--proxy-config` / `setup-proxy`),
+the cache-handoff Stop hook (`--cache-handoff-hook`), and the memory-compact Stop hook
+(`--memory-compact-hook`). If you enabled any, remove its entry from
+`~/.claude/settings.json` by hand (or restore the `.apex-bak`). Both hooks write advisory
+docs under `~/.claude/handoffs/` — delete that dir to clear them. `memory_compact.py --apply`
+is the only thing that moves memory files, and it does so inside git (revert with git).
 
 ---
 

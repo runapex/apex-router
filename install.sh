@@ -22,6 +22,7 @@
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --cache-handoff-hook  wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json
+#         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The public
 #                                   apex-router-skills marketplace is added by default.
@@ -49,6 +50,7 @@ DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
+DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
 VERIFY_ONLY=0
 SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
 NL='
@@ -81,6 +83,7 @@ while [ $# -gt 0 ]; do
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
     --cache-handoff-hook) DO_CACHE_HANDOFF=1 ;;   # wire the cache-cost Stop hook into settings.json
+    --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
     --install-hooks) HOOK_REPOS="$2"; shift ;;
     # Accumulate NEWLINE-separated (not space) so a local marketplace path containing spaces stays
     # one argument through the consumption loop (Codex pass-2). The env-var form stays space-separated
@@ -414,23 +417,16 @@ install_hooks() {
   done
 }
 
-install_cache_handoff_hook() {
-  # Wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json.
-  # Opt-in (advisory hook; never blocks a session). Idempotent — re-running is a no-op.
-  [ "$DO_CACHE_HANDOFF" = "1" ] || {
-    echo "  cache-handoff Stop hook NOT wired (pass --cache-handoff-hook to enable)."
-    return 0
-  }
-  local hook="$INSTALL_DIR/hooks/cache-handoff-nudge.sh"
-  [ -f "$hook" ] || { warn "cache-handoff hook missing at $hook"; return 0; }
+_wire_stop_hook() {
+  # Shared: idempotently merge a Stop hook into ~/.claude/settings.json (preserve
+  # existing hooks + unrelated keys, append as its own group, .apex-bak backup).
+  # $1 = absolute hook path, $2 = basename to dedupe on.
+  local hook="$1" base="$2" settings="$HOME/.claude/settings.json"
+  [ -f "$hook" ] || { warn "hook missing at $hook"; return 1; }
   chmod +x "$hook" 2>/dev/null
-  local settings="$HOME/.claude/settings.json"
-  say "wiring cache-handoff Stop hook into settings.json"
-  # Merge with python (stdlib) — preserve existing hooks, append as its own Stop group,
-  # skip if already present. Writes a .apex-bak backup like the proxy setup does.
-  "$INSTALL_DIR/.venv/bin/python" - "$settings" "$hook" <<'PY' && ok "cache-handoff hook wired" || warn "settings.json merge failed — wire it manually (see docs/RUNBOOK-cache-cost.md)"
+  "$INSTALL_DIR/.venv/bin/python" - "$settings" "$hook" "$base" <<'PY'
 import json, os, sys
-settings_path, hook_path = sys.argv[1], sys.argv[2]
+settings_path, hook_path, base = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 try:
     with open(settings_path) as f:
@@ -438,7 +434,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     s = {}
 stop = s.setdefault("hooks", {}).setdefault("Stop", [])
-already = any(h.get("command", "").endswith("cache-handoff-nudge.sh")
+already = any(h.get("command", "").endswith(base)
               for g in stop if isinstance(g, dict) for h in g.get("hooks", []))
 if not already:
     if os.path.exists(settings_path):
@@ -450,8 +446,40 @@ if not already:
         json.dump(s, f, indent=2); f.write("\n")
     os.replace(tmp, settings_path)
 PY
-  echo "     starts with an AGGRESSIVE (low) cap; relax per repo/task as signals show — see docs/RUNBOOK-cache-cost.md"
-  echo "     inspect per-session read distribution: python $INSTALL_DIR/scripts/cache_report.py --days 7"
+}
+
+install_cache_handoff_hook() {
+  # Wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json.
+  # Opt-in (advisory hook; never blocks a session). Idempotent — re-running is a no-op.
+  [ "$DO_CACHE_HANDOFF" = "1" ] || {
+    echo "  cache-handoff Stop hook NOT wired (pass --cache-handoff-hook to enable)."
+    return 0
+  }
+  say "wiring cache-handoff Stop hook into settings.json"
+  if _wire_stop_hook "$INSTALL_DIR/hooks/cache-handoff-nudge.sh" "cache-handoff-nudge.sh"; then
+    ok "cache-handoff hook wired"
+    echo "     starts with an AGGRESSIVE (low) cap; relax per repo/task as signals show — see docs/RUNBOOK-cache-cost.md"
+    echo "     inspect per-session read distribution: python $INSTALL_DIR/scripts/cache_report.py --days 7"
+  else
+    warn "settings.json merge failed — wire it manually (see docs/RUNBOOK-cache-cost.md)"
+  fi
+}
+
+install_memory_compact_hook() {
+  # Wire the project-memory compaction Stop hook into ~/.claude/settings.json.
+  # Opt-in, advisory (never mutates memory — the mutating path is memory_compact.py --apply).
+  [ "$DO_MEMORY_COMPACT" = "1" ] || {
+    echo "  memory-compact Stop hook NOT wired (pass --memory-compact-hook to enable)."
+    return 0
+  }
+  say "wiring memory-compact Stop hook into settings.json"
+  if _wire_stop_hook "$INSTALL_DIR/hooks/memory-compact-nudge.sh" "memory-compact-nudge.sh"; then
+    ok "memory-compact hook wired"
+    echo "     advisory: nudges when a project's MEMORY.md grows large; run"
+    echo "     'python $INSTALL_DIR/scripts/memory_compact.py --dir <memory>' to review — see docs/RUNBOOK-cache-cost.md"
+  else
+    warn "settings.json merge failed — wire it manually (see docs/RUNBOOK-cache-cost.md)"
+  fi
 }
 
 install_proxy() {
@@ -584,6 +612,7 @@ main() {
   install_watchers
   install_hooks
   install_cache_handoff_hook
+  install_memory_compact_hook
   install_proxy
   setup_proxy
   verify
