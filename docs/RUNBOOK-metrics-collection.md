@@ -11,6 +11,9 @@ per-repo health (name + booleans). **What's NOT shared:** raw prompts, file cont
 paths, hostnames (the host is a hash), usernames. The exporter self-checks its own output for
 leaks and refuses (exit 2) if anything looks like a path/email/long-text value.
 
+> **Related:** for the *local* cache-cost view (per-session cache-read, prefix budget,
+> offload ROI) that doesn't leave the machine, see [`RUNBOOK-cache-cost.md`](RUNBOOK-cache-cost.md).
+
 ---
 
 ## Kick it — each teammate runs this ONE command

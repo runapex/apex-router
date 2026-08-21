@@ -330,6 +330,37 @@ To share:
 
 ---
 
+## Cache-cost optimization toolkit (`scripts/`)
+
+Four offline, measure-first tools for understanding and reducing prompt-cache
+read cost. They read the telemetry the proxy already writes (and Codex's own
+rollout files) — no proxy restart, no model call, nothing transmitted. Full
+guide: [`docs/RUNBOOK-cache-cost.md`](docs/RUNBOOK-cache-cost.md).
+
+| Tool | What it answers |
+|---|---|
+| `scripts/cache_report.py` | Where does cache-read cost go this week? Per-session ranking + offload ROI gate. |
+| `scripts/prefix_budget.py` | How big is the re-read-every-turn prefix (CLAUDE.md + tool schemas)? |
+| `scripts/cache-handoff-nudge.sh` | Stop hook: nudge to start a fresh session before its prefix gets expensive. |
+| `scripts/codex_session_report.py` | Same per-session cache-cost view, for Codex sessions (reads `~/.codex/sessions`). |
+
+```bash
+python scripts/cache_report.py --days 7           # weekly cost + top sessions + offload ROI
+python scripts/cache_report.py --days 7 --check   # exit 2 if the data span can't support a weekly claim
+python scripts/prefix_budget.py --budget 8000     # measure the fixed prefix vs a budget
+python scripts/codex_session_report.py --days 7   # Codex per-session cache-read cost
+```
+
+**Honesty guard:** `cache_report.py` reports the *actual* data span and refuses to
+present a short window as a full week (`--check` exits non-zero). Cost figures use
+the caching price schedule (read 0.1×, write 1.25×, fresh input 1×, output 5×).
+
+**The lever these tools point at is `less context × fewer turns`, not cache tuning** —
+a high cache-read line at a high hit-rate / low bust-rate is caching *working*. See
+the runbook for the interpretation guide.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause & fix |
@@ -354,10 +385,15 @@ apex-router watch uninstall            # remove the launchd/systemd units first
 rm -rf "$HOME/.apex-router"            # package, venv, logs, route tables, telemetry
 ```
 
-That removes everything apex-router created. ollama and the Ornith model (if installed)
-are left in place — remove them with their own tooling if you want (`brew uninstall ollama`
-/ delete the HF model cache). apex-router never modified system files outside its own dir
-and the user-level watcher units.
+That removes everything apex-router created under its own dir. ollama and the Ornith
+model (if installed) are left in place — remove them with their own tooling if you want
+(`brew uninstall ollama` / delete the HF model cache).
+
+Two opt-in features write **outside** the apex-router dir, into `~/.claude/settings.json`
+(each leaves a `.apex-bak` backup): proxy client wiring (`--proxy-config` / `setup-proxy`)
+and the cache-handoff Stop hook (`--cache-handoff-hook`). If you enabled either, remove its
+entry from `~/.claude/settings.json` by hand (or restore the `.apex-bak`). The cache-handoff
+hook also writes advisory docs under `~/.claude/handoffs/` — delete that dir to clear them.
 
 ---
 

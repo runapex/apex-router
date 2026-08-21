@@ -33,11 +33,14 @@ case "$session_id" in
 esac
 
 # --- tunables (env-overridable) --------------------------------------------
-# THRESHOLD IS A PLACEHOLDER until C1 (cache_report.py) logs a real 7-day window
-# and we tune it from measured per-session read tokens. 300M read tokens ~ the
-# point where a session is in the top tier (ac845f18 territory) at ~$0.15/req.
-READ_TOKEN_THRESHOLD="${CACHE_HANDOFF_READ_THRESHOLD:-300000000}"
-MSG_THRESHOLD="${CACHE_HANDOFF_MSG_THRESHOLD:-400}"   # fallback proxy
+# Policy: START AGGRESSIVE (nudge early), RELAX over time only if signals show
+# the nudges are premature. 100M read tokens ~ $50 of accumulated read cost —
+# catches the fat-tail sessions, not just the single largest. This is a
+# deliberately low initial cap, NOT a data-fit; the per-repo adaptive threshold
+# (proposed nightly from cache_report.py once >=7d of data exist) raises it per
+# key as the measured distribution justifies. Override per repo/task via env.
+READ_TOKEN_THRESHOLD="${CACHE_HANDOFF_READ_THRESHOLD:-100000000}"
+MSG_THRESHOLD="${CACHE_HANDOFF_MSG_THRESHOLD:-200}"   # fallback proxy (aggressive)
 TELEMETRY="${APEX_TELEMETRY:-$HOME/.apex/telemetry.jsonl}"
 HANDOFF_DIR="${CACHE_HANDOFF_DIR:-$HOME/.claude/handoffs}"
 STAMP="$HANDOFF_DIR/.nudged-$session_id"   # once per session — don't re-nag
