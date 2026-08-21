@@ -361,6 +361,9 @@ the caching price schedule (read 0.1×, write 1.25×, fresh input 1×, output 5�
 a high cache-read line at a high hit-rate / low bust-rate is caching *working*. See
 the runbook for the interpretation guide.
 
+**Updating an existing install** (pull the latest tools/hooks — no restart of anything):
+[`docs/RUNBOOK-update.md`](docs/RUNBOOK-update.md).
+
 ---
 
 ## Troubleshooting
