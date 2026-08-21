@@ -116,10 +116,12 @@ touch "$STAMP" 2>/dev/null || true
 
 # Only reference the proposed file if it was actually written; otherwise nudge
 # with the apply command alone (never claim an artifact that isn't there).
+# Advertise the SAME python we resolved for our own run — this box may have only
+# `python3` (bare `python` => command-not-found). $PYTHON is always set above.
 if [ "$have_proposed" -eq 1 ]; then
-  msg="Project memory is a growing per-session prefix ($saved). Proposed compaction written to $proposed — review it, then apply with: python $ENGINE --dir $mem_dir --apply  (git-guarded, advisory)."
+  msg="Project memory is a growing per-session prefix ($saved). Proposed compaction written to $proposed — review it, then apply with: $PYTHON $ENGINE --dir $mem_dir --apply  (auto-creates a reversible git checkpoint, advisory)."
 else
-  msg="Project memory is a growing per-session prefix ($saved). Review + compact with: python $ENGINE --dir $mem_dir  (add --apply to archive cold files; git-guarded, advisory)."
+  msg="Project memory is a growing per-session prefix ($saved). Review + compact with: $PYTHON $ENGINE --dir $mem_dir  (add --apply to archive cold files; auto-creates a reversible git checkpoint, advisory)."
 fi
 jq -n --arg m "$msg" \
   '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $m}}' 2>/dev/null || true

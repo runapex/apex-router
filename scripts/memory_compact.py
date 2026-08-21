@@ -9,8 +9,11 @@ files up into a single archived line per cluster.
 
 Advisory by default: it MEASURES and PROPOSES. `--apply` is the only mutating path
 (moves cold files to `archive/<cluster>/`, rewrites the index) — human-run and
-git-guarded, so every apply is reversible. No LLM in the hot path: tiering is
-deterministic from frontmatter that is already present.
+reversible: because a Claude Code project-memory dir is never itself a git repo,
+--apply auto-creates a git checkpoint (init + pre-compaction snapshot) rooted at the
+dir when it isn't already inside one, so the whole compaction is undoable with
+`git reset --hard HEAD`. Use `--no-init-git` for strict mode (refuse instead). No LLM
+in the hot path: tiering is deterministic from frontmatter that is already present.
 
 Provider-neutral: nothing about any specific repo is hardcoded — everything is
 derived from the memory dir passed in.
@@ -18,7 +21,7 @@ derived from the memory dir passed in.
 Run:
     python3 scripts/memory_compact.py --dir ~/.claude/projects/<slug>/memory
     python3 scripts/memory_compact.py --dir <memory> --json
-    python3 scripts/memory_compact.py --dir <memory> --apply      # mutates (git-guarded)
+    python3 scripts/memory_compact.py --dir <memory> --apply      # mutates (reversible git checkpoint)
 """
 from __future__ import annotations
 
@@ -247,6 +250,37 @@ def _git_clean(dir_path: Path) -> tuple[bool, str]:
         return False, "git not found"
 
 
+def _inside_git_repo(dir_path: Path) -> bool:
+    """True iff dir_path is already inside an existing git work tree."""
+    try:
+        top = subprocess.run(["git", "-C", str(dir_path.resolve()),
+                              "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    return top.returncode == 0 and bool(top.stdout.strip())
+
+
+def _git_init_checkpoint(dir_path: Path) -> None:
+    """Make a memory dir reversible when it is NOT already inside a git repo: `git
+    init` rooted AT the dir, then commit a pre-compaction snapshot so `--apply` stays
+    fully undoable (git reset --hard + git clean). A Claude Code project-memory dir
+    is never a git repo, so without this the git-guard makes --apply unreachable in
+    its primary use.
+
+    Uses per-invocation identity + gpgsign off so the snapshot commit succeeds even
+    with NO global git user.name/email (a fresh checkout) and never touches the user's
+    global config."""
+    d = str(dir_path.resolve())
+    cfg = ["-c", "user.email=memory-compact@apex-router.local",
+           "-c", "user.name=memory-compact", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+    subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", d, *cfg, "commit", "-q", "--allow-empty",
+                    "-m", "memory-compact: pre-compaction snapshot"],
+                   check=True, capture_output=True)
+
+
 def _archivable_names_apply_would_move(dir_path: Path, clusters: dict) -> set[str]:
     """The filenames `apply_compaction` will ACTUALLY move — applying the same skip
     conditions apply uses, so the advisory preview and apply agree by construction:
@@ -280,14 +314,28 @@ def compact_existing_index(index_text: str, archived_files: set[str]) -> str:
 
 
 def apply_compaction(dir_path: Path, *, min_age_days: int = 0,
-                     now_date: str | None = None, multitoken: tuple[str, ...] = ()) -> dict:
+                     now_date: str | None = None, multitoken: tuple[str, ...] = (),
+                     init_git: bool = True) -> dict:
     """MUTATING. Move archived files to archive/<cluster>/ and compact the index
     IN PLACE (drop cold-file lines, keep curated prose). Git-guarded + idempotent.
+
+    Reversibility: apply is allowed only where every change is undoable via git. A
+    Claude Code project-memory dir is never itself a git repo, so by default
+    (`init_git=True`) a dir that is NOT already inside a repo gets an auto-created
+    checkpoint (git init + pre-compaction snapshot commit) rooted at the dir — after
+    which the normal clean-tree guard applies. Pass `init_git=False` for strict mode
+    (refuse rather than create a repo). A dir already inside a repo is never
+    re-inited and must be clean, exactly as before.
 
     Hardening (Codex xval): refuses to follow a symlinked index/archive/target (#2);
     never overwrites an existing archived file — a same-name re-archive is skipped
     with a warning rather than clobbering (#1); the index is edited, not regenerated
     from scratch, so hand-curated content survives (#3)."""
+    created_repo = False
+    if init_git and not _inside_git_repo(dir_path):
+        _git_init_checkpoint(dir_path)          # snapshot BEFORE any mutation
+        created_repo = True
+
     ok, reason = _git_clean(dir_path)
     if not ok:
         raise RuntimeError(reason)
@@ -327,7 +375,8 @@ def apply_compaction(dir_path: Path, *, min_age_days: int = 0,
     if index_path.is_file():
         new_index = compact_existing_index(index_path.read_text(encoding="utf-8"), archived_names)
         index_path.write_text(new_index, encoding="utf-8")
-    return {"moved": moved, "moved_count": len(moved), "skipped": skipped}
+    return {"moved": moved, "moved_count": len(moved), "skipped": skipped,
+            "created_repo": created_repo}
 
 
 def _fmt_text(rep: dict) -> str:
@@ -359,6 +408,9 @@ def main(argv=None) -> int:
                     help="index byte budget; --check exits 2 if the CURRENT index exceeds it")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--apply", action="store_true", help="MUTATE: archive cold files + rewrite index")
+    ap.add_argument("--no-init-git", action="store_true",
+                    help="with --apply: refuse if the memory dir isn't already a git repo, "
+                         "instead of auto-creating a reversible checkpoint (strict mode)")
     ap.add_argument("--check", action="store_true", help="exit 2 if current index over --budget")
     ap.add_argument("--write-proposed", type=Path, default=None,
                     help="write the proposed index to this path (does not touch the live index)")
@@ -373,10 +425,14 @@ def main(argv=None) -> int:
     if args.apply:
         try:
             res = apply_compaction(args.dir, min_age_days=args.min_age_days,
-                                   now_date=args.now_date, multitoken=multitoken)
+                                   now_date=args.now_date, multitoken=multitoken,
+                                   init_git=not args.no_init_git)
         except RuntimeError as e:
             print(f"memory_compact: refusing to apply — {e}", file=sys.stderr)
             return 3
+        if res.get("created_repo"):
+            print("note: memory dir was not a git repo — created a pre-compaction "
+                  "snapshot (git reset --hard HEAD to undo)")
         print(f"applied: moved {res['moved_count']} file(s) to archive/, rewrote {INDEX_NAME}")
         return 0
 

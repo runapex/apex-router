@@ -102,13 +102,76 @@ def test_build_report_shrinks_index(tmp_path):
     assert rep["index_bytes_saved"] > 0    # proposed index is smaller
 
 
-def test_apply_refuses_outside_git(tmp_path):
+def test_apply_no_init_git_still_refuses_outside_git(tmp_path):
+    # strict mode (--no-init-git): outside a repo, apply must still refuse rather
+    # than silently create one.
     _write(tmp_path, "alpha_a.md", mtype="reference")
     try:
-        mc.apply_compaction(tmp_path)
+        mc.apply_compaction(tmp_path, init_git=False)
         assert False, "should have refused (not a git repo)"
     except RuntimeError as e:
         assert "git" in str(e).lower()
+
+
+def test_apply_autoinits_git_checkpoint_outside_repo(tmp_path):
+    # Default behavior: the CC project-memory dir is never a git repo, so apply
+    # must auto-create a reversible checkpoint (git init + pre-compaction snapshot)
+    # and then compact — the advertised `--apply` command must actually work there.
+    _write(tmp_path, "alpha_a.md", mtype="reference", desc="original-body")
+    _write(tmp_path, "feedback_keep.md", mtype="feedback")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory index\n- [alpha_a.md](alpha_a.md) — cold\n"
+        "- [feedback_keep.md](feedback_keep.md) — hot\n")
+
+    res = mc.apply_compaction(tmp_path)                    # no init_git → default True
+    assert res["created_repo"] is True
+    # it actually compacted
+    assert res["moved_count"] == 1
+    assert (tmp_path / "archive" / "alpha" / "alpha_a.md").exists()
+    assert not (tmp_path / "alpha_a.md").exists()
+    # a real git repo now exists, rooted at the memory dir, with a snapshot commit
+    assert (tmp_path / ".git").is_dir()
+    top = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    assert Path(top.stdout.strip()).resolve() == tmp_path.resolve()
+    # REVERSIBLE: the pre-compaction snapshot still holds the ORIGINAL file, so the
+    # archive move can be undone from git even though it now lives under archive/.
+    shown = subprocess.run(["git", "-C", str(tmp_path), "show", "HEAD:alpha_a.md"],
+                           capture_output=True, text=True)
+    assert shown.returncode == 0
+    assert "original-body" in shown.stdout
+
+
+def test_apply_autoinit_is_reversible_reset(tmp_path):
+    # The whole compaction is undoable back to the snapshot with reset --hard + clean.
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    (tmp_path / "MEMORY.md").write_text("# Memory index\n- [alpha_a.md](alpha_a.md) — cold\n")
+    mc.apply_compaction(tmp_path)
+    assert (tmp_path / "archive" / "alpha" / "alpha_a.md").exists()  # moved
+    subprocess.run(["git", "-C", str(tmp_path), "reset", "--hard", "HEAD"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "clean", "-fdq"], check=True, capture_output=True)
+    assert (tmp_path / "alpha_a.md").exists()                        # restored
+    assert not (tmp_path / "archive" / "alpha" / "alpha_a.md").exists()
+
+
+def test_apply_autoinit_snapshot_no_global_git_identity(tmp_path, monkeypatch):
+    # Auto-init must succeed even when the user has NO global git user.name/email
+    # (a fresh checkout of the CC memory dir). Isolate git config to a temp HOME.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(fake_home / ".gitconfig"))  # empty → no identity
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    (tmp_path / "MEMORY.md").write_text("# Memory index\n- [alpha_a.md](alpha_a.md) — cold\n")
+    res = mc.apply_compaction(tmp_path)      # must not raise on missing identity
+    assert res["created_repo"] is True
+    assert res["moved_count"] == 1
 
 
 def test_apply_moves_and_is_idempotent(tmp_path):

@@ -343,7 +343,7 @@ guide: [`docs/RUNBOOK-cache-cost.md`](docs/RUNBOOK-cache-cost.md).
 | `scripts/prefix_budget.py` | How big is the re-read-every-turn prefix (CLAUDE.md + tool schemas)? |
 | `scripts/cache-handoff-nudge.sh` | Stop hook: nudge to start a fresh session before its prefix gets expensive. |
 | `scripts/codex_session_report.py` | Same per-session cache-cost view, for Codex sessions (reads `~/.codex/sessions`). |
-| `scripts/memory_compact.py` | Hierarchically compact a project-memory dir (cluster + tier + freshness); advisory, `--apply` is git-guarded. |
+| `scripts/memory_compact.py` | Hierarchically compact a project-memory dir (cluster + tier + freshness); advisory, `--apply` auto-creates a reversible git checkpoint (or `--no-init-git` to require an existing repo). |
 | `scripts/memory-compact-nudge.sh` | Stop hook: nudge to compact a large project `MEMORY.md` (advisory; never mutates). |
 
 ```bash
