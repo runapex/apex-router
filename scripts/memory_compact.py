@@ -12,8 +12,12 @@ Advisory by default: it MEASURES and PROPOSES. `--apply` is the only mutating pa
 reversible: because a Claude Code project-memory dir is never itself a git repo,
 --apply auto-creates a git checkpoint (init + pre-compaction snapshot) rooted at the
 dir when it isn't already inside one, so the whole compaction is undoable with
-`git reset --hard HEAD`. Use `--no-init-git` for strict mode (refuse instead). No LLM
-in the hot path: tiering is deterministic from frontmatter that is already present.
+`git reset --hard HEAD && git clean -fd` (reset restores the moved originals; clean
+removes the now-untracked archive/ copies). The auto-created repo has no ignore rules,
+so clean removes every archive/ copy there; inside a pre-existing repo whose
+`.gitignore` covers `archive/`, add `-x` to also drop ignored copies. Use
+`--no-init-git` for strict mode (refuse instead). No LLM in the hot path: tiering is
+deterministic from frontmatter that is already present.
 
 Provider-neutral: nothing about any specific repo is hardcoded — everything is
 derived from the memory dir passed in.
@@ -27,7 +31,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -234,15 +241,23 @@ def _git_clean(dir_path: Path) -> tuple[bool, str]:
             rel = d.relative_to(root)
         except ValueError:
             return False, "could not locate the memory dir within its git repo"
-        st = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--ignored"],
+        # Force -uall so a user's status.showUntrackedFiles=no can't hide untracked
+        # memory files from the clean check (Codex xval F5 — those files aren't in
+        # HEAD, so moving them would be irreversible).
+        st = subprocess.run(["git", "-C", str(root), "status", "--porcelain",
+                            "--ignored", "--untracked-files=all"],
                             capture_output=True, text=True)
         if st.returncode != 0:
             return False, f"git status failed (rc={st.returncode}) — refusing to apply"
         prefix = "" if str(rel) == "." else str(rel) + "/"
         for line in st.stdout.splitlines():
-            # porcelain: 'XY <path>' (or '!! <path>' for ignored). Path starts at col 3.
-            path = line[3:].split(" -> ")[-1].strip().strip('"')
-            if prefix == "" or path.startswith(prefix):
+            # porcelain: 'XY <path>' (or 'XY <old> -> <new>' for renames; '!! <path>'
+            # for ignored). Check BOTH sides of a rename so a rename OUT of the memory
+            # dir (memory/a -> elsewhere/a) still counts as dirty (Codex xval pass2 #5).
+            body = line[3:]
+            parts = [p.strip().strip('"') for p in body.split(" -> ")] if " -> " in body \
+                else [body.strip().strip('"')]
+            if prefix == "" or any(p.startswith(prefix) for p in parts):
                 return False, ("git tree has uncommitted or ignored changes under the memory "
                                "dir — commit/stash and un-ignore first")
         return True, ""
@@ -250,35 +265,82 @@ def _git_clean(dir_path: Path) -> tuple[bool, str]:
         return False, "git not found"
 
 
-def _inside_git_repo(dir_path: Path) -> bool:
-    """True iff dir_path is already inside an existing git work tree."""
+def _fs_has_git_ancestor(dir_path: Path) -> bool:
+    """A .git exists at dir_path or any ancestor — a filesystem check INDEPENDENT of
+    git's own discovery (which env vars like GIT_CEILING_DIRECTORIES/GIT_DIR can
+    suppress). Used to refuse auto-init even when `git rev-parse` was fooled into
+    reporting 'no repository' (Codex xval pass2 #3)."""
+    d = dir_path.resolve()
+    for p in (d, *d.parents):
+        if (p / ".git").exists():
+            return True
+    return False
+
+
+def _git_repo_state(dir_path: Path) -> str:
+    """Tri-state, FAIL CLOSED (Codex xval F3): 'inside' (already in a git work tree),
+    'outside' (git DEFINITIVELY reports no repository — safe to auto-init), or 'error'
+    (any ambiguous git failure: dubious ownership, corrupt metadata, permissions, git
+    missing). Only a definitive 'not a git repository' is 'outside'; every other
+    nonzero result is 'error' so we never auto-init inside a repo we merely failed to
+    detect.
+
+    LC_ALL=C so localized git builds still emit the canonical English diagnostic we
+    match on. A filesystem walk-up backstops git's discovery: if any ancestor has a
+    .git, we are 'inside' regardless of what git reports (env-suppressed discovery)."""
+    if _fs_has_git_ancestor(dir_path):
+        return "inside"
+    env = {**os.environ, "LC_ALL": "C"}
     try:
-        top = subprocess.run(["git", "-C", str(dir_path.resolve()),
-                              "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True)
+        r = subprocess.run(["git", "-C", str(dir_path.resolve()),
+                            "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, env=env)
     except FileNotFoundError:
-        return False
-    return top.returncode == 0 and bool(top.stdout.strip())
+        return "error"          # git absent — cannot guarantee reversibility
+    if r.returncode == 0 and r.stdout.strip():
+        return "inside"
+    # git's canonical "no repo here" message. Anything else is a real error → refuse.
+    if "not a git repository" in (r.stderr or "").lower():
+        return "outside"
+    return "error"
 
 
 def _git_init_checkpoint(dir_path: Path) -> None:
     """Make a memory dir reversible when it is NOT already inside a git repo: `git
     init` rooted AT the dir, then commit a pre-compaction snapshot so `--apply` stays
-    fully undoable (git reset --hard + git clean). A Claude Code project-memory dir
-    is never a git repo, so without this the git-guard makes --apply unreachable in
-    its primary use.
+    fully undoable (git reset --hard + git clean -fd). A Claude Code project-memory
+    dir is never a git repo, so without this the git-guard makes --apply unreachable
+    in its primary use.
 
     Uses per-invocation identity + gpgsign off so the snapshot commit succeeds even
     with NO global git user.name/email (a fresh checkout) and never touches the user's
-    global config."""
+    global config. Disables inherited template hooks (`init.templateDir=''`,
+    `core.hooksPath=/dev/null`) so a global commit hook can't fail or mutate files
+    during the snapshot (Codex xval F4). Any git failure is converted to a RuntimeError
+    so callers get the refuse-path, not a raw CalledProcessError traceback."""
     d = str(dir_path.resolve())
-    cfg = ["-c", "user.email=memory-compact@apex-router.local",
-           "-c", "user.name=memory-compact", "-c", "commit.gpgsign=false"]
-    subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
-    subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", d, *cfg, "commit", "-q", "--allow-empty",
-                    "-m", "memory-compact: pre-compaction snapshot"],
-                   check=True, capture_output=True)
+    dot_git = dir_path.resolve() / ".git"
+    preexisting_git = dot_git.exists()      # never delete a .git we didn't create
+    # gpgsign/hook-suppression apply to the mutating commit; identity too.
+    safe = ["-c", "user.email=memory-compact@apex-router.local",
+            "-c", "user.name=memory-compact", "-c", "commit.gpgsign=false",
+            "-c", "core.hooksPath=/dev/null"]
+    try:
+        subprocess.run(["git", "init", "-q", "--template=", d],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", d, "add", "-A"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", d, *safe, "commit", "-q", "--allow-empty",
+                        "--no-verify", "-m", "memory-compact: pre-compaction snapshot"],
+                       check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        # Roll back a PARTIAL init so a failed checkpoint leaves nothing behind
+        # (Codex xval pass2 #1). Only remove a .git we ourselves just created.
+        if not preexisting_git and dot_git.is_dir() and not dot_git.is_symlink():
+            shutil.rmtree(dot_git, ignore_errors=True)
+        detail = (e.stderr or e.stdout or "").strip().splitlines()
+        msg = detail[-1] if detail else str(e)
+        raise RuntimeError(f"could not create a git checkpoint (snapshot) — {msg}") from e
 
 
 def _archivable_names_apply_would_move(dir_path: Path, clusters: dict) -> set[str]:
@@ -321,25 +383,20 @@ def apply_compaction(dir_path: Path, *, min_age_days: int = 0,
 
     Reversibility: apply is allowed only where every change is undoable via git. A
     Claude Code project-memory dir is never itself a git repo, so by default
-    (`init_git=True`) a dir that is NOT already inside a repo gets an auto-created
-    checkpoint (git init + pre-compaction snapshot commit) rooted at the dir — after
-    which the normal clean-tree guard applies. Pass `init_git=False` for strict mode
-    (refuse rather than create a repo). A dir already inside a repo is never
-    re-inited and must be clean, exactly as before.
+    (`init_git=True`) a dir that is DEFINITIVELY not inside a repo gets an auto-created
+    checkpoint (git init + pre-compaction snapshot commit) rooted at the dir. Pass
+    `init_git=False` for strict mode (refuse rather than create a repo). A dir already
+    inside a repo is never re-inited and must be clean, exactly as before; an ambiguous
+    git error refuses (fail closed) rather than auto-initing.
+
+    Ordering (Codex xval F6): ALL non-mutating validation (symlink guards) and planning
+    run BEFORE any git init, so a refused apply never leaves a `.git`/commit behind.
 
     Hardening (Codex xval): refuses to follow a symlinked index/archive/target (#2);
     never overwrites an existing archived file — a same-name re-archive is skipped
     with a warning rather than clobbering (#1); the index is edited, not regenerated
     from scratch, so hand-curated content survives (#3)."""
-    created_repo = False
-    if init_git and not _inside_git_repo(dir_path):
-        _git_init_checkpoint(dir_path)          # snapshot BEFORE any mutation
-        created_repo = True
-
-    ok, reason = _git_clean(dir_path)
-    if not ok:
-        raise RuntimeError(reason)
-
+    # --- 1. NON-MUTATING validation first — a refusal here must leave nothing behind.
     index_path = dir_path / INDEX_NAME
     if index_path.is_symlink():
         raise RuntimeError(f"{INDEX_NAME} is a symlink — refusing to write through it")
@@ -347,34 +404,67 @@ def apply_compaction(dir_path: Path, *, min_age_days: int = 0,
     if archive_root.exists() and archive_root.is_symlink():
         raise RuntimeError("archive/ is a symlink — refusing to move files through it")
 
-    rows = scan_memory(dir_path, multitoken=multitoken)
-    clusters = plan_compaction(rows, min_age_days=min_age_days, now_date=now_date)
+    # --- 2. Establish a reversible checkpoint. Only a DEFINITIVE 'outside' auto-inits.
+    created_repo = False
+    if init_git:
+        state = _git_repo_state(dir_path)
+        if state == "outside":
+            _git_init_checkpoint(dir_path)      # snapshot BEFORE any mutation
+            created_repo = True
+        elif state == "error":
+            raise RuntimeError(
+                "could not determine git state of the memory dir (fail closed) — "
+                "resolve the git error or run with --no-init-git inside a clean repo")
 
-    moved, skipped = [], []
-    for name, c in clusters.items():
-        for r in c["archived"]:
-            src = dir_path / r["file"]
-            if not src.exists():
-                continue
-            if src.is_symlink():
-                skipped.append(f"{r['file']} (symlink)")
-                continue
-            dst_dir = archive_root / name
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            dst = dst_dir / r["file"]
-            if dst.exists():
-                # NEVER overwrite an existing archived version (data-loss guard #1)
-                skipped.append(f"{r['file']} (already archived — not overwritten)")
-                continue
-            src.replace(dst)
-            moved.append(str(dst.relative_to(dir_path)))
+    # If anything AFTER a successful auto-init refuses, remove the .git we created so
+    # a refused apply still leaves nothing behind (Codex xval pass2 #1, post-init path).
+    try:
+        # --- 3. Clean-tree guard: every change must be undoable from the snapshot/HEAD.
+        ok, reason = _git_clean(dir_path)
+        if not ok:
+            raise RuntimeError(reason)
 
-    # Compact the EXISTING index in place — preserve everything that isn't a
-    # link to a file we just archived.
-    archived_names = {Path(m).name for m in moved}
-    if index_path.is_file():
-        new_index = compact_existing_index(index_path.read_text(encoding="utf-8"), archived_names)
-        index_path.write_text(new_index, encoding="utf-8")
+        # --- 4. Plan + execute the (now reversible) mutation.
+        rows = scan_memory(dir_path, multitoken=multitoken)
+        clusters = plan_compaction(rows, min_age_days=min_age_days, now_date=now_date)
+
+        moved, skipped = [], []
+        for name, c in clusters.items():
+            for r in c["archived"]:
+                src = dir_path / r["file"]
+                if not src.exists():
+                    continue
+                if src.is_symlink():
+                    skipped.append(f"{r['file']} (symlink)")
+                    continue
+                dst_dir = archive_root / name
+                # A symlinked archive SUBDIR (archive/<cluster> -> /outside) would let
+                # replace() move files outside the memory dir — refuse it, don't follow
+                # (Codex xval pass2 #2; archive/ itself is guarded above).
+                if dst_dir.is_symlink():
+                    skipped.append(f"{r['file']} (archive/{name} is a symlink)")
+                    continue
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                dst = dst_dir / r["file"]
+                if dst.exists():
+                    # NEVER overwrite an existing archived version (data-loss guard #1)
+                    skipped.append(f"{r['file']} (already archived — not overwritten)")
+                    continue
+                src.replace(dst)
+                moved.append(str(dst.relative_to(dir_path)))
+
+        # Compact the EXISTING index in place — preserve everything that isn't a
+        # link to a file we just archived.
+        archived_names = {Path(m).name for m in moved}
+        if index_path.is_file():
+            new_index = compact_existing_index(index_path.read_text(encoding="utf-8"), archived_names)
+            index_path.write_text(new_index, encoding="utf-8")
+    except BaseException:
+        if created_repo:
+            dot_git = dir_path.resolve() / ".git"
+            if dot_git.is_dir() and not dot_git.is_symlink():
+                shutil.rmtree(dot_git, ignore_errors=True)
+        raise
     return {"moved": moved, "moved_count": len(moved), "skipped": skipped,
             "created_repo": created_repo}
 
@@ -431,8 +521,10 @@ def main(argv=None) -> int:
             print(f"memory_compact: refusing to apply — {e}", file=sys.stderr)
             return 3
         if res.get("created_repo"):
-            print("note: memory dir was not a git repo — created a pre-compaction "
-                  "snapshot (git reset --hard HEAD to undo)")
+            qd = shlex.quote(str(args.dir))
+            print(f"note: memory dir was not a git repo — created a pre-compaction "
+                  f"snapshot. To undo this compaction:  git -C {qd} reset --hard HEAD "
+                  f"&& git -C {qd} clean -fd")
         print(f"applied: moved {res['moved_count']} file(s) to archive/, rewrote {INDEX_NAME}")
         return 0
 

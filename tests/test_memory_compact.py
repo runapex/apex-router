@@ -143,7 +143,9 @@ def test_apply_autoinits_git_checkpoint_outside_repo(tmp_path):
 
 
 def test_apply_autoinit_is_reversible_reset(tmp_path):
-    # The whole compaction is undoable back to the snapshot with reset --hard + clean.
+    # The DOCUMENTED undo is BOTH commands: `git reset --hard HEAD` restores the moved
+    # originals, `git clean -fd` removes the now-untracked archive/ copies (Codex xval
+    # F2 — reset alone leaves archive/ behind).
     _write(tmp_path, "alpha_a.md", mtype="reference")
     (tmp_path / "MEMORY.md").write_text("# Memory index\n- [alpha_a.md](alpha_a.md) — cold\n")
     mc.apply_compaction(tmp_path)
@@ -152,7 +154,124 @@ def test_apply_autoinit_is_reversible_reset(tmp_path):
                    check=True, capture_output=True)
     subprocess.run(["git", "-C", str(tmp_path), "clean", "-fdq"], check=True, capture_output=True)
     assert (tmp_path / "alpha_a.md").exists()                        # restored
-    assert not (tmp_path / "archive" / "alpha" / "alpha_a.md").exists()
+    assert not (tmp_path / "archive" / "alpha" / "alpha_a.md").exists()  # copies removed
+
+
+def test_git_repo_state_tri_state_fail_closed(monkeypatch):
+    # Codex xval F3: detection must FAIL CLOSED — only a definitive "not a git
+    # repository" is 'outside' (safe to auto-init); any ambiguous git error is
+    # 'error' (refuse), never silently treated as not-a-repo.
+    from types import SimpleNamespace
+
+    def fake(stderr, rc=128, stdout=""):
+        return SimpleNamespace(returncode=rc, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(mc.subprocess, "run",
+                        lambda *a, **k: fake("fatal: not a git repository (or any parent): .git"))
+    assert mc._git_repo_state(Path("/whatever")) == "outside"
+    monkeypatch.setattr(mc.subprocess, "run",
+                        lambda *a, **k: fake("fatal: detected dubious ownership in repository at '/x'"))
+    assert mc._git_repo_state(Path("/whatever")) == "error"
+    monkeypatch.setattr(mc.subprocess, "run",
+                        lambda *a, **k: fake("", rc=0, stdout="/some/repo\n"))
+    assert mc._git_repo_state(Path("/whatever")) == "inside"
+
+
+def test_apply_refuses_on_ambiguous_git_error(tmp_path, monkeypatch):
+    # F3: an 'error' state must refuse (no auto-init) rather than fail open.
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    monkeypatch.setattr(mc, "_git_repo_state", lambda p: "error")
+    try:
+        mc.apply_compaction(tmp_path)
+        assert False, "should refuse on an ambiguous git error"
+    except RuntimeError as e:
+        assert "git" in str(e).lower()
+    assert not (tmp_path / ".git").exists()
+
+
+def test_checkpoint_failure_raises_runtimeerror_not_calledprocess(tmp_path, monkeypatch):
+    # Codex xval F4: a failed snapshot must surface as RuntimeError (caught by main),
+    # not a raw CalledProcessError traceback.
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    monkeypatch.setattr(mc, "_git_repo_state", lambda p: "outside")  # force the init path
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, ["git"], stderr="boom")
+    monkeypatch.setattr(mc.subprocess, "run", boom)
+    try:
+        mc.apply_compaction(tmp_path)
+        assert False, "should raise RuntimeError"
+    except RuntimeError as e:
+        assert "checkpoint" in str(e).lower() or "git" in str(e).lower()
+    except subprocess.CalledProcessError:
+        assert False, "raw CalledProcessError leaked past apply_compaction"
+
+
+def test_refused_symlink_apply_creates_no_repo(tmp_path):
+    # Codex xval F6: non-mutating validation must run BEFORE auto-init, so a refusal
+    # (here: a symlinked index) never leaves a .git checkpoint behind.
+    real = tmp_path / "real_index.md"
+    real.write_text("# real\n")
+    (tmp_path / "MEMORY.md").symlink_to(real)      # dir is NOT a repo → would auto-init
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    try:
+        mc.apply_compaction(tmp_path)
+        assert False, "should refuse a symlinked index"
+    except RuntimeError as e:
+        assert "symlink" in str(e).lower()
+    assert not (tmp_path / ".git").exists()          # refusal created no repo
+
+
+def test_partial_init_failure_leaves_no_git(tmp_path, monkeypatch):
+    # Codex xval pass2 #1: if git init succeeds but add/commit fails, the checkpoint
+    # helper must ROLL BACK the .git it created — a refusal leaves nothing behind.
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    (tmp_path / "MEMORY.md").write_text("# i\n")
+    real_run = subprocess.run
+
+    def flaky(*a, **k):
+        if a and a[0][:2] == ["git", "init"]:
+            return real_run(*a, **k)          # let init create .git
+        if a and a[0][0] == "git":
+            raise subprocess.CalledProcessError(1, a[0], stderr="simulated add failure")
+        return real_run(*a, **k)
+    monkeypatch.setattr(mc.subprocess, "run", flaky)
+    try:
+        mc._git_init_checkpoint(tmp_path)
+        assert False, "should raise"
+    except RuntimeError:
+        pass
+    assert not (tmp_path / ".git").exists()      # rolled back
+
+
+def test_no_nested_repo_under_existing_worktree_even_if_git_discovery_suppressed(tmp_path, monkeypatch):
+    # Codex xval pass2 #3: a memory dir nested in an existing repo must never auto-init
+    # a nested repo, even when git's own discovery is suppressed (GIT_CEILING_DIRECTORIES).
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sub = tmp_path / "memory"
+    sub.mkdir()
+    _write(sub, "alpha_a.md", mtype="reference")
+    (sub / "MEMORY.md").write_text("# i\n")
+    # suppress discovery so `git -C sub rev-parse` can't see the parent repo
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert mc._git_repo_state(sub) == "inside"    # walk-up still finds parent .git
+    try:
+        mc.apply_compaction(sub)                   # must not create a nested repo
+    except RuntimeError:
+        pass                                        # refusing is fine; nested-init is not
+    assert not (sub / ".git").exists()
+
+
+def test_refused_after_autoinit_removes_repo(tmp_path, monkeypatch):
+    # If the post-init clean-tree guard refuses, the auto-created .git must be removed.
+    _write(tmp_path, "alpha_a.md", mtype="reference")
+    (tmp_path / "MEMORY.md").write_text("# i\n")
+    monkeypatch.setattr(mc, "_git_clean", lambda p: (False, "simulated dirty refusal"))
+    try:
+        mc.apply_compaction(tmp_path)
+        assert False, "should refuse"
+    except RuntimeError as e:
+        assert "dirty" in str(e).lower() or "simulated" in str(e).lower()
+    assert not (tmp_path / ".git").exists()      # cleaned up on refusal
 
 
 def test_apply_autoinit_snapshot_no_global_git_identity(tmp_path, monkeypatch):
