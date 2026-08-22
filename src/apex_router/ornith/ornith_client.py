@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Any
 from urllib import request, error
 
+from . import local_tier
+
 ROOT = Path(os.environ.get("ORNITH_ROOT", Path(__file__).resolve().parent))
-BASE_URL = os.environ.get("ORNITH_URL", "http://127.0.0.1:8080").rstrip("/")
+# Defaults now describe OLLAMA (:11434), not the retired MLX server (:8080). ORNITH_URL still wins,
+# so a deployment fronting the model with a proxy is unaffected.
+BASE_URL = os.environ.get("ORNITH_URL", local_tier.DEFAULT_URL).rstrip("/")
 LOCK = Path.home() / ".cache/ornith/request.lock"
 MAINTENANCE = ROOT / "state/maintenance"
 
@@ -34,20 +38,33 @@ READY_TIMEOUT = _env_num("ORNITH_READY_TIMEOUT_SECS", "30", float)
 LIVE_TIMEOUT = _env_num("ORNITH_LIVE_TIMEOUT_SECS", "5", float)
 STARTUP_RETRIES = _env_num("ORNITH_STARTUP_RETRIES", "12", int)
 
-# Backend profile. Defaults (no env) reproduce the Ornith/vLLM request body exactly, so existing
-# callers are byte-identical. Set these to speak an OpenAI-compatible backend (e.g. ollama), which
-# requires an explicit `model` and uses `reasoning_effort` to gate thinking. ORNITH_API_MODEL (the
-# API model id) is deliberately distinct from ORNITH_MODEL (the server-side MLX filesystem path),
-# so that path can never leak into the API `model` field.
-MODEL = os.environ.get("ORNITH_API_MODEL", "")
-THINKING_STYLE = os.environ.get("ORNITH_THINKING_STYLE", "chat_template")
+# Backend profile. The backend is now ollama, which REQUIRES an explicit `model` (the MLX server
+# let clients omit it and used its own start-time default) and gates thinking with
+# `reasoning_effort`. Both still come from env first; the fallbacks come from the active tier so
+# there is one source of truth for "which local model is live" (see local_tier).
+# ORNITH_API_MODEL (the API model id) stays deliberately distinct from ORNITH_MODEL (the retired
+# MLX filesystem path), so that path can never leak into the API `model` field.
+MODEL = os.environ.get("ORNITH_API_MODEL") or local_tier.resolve().api_model
+THINKING_STYLE = os.environ.get("ORNITH_THINKING_STYLE", local_tier.THINKING_STYLE)
+
+# Liveness probe path. The MLX server exposed /health returning {"status":"ok"}; ollama has no
+# /health at all (404) and answers /v1/models with an OpenAI model list. Probing the wrong one
+# reports a healthy server as dead, which strands every lane. Kept configurable for proxied setups.
+HEALTH_PATH = os.environ.get("ORNITH_HEALTH_PATH", "/v1/models")
 
 
-def _apply_backend(body: dict, *, enable_thinking: bool) -> dict:
-    """Shape the request body for the configured backend, in place. Defaults (no env) reproduce
-    today's Ornith/vLLM body exactly."""
-    if MODEL:
-        body["model"] = MODEL
+def _apply_backend(body: dict, *, enable_thinking: bool, model: str | None = None) -> dict:
+    """Shape the request body for the configured backend, in place.
+
+    `model` overrides the module-level MODEL for ONE call. That override exists because MODEL binds
+    at import: without it, a caller holding a Route that asks for the other tier could not act on it
+    without restarting the process, and would silently get whichever tier was bound at startup.
+    Note this selects a model, it does not LOAD one — ollama will pull the weights in on first use,
+    so an unwarmed tier pays a multi-GB cold start on this request.
+    """
+    chosen = model or MODEL
+    if chosen:
+        body["model"] = chosen
     if THINKING_STYLE == "reasoning_effort":
         if not enable_thinking:
             body["reasoning_effort"] = "none"
@@ -143,17 +160,22 @@ def _parse(payload: dict[str, Any]) -> ChatResult:
 
 
 def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
-                  temperature=0.3, top_p=0.95, raise_on_truncation=True) -> ChatResult:
+                  temperature=0.3, top_p=0.95, raise_on_truncation=True,
+                  model: str | None = None) -> ChatResult:
     """raise_on_truncation (default True): a finish_reason=length answer raises OrnithProtocolError —
     correct for codegen/extraction where a cut-off answer is useless. Callers whose PARTIAL output is
     still valuable (e.g. the review pre-filter, where partial findings still escalate usefully) pass
-    False to receive the truncated ChatResult instead of an exception."""
+    False to receive the truncated ChatResult instead of an exception.
+
+    model: send THIS tier's model id instead of the module-level one — pass `route.model` to honour
+    a model_router verdict without restarting the process. Selecting an unwarmed tier makes this
+    request pay the cold load."""
     if MAINTENANCE.exists():
         raise OrnithMaintenance("Scheduled maintenance")
     body = _apply_backend(
         {"messages": messages, "max_tokens": max_tokens,
          "temperature": temperature, "top_p": top_p},
-        enable_thinking=enable_thinking)
+        enable_thinking=enable_thinking, model=model)
     with inference_lock():
         if MAINTENANCE.exists():
             raise OrnithMaintenance("Scheduled maintenance")
@@ -167,10 +189,24 @@ def chat(prompt: str, **kwargs) -> ChatResult:
     return chat_messages([{"role": "user", "content": prompt}], **kwargs)
 
 
+def _is_healthy(payload) -> bool:
+    """Accept EITHER health shape, so one probe covers both backends and any proxy in front:
+      - MLX/vLLM  /health     -> {"status": "ok"}
+      - ollama    /v1/models  -> {"object": "list", "data": [...]}
+    An empty `data` list is still 'up': ollama with no model pulled is a live server, and treating
+    it as dead would send callers hunting a network fault that isn't there.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("status") == "ok":
+        return True
+    return isinstance(payload.get("data"), list)
+
+
 def liveness() -> bool:
-    """Process is up. GET /health, short timeout, NO retry, no lock."""
+    """Process is up. GET HEALTH_PATH, short timeout, NO retry, no lock."""
     try:
-        return _get("/health", timeout=LIVE_TIMEOUT, retries=0).get("status") == "ok"
+        return _is_healthy(_get(HEALTH_PATH, timeout=LIVE_TIMEOUT, retries=0))
     except OrnithError:
         return False
 

@@ -19,9 +19,11 @@ dependencies = []
 # (tool-set / system markers, 0 services) still routes. The client itself is stdlib
 # (urllib), so this extra only documents the runtime service expectation.
 embed = []
-# The replay bench can drive a local MLX server for offline scoring/codegen. MLX is Apple-Silicon
-# only, so the dependency carries a platform marker — `pip install apex-router[ornith]` is a clean
-# no-op on Linux/Intel (installs nothing) instead of failing on an unavailable wheel.
+# LEGACY. Local inference moved to ollama (an external binary, not a Python dep), so nothing under
+# src/ imports mlx_lm any more and the installer no longer selects this extra. Kept declared so the
+# old MLX replay path stays installable on demand. MLX is Apple-Silicon only, so the dependency
+# carries a platform marker — `pip install apex-router[ornith]` is a clean no-op on Linux/Intel
+# (installs nothing) instead of failing on an unavailable wheel.
 ornith = ["mlx-lm>=0.19.0; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 # The measuring PROXY (apex_router.proxy_engine): an ASGI server that fronts the provider,
 # measures composition/usage, and runs the offline policy tuner. Heavy deps live ONLY here, so the

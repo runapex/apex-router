@@ -52,7 +52,7 @@ routing core is required and pure-stdlib; the proxy and its tuner are optional e
 │                 lanes: codegen (gated by tests) · review (pre-filter) · adhoc  │
 └───────────────────────────────────────────────────────────────────────────────┘
 ┌─ toolkit (the evidence source) ──────────────────────────────────────────────┐
-│  codeqa: grounded code-Q&A + freshness gate   ornith: local MLX client        │
+│  codeqa: grounded code-Q&A + freshness gate   ornith: local tiered client     │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -137,28 +137,62 @@ Arch-aware and idempotent:
 | Python ≥3.11, uv | if missing | required |
 | `apex-router` package | always | pure stdlib, near-instant |
 | ollama + `nomic-embed-text` | if missing | embedding-refinement classifier (optional) |
-| Ornith MLX server | **Apple Silicon only** | local bench / codegen / review; skipped elsewhere with a notice. Run helper written; add `--ornith-serve` for always-on launchd agents |
+| Ornith 1.5 tiers (via ollama) | any platform ollama supports | local bench / codegen / review. Pulls the small tier by default; `--ornith-tier large\|both` for the big one, `--ornith-serve` for the queue-worker launchd agents |
 | starter route table | always | empty → resolves to your static defaults until a bench fills it |
 | background watchers | **only with `--watch`** | drain worker + daily report (see below) |
 | measuring proxy | **only with `--proxy`** | the `[proxy]`/`[tuner]` extras; installed, not auto-started |
 
-Flags: `--no-ornith` (skip the large model download), `--ornith-serve` (macOS: install the
-Ornith stack — server + queue worker + nightly cycle — as always-on launchd agents, not just
-the run helper), `--no-embed`, `--watch` (install watchers at first run), `--proxy` (install
+Flags: `--no-ornith` (skip the local model pulls), `--ornith-tier small|large|both` (which tier to
+pull and activate; default `small`), `--ornith-serve` (macOS: install the Ornith queue worker +
+nightly cycle as launchd agents), `--no-embed`, `--watch` (install watchers at first run), `--proxy` (install
 the measuring proxy + its extra), `--proxy-config <file>` (wire Claude Code through a proxy),
 `--skills-marketplace <git-url>` (print the wiring for a private team skill marketplace — see
 below), `--dir PATH`, `--verify-only`.
 
-**Persistent local Ornith (macOS).** By default the installer downloads the model and writes
-`~/.apex-router/serve-ornith.sh` (a manual start helper) — it does **not** keep a 20GB server
-running. Pass `--ornith-serve` to install three launchd agents instead:
-`com.ornith.server` (the MLX server, restarts on crash/login), `com.ornith.worker` (the
-offload queue), and `com.ornith.overnight` at 01:30 (nightly maintenance; a no-op unless you've
-queued training data). All paths derive from the install dir and apex-router's own venv — nothing
-machine-specific. The **worker is not auto-started** (it would drain the queue while the 35B model
-is still loading); once the server answers, kick it off once with
-`launchctl kickstart gui/$(id -u)/com.ornith.worker`. Manage: `launchctl kickstart -k` (restart) /
-`bootout` (stop) any `com.ornith.*` label.
+### Local model tiers (Ornith 1.5)
+
+Local inference runs on **ollama** (`:11434`) — the same instance that serves `nomic-embed-text`.
+The old MLX server (`mlx_lm.server` on `:8080`, `com.ornith.server`) is **retired**: it pinned one
+model at process start, which made switching sizes a restart-and-reload, and it confined local
+inference to Apple Silicon.
+
+Two tiers, one resident at a time:
+
+| Tier | Model | Weights | Shape |
+|---|---|---|---|
+| `small` | `hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M` | ~5.6 GB | dense 9B — bulk/triage, coexists with everything else |
+| `large` | `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M` | ~21 GB | 35B-A3B MoE, 3B active/token — fidelity, synthesis, codegen |
+
+> There is **no 27B**. Upstream Ornith 1.5 ships 9B, 35B-A3B and 397B; 397B does not fit a single
+> workstation. The 35B-A3B is the practical "big" tier — being MoE, it decodes near a 3B model.
+
+```bash
+apex-router ornith-tier            # what's configured, pulled, and actually resident
+apex-router ornith-tier large      # unload the old tier, write the new one, warm it, restart consumers
+apex-router ornith-tier --unload   # free the RAM without changing the configured tier
+apex-router ornith-tier --json     # machine-readable
+```
+
+The active tier lives in `~/.apex-router/ornith.env` and is the single source of truth: the launchd
+units carry **no** model id, so switching never means editing a plist. Switching is never implicit —
+`model_router.select()` reports `needs_switch` and names the model it wants, but will not trigger a
+multi-GB load as a side effect of asking for a route.
+
+Capacity is checked against **physical RAM**, not a hardcoded ceiling, and a switch unloads the
+outgoing tier *before* warming the incoming one — both tiers resident is ~27 GB.
+
+**Persistent local Ornith (macOS).** Pass `--ornith-serve` to install two launchd agents:
+`com.ornith.worker` (the offload queue) and `com.ornith.overnight` at 01:30 (nightly maintenance;
+a no-op unless you've queued training data). Model *serving* is ollama's own service — apex-router
+does not supervise it. The **worker is not auto-started** (it would drain the queue while the tier
+is still cold); warm the tier, then kick it off once:
+
+```bash
+apex-router ornith-tier small
+launchctl kickstart gui/$(id -u)/com.ornith.worker
+```
+
+Manage: `launchctl kickstart -k` (restart) / `bootout` (stop) any `com.ornith.*` label.
 
 No model gateway required — the target uses its own Claude + Codex subscriptions.
 
@@ -172,10 +206,9 @@ apex-router verify     # exits 0 if routing works
 ### Platform support
 
 - **Routing core + codeqa + offload client:** macOS and Linux.
-- **Local model server (Ornith MLX):** Apple Silicon only. On Linux/Intel the routing,
-  embedding, and codeqa-retrieval tiers still install; local bench/codegen/review are skipped.
-  Add `--ornith-serve` (macOS) to run it as an always-on launchd service instead of the manual
-  `serve-ornith.sh` helper.
+- **Local model tiers (Ornith 1.5 via ollama):** anywhere ollama runs — macOS *and* Linux, Apple
+  Silicon or not. This used to be Apple-Silicon-only because it required MLX; retiring the MLX
+  server removed that constraint. `--ornith-serve` (macOS) adds the queue-worker launchd agents.
 - **Watchers:** launchd on macOS, systemd `--user` on Linux.
 
 ---
@@ -371,7 +404,7 @@ the runbook for the interpretation guide.
 | Symptom | Likely cause & fix |
 |---|---|
 | `apex-router: command not found` | Not on PATH. `export PATH="$HOME/.apex-router/.venv/bin:$PATH"`. |
-| `apex-router status` shows `ornith=unavailable` | Local model server isn't running (or non-Apple-Silicon). Start it (`serve-ornith.sh`) or ignore if you don't need local offload. |
+| `apex-router status` shows `ornith=unavailable` | ollama isn't running. Start it (`ollama serve`), then `apex-router ornith-tier` to check the tier — or ignore if you don't need local offload. |
 | Scheduled codeqa/ask "asked 0 questions" | The watcher's minimal PATH lacks `rg`/`uv`. Ensure `/opt/homebrew/bin` (macOS) or the ripgrep dir is on the unit's PATH — the shipped units include it, but a custom setup may not. |
 | Every local job lands in `jobs/failed/` with `finish_reason=length` empty | Thinking-ON runaway. Codegen/adhoc must run thinking-OFF (the worker forces this); if you hand-craft jobs, don't set `enable_thinking` on codegen. |
 | Review jobs fail on large diffs | Diffs over ~100 KB are skipped by the hook (size guard); truncated reviews keep partial findings and still escalate — check `detail` for `(truncated)`. |

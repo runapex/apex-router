@@ -10,7 +10,11 @@ class TestRouter(unittest.TestCase):
     def test_select_returns_ornith_route(self):
         route = r.select(task="narrate")
         self.assertEqual(route.backend, "ornith-http")
-        self.assertIsNone(route.model)
+        # CONTRACT CHANGE (MLX -> ollama): this used to assert `model is None`, because the MLX
+        # server had one start-time model and clients omitted the field. ollama REQUIRES an
+        # explicit model id — omitting it is a 400 — so the Route now always names one.
+        self.assertIsInstance(route.model, str)
+        self.assertTrue(route.model)
 
     def test_select_ornith_override_ok(self):
         self.assertEqual(r.select(task="x", override="ornith").backend, "ornith-http")
@@ -35,7 +39,9 @@ class TestRouter(unittest.TestCase):
     def test_fit_synthesis_within_envelope(self):
         route = r.select(task="synthesis", items=12, item_bytes=40_000)
         self.assertTrue(route.fits)
-        self.assertEqual(route.reason, "capability match: synthesis")
+        # The reason now also names the tier the verdict picked.
+        self.assertEqual(route.reason, "capability match: synthesis → large tier")
+        self.assertEqual(route.tier, "large")
 
     def test_fit_extraction_within_envelope(self):
         route = r.select(task="extract", items=5, item_bytes=8_000)
@@ -53,11 +59,14 @@ class TestRouter(unittest.TestCase):
         self.assertIn("250", route.reason)  # KB in the reason
         self.assertIn("100", route.reason)  # the slice bound
 
-    def test_decline_bulk_reasoning_task(self):
-        # Qwen was the bulk/triage tier; retired. Bulk-reasoning does NOT fit dense Ornith —
-        # decline with a reason rather than silently accept a mis-route.
+    def test_bulk_reasoning_task_routes_to_the_small_tier(self):
+        # CONTRACT CHANGE: this used to be a hard DECLINE. Qwen had been the bulk/triage tier and
+        # its retirement left only the big model up, so bulk work was a mis-route we named rather
+        # than accepted. Tiers restore that lane — bulk is now the SMALL tier's job, so the honest
+        # verdict is "fits, on small", not "decline".
         route = r.select(task="bulk_triage", items=8, item_bytes=1_000)
-        self.assertFalse(route.fits)
+        self.assertTrue(route.fits)
+        self.assertEqual(route.tier, "small")
         self.assertIn("bulk", route.reason.lower())
 
     def test_fit_defaults_true_when_unspecified(self):

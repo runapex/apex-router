@@ -107,8 +107,16 @@ def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None, xval_f
 
 
 def _default_log(task_type: str, outcome: str) -> None:
+    """Log the outcome against the model that ACTUALLY ran.
+
+    This used to hardcode "qwen3.8" — a model retired before Ornith, so every row since has
+    mislabelled which local model earned (or lost) the offload. The label now comes from the
+    active tier, which also makes the two tiers separable in the readout: small and large have
+    very different economics, and a shared label would average them into a meaningless number.
+    """
     from ..route_log import log_outcome
-    log_outcome(task_type, "qwen3.8", outcome)   # outcome ∈ {"ok","escalated"}
+    from . import local_tier
+    log_outcome(task_type, local_tier.resolve().api_model, outcome)  # outcome ∈ {"ok","escalated"}
 
 
 def orchestrate(subtask: SubTask, *, advise_fn: Callable = _default_advise,

@@ -11,12 +11,15 @@
 # Tiers:
 #   - apex-router package  : ALWAYS (pure Python stdlib core; routing needs no services)
 #   - ollama + nomic-embed : embedding-refinement classifier (optional; skipped on failure)
-#   - Ornith MLX server    : Apple Silicon only (local replay bench / codegen); skipped
-#                            with a clear notice on any other arch — never a hard failure
+#   - Ornith 1.5 tiers     : local replay bench / codegen, served by the SAME ollama. Two sizes
+#                            (small 9B, large 35B-A3B) switchable via `apex-router ornith-tier`.
+#                            No longer Apple-Silicon-only: the MLX server it used to need is
+#                            retired, so this now works anywhere ollama does.
 #
-# Flags:  --no-ornith   skip the large MLX model download
+# Flags:  --no-ornith   skip the local Ornith model pulls
+#         --ornith-tier N  which tier to pull+activate: small (~5.6GB, default) | large (~21GB) | both
 #         --ornith-serve  (macOS) install the Ornith stack as always-on launchd agents
-#                         (server + queue worker + nightly cycle), not just the run helper
+#                         (queue worker + nightly cycle), not just the model pull
 #         --no-embed    skip ollama / nomic-embed
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
@@ -55,7 +58,12 @@ VERIFY_ONLY=0
 SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
 NL='
 '               # a literal newline — the internal separator for the repeatable --skills-marketplace
-ORNITH_MODEL="mlx-community/Ornith-1.0-35B-4bit"
+# Ornith 1.5 tiers, served by ollama. There is NO 27B — upstream ships 9B / 35B-A3B / 397B, and
+# 397B does not fit a single workstation. Q4_K_M is the quality/size knee and the only quant
+# present in both GGUF repos. Keep these in sync with src/apex_router/ornith/local_tier.py.
+ORNITH_MODEL_SMALL="hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M"
+ORNITH_MODEL_LARGE="hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"
+ORNITH_TIER="small"   # --ornith-tier small|large|both
 # Repos to install the review post-commit hook into (space-separated; user-supplied, none hardcoded).
 HOOK_REPOS="${APEX_HOOK_REPOS:-}"
 # Skill marketplaces (Claude Code plugin repos), wired via the `claude plugin` CLI.
@@ -78,6 +86,7 @@ PROXY_CONFIG="${APEX_PROXY_CONFIG:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ornith) DO_ORNITH=0 ;;
+    --ornith-tier) ORNITH_TIER="${2:-small}"; shift ;;
     --ornith-serve) DO_ORNITH_SERVE=1 ;;   # macOS: install the Ornith stack as launchd agents
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
@@ -158,7 +167,9 @@ install_package() {
   say "creating venv + installing the package"
   # Core is dependency-free; add extras only for the tiers the user opted into.
   local extras="dev"
-  [ "$DO_ORNITH" = "1" ] && [ "$IS_APPLE_SILICON" = "1" ] && extras="$extras,ornith"
+  # The [ornith] extra is mlx-lm, needed only by the RETIRED MLX server. Local inference is ollama
+  # now (an external binary, not a Python dep) and nothing under src/ imports mlx_lm, so a fresh
+  # install no longer pulls it. The extra stays declared in pyproject for the legacy replay path.
   # The measuring proxy pulls starlette/uvicorn/httpx/brotli/numpy (+scipy/tiktoken for the tuner);
   # only with --proxy so a plain install stays lean.
   [ "$DO_PROXY" = "1" ] && extras="$extras,proxy,tuner"
@@ -224,46 +235,65 @@ install_embed() {
 }
 
 # --------------------------------------------------------------------------- #
-# 4. local Ornith MLX server — Apple Silicon ONLY (graceful skip elsewhere)
+# 4. local Ornith 1.5 tiers — served by ollama (no longer Apple-Silicon-only)
 # --------------------------------------------------------------------------- #
 install_ornith() {
   [ "$DO_ORNITH" = "1" ] || { warn "skipping local Ornith (--no-ornith)"; return 0; }
-  if [ "$IS_APPLE_SILICON" != "1" ]; then
-    warn "local Ornith needs Apple Silicon (MLX); this is $OS/$ARCH — routing + embedding still installed, local bench/codegen unavailable"
+  # The MLX server is RETIRED. It pinned ONE model at process start, which is exactly what made a
+  # tier switch impossible without a rebuild, and it confined local inference to Apple Silicon.
+  # ollama serves both tiers on :11434 and loads/unloads on demand — so this step is now just a
+  # pull plus a written tier, and it works wherever ollama does.
+  if ! have ollama; then
+    warn "local Ornith needs ollama (install it or drop --no-embed so step 3 installs it) — routing still works"
     return 0
   fi
-  # mlx-lm was installed as the 'ornith' extra in step 2. Download the model (resumable
-  # via huggingface cache) and leave a launch helper — we don't auto-start a 20GB server.
-  #
-  # RECOMMENDED: export a Hugging Face token before running so this ~20GB pull isn't
-  # throttled by anonymous rate limits (and to reach any gated repo). snapshot_download
-  # reads it from the environment automatically — no flag needed:
-  #     export HF_TOKEN=hf_xxx      # https://huggingface.co/settings/tokens (read scope)
-  # Never hardcode the token here or commit it; it stays in your shell/secret store only.
-  [ -n "${HF_TOKEN:-}" ] && say "using HF_TOKEN from environment for the model download" \
-    || warn "no HF_TOKEN set — the ~20GB pull may be rate-limited; export HF_TOKEN to speed it up"
-  say "downloading Ornith MLX model ($ORNITH_MODEL, ~20GB, resumable) — this can take a while"
-  "$INSTALL_DIR/.venv/bin/python" - "$ORNITH_MODEL" <<'PY' || { warn "Ornith model download failed; local bench unavailable (re-run to resume)"; return 0; }
-import sys
-try:
-    from huggingface_hub import snapshot_download
-    snapshot_download(sys.argv[1])
-except Exception as e:
-    print(f"download error: {e}", file=sys.stderr); sys.exit(1)
-PY
-  cat > "$INSTALL_DIR/serve-ornith.sh" <<EOF
+  (ollama serve >/dev/null 2>&1 &) || true
+  sleep 2
+
+  # Pull only what was asked for: the large tier is ~21GB and most machines want the small one.
+  local want_small=0 want_large=0
+  case "$ORNITH_TIER" in
+    small) want_small=1 ;;
+    large) want_large=1 ;;
+    both)  want_small=1; want_large=1 ;;
+    *) warn "unknown --ornith-tier '$ORNITH_TIER' (small|large|both) — defaulting to small"; want_small=1; ORNITH_TIER="small" ;;
+  esac
+
+  # A failed pull is a WARNING, never a hard failure: routing is pure-stdlib and does not need a
+  # local model. `ollama pull` is resumable, so a re-run continues rather than restarting.
+  if [ "$want_small" = "1" ]; then
+    say "pulling Ornith 1.5 small tier ($ORNITH_MODEL_SMALL, ~5.6GB, resumable)"
+    ollama pull "$ORNITH_MODEL_SMALL" || warn "small-tier pull failed; re-run to resume"
+  fi
+  if [ "$want_large" = "1" ]; then
+    say "pulling Ornith 1.5 large tier ($ORNITH_MODEL_LARGE, ~21GB, resumable) — this can take a while"
+    ollama pull "$ORNITH_MODEL_LARGE" || warn "large-tier pull failed; re-run to resume"
+  fi
+
+  # Write the active tier. This file is the single source of truth every consumer reads
+  # (local_tier.resolve); the launchd units carry no model id of their own, so switching a tier
+  # never means editing a plist.
+  local active="$ORNITH_TIER"; [ "$active" = "both" ] && active="small"
+  "$INSTALL_DIR/.venv/bin/python" -c "
+import sys; sys.path.insert(0, '$INSTALL_DIR/src')
+from apex_router.ornith import local_tier, tier_switch
+tier_switch.write_state(local_tier.TIERS['$active'])
+" || warn "could not write the tier file; 'apex-router ornith-tier $active' will fix it"
+
+  # The retired MLX launch helper. Left as a loud stub rather than deleted so an existing launchd
+  # unit or shell alias that still calls it fails with an explanation instead of a confusing
+  # 'no such file' or, worse, silently starting a second resident model.
+  cat > "$INSTALL_DIR/serve-ornith.sh" <<'EOF'
 #!/usr/bin/env bash
-# start the local Ornith MLX server on :8080. Model + tuning come from env (overridable)
-# so the launchd unit and a manual run share one definition.
-# Only flags supported across mlx-lm>=0.19.0 (the pyproject floor) are used here —
-# --decode-concurrency/--prompt-concurrency arrived later and would make an older-but-valid
-# mlx-lm exit on unknown args, which KeepAlive would then restart-loop (Codex #7).
-exec "\${ORNITH_PYTHON:-$INSTALL_DIR/.venv/bin/python}" -m mlx_lm.server \\
-  --model "\${ORNITH_MODEL:-$ORNITH_MODEL}" --host "\${ORNITH_HOST:-127.0.0.1}" --port "\${ORNITH_PORT:-8080}" \\
-  --temp 0.0 --top-p 1.0
+# RETIRED. The Ornith MLX server (mlx_lm.server on :8080) has been replaced by ollama on :11434,
+# which serves both tiers and can switch between them without a restart.
+echo "serve-ornith.sh is retired — Ornith is served by ollama now." >&2
+echo "  apex-router ornith-tier          # show the active tier" >&2
+echo "  apex-router ornith-tier large    # switch (small|large)" >&2
+exit 1
 EOF
   chmod +x "$INSTALL_DIR/serve-ornith.sh"
-  ok "Ornith MLX model ready — start it with: $INSTALL_DIR/serve-ornith.sh"
+  ok "Ornith 1.5 ready (tier: $active) — switch with: apex-router ornith-tier small|large"
   # NB: a bare `[ … ] && fn` returns 1 when the test is false, which under `set -e`
   # would abort the whole installer after ornith (Codex #1). Use an if-block.
   if [ "$DO_ORNITH_SERVE" = "1" ]; then
@@ -271,15 +301,18 @@ EOF
   fi
 }
 
-# Install the local Ornith stack as always-on launchd agents (macOS): the MLX server
-# (com.ornith.server, RunAtLoad+KeepAlive), the job-queue worker (com.ornith.worker), and
-# the nightly maintenance cycle (com.ornith.overnight, 01:30). All three run apex-router's
-# OWN venv python and derive every path from $INSTALL_DIR — nothing machine-specific is
-# hardcoded. The server Label is exactly 'com.ornith.server' because apex_router.ornith.
-# model_router keys its readiness check off that label.
+# Install the local Ornith stack as launchd agents (macOS): the job-queue worker
+# (com.ornith.worker) and the nightly maintenance cycle (com.ornith.overnight, 01:30). Both run
+# apex-router's OWN venv python and derive every path from $INSTALL_DIR — nothing machine-specific
+# is hardcoded.
+#
+# com.ornith.server (the MLX model server) is GONE: ollama owns model serving now and is already
+# supervised by its own launchd/brew service, so a second always-on unit would just be a way to
+# have two resident models. Any leftover unit from an older install is booted out below, because
+# leaving it loaded would silently hold ~20GB against the tier budget.
 install_ornith_service() {
   if [ "$OS" != "Darwin" ]; then
-    warn "Ornith launchd service is macOS-only; run $INSTALL_DIR/serve-ornith.sh manually on $OS"
+    warn "Ornith launchd agents are macOS-only; on $OS run the worker manually: $INSTALL_DIR/.venv/bin/python -m apex_router.ornith.ornith_worker"
     return 0
   fi
   local agents="$HOME/Library/LaunchAgents" logs="$INSTALL_DIR/logs" uid; uid="$(id -u)"
@@ -294,7 +327,7 @@ install_ornith_service() {
 <key>Label</key><string>$1</string>
 <key>ProgramArguments</key><array>$2</array>
 <key>WorkingDirectory</key><string>$INSTALL_DIR</string>
-<key>EnvironmentVariables</key><dict><key>ORNITH_MODEL</key><string>$ORNITH_MODEL</string><key>APEX_ORNITH_QUEUE</key><string>${APEX_ORNITH_QUEUE:-$INSTALL_DIR/queue}</string></dict>
+<key>EnvironmentVariables</key><dict><key>ORNITH_URL</key><string>http://127.0.0.1:11434</string><key>APEX_ORNITH_QUEUE</key><string>${APEX_ORNITH_QUEUE:-$INSTALL_DIR/queue}</string></dict>
 $3
 $4
 <key>StandardOutPath</key><string>$logs/$1.out</string>
@@ -303,11 +336,25 @@ $4
 PLIST
   }
 
-  _ornith_plist com.ornith.server \
-    "<string>/bin/bash</string><string>$INSTALL_DIR/serve-ornith.sh</string>" \
-    '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>' ''
-  # Worker: must NOT start at bootstrap — if it starts with the server it would drain the queue
-  # while the 35B model is still loading and fail those jobs (POSTs aren't retried) (Codex #3).
+  # NOTE: no ORNITH_API_MODEL here, deliberately. The active tier lives in ~/.apex-router/ornith.env
+  # and is read at import by local_tier.resolve(), so switching tiers is one file write plus a
+  # restart — not a plist rewrite. A model id baked in here would silently outrank the switch.
+
+  # Boot out a com.ornith.server left over from the MLX era. If it survives, it holds ~20GB of
+  # weights that the tier budget knows nothing about, and `apex-router ornith-tier` will refuse to
+  # switch. The plist is renamed rather than deleted so the change is reversible.
+  if launchctl print "gui/$uid/com.ornith.server" >/dev/null 2>&1; then
+    say "retiring the MLX server unit (com.ornith.server) — ollama serves the model now"
+    launchctl bootout "gui/$uid/com.ornith.server" >/dev/null 2>&1 || true
+  fi
+  # if-block, not `[ … ] && mv`: a bare test-and-command returns 1 when the test is false, which
+  # under `set -e` aborts the whole installer (Codex #1, same trap as the ornith call site).
+  if [ -f "$agents/com.ornith.server.plist" ]; then
+    mv "$agents/com.ornith.server.plist" "$agents/com.ornith.server.plist.retired-mlx"
+  fi
+
+  # Worker: must NOT start at bootstrap — it would drain the queue while the tier is still cold and
+  # fail those jobs (POSTs aren't retried) (Codex #3).
   # There is NO launchd keepalive form that both stays idle at load AND self-restarts: a bare
   # <key>KeepAlive</key><true/> starts immediately at load (regardless of RunAtLoad), and a KeepAlive
   # *dict* (e.g. SuccessfulExit=false) also runs once at load — launchd must run a job to ever observe
@@ -322,7 +369,7 @@ PLIST
     '' '<key>StartCalendarInterval</key><dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>30</integer></dict>'
 
   local n
-  for n in com.ornith.server com.ornith.worker com.ornith.overnight; do
+  for n in com.ornith.worker com.ornith.overnight; do
     plutil -lint "$agents/$n.plist" >/dev/null || { warn "  $n.plist failed lint — skipping"; continue; }
     # bootout the old label, then retry bootstrap a couple of times: an immediate re-bootstrap
     # can race a not-yet-finished bootout (Codex #4). We DON'T use `bootout --wait` — it can
@@ -342,11 +389,12 @@ PLIST
       || warn "  failed to load $n — old instance may still be unloading; re-run: launchctl bootstrap gui/$uid $agents/$n.plist"
   done
   ORNITH_WORKER_INSTALLED=1   # the drain-owning worker is now installed → watchers may skip drain
-  ok "Ornith server + overnight cycle loaded. The model takes ~1-3min to load on first start."
+  ok "Ornith worker + overnight cycle loaded (model serving is ollama's job now)."
   echo "    The WORKER is intentionally NOT auto-started (it would drain the queue before the"
-  echo "    model is ready). Once the server answers, start it with:"
+  echo "    tier is warm). Warm the tier, then start it:"
+  echo "        apex-router ornith-tier $ORNITH_TIER      # loads + waits for the model to answer"
   echo "        launchctl kickstart gui/$uid/com.ornith.worker"
-  echo "    Verify:  launchctl print gui/$uid/com.ornith.server | grep -i state"
+  echo "    Verify:  apex-router ornith-tier --json"
 }
 
 # --------------------------------------------------------------------------- #
