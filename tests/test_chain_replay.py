@@ -1,9 +1,8 @@
 """WP5 acceptance: both orders produce distinguishable replay rows the gate can consume."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from apex_router.chain_replay import replay_both_orders, PayloadLogger
-from chain_bench import analyze
+from apex_router.chain_bench import analyze
 
 
 def test_both_orders_distinguishable_and_flagged():

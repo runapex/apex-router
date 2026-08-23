@@ -105,8 +105,7 @@ def render_rationale(task_class: str, decisions: list[SlotDecision], *,
 def _cli(argv=None) -> int:
     import argparse, json, sys
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
-    from chain_bench import analyze, _load_rows  # noqa
+    from .chain_bench import analyze, _load_rows  # noqa
 
     p = argparse.ArgumentParser(prog="chain-planner")
     p.add_argument("--task-class", required=True)

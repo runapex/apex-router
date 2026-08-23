@@ -1,8 +1,7 @@
 """WP3 acceptance: gate verdict on known effect; CI narrows with N; cluster by chain_id."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from chain_bench import analyze, cluster_bootstrap, _split
+from apex_router.chain_bench import analyze, cluster_bootstrap, _split
 
 
 def _rows(cell, model, n_chains, reward, cost=0.01):

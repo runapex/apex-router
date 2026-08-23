@@ -91,6 +91,12 @@ def main(argv=None) -> int:
     # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
     sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
                    add_help=False)
+    # Adaptive learning-chains + nightly RAG (args after the subcommand are forwarded).
+    sub.add_parser("rag-nightly", help="nightly RAG harvest + L1 gate + QLoRA trigger", add_help=False)
+    sub.add_parser("chain-bench", help="learning-chain gate verdicts + aggregates (per slot:task_class)",
+                   add_help=False)
+    sub.add_parser("chain-planner", help="propose a model chain for a task_class (metrics rationale)",
+                   add_help=False)
     sub.add_parser("proxy", help="proxy engine CLI: serve/doctor/compile/readout (needs [proxy])",
                    add_help=False)
     # Local-model tier: which Ornith size is resident. Bare `ornith-tier` reports; a positional
@@ -199,6 +205,16 @@ def main(argv=None) -> int:
         if args.dry_run:
             pa.append("--dry-run")
         return proxy_setup.main(pa)
+
+    if args.cmd == "rag-nightly":
+        from .rag_nightly import main as _rn
+        return _rn(extra)
+    if args.cmd == "chain-bench":
+        from .chain_bench import main as _cb
+        return _cb(extra)
+    if args.cmd == "chain-planner":
+        from .chain_planner import _cli as _cp
+        return _cp(extra)
 
     if args.cmd == "ornith-tier":
         from .ornith import tier_switch
