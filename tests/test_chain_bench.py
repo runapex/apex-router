@@ -69,3 +69,16 @@ def test_single_topic_never_skips():
              "chain_id": f"ch{i}", "topic_id": "one"} for i in range(24)]
     res = {r["cell_id"]: r for r in analyze(rows)}["synthesize:algo"]
     assert res["n_topics"] == 1 and res["verdict"] == "OFFERED"
+
+
+def test_main_cli_prints_without_crash(tmp_path, capsys):
+    import json as _j
+    from apex_router.chain_bench import main
+    rows = tmp_path / "sc2.jsonl"
+    rows.write_text("\n".join(_j.dumps(r) for r in
+        [{"cell_id": "deepen:algo", "model": "opus", "reward": 0.5, "cost_usd": 0.01,
+          "chain_id": f"c{i}", "topic_id": f"t{i}"} for i in range(6)]))
+    rc = main(["--rows", str(rows)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "deepen:algo" in out and "topics=" in out

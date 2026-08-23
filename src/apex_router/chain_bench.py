@@ -156,7 +156,7 @@ def main(argv=None) -> int:
     for res in analyze(rows, k=a.k, m_windows=a.m_windows):
         ci = res["ci"]
         print(f"{res['verdict']:8} {res['cell_id']:30} Δ={res['mean_delta']:+.3f} "
-              f"CI[{ci[0]:+.3f},{ci[1]:+.3f}] n={res['n']} chains={res['n_chains']}")
+              f"CI[{ci[0]:+.3f},{ci[1]:+.3f}] n={res['n']} topics={res['n_topics']}")
     return 0
 
 
