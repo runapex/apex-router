@@ -314,6 +314,22 @@ The keys it manages are non-secret client wiring (`CLAUDE_CODE_USE_FOUNDRY`,
 **Any auth your proxy itself needs lives in the proxy's own environment, never here** —
 `proxy.env` is gitignored so a filled-in copy is never committed.
 
+### pi integration (per-task model/family switching)
+
+The [pi](https://github.com/earendil-works/pi) coding agent can point at the apex-router
+proxy and switch **model and family per task** — inline (`>>local fix this test`,
+`>>frontier design the migration`) or with a sticky `/apex-route` command. Frontier and
+Kimi turns flow through the measuring proxy; local turns go straight to the Ornith tiers on
+ollama. Two drop-in pieces live under [`integrations/pi/`](integrations/pi/):
+
+```bash
+cp integrations/pi/models.json ~/.pi/agent/models.json     # route anthropic+moonshotai via the proxy
+pi install integrations/pi/apex-route.ts                    # the per-task router extension
+```
+
+Full instructions, the family table, and testing steps:
+[`docs/RUNBOOK-pi-integration.md`](docs/RUNBOOK-pi-integration.md).
+
 ## Team skills (private marketplace)
 
 apex-router ships **no skills** and hardcodes no private URL. Internal skills (team

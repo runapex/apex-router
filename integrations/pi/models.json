@@ -1,0 +1,44 @@
+{
+  "//": "apex-router <-> pi wiring. Copy into ~/.pi/agent/models.json (merge the",
+  "//providers": "'providers' keys into any existing file). Overriding the built-in",
+  "//anthropic": "anthropic + moonshotai baseUrls routes those families through the",
+  "//proxy": "apex-router measuring proxy on :8788 (see `apex-router serve`). The",
+  "//ollama": "ollama provider stays direct so local Ornith tiers have no proxy hop.",
+  "providers": {
+    "moonshotai": {
+      "baseUrl": "http://127.0.0.1:8788/v1"
+    },
+    "anthropic": {
+      "baseUrl": "http://127.0.0.1:8788"
+    },
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true
+      },
+      "models": [
+        {
+          "id": "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
+          "name": "Ornith 1.5 9B (local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        },
+        {
+          "id": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "name": "Ornith 1.5 35B-A3B (local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
