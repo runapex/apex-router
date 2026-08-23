@@ -26,6 +26,7 @@
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --cache-handoff-hook  wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
+#         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The public
 #                                   apex-router-skills marketplace is added by default.
@@ -54,6 +55,7 @@ DO_WATCH=0
 DO_PROXY=0
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
+DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
 VERIFY_ONLY=0
 SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
 NL='
@@ -93,6 +95,7 @@ while [ $# -gt 0 ]; do
     --proxy)     DO_PROXY=1 ;;
     --cache-handoff-hook) DO_CACHE_HANDOFF=1 ;;   # wire the cache-cost Stop hook into settings.json
     --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
+    --pi-integration) DO_PI=1 ;;                   # install the pi per-task router + models.json wiring
     --install-hooks) HOOK_REPOS="$2"; shift ;;
     # Accumulate NEWLINE-separated (not space) so a local marketplace path containing spaces stays
     # one argument through the consumption loop (Codex pass-2). The env-var form stays space-separated
@@ -570,6 +573,44 @@ setup_proxy() {
     || warn "proxy setup did not complete (routing still works)"
 }
 
+install_pi() {
+  # Wire the pi coding agent for per-task model/family switching on top of apex-router:
+  #   1. install the apex-route extension (persisted in pi's settings), and
+  #   2. seed ~/.pi/agent/models.json to route anthropic+moonshotai via the proxy.
+  # Opt-in. NEVER clobbers an existing models.json (merge is the user's call) — mirrors the
+  # "merge, never overwrite" posture of setup-proxy. See docs/RUNBOOK-pi-integration.md.
+  [ "$DO_PI" = "1" ] || {
+    echo "  pi integration NOT installed (pass --pi-integration to add the per-task router)."
+    return 0
+  }
+  local src="$INSTALL_DIR/integrations/pi"
+  if ! have pi; then
+    warn "pi not on PATH — skipping. Install pi, then: pi install $src/apex-route.ts"
+    echo "     and merge $src/models.json into ~/.pi/agent/models.json (see docs/RUNBOOK-pi-integration.md)"
+    return 0
+  fi
+  say "installing pi per-task router extension"
+  if pi install "$src/apex-route.ts" >/dev/null 2>&1; then
+    ok "apex-route extension installed (>>local / >>kimi / >>frontier / >>deep, and /apex-route)"
+  else
+    warn "pi install failed — add it manually: pi install $src/apex-route.ts"
+  fi
+  # models.json: seed only when absent; never overwrite a user's providers.
+  local pim="$HOME/.pi/agent/models.json"
+  if [ -f "$pim" ]; then
+    echo "     $pim exists — NOT overwritten. Merge the 'providers' block from:"
+    echo "       $src/models.json   (routes anthropic+moonshotai via the proxy on :8788)"
+  else
+    mkdir -p "$(dirname "$pim")" 2>/dev/null || true
+    if cp "$src/models.json" "$pim" 2>/dev/null; then
+      ok "seeded $pim (proxied anthropic+moonshotai + local Ornith tiers)"
+    else
+      warn "could not write $pim — copy $src/models.json there by hand"
+    fi
+  fi
+  echo "     start the proxy first:  apex-router serve   (per-task routing needs it on :8788)"
+}
+
 # Register one marketplace via the non-interactive `claude plugin marketplace add` CLI. Idempotent:
 # `add` on an already-registered marketplace is a no-op that returns 0, so re-running the installer
 # (or installing when apex-router is already present) just refreshes it. Prints the manual command
@@ -669,6 +710,7 @@ main() {
   install_memory_compact_hook
   install_proxy
   setup_proxy
+  install_pi
   verify
   install_skills_marketplaces
 }
