@@ -4,8 +4,10 @@
  * Two ways to switch, both mid-session, no restart:
  *
  *   1. Inline task cue — prefix a message with `>><family> ` and just that task
- *      runs on the chosen family; the prefix is stripped before the model sees it.
+ *      runs on the chosen family; the prefix is stripped before the model sees it,
+ *      and your ORIGINAL model is restored on your next ordinary message.
  *      (`>>` is used instead of `@` because pi reserves `@` for file mentions.)
+ *      A bare `>><family>` (no task) is a sticky switch, same as /apex-route.
  *        >>local   fix this flaky test         -> local Ornith tier (via ollama)
  *        >>kimi    summarise this diff          -> Kimi K2 (via the apex proxy)
  *        >>frontier design the migration plan   -> Claude Sonnet (via the apex proxy)
@@ -73,14 +75,37 @@ export default function (pi: ExtensionAPI) {
 		return ok;
 	}
 
-	// 1. Inline task cue: `>><family> <task>` switches model just for this task.
-	// `>>` avoids pi's reserved `@` (file mention) and `/` (command) sigils.
+	// 1. Inline task cue: `>><family> <task>` switches the model for JUST this task,
+	// then restores the prior model on the next ordinary message. A bare `>><family>`
+	// is a sticky switch. `>>` avoids pi's reserved `@` (file) and `/` (command) sigils.
+	let savedModel: ExtensionContext["model"] | undefined; // original, pending one-shot restore
+	async function restoreIfPending(): Promise<void> {
+		if (savedModel) {
+			await pi.setModel(savedModel);
+			savedModel = undefined;
+		}
+	}
 	pi.on("input", async (event, ctx) => {
-		const m = /^>>\s*([a-zA-Z0-9_-]+)\s+([\s\S]+)$/.exec(event.text);
-		if (!m) return { action: "continue" };
+		const m = /^>>\s*([a-zA-Z0-9_-]+)(?:\s+([\s\S]+))?$/.exec(event.text);
+		if (!m || !routes[m[1]]) {
+			// ordinary message (or an unknown family we don't own): first undo any
+			// one-shot cue left active from the previous turn, then pass through.
+			await restoreIfPending();
+			return { action: "continue" };
+		}
 		const [, family, rest] = m;
-		if (!routes[family]) return { action: "continue" }; // not one of ours — leave it alone
-		await switchTo(family, ctx);
+		const snapshot = ctx.model;
+		if (!(await switchTo(family, ctx))) {
+			// failed switch (unknown model / no key): do NOT strip the cue — leave the
+			// text intact so the failure is visible instead of silently mis-routing.
+			return { action: "continue" };
+		}
+		if (!rest || !rest.trim()) {
+			savedModel = undefined; // bare cue = sticky switch, nothing to restore
+			ctx.ui.notify(`apex-route: switched to ${family} (sticky)`, "info");
+			return { action: "handled" };
+		}
+		if (!savedModel) savedModel = snapshot; // remember original for the one-shot restore
 		return { action: "transform", text: rest };
 	});
 

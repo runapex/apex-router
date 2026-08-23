@@ -59,8 +59,12 @@ def db_connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     cx = sqlite3.connect(str(DB_PATH))
     cx.execute("PRAGMA journal_mode=WAL")
+    # FK enforcement is OFF by default in sqlite3, so `ON DELETE CASCADE` would NOT
+    # fire and reindex/stale-replace would orphan chunk rows. Enable it per-connection.
+    cx.execute("PRAGMA foreign_keys=ON")
     cx.executescript(
         """
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS books (
             id INTEGER PRIMARY KEY, path TEXT UNIQUE, title TEXT,
             mtime REAL, n_chunks INTEGER, indexed_at REAL
@@ -155,52 +159,89 @@ def chunk_pages(pages, target_chars: int):
 # --------------------------------------------------------------------------- #
 # ingest
 # --------------------------------------------------------------------------- #
+def _check_embed_model(cx, reindex: bool) -> None:
+    """Guard against mixing vector spaces: all chunks must share one embed model.
+    First ingest records the model; a later mismatch refuses unless --reindex (which
+    wipes and rebuilds under the new model)."""
+    row = cx.execute("SELECT value FROM meta WHERE key='embed_model'").fetchone()
+    if row is None:
+        cx.execute("INSERT OR REPLACE INTO meta VALUES('embed_model',?)", (EMBED_MODEL,))
+        cx.commit()
+    elif row[0] != EMBED_MODEL:
+        if not reindex:
+            sys.exit(
+                f"index was built with embed model '{row[0]}' but EMBED_MODEL='{EMBED_MODEL}'.\n"
+                f"Mixing models corrupts cosine scores. Re-run with --reindex to rebuild."
+            )
+        cx.execute("DELETE FROM books")  # FK cascade clears chunks
+        cx.execute("INSERT OR REPLACE INTO meta VALUES('embed_model',?)", (EMBED_MODEL,))
+        cx.commit()
+
+
 def cmd_ingest(args) -> int:
     root = Path(args.dir).expanduser()
     if not root.is_dir():
         sys.exit(f"books dir not found: {root}")
     cx = db_connect()
+    _check_embed_model(cx, args.reindex)
     pdfs = sorted(p for p in root.rglob("*.pdf"))
     if args.limit:
         pdfs = pdfs[: args.limit]
     print(f"scanning {len(pdfs)} PDFs under {root}")
-    n_new = n_skip = n_empty = n_chunks = 0
+    n_new = n_skip = n_empty = n_fail = n_chunks = 0
     for path in pdfs:
-        mtime = path.stat().st_mtime
-        row = cx.execute("SELECT id, mtime FROM books WHERE path=?", (str(path),)).fetchone()
-        if row and abs(row[1] - mtime) < 1 and not args.reindex:
-            n_skip += 1
-            continue
-        if row:  # stale or forced -> replace
-            cx.execute("DELETE FROM books WHERE id=?", (row[0],))
-        title = title_of(path)
-        chunks = list(chunk_pages(extract_pages(path, args.max_pages), CHUNK_CHARS))
-        if args.max_chunks:
-            chunks = chunks[: args.max_chunks]
-        if not chunks:
-            n_empty += 1
-            print(f"  - {title}: no extractable text (scanned image?) — skipped")
-            continue
-        cur = cx.execute(
-            "INSERT INTO books(path,title,mtime,n_chunks,indexed_at) VALUES(?,?,?,?,?)",
-            (str(path), title, mtime, len(chunks), time.time()),
-        )
-        book_id = cur.lastrowid
-        for ordi, (ps, pe, text) in enumerate(chunks):
-            try:
-                vec = embed_retry(text[:EMBED_CHAR_CAP])
-            except (EmbedError, ValueError) as exc:
-                print(f"  ! embed failed ({title} p{ps}): {exc}", file=sys.stderr)
+        try:
+            mtime = path.stat().st_mtime
+            row = cx.execute("SELECT id, mtime FROM books WHERE path=?", (str(path),)).fetchone()
+            if row and abs(row[1] - mtime) < 1 and not args.reindex:
+                n_skip += 1
                 continue
-            cx.execute(
-                "INSERT INTO chunks(book_id,ord,page_start,page_end,text,embedding) VALUES(?,?,?,?,?,?)",
-                (book_id, ordi, ps, pe, text, json.dumps(vec)),
+            if row:  # stale or forced -> replace (FK cascade clears its chunks)
+                cx.execute("DELETE FROM books WHERE id=?", (row[0],))
+            title = title_of(path)
+            chunks = list(chunk_pages(extract_pages(path, args.max_pages), CHUNK_CHARS))
+            if args.max_chunks:
+                chunks = chunks[: args.max_chunks]
+            if not chunks:
+                n_empty += 1
+                print(f"  - {title}: no extractable text (scanned image?) — skipped")
+                continue
+            cur = cx.execute(
+                "INSERT INTO books(path,title,mtime,n_chunks,indexed_at) VALUES(?,?,?,?,?)",
+                (str(path), title, mtime, len(chunks), time.time()),
             )
-            n_chunks += 1
-        cx.commit()
-        n_new += 1
-        print(f"  + {title}: {len(chunks)} chunks (pp {chunks[0][0]}–{chunks[-1][1]})")
-    print(f"\ndone: {n_new} indexed, {n_skip} unchanged, {n_empty} no-text, {n_chunks} new chunks")
+            book_id = cur.lastrowid
+            inserted = 0
+            for ordi, (ps, pe, text) in enumerate(chunks):
+                try:
+                    vec = embed_retry(text[:EMBED_CHAR_CAP])
+                except (EmbedError, ValueError) as exc:
+                    print(f"  ! embed failed ({title} p{ps}): {exc}", file=sys.stderr)
+                    continue
+                cx.execute(
+                    "INSERT INTO chunks(book_id,ord,page_start,page_end,text,embedding) VALUES(?,?,?,?,?,?)",
+                    (book_id, ordi, ps, pe, text, json.dumps(vec)),
+                )
+                inserted += 1
+            if inserted == 0:
+                # every chunk failed to embed -> drop the book row so a later run RETRIES
+                # it instead of skipping on the recorded mtime.
+                cx.execute("DELETE FROM books WHERE id=?", (book_id,))
+                cx.commit()
+                n_fail += 1
+                print(f"  ! {title}: all {len(chunks)} chunks failed to embed — not indexed (will retry)")
+                continue
+            cx.execute("UPDATE books SET n_chunks=? WHERE id=?", (inserted, book_id))
+            cx.commit()
+            n_new += 1
+            n_chunks += inserted
+            print(f"  + {title}: {inserted} chunks (pp {chunks[0][0]}–{chunks[-1][1]})")
+        except Exception as exc:  # noqa: BLE001 — isolate one bad PDF from the batch
+            cx.rollback()
+            print(f"  ! {path.name}: skipped ({type(exc).__name__}: {exc})", file=sys.stderr)
+            continue
+    print(f"\ndone: {n_new} indexed, {n_skip} unchanged, {n_empty} no-text, "
+          f"{n_fail} embed-failed, {n_chunks} new chunks")
     print(f"index: {DB_PATH}")
     return 0
 
@@ -209,6 +250,8 @@ def cmd_ingest(args) -> int:
 # query
 # --------------------------------------------------------------------------- #
 def cmd_query(args) -> int:
+    # NOTE: linear scan + per-chunk json.loads. Fine for a personal library (tens of
+    # thousands of chunks); for much larger corpora swap in an ANN index (e.g. sqlite-vec).
     cx = db_connect()
     total = cx.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     if total == 0:

@@ -639,10 +639,15 @@ EOF
     pi install "$INSTALL_DIR/integrations/pi/booksearch.ts" >/dev/null 2>&1 \
       && ok "pi /books command installed" || echo "     add pi cmd: pi install $INSTALL_DIR/integrations/pi/booksearch.ts"
   fi
-  # claude slash command (best-effort; copy, don't overwrite silently)
+  # claude slash command (best-effort; never clobber a user-customised copy)
   local cmddir="$HOME/.claude/commands"
-  mkdir -p "$cmddir" 2>/dev/null && cp "$INSTALL_DIR/integrations/claude/books.md" "$cmddir/books.md" 2>/dev/null \
-    && ok "claude /books command installed" || true
+  if mkdir -p "$cmddir" 2>/dev/null; then
+    if [ -e "$cmddir/books.md" ]; then
+      echo "     claude /books exists at $cmddir/books.md — not overwritten"
+    elif cp "$INSTALL_DIR/integrations/claude/books.md" "$cmddir/books.md" 2>/dev/null; then
+      ok "claude /books command installed"
+    fi
+  fi
   echo "     now index your library:  booksearch ingest   (one-time; ~/books by default)"
   echo "     then query:              booksearch query \"<your problem>\"   — see docs/RUNBOOK-booksearch.md"
 }
