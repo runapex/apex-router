@@ -38,11 +38,23 @@ tests + full repo suite (1159 passed / 4 skipped / 0 failed) green.
 3. Treat **OFFERED as exploration-only (never ON)**; label cost as confirm-phase unless
    lifetime (promo+exploration) cost is added separately.
 
-## Open (non-blocking) follow-ups
+## Follow-ups — status
 
-- Wire the pi `/learn` extension to emit SC1 records + call the planner (WP1/WP4 CLI
-  seams exist); add `apex-router rag-nightly` / `chain-bench` subcommands to `cli.py`
-  and `uv tool install --force` (coordinator note in IMPL-plan).
-- Real QLoRA run needs the MLX base weights + `mlx-lm`; `train.sh --dry-run` validates
-  everything else. `Stream ended without finish_reason` is an upstream/model transient
-  (pi retries); the byte-pure proxy is intentionally untouched.
+**DONE (shipped this pass):**
+- First-class CLI subcommands wired in `cli.py` and live on the machine
+  (`uv tool install --force --editable`): `apex-router chain-planner|chain-bench|rag-nightly`.
+  `chain_bench` moved into the package so it ships with the installed tool.
+- Full machine setup refreshed (uv tool + pi extensions apex-route/learn/booksearch + pypdf).
+- **Full end-to-end regression:** repo suite **1162 passed / 4 skipped / 0 failed**; 12/12
+  system smoke checks (verify, tiers, all 3 chain CLIs, train.sh dry-run exit-code paths,
+  3 pi extensions load, proxy health, ollama, live booksearch query). One real bug found
+  and fixed by the E2E (chain-bench CLI `n_chains`→`n_topics` KeyError) + regression test added.
+
+**REMAINING for the sonnet-4.6 agents (non-blocking):**
+- Wire the pi `/learn` extension to call `apex-router chain-planner` for the metrics-
+  grounded proposed chain + confirm/edit, and emit SC1 chain/stage records during the run
+  (WP1/WP4 CLI seams exist).
+- Real QLoRA run needs MLX base weights + `mlx-lm`; `train.sh --dry-run` validates
+  everything else (exit 3 = missing data, exit 1 = missing mlx-lm — both verified).
+- `Stream ended without finish_reason` is an upstream/model transient (pi retries); the
+  byte-pure proxy is intentionally untouched (streamed the identical 66 KB request cleanly).
