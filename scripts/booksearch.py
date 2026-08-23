@@ -21,11 +21,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
+
+# pypdf logs recoverable xref/trailer repairs at WARNING ("Previous trailer cannot be
+# read", "parsing for Object Streams") — noise on malformed-but-readable PDFs. Silence
+# it so the ingest log shows only real progress + genuine errors.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+# Line-buffer stdout so `+ <title>` progress reaches a redirected log in real time
+# instead of sitting in a block buffer until the process exits.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 # Reuse apex-router's local, stdlib embed client + local Ornith chat client.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
