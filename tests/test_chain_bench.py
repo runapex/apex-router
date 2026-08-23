@@ -9,7 +9,7 @@ def _rows(cell, model, n_chains, reward, cost=0.01):
     out = []
     for i in range(n_chains):
         out.append({"cell_id": cell, "model": model, "reward": reward,
-                    "cost_usd": cost, "chain_id": f"ch{i}"})
+                    "cost_usd": cost, "chain_id": f"ch{i}", "topic_id": f"t{i}"})
     return out
 
 
@@ -61,3 +61,12 @@ def test_pseudo_replication_clusters_by_topic():
                      "cost_usd": 0.01, "chain_id": f"ch{i}", "topic_id": "same-topic"})
     res = {r["cell_id"]: r for r in analyze(rows)}["deepen:algo"]
     assert res["n_topics"] == 1            # all confirm rows collapse to one topic cluster
+
+
+def test_single_topic_never_skips():
+    # many chains but ONE topic -> insufficient diversity -> OFFERED, never SKIP on a
+    # degenerate zero-width CI (Kimi reconciliation invariant)
+    rows = [{"cell_id": "synthesize:algo", "model": "kimi", "reward": 0.0, "cost_usd": 0.01,
+             "chain_id": f"ch{i}", "topic_id": "one"} for i in range(24)]
+    res = {r["cell_id"]: r for r in analyze(rows)}["synthesize:algo"]
+    assert res["n_topics"] == 1 and res["verdict"] == "OFFERED"

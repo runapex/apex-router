@@ -28,7 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from apex_router.gate import CellEvidence, run_gate  # noqa: E402
 
 INCUMBENT = "prior-stage"
-SKIP_EPS = 0.02  # |mean| below this with a tight CI => the slot doesn't earn its cost
+SKIP_EPS = 0.02          # |mean| below this with a tight CI => the slot doesn't earn its cost
+MIN_SKIP_TOPICS = 2      # never SKIP on fewer than this many distinct confirm topics (Kimi reconcile)
+NO_TOPIC = "__no_topic__"  # missing topic_id collapses to ONE conservative cluster, never per-chain
 
 
 def _split(chain_id: str) -> str:
@@ -103,7 +105,9 @@ def analyze(rows: list[dict], *, k: int = 2, m_windows: int = 2, alpha: float = 
         for r in rws:
             if _split(r.get("chain_id") or "c?") != "confirm":
                 continue
-            key = r.get("topic_id") or r.get("chain_id") or "c?"
+            # Missing topic_id must NOT fall back to chain_id (that reopens pseudo-
+            # replication); collapse all such rows into ONE conservative cluster.
+            key = r.get("topic_id") or NO_TOPIC
             vbc[key].append(float(r.get("reward", 0.0)))
             cost_sum += float(r.get("cost_usd", 0.0)); n += 1
         mean, lo, hi = cluster_bootstrap(vbc)
@@ -111,15 +115,16 @@ def analyze(rows: list[dict], *, k: int = 2, m_windows: int = 2, alpha: float = 
         promoted = bool(gr and gr.promoted)
         if promoted:
             verdict = "ON"
-        elif not vbc:                    # no out-of-sample data yet -> not eligible to SKIP
-            verdict = "OFFERED"
-        elif hi <= SKIP_EPS:            # tight confirm-only CI at/near zero -> doesn't pay off
+        elif len(vbc) < MIN_SKIP_TOPICS:  # no / too-few out-of-sample topics -> can't SKIP
+            verdict = "OFFERED"           # (a 1-topic CI is degenerate; never SKIP on it)
+        elif hi <= SKIP_EPS:              # tight confirm-only CI at/near zero -> doesn't pay off
             verdict = "SKIP"
         else:
-            verdict = "OFFERED"          # positive but not FDR-confirmed out-of-sample
-        cost_per_delta = (cost_sum / n / mean) if (n and mean > 1e-9) else None
+            verdict = "OFFERED"           # positive but not FDR-confirmed out-of-sample
+        # NOTE: confirm-PHASE cost per delta (excludes promo/exploration spend).
+        cost_per_delta_confirm = (cost_sum / n / mean) if (n and mean > 1e-9) else None
         out.append({"cell_id": cid, "mean_delta": round(mean, 4),
-                    "ci": [round(lo, 4), round(hi, 4)], "cost_per_delta": cost_per_delta,
+                    "ci": [round(lo, 4), round(hi, 4)], "cost_per_delta_confirm": cost_per_delta_confirm,
                     "verdict": verdict, "n": int(n), "n_topics": len(vbc)})
     return out
 
