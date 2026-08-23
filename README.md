@@ -330,6 +330,21 @@ pi install integrations/pi/apex-route.ts                    # the per-task route
 Full instructions, the family table, and testing steps:
 [`docs/RUNBOOK-pi-integration.md`](docs/RUNBOOK-pi-integration.md).
 
+### Local book references (booksearch)
+
+Index a folder of PDF books locally and, while working on a problem, pull the **Top-K
+most relevant books with a one-line reason each** — retrieval by local `nomic-embed`,
+reasoning by the local Ornith tier, storage in one SQLite file. Nothing leaves the box.
+
+```bash
+./install.sh --books-index          # [books] extra + `booksearch` wrapper + pi/claude commands
+booksearch ingest                   # one-time index of ~/books (incremental, resumable)
+booksearch query "how do B-trees stay balanced?" -k 5
+```
+
+Callable from pi (`/books <problem>`) or Claude Code (`/books <problem>`). Full guide:
+[`docs/RUNBOOK-booksearch.md`](docs/RUNBOOK-booksearch.md).
+
 ## Team skills (private marketplace)
 
 apex-router ships **no skills** and hardcodes no private URL. Internal skills (team

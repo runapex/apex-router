@@ -27,6 +27,7 @@
 #         --cache-handoff-hook  wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
+#         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The public
 #                                   apex-router-skills marketplace is added by default.
@@ -56,6 +57,7 @@ DO_PROXY=0
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
 DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
+DO_BOOKS=0           # --books-index: install the local booksearch tool + pi/claude commands
 VERIFY_ONLY=0
 SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
 NL='
@@ -96,6 +98,7 @@ while [ $# -gt 0 ]; do
     --cache-handoff-hook) DO_CACHE_HANDOFF=1 ;;   # wire the cache-cost Stop hook into settings.json
     --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
     --pi-integration) DO_PI=1 ;;                   # install the pi per-task router + models.json wiring
+    --books-index) DO_BOOKS=1 ;;                   # install the local booksearch tool + pi/claude commands
     --install-hooks) HOOK_REPOS="$2"; shift ;;
     # Accumulate NEWLINE-separated (not space) so a local marketplace path containing spaces stays
     # one argument through the consumption loop (Codex pass-2). The env-var form stays space-separated
@@ -611,6 +614,39 @@ install_pi() {
   echo "     start the proxy first:  apex-router serve   (per-task routing needs it on :8788)"
 }
 
+install_booksearch() {
+  # Local semantic index over a folder of PDF books (scripts/booksearch.py): the [books]
+  # extra (pypdf), a `booksearch` wrapper on PATH, and the pi + claude slash commands.
+  # Ingest is a heavy one-time step we do NOT auto-run — we print the command.
+  [ "$DO_BOOKS" = "1" ] || {
+    echo "  booksearch NOT installed (pass --books-index for local-book references)."
+    return 0
+  }
+  say "installing booksearch ([books] extra + wrapper)"
+  uv pip install --python "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR[books]" >/dev/null 2>&1 \
+    && ok "pypdf installed" || warn "could not install [books] extra (pypdf) — PDF ingest will fail"
+  local bin="$HOME/.local/bin/booksearch"
+  mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+  cat > "$bin" <<EOF
+#!/usr/bin/env bash
+# booksearch — local semantic index over \$BOOKS_DIR (default ~/books). All local.
+exec "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/booksearch.py" "\$@"
+EOF
+  chmod +x "$bin" && ok "wrapper installed: $bin"
+  case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) echo "     add ~/.local/bin to PATH to call 'booksearch' directly";; esac
+  # pi command (best-effort)
+  if have pi; then
+    pi install "$INSTALL_DIR/integrations/pi/booksearch.ts" >/dev/null 2>&1 \
+      && ok "pi /books command installed" || echo "     add pi cmd: pi install $INSTALL_DIR/integrations/pi/booksearch.ts"
+  fi
+  # claude slash command (best-effort; copy, don't overwrite silently)
+  local cmddir="$HOME/.claude/commands"
+  mkdir -p "$cmddir" 2>/dev/null && cp "$INSTALL_DIR/integrations/claude/books.md" "$cmddir/books.md" 2>/dev/null \
+    && ok "claude /books command installed" || true
+  echo "     now index your library:  booksearch ingest   (one-time; ~/books by default)"
+  echo "     then query:              booksearch query \"<your problem>\"   — see docs/RUNBOOK-booksearch.md"
+}
+
 # Register one marketplace via the non-interactive `claude plugin marketplace add` CLI. Idempotent:
 # `add` on an already-registered marketplace is a no-op that returns 0, so re-running the installer
 # (or installing when apex-router is already present) just refreshes it. Prints the manual command
@@ -711,6 +747,7 @@ main() {
   install_proxy
   setup_proxy
   install_pi
+  install_booksearch
   verify
   install_skills_marketplaces
 }
