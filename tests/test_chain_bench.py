@@ -51,3 +51,13 @@ def test_split_is_deterministic_and_disjoint():
     s = {_split(f"ch{i}") for i in range(50)}
     assert s == {"promo", "confirm"}           # both splits populated
     assert _split("ch7") == _split("ch7")      # stable
+
+
+def test_pseudo_replication_clusters_by_topic():
+    # 12 distinct chains, all the SAME topic -> must count as ~1 topic, not 12 obs
+    rows = []
+    for i in range(12):
+        rows.append({"cell_id": "deepen:algo", "model": "opus", "reward": 0.5,
+                     "cost_usd": 0.01, "chain_id": f"ch{i}", "topic_id": "same-topic"})
+    res = {r["cell_id"]: r for r in analyze(rows)}["deepen:algo"]
+    assert res["n_topics"] == 1            # all confirm rows collapse to one topic cluster

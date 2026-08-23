@@ -56,7 +56,7 @@ def plan(task_class: str, analyze_by_cell: dict, *, chain=DEFAULT_CHAIN, eps: fl
             continue
         v = res.get("verdict", "OFFERED")
         common = dict(verdict=v, mean_delta=res.get("mean_delta"), ci=res.get("ci"),
-                      n_chains=res.get("n_chains", 0))
+                      n_chains=res.get("n_topics", res.get("n_chains", 0)))
         if v == "ON":
             decisions.append(SlotDecision(slot, model, "include", **common))
         elif v == "SKIP":

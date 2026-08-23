@@ -70,12 +70,15 @@ def judge_pair(prev_out: str, cur_out: str, *, judge_fn, rubric: str | None = No
     """Signed marginal value of cur over prev, POSITION-SWAPPED to cancel order bias.
 
     judge_fn(model, prompt) -> float in [-1,1] (cur-vs-prev oriented). Called twice with
-    A/B swapped; reward = mean of the two signed scores. Acceptance: (+0.4,-0.2)->0.1.
+    A/B swapped; reward = (s1 - s2)/2 so the shared B-position bias cancels and the true
+    cur-over-prev advantage survives. Acceptance: (+0.4,-0.2)->0.3.
     """
     rubric = rubric or load_rubric()
-    s1 = float(judge_fn(judge_model, _judge_prompt(rubric, prev_out, cur_out)))   # A=prev,B=cur
-    s2 = float(judge_fn(judge_model, _judge_prompt(rubric, cur_out, prev_out)))   # swapped
-    return max(-1.0, min(1.0, (s1 + s2) / 2.0))
+    s1 = float(judge_fn(judge_model, _judge_prompt(rubric, prev_out, cur_out)))   # A=prev,B=cur => truth+bias
+    s2 = float(judge_fn(judge_model, _judge_prompt(rubric, cur_out, prev_out)))   # A=cur, B=prev => -truth+bias
+    # DEBIAS: (s1 - s2)/2 = truth; (s1 + s2)/2 would return the position BIAS and, for an
+    # antisymmetric judge, ZERO the signal (Fable/sonnet review DEFECT 1).
+    return max(-1.0, min(1.0, (s1 - s2) / 2.0))
 
 
 def _stage_row(stage: dict, task_class: str, reward: float) -> dict:

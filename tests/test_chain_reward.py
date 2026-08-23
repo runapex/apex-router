@@ -7,7 +7,7 @@ def test_swapped_judge_averages():
     def judge_fn(model, prompt):
         calls.append(model); return 0.4 if len(calls) == 1 else -0.2
     r = judge_pair("prev", "cur", judge_fn=judge_fn)
-    assert abs(r - 0.1) < 1e-9
+    assert abs(r - 0.3) < 1e-9   # debiased (s1-s2)/2 = (0.4-(-0.2))/2
     assert calls == ["anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5"]  # pinned, twice
 
 
@@ -33,7 +33,8 @@ def test_cosine_pregate_skips_judge_when_unchanged():
 
 def test_compute_rewards_judges_changed_output():
     def embed_fn(t): return [1.0, 0.0] if t.startswith("a") else [0.0, 1.0]  # orthogonal -> not skipped
-    def judge_fn(model, prompt): return 0.6
+    def judge_fn(model, prompt):  # antisymmetric: +0.6 when cur(bbb) is in the B slot, else -0.6
+        return 0.6 if "OUTPUT B:\nbbb" in prompt else -0.6
     records = [
         {"kind": "chain", "chain_id": "c1", "task_class": "algo"},
         {"kind": "stage", "chain_id": "c1", "slot": "retrieve", "model": "local"},

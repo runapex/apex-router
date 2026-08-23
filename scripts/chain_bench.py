@@ -94,24 +94,33 @@ def analyze(rows: list[dict], *, k: int = 2, m_windows: int = 2, alpha: float = 
                                               previously_promoted=previously_promoted)}
     out = []
     for cid, rws in sorted(by_cell.items()):
+        # DEFECT 2: the rendered CI and the SKIP decision must use the SAME out-of-sample
+        # estimand as the gate -> CONFIRM-split rows only (pooling promo inflates precision).
+        # DEFECT 3: cluster by topic_id (not chain_id) so re-chaining the same topic can't
+        # masquerade as independent replication (pseudo-replication).
         vbc = defaultdict(list)
         cost_sum = n = 0.0
         for r in rws:
-            vbc[r.get("chain_id") or "c?"].append(float(r.get("reward", 0.0)))
+            if _split(r.get("chain_id") or "c?") != "confirm":
+                continue
+            key = r.get("topic_id") or r.get("chain_id") or "c?"
+            vbc[key].append(float(r.get("reward", 0.0)))
             cost_sum += float(r.get("cost_usd", 0.0)); n += 1
         mean, lo, hi = cluster_bootstrap(vbc)
         gr = results.get(cid)
         promoted = bool(gr and gr.promoted)
         if promoted:
             verdict = "ON"
-        elif hi <= SKIP_EPS:            # tight CI at/near zero -> slot doesn't pay off
+        elif not vbc:                    # no out-of-sample data yet -> not eligible to SKIP
+            verdict = "OFFERED"
+        elif hi <= SKIP_EPS:            # tight confirm-only CI at/near zero -> doesn't pay off
             verdict = "SKIP"
         else:
             verdict = "OFFERED"          # positive but not FDR-confirmed out-of-sample
         cost_per_delta = (cost_sum / n / mean) if (n and mean > 1e-9) else None
         out.append({"cell_id": cid, "mean_delta": round(mean, 4),
                     "ci": [round(lo, 4), round(hi, 4)], "cost_per_delta": cost_per_delta,
-                    "verdict": verdict, "n": int(n), "n_chains": len(vbc)})
+                    "verdict": verdict, "n": int(n), "n_topics": len(vbc)})
     return out
 
 
