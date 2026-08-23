@@ -1,8 +1,9 @@
 # RUNBOOK — booksearch (local semantic references over your book library)
 
-Index a folder of **PDF books** locally and, while working on a problem, pull the
-**Top-K most relevant books with a one-line reason for each**. Everything runs on
-this machine:
+Index a folder of **PDF books plus code samples** (Jupyter notebooks, `.py`, `.m`,
+`.r`, `.md`, `.txt`, and other source/text) locally and, while working on a problem,
+pull the **Top-K most relevant references with a one-line reason for each**. PDFs are
+located by page; notebooks/source/text by line span. Everything runs on this machine:
 
 - **Retrieval:** `nomic-embed-text` via ollama (the same embed client the router uses).
 - **Explanation:** the active **Ornith tier** via ollama.
@@ -30,6 +31,9 @@ and the index location with `BOOKSEARCH_DB`.
 booksearch ingest                    # indexes ~/books (override: --dir /path or BOOKS_DIR)
 ```
 
+- **File types:** PDFs (by page) + `.ipynb` (cells flattened), `.py`, `.m`, `.r`, `.jl`,
+  `.md`, `.txt`, `.sql`, and common source extensions (by line span). `.git`,
+  `.ipynb_checkpoints`, `__pycache__`, `node_modules` and binaries are skipped.
 - **Incremental:** re-running skips books whose path+mtime are unchanged; `--reindex`
   forces a rebuild.
 - **Robust:** per-page/per-file errors are logged and skipped; scanned-image PDFs with

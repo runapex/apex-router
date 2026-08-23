@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""booksearch — local semantic index over a folder of PDF books, with local-model
-Top-K references + explanations. 100% local: nomic-embed (ollama) for vectors,
-the active Ornith tier (ollama) for the "why this book" explanation.
+"""booksearch — local semantic index over a folder of books AND code samples, with
+local-model Top-K references + explanations. 100% local: nomic-embed (ollama) for
+vectors, the active Ornith tier (ollama) for the "why this reference" explanation.
+
+Indexes PDFs (by page) plus notebooks and source/text files (.ipynb, .py, .m, .r,
+.md, .txt, ...) by line span — so code samples extracted from books are searchable
+alongside the prose.
 
     # one-time (resumable, incremental): extract text -> chunk -> embed -> store
     booksearch ingest                      # indexes $BOOKS_DIR (default ~/books)
@@ -59,6 +63,7 @@ def db_connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     cx = sqlite3.connect(str(DB_PATH))
     cx.execute("PRAGMA journal_mode=WAL")
+    cx.execute("PRAGMA busy_timeout=30000")  # wait, don't crash, if another ingest holds the write lock
     # FK enforcement is OFF by default in sqlite3, so `ON DELETE CASCADE` would NOT
     # fire and reindex/stale-replace would orphan chunk rows. Enable it per-connection.
     cx.execute("PRAGMA foreign_keys=ON")
@@ -80,8 +85,87 @@ def db_connect() -> sqlite3.Connection:
     return cx
 
 
-def title_of(path: Path) -> str:
-    return path.stem.replace("_", " ").strip()
+# Text/code file types indexed alongside PDFs (e.g. code samples from books/courses).
+# Everything else (binaries, data, images) is skipped. .git internals etc. are pruned.
+SOURCE_EXTS = {
+    ".ipynb", ".py", ".m", ".r", ".jl", ".md", ".txt", ".rst", ".tex", ".sql",
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".java", ".js", ".ts", ".go", ".rs",
+    ".rb", ".scala", ".sh", ".lua", ".jl",
+}
+ALL_EXTS = SOURCE_EXTS | {".pdf"}
+EXCLUDE_DIRS = {".git", ".ipynb_checkpoints", "__pycache__", "node_modules", ".venv"}
+MAX_TEXT_BYTES = 2_000_000  # skip pathologically large/minified/generated files
+
+
+def _supported(path: Path) -> bool:
+    if path.suffix.lower() not in ALL_EXTS:
+        return False
+    return not any(part in EXCLUDE_DIRS for part in path.parts)
+
+
+def _title(path: Path, root: Path) -> str:
+    """PDFs keep their clean stem; code/text files carry their path relative to the
+    corpus root (e.g. 'code_samles/LinAlgBook/svd.ipynb') so the source is legible."""
+    if path.suffix.lower() == ".pdf":
+        return path.stem.replace("_", " ").strip()
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return f"{path.parent.name}/{path.name}"
+
+
+def read_text_file(path: Path) -> str:
+    try:
+        if path.stat().st_size > MAX_TEXT_BYTES:
+            return ""
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def ipynb_to_text(path: Path) -> str:
+    """Flatten a notebook to text: markdown + code cell sources, each tagged so the
+    embedder sees prose and code with light structure."""
+    try:
+        nb = json.loads(read_text_file(path) or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    out = []
+    for cell in nb.get("cells", []):
+        src = cell.get("source", "")
+        if isinstance(src, list):
+            src = "".join(src)
+        if isinstance(src, str) and src.strip():
+            out.append(f"# [{cell.get('cell_type', 'cell')}]\n{src}")
+    return "\n\n".join(out)
+
+
+def chunk_lines(text: str, target_chars: int):
+    """Pack a text/code file into <=target_chars chunks, tracking 1-based line spans
+    (the non-PDF analogue of chunk_pages). Long single lines are split."""
+    buf, start_ln, end_ln, size = [], None, None, 0
+    for i, line in enumerate(text.splitlines(), 1):
+        for piece in _slice_text(line, target_chars) if len(line) > target_chars else [line]:
+            if size and size + len(piece) + 1 > target_chars:
+                yield start_ln, end_ln, "\n".join(buf)
+                buf, start_ln, end_ln, size = [], None, None, 0
+            if start_ln is None:
+                start_ln = i
+            end_ln = i
+            buf.append(piece)
+            size += len(piece) + 1
+    if buf:
+        yield start_ln, end_ln, "\n".join(buf)
+
+
+def units_for(path: Path, max_pages: int | None):
+    """Return (start,end,text) chunks for any supported file: page spans for PDFs,
+    line spans for notebooks/source/text."""
+    suf = path.suffix.lower()
+    if suf == ".pdf":
+        return chunk_pages(extract_pages(path, max_pages), CHUNK_CHARS)
+    text = ipynb_to_text(path) if suf == ".ipynb" else read_text_file(path)
+    return chunk_lines(text, CHUNK_CHARS)
 
 
 def embed_retry(text: str, tries: int = 5):
@@ -184,10 +268,12 @@ def cmd_ingest(args) -> int:
         sys.exit(f"books dir not found: {root}")
     cx = db_connect()
     _check_embed_model(cx, args.reindex)
-    pdfs = sorted(p for p in root.rglob("*.pdf"))
+    files = sorted(p for p in root.rglob("*") if p.is_file() and _supported(p))
     if args.limit:
-        pdfs = pdfs[: args.limit]
-    print(f"scanning {len(pdfs)} PDFs under {root}")
+        files = files[: args.limit]
+    n_pdf = sum(1 for p in files if p.suffix.lower() == ".pdf")
+    print(f"scanning {len(files)} files under {root} ({n_pdf} pdf, {len(files) - n_pdf} code/text)")
+    pdfs = files
     n_new = n_skip = n_empty = n_fail = n_chunks = 0
     for path in pdfs:
         try:
@@ -198,13 +284,13 @@ def cmd_ingest(args) -> int:
                 continue
             if row:  # stale or forced -> replace (FK cascade clears its chunks)
                 cx.execute("DELETE FROM books WHERE id=?", (row[0],))
-            title = title_of(path)
-            chunks = list(chunk_pages(extract_pages(path, args.max_pages), CHUNK_CHARS))
+            title = _title(path, root)
+            chunks = list(units_for(path, args.max_pages))
             if args.max_chunks:
                 chunks = chunks[: args.max_chunks]
             if not chunks:
                 n_empty += 1
-                print(f"  - {title}: no extractable text (scanned image?) — skipped")
+                print(f"  - {title}: no extractable text — skipped")
                 continue
             cur = cx.execute(
                 "INSERT INTO books(path,title,mtime,n_chunks,indexed_at) VALUES(?,?,?,?,?)",
@@ -235,7 +321,8 @@ def cmd_ingest(args) -> int:
             cx.commit()
             n_new += 1
             n_chunks += inserted
-            print(f"  + {title}: {inserted} chunks (pp {chunks[0][0]}–{chunks[-1][1]})")
+            unit = "pp" if path.suffix.lower() == ".pdf" else "L"
+            print(f"  + {title}: {inserted} chunks ({unit} {chunks[0][0]}–{chunks[-1][1]})")
         except Exception as exc:  # noqa: BLE001 — isolate one bad PDF from the batch
             cx.rollback()
             print(f"  ! {path.name}: skipped ({type(exc).__name__}: {exc})", file=sys.stderr)
@@ -284,9 +371,10 @@ def cmd_query(args) -> int:
         print(json.dumps({"query": args.text, "results": out}, indent=2))
         return 0
 
-    print(f"\nTop {len(top)} local-book references for:\n  “{args.text}”\n")
+    print(f"\nTop {len(top)} local references for:\n  “{args.text}”\n")
     for i, r in enumerate(top, 1):
-        loc = f"p.{r['page_start']}" + (f"–{r['page_end']}" if r["page_end"] != r["page_start"] else "")
+        unit = "p." if str(r["path"]).lower().endswith(".pdf") else "L"
+        loc = f"{unit}{r['page_start']}" + (f"–{r['page_end']}" if r["page_end"] != r["page_start"] else "")
         print(f"[{i}] {r['title']}  ({loc}, score {r['score']:.3f})")
         if r.get("why"):
             print(f"    → {r['why']}")
@@ -303,9 +391,9 @@ def explain(problem: str, ref: dict) -> str:
         return f"(explanation unavailable: {exc})"
     snippet = " ".join(ref["text"].split())[:1200]
     prompt = (
-        "You recommend reference books. In ONE sentence (no preamble), say why this "
-        f"book passage helps with the problem.\n\nProblem: {problem}\n\n"
-        f"Book: {ref['title']}\nPassage: {snippet}\n\nOne-sentence reason:"
+        "You recommend references (books and code samples). In ONE sentence (no preamble), "
+        f"say why this passage helps with the problem.\n\nProblem: {problem}\n\n"
+        f"Source: {ref['title']}\nPassage: {snippet}\n\nOne-sentence reason:"
     )
     try:
         res = chat(prompt, max_tokens=120, enable_thinking=False, raise_on_truncation=False)
@@ -320,7 +408,7 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pi = sub.add_parser("ingest", help="index PDFs under a folder (incremental)")
+    pi = sub.add_parser("ingest", help="index PDFs + notebooks/source/text under a folder (incremental)")
     pi.add_argument("--dir", default=str(BOOKS_DIR), help=f"books folder (default {BOOKS_DIR})")
     pi.add_argument("--reindex", action="store_true", help="re-embed even unchanged books")
     pi.add_argument("--limit", type=int, default=0, help="only the first N PDFs (debug)")
