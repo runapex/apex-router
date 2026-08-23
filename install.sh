@@ -634,10 +634,13 @@ exec "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/booksearch.py" "\$@"
 EOF
   chmod +x "$bin" && ok "wrapper installed: $bin"
   case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) echo "     add ~/.local/bin to PATH to call 'booksearch' directly";; esac
-  # pi command (best-effort)
+  # pi commands (best-effort): /books (retrieve) and /learn (retrieve->validate->explain pipeline)
   if have pi; then
     pi install "$INSTALL_DIR/integrations/pi/booksearch.ts" >/dev/null 2>&1 \
       && ok "pi /books command installed" || echo "     add pi cmd: pi install $INSTALL_DIR/integrations/pi/booksearch.ts"
+    pi install "$INSTALL_DIR/integrations/pi/learn.ts" >/dev/null 2>&1 \
+      && ok "pi /learn pipeline installed (booksearch -> sonnet validate -> opus explain)" \
+      || echo "     add pi cmd: pi install $INSTALL_DIR/integrations/pi/learn.ts"
   fi
   # claude slash command (best-effort; never clobber a user-customised copy)
   local cmddir="$HOME/.claude/commands"

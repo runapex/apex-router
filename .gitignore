@@ -41,3 +41,6 @@ ornith.env
 serve-ornith.sh
 offload_daily.md
 tables/
+
+# machine-local apex-route family overrides (personal model choices)
+pi-routes.json
