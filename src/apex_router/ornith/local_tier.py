@@ -169,6 +169,27 @@ def resolve(env: dict | None = None, state_file: Path | None = None,
     return tiers.get(tier) or families[DEFAULT_FAMILY][DEFAULT_TIER]
 
 
+def active_family(env: dict | None = None, state_file: Path | None = None,
+                  overlay_path: Path | None = None) -> str:
+    """The active local family NAME, from config precedence (NOT reverse-matched by model id).
+
+    Mirrors resolve()'s family selection: a pinned ORNITH_API_MODEL has no family semantics
+    (it names a single model), so it maps to whichever family actually contains that id, else
+    DEFAULT_FAMILY. Otherwise: LOCAL_FAMILY (env, else state file), else DEFAULT_FAMILY. An
+    unknown family name falls back to DEFAULT_FAMILY. Never raises."""
+    source = dict(os.environ) if env is None else dict(env)
+    families = load_families(env=source, overlay_path=overlay_path)
+    pinned = source.get("ORNITH_API_MODEL")
+    if pinned:
+        for fam, tiers in families.items():
+            if any(t.api_model == pinned for t in tiers.values()):
+                return fam
+        return DEFAULT_FAMILY
+    state = _read_state(state_file)
+    fam = (source.get("LOCAL_FAMILY") or state.get("LOCAL_FAMILY") or DEFAULT_FAMILY).strip().lower()
+    return fam if fam in families else DEFAULT_FAMILY
+
+
 def total_ram_gb() -> float:
     """Physical RAM in GB. Read from the OS — the old hardcoded 52 GB ceiling in model_router was
     measured on a different machine and silently mis-gated every other one."""

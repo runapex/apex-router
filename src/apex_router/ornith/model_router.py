@@ -121,10 +121,10 @@ def select(task: str | None = None, items: int | None = None,
     fits, reason, wanted = _score_fit(task, items, item_bytes)
     resident = local_tier.resolve()
     chosen_name = (tier or wanted or resident.name).strip().lower()
-    # Resolve the chosen tier through the ACTIVE family (the one `resident` belongs to), not the
-    # committed ornith alias — otherwise a request against an overlay family silently serves ornith.
+    # Resolve the chosen tier through the ACTIVE family — identified by CONFIG (active_family),
+    # not reverse-matched from the resident model id (two families may share a model id).
     _families = local_tier.load_families()
-    _active_tiers = _families.get(local_tier.family_of(resident), local_tier.TIERS)
+    _active_tiers = _families.get(local_tier.active_family(), local_tier.TIERS)
     chosen = _active_tiers.get(chosen_name, resident)
     reuse = items is not None and items > 1  # >1 item ⇒ shared preamble worth reusing
     return Route(model=chosen.api_model, tier=chosen.name, fits=fits, reason=reason,

@@ -6,6 +6,7 @@ that DO need a live backend (warm/unload) are exercised only for their failure h
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -250,16 +251,20 @@ class TestRouteSelection(unittest.TestCase):
             self.assertTrue(r.model)
 
     def test_needs_switch_flags_a_non_resident_tier(self):
+        # Isolate from any machine-local overlay: pin the ACTIVE family to committed ornith so the
+        # tier resolves against ornith's map regardless of the box's LOCAL_FAMILY/models.json.
         with mock.patch.object(local_tier, "resolve",
-                               return_value=local_tier.TIERS["small"]):
+                               return_value=local_tier.TIERS["small"]), \
+             mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
             r = model_router.select(task="synthesis")
             self.assertEqual(r.tier, "large")
             self.assertTrue(r.needs_switch)
 
     def test_chosen_tier_resolves_via_active_family_not_default(self):
-        # P1-a: when the resident model belongs to an OVERLAY family, a tier request must resolve
-        # against THAT family's tier map, not the committed ornith alias. Otherwise a "large"
-        # request silently serves ornith's large model.
+        # P1-a: when the ACTIVE family (from config: LOCAL_FAMILY) is an OVERLAY family, a tier
+        # request must resolve against THAT family's tier map, not the committed ornith alias.
+        # Otherwise a "large" request silently serves ornith's large model.
         acme_small = local_tier.Tier(name="small", api_model="acme/small:tag",
                                      weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
         acme_large = local_tier.Tier(name="large", api_model="acme/large:tag",
@@ -267,11 +272,73 @@ class TestRouteSelection(unittest.TestCase):
         fams = {"ornith": dict(local_tier.FAMILIES["ornith"]),
                 "acme": {"small": acme_small, "large": acme_large}}
         with mock.patch.object(local_tier, "resolve", return_value=acme_small), \
-             mock.patch.object(local_tier, "load_families", return_value=fams):
+             mock.patch.object(local_tier, "load_families", return_value=fams), \
+             mock.patch.dict(os.environ, {"LOCAL_FAMILY": "acme"}, clear=True):
             r = model_router.select(task="synthesis")  # wants tier "large"
             self.assertEqual(r.tier, "large")
             self.assertEqual(r.model, "acme/large:tag")
             self.assertNotEqual(r.model, local_tier.FAMILIES["ornith"]["large"].api_model)
+
+    def test_shared_model_id_routes_by_config_not_reverse_match(self):
+        # Codex pass-2 regression: a custom family `acme` REUSES ornith's small api_model but
+        # defines its own large. With LOCAL_FAMILY=acme resident on small, reverse-matching the
+        # family by the resident model id returns the FIRST match (ornith) and misroutes a
+        # synthesis request to ornith's large. The active family must come from CONFIG. This
+        # exercises the REAL active_family() (env-driven), not a patched return value.
+        ornith_small = local_tier.FAMILIES["ornith"]["small"]
+        acme_small = local_tier.Tier(  # shares ornith small's api_model exactly
+            name="small", api_model=ornith_small.api_model,
+            weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        acme_large = local_tier.Tier(name="large", api_model="acme/big:tag",
+                                     weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        fams = {"ornith": dict(local_tier.FAMILIES["ornith"]),
+                "acme": {"small": acme_small, "large": acme_large}}
+        with mock.patch.object(local_tier, "resolve", return_value=acme_small), \
+             mock.patch.object(local_tier, "load_families", return_value=fams), \
+             mock.patch.dict(os.environ, {"LOCAL_FAMILY": "acme"}, clear=True):
+            r = model_router.select(task="synthesis")  # wants tier "large"
+        self.assertEqual(r.model, "acme/big:tag")
+        self.assertNotEqual(r.model, local_tier.FAMILIES["ornith"]["large"].api_model)
+
+
+class TestActiveFamily(unittest.TestCase):
+    def test_local_family_env_selects_that_family(self):
+        fams = {"ornith": dict(local_tier.FAMILIES["ornith"]),
+                "acme": {"small": local_tier.Tier(
+                    name="small", api_model="acme/small:tag",
+                    weights_gb=0.0, active_b=0.0, total_b=0.0, note="")}}
+        with mock.patch.object(local_tier, "load_families", return_value=fams):
+            self.assertEqual(
+                local_tier.active_family(env={"LOCAL_FAMILY": "acme"},
+                                         state_file=Path("/nonexistent")),
+                "acme")
+
+    def test_unknown_family_falls_back_to_default(self):
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            self.assertEqual(
+                local_tier.active_family(env={"LOCAL_FAMILY": "nope"},
+                                         state_file=Path("/nonexistent")),
+                "ornith")
+
+    def test_pinned_api_model_maps_to_owning_family(self):
+        acme_small = local_tier.Tier(name="small", api_model="acme/small:tag",
+                                     weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        fams = {"ornith": dict(local_tier.FAMILIES["ornith"]),
+                "acme": {"small": acme_small}}
+        with mock.patch.object(local_tier, "load_families", return_value=fams):
+            self.assertEqual(
+                local_tier.active_family(env={"ORNITH_API_MODEL": "acme/small:tag"},
+                                         state_file=Path("/nonexistent")),
+                "acme")
+
+    def test_pinned_unknown_api_model_falls_back_to_default(self):
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            self.assertEqual(
+                local_tier.active_family(env={"ORNITH_API_MODEL": "pinned/x:tag"},
+                                         state_file=Path("/nonexistent")),
+                "ornith")
 
 
 class TestUnloadMatching(unittest.TestCase):
