@@ -10,8 +10,12 @@ whose static floor disagrees with itself routes on vibes. Now:
   - A user overlay at `~/.apex-router/models.json` (env APEX_MODEL_REGISTRY to relocate)
     merges over DEFAULTS — one file edits every consumer at once.
   - The pi extensions (`apex-route.ts`, `learn.ts`) read the SAME file; `local` resolves
-    from `ornith.env` (the active tier), never a hardcoded id — routing `>>local` at the
-    non-resident tier triggers an unintended multi-GB ollama load.
+    through `local_tier.resolve()` (the active tier), never a hardcoded id — routing
+    `>>local` at the non-resident tier triggers an unintended multi-GB ollama load.
+    `local_tier.resolve()` now honors `ORNITH_API_MODEL` + `LOCAL_FAMILY` and the
+    `local_families` overlay, so `families()["local"]["id"]` follows the resolved backend.
+  - ~/.apex-router/models.json may also carry a "local_families" key read by local_tier
+    (machine-local model families).
 
 Consumers:
   - codeqa.tier_router  -> tier_model()  (CODEQA_TIER_MODELS env still wins)

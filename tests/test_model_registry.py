@@ -79,6 +79,18 @@ class TestModelRegistry(unittest.TestCase):
             fams = model_registry.families(registry=registry)
             self.assertNotIn("local", fams)
 
+    def test_local_family_follows_resolved_pin(self):
+        import apex_router.model_registry as mr
+        from apex_router.ornith import local_tier
+        from unittest import mock
+        with mock.patch.object(local_tier, "resolve",
+                               return_value=local_tier.Tier(
+                                   name="pinned", api_model="some/backend:tag",
+                                   weights_gb=0, active_b=0, total_b=0, note="")):
+            fams = mr.families()
+        self.assertEqual(fams["local"]["id"], "some/backend:tag")
+        self.assertEqual(fams["local"]["provider"], "ollama")
+
     def test_learn_resolves_through_tiers(self):
         result = model_registry.learn()
         self.assertEqual(result["provider"], "anthropic")
