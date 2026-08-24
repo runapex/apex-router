@@ -76,6 +76,13 @@ def main(argv=None) -> int:
     readout_p = sub.add_parser(
         "route-readout", help="show per-task-type escalation rate from the outcome log")
     readout_p.add_argument("--json", action="store_true")
+    # Conformance readout: per-(surface,task_type) tier-conformance drift rate from the
+    # conformance log. Agent-surface rows are intent-only (resolved model unobservable), so the
+    # human table labels them 'unobservable' rather than showing a fabricated drift number.
+    check_p = sub.add_parser(
+        "route-check",
+        help="per-(surface,task_type) tier-conformance drift rate (agent surface is intent-only)")
+    check_p.add_argument("--json", action="store_true")
     # Advise: turn the escalation rates into an evidence-backed routing recommendation per
     # task-type, gated on statistical significance (Wilson CI + a sample floor). Recommends only;
     # it never mutates a config or a skill — the caller reads the advice and decides.
@@ -216,6 +223,10 @@ def main(argv=None) -> int:
         except Exception:
             pass
         return 0
+
+    if args.cmd == "route-check":
+        from . import route_conformance
+        return route_conformance.main(["--json"] if args.json else [])
 
     if args.cmd == "route-advise":
         # Read-only, fail-safe (same contract as route-readout): never break a caller. Emits a

@@ -111,3 +111,36 @@ class TestExpectedModels(unittest.TestCase):
 
     def test_unknown_tier_returns_empty_set(self):
         self.assertEqual(rc.expected_models("nope"), set())
+
+
+class TestRouteCheckReadout(unittest.TestCase):
+    def test_json_readout_and_unobservable_marker(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            Path(p).write_text(
+                json.dumps({"surface":"resolve","task_type":"synthesis","requested_tier":"opus",
+                            "resolved_model":"claude-opus-4-8","matched":True,"ts":1,"note":""})+"\n"
+                + json.dumps({"surface":"agent","task_type":"explore","requested_tier":"sonnet",
+                              "resolved_model":None,"matched":None,"ts":2,"note":""})+"\n")
+            os.environ["APEX_CONFORMANCE_LOG"] = str(p)
+            try:
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc.main(["--json"])
+                out = json.loads(buf.getvalue())
+                self.assertIn("resolve\tsynthesis", out)
+                # human readout marks the agent surface unobservable:
+                buf2 = io.StringIO()
+                with contextlib.redirect_stdout(buf2):
+                    rc.main([])
+                self.assertIn("unobservable", buf2.getvalue())
+            finally:
+                del os.environ["APEX_CONFORMANCE_LOG"]
+
+    def test_empty_log_exit_zero(self):
+        os.environ["APEX_CONFORMANCE_LOG"] = "/nonexistent/c.jsonl"
+        try:
+            self.assertEqual(rc.main([]), 0)
+        finally:
+            del os.environ["APEX_CONFORMANCE_LOG"]

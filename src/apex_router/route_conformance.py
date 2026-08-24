@@ -106,3 +106,33 @@ def read_conformance(*, log_path=None) -> dict:
         if line.strip():
             _accumulate(agg, line)
     return agg
+
+
+def main(argv=None) -> int:
+    """Read-only conformance readout — fail-safe, never raises. --json dumps the aggregate;
+    the human table labels any row with observed==0 (agent-surface / intent-only) 'unobservable'
+    so an un-observable dispatch can never display a fake drift number."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="route-check",
+                                 description="per-(surface,task_type) tier-conformance drift rate")
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    try:
+        agg = read_conformance()
+    except Exception:
+        agg = {}
+    if a.json:
+        print(json.dumps(agg, indent=2, sort_keys=True))
+        return 0
+    if not agg:
+        print("route-check: no conformance data yet")
+        return 0
+    print(f"{'surface':8} {'task_type':20} {'n':>4} {'obs':>4} {'drift':>6}")
+    for key in sorted(agg):
+        surface, task_type = key.split("\t", 1)
+        c = agg[key]
+        if c["observed"] == 0:
+            print(f"{surface:8} {task_type:20} {c['n']:>4} {'-':>4} {'unobservable':>6}")
+        else:
+            print(f"{surface:8} {task_type:20} {c['n']:>4} {c['observed']:>4} {c['drift_rate']:>6.2f}")
+    return 0
