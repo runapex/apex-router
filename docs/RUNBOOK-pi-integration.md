@@ -102,16 +102,19 @@ default, but you can declare any ollama-served model here without touching sourc
 
 **Shape** (`~/.apex-router/models.json` fragment):
 
+Add only the *new* family — the committed `ornith` family (with its measured tier
+sizes) is already present and is merged under your overlay, so do **not** redeclare
+it here. The bare-string form below is a convenience shorthand for `{"api_model": …}`;
+it carries no `weights_gb`, so a shorthand tier is treated as unknown-size and skips
+the RAM fit-check. Give a `weights_gb` (object form) for any tier you want the
+capacity gate to guard.
+
 ```json
 {
   "local_families": {
-    "ornith": {
-      "small": "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
-      "large": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"
-    },
     "mymodel": {
       "small": "mymodel:8b-q4",
-      "large": "mymodel:27b-q4"
+      "large": { "api_model": "mymodel:27b-q4", "weights_gb": 18 }
     }
   }
 }
