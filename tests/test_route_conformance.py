@@ -57,3 +57,49 @@ class TestLogConformance(unittest.TestCase):
                 self.assertEqual(rc.default_conformance_path(), Path(d) / "x.jsonl")
             finally:
                 del os.environ["APEX_CONFORMANCE_LOG"]
+
+
+class TestReadConformance(unittest.TestCase):
+    def _write(self, p, rows):
+        Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def test_drift_rate_excludes_intent_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self._write(p, [
+                {"surface":"resolve","task_type":"synthesis","requested_tier":"opus",
+                 "resolved_model":"claude-opus-4-8","matched":True,"ts":1,"note":""},
+                {"surface":"resolve","task_type":"synthesis","requested_tier":"opus",
+                 "resolved_model":"wrong","matched":False,"ts":2,"note":""},
+                {"surface":"agent","task_type":"synthesis","requested_tier":"opus",
+                 "resolved_model":None,"matched":None,"ts":3,"note":""},
+            ])
+            agg = rc.read_conformance(log_path=p)
+            r = agg["resolve\tsynthesis"]
+            self.assertEqual(r["n"], 2)
+            self.assertEqual(r["observed"], 2)
+            self.assertEqual(r["mismatches"], 1)
+            self.assertAlmostEqual(r["drift_rate"], 0.5)
+            a = agg["agent\tsynthesis"]
+            self.assertEqual(a["n"], 1)
+            self.assertEqual(a["observed"], 0)   # intent-only: no denominator
+            self.assertEqual(a["drift_rate"], 0.0)
+
+    def test_malformed_line_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            Path(p).write_text('{"surface":"resolve","task_type":"t","requested_tier":"opus","matched":true,"ts":1}\n{ bad\n')
+            agg = rc.read_conformance(log_path=p)
+            self.assertEqual(agg["resolve\tt"]["observed"], 1)
+
+    def test_empty_or_missing_is_empty_dict(self):
+        self.assertEqual(rc.read_conformance(log_path=Path("/nonexistent/c.jsonl")), {})
+
+
+class TestExpectedModels(unittest.TestCase):
+    def test_known_tier_returns_its_model(self):
+        from apex_router import model_registry as mr
+        self.assertEqual(rc.expected_models("opus"), {mr.tier_model("opus")})
+
+    def test_unknown_tier_returns_empty_set(self):
+        self.assertEqual(rc.expected_models("nope"), set())

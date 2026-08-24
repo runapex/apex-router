@@ -60,3 +60,49 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
         return True
     except Exception:
         return False
+
+
+def expected_models(tier, *, registry=None) -> set:
+    """Allowed model id(s) for a frontier tier name, from model_registry. Unknown tier → empty set
+    (the emitter then logs matched=None rather than a false mismatch)."""
+    try:
+        from . import model_registry
+        m = model_registry.tier_model(tier, registry=registry)
+        return {m} if isinstance(m, str) and m else set()
+    except Exception:
+        return set()
+
+
+def _accumulate(agg: dict, line: str) -> None:
+    try:
+        rec = json.loads(line)
+    except Exception:
+        return
+    surface = rec.get("surface")
+    task_type = rec.get("task_type")
+    if not (isinstance(surface, str) and isinstance(task_type, str)):
+        return
+    matched = rec.get("matched")
+    key = f"{surface}\t{task_type}"
+    cell = agg.setdefault(key, {"n": 0, "observed": 0, "mismatches": 0, "drift_rate": 0.0})
+    cell["n"] += 1
+    if isinstance(matched, bool):          # only observed rows enter the denominator
+        cell["observed"] += 1
+        if not matched:
+            cell["mismatches"] += 1
+        cell["drift_rate"] = cell["mismatches"] / cell["observed"]
+
+
+def read_conformance(*, log_path=None) -> dict:
+    """Aggregate to {'surface\\ttask_type': {n, observed, mismatches, drift_rate}}. Fail-safe:
+    a missing/unreadable log yields {}; a malformed line is skipped, never fatal."""
+    agg: dict = {}
+    p = Path(log_path) if log_path is not None else default_conformance_path()
+    try:
+        text = p.read_text()
+    except OSError:
+        return agg
+    for line in text.splitlines():
+        if line.strip():
+            _accumulate(agg, line)
+    return agg
