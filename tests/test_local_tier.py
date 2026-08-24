@@ -56,6 +56,36 @@ class TestTierTable(unittest.TestCase):
         for t in local_tier.TIERS.values():
             self.assertNotIn("mlx-community", t.api_model)
 
+    def test_ornith_is_the_default_committed_family(self):
+        self.assertEqual(local_tier.DEFAULT_FAMILY, "ornith")
+        self.assertEqual(set(local_tier.FAMILIES["ornith"]), {"small", "large"})
+
+    def test_TIERS_is_backcompat_alias_of_default_family(self):
+        self.assertIs(local_tier.TIERS, local_tier.FAMILIES[local_tier.DEFAULT_FAMILY])
+
+
+class TestLoadFamilies(unittest.TestCase):
+    def test_default_only_when_no_overlay(self):
+        fams = local_tier.load_families(overlay_path=Path("/nonexistent/models.json"))
+        self.assertEqual(set(fams), {"ornith"})
+
+    def test_overlay_adds_a_family(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            p.write_text(json.dumps({"local_families": {"acme": {"tiers": {
+                "big": {"api_model": "acme/model:tag", "weights_gb": 18,
+                        "active_b": 27, "total_b": 27, "note": "test"}}}}}))
+            fams = local_tier.load_families(overlay_path=p)
+            self.assertIn("acme", fams)
+            self.assertEqual(fams["acme"]["big"].api_model, "acme/model:tag")
+            self.assertIn("ornith", fams)   # base family survives the merge
+
+    def test_malformed_overlay_falls_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            p.write_text("{ not json")
+            self.assertEqual(set(local_tier.load_families(overlay_path=p)), {"ornith"})
+
 
 class TestFits(unittest.TestCase):
     def test_large_fits_36gb(self):

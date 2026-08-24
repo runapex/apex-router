@@ -21,6 +21,7 @@ matching the testing convention used across this package.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,21 +53,30 @@ class Tier:
         return self.active_b < self.total_b
 
 
-# Q4_K_M for both: the quality/size knee, and the only quant present in BOTH GGUF repos.
-TIERS: dict[str, Tier] = {
-    "small": Tier(
-        name="small",
-        api_model="hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
-        weights_gb=5.6, active_b=9.0, total_b=9.0,
-        note="dense 9B — coexists with nomic-embed and the proxy without pressure",
-    ),
-    "large": Tier(
-        name="large",
-        api_model="hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
-        weights_gb=21.2, active_b=3.0, total_b=34.7,
-        note="35B-A3B MoE — 3B active per token, so it decodes near a 3B while reasoning near a 35B",
-    ),
+DEFAULT_FAMILY = "ornith"
+
+# Committed families. Ornith 1.5 is the shipped default; other local families are declared
+# machine-locally in ~/.apex-router/models.json under local_families and merged in by
+# load_families() — never hardcoded here (this is a public, vendor-neutral repo).
+# Q4_K_M for both Ornith tiers: the quality/size knee, and the only quant present in BOTH GGUF repos.
+FAMILIES: dict[str, dict[str, Tier]] = {
+    "ornith": {
+        "small": Tier(
+            name="small",
+            api_model="hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
+            weights_gb=5.6, active_b=9.0, total_b=9.0,
+            note="dense 9B — coexists with nomic-embed and the proxy without pressure",
+        ),
+        "large": Tier(
+            name="large",
+            api_model="hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+            weights_gb=21.2, active_b=3.0, total_b=34.7,
+            note="35B-A3B MoE — 3B active per token, so it decodes near a 3B while reasoning near a 35B",
+        ),
+    },
 }
+# Back-compat: existing consumers and tests import TIERS as "the tiers of the active/default family".
+TIERS: dict[str, Tier] = FAMILIES[DEFAULT_FAMILY]
 
 DEFAULT_TIER = "small"
 
@@ -91,6 +101,37 @@ def _read_state(path: Path | None = None) -> dict[str, str]:
             continue
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip()
+    return out
+
+
+def load_families(env: dict | None = None, overlay_path: Path | None = None
+                  ) -> dict[str, dict[str, Tier]]:
+    """Committed FAMILIES deep-merged with the local_families overlay in ~/.apex-router/models.json.
+    Never raises: a missing/malformed overlay yields the committed families only."""
+    out: dict[str, dict[str, Tier]] = {fam: dict(tiers) for fam, tiers in FAMILIES.items()}
+    p = overlay_path if overlay_path is not None else (
+        Path((env or os.environ).get("APEX_MODEL_REGISTRY", ""))
+        if (env or os.environ).get("APEX_MODEL_REGISTRY")
+        else Path.home() / ".apex-router" / "models.json")
+    try:
+        overlay = json.loads(p.read_text())
+        local_fams = overlay.get("local_families") if isinstance(overlay, dict) else None
+        if isinstance(local_fams, dict):
+            for fam, tiers in local_fams.items():
+                if not isinstance(tiers, dict):
+                    continue
+                dst = out.setdefault(fam, {})
+                for tname, spec in (tiers.get("tiers", tiers)).items():
+                    if not isinstance(spec, dict) or "api_model" not in spec:
+                        continue
+                    dst[tname] = Tier(
+                        name=tname, api_model=str(spec["api_model"]),
+                        weights_gb=float(spec.get("weights_gb", 0.0)),
+                        active_b=float(spec.get("active_b", 0.0)),
+                        total_b=float(spec.get("total_b", 0.0)),
+                        note=str(spec.get("note", "")))
+    except (OSError, ValueError, TypeError):
+        pass
     return out
 
 
