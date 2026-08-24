@@ -113,6 +113,29 @@ class TestLoadFamilies(unittest.TestCase):
             p.write_text("{ not json")
             self.assertEqual(set(local_tier.load_families(overlay_path=p)), {"ornith"})
 
+    def test_non_dict_tiers_does_not_raise(self):
+        # P2: an overlay whose inner tier-map is a string must not raise AttributeError —
+        # load_families() has a "never raises" contract. The committed family survives.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            p.write_text(json.dumps({"local_families": {"x": {"tiers": "bad"}}}))
+            fams = local_tier.load_families(overlay_path=p)
+            self.assertIn("ornith", fams)
+
+    def test_string_shorthand_tier_is_accepted(self):
+        # P1-b: the runbooks document a bare-STRING tier value (the api_model). Accept it.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            p.write_text(json.dumps({"local_families": {"mymodel": {
+                "small": "mymodel:8b-q4", "large": "mymodel:27b-q4"}}}))
+            fams = local_tier.load_families(overlay_path=p)
+            self.assertIn("mymodel", fams)
+            self.assertEqual(fams["mymodel"]["small"].api_model, "mymodel:8b-q4")
+            self.assertEqual(fams["mymodel"]["large"].api_model, "mymodel:27b-q4")
+            t = local_tier.resolve(env={"LOCAL_FAMILY": "mymodel", "ORNITH_TIER": "small"},
+                                   overlay_path=p, state_file=Path("/nonexistent"))
+            self.assertEqual(t.api_model, "mymodel:8b-q4")
+
 
 class TestFits(unittest.TestCase):
     def test_large_fits_36gb(self):
@@ -168,15 +191,23 @@ class TestRouteSelection(unittest.TestCase):
 
     def test_bulk_routes_to_small_instead_of_declining(self):
         # Under the single-model setup this was a hard decline. With tiers it is the small lane.
-        r = model_router.select(task="triage")
+        # Isolate from any machine-local overlay so the ACTIVE family is the committed ornith one
+        # (the tier now resolves through the resident's family — see test_chosen_tier... below).
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            r = model_router.select(task="triage")
         self.assertTrue(r.fits)
         self.assertEqual(r.tier, "small")
 
     def test_fidelity_task_routes_large(self):
-        self.assertEqual(model_router.select(task="synthesis").tier, "large")
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            self.assertEqual(model_router.select(task="synthesis").tier, "large")
 
     def test_explicit_tier_beats_task_implication(self):
-        r = model_router.select(task="synthesis", tier="small")
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            r = model_router.select(task="synthesis", tier="small")
         self.assertEqual(r.tier, "small")
 
     def test_envelope_miss_still_declines(self):
@@ -225,6 +256,23 @@ class TestRouteSelection(unittest.TestCase):
             self.assertEqual(r.tier, "large")
             self.assertTrue(r.needs_switch)
 
+    def test_chosen_tier_resolves_via_active_family_not_default(self):
+        # P1-a: when the resident model belongs to an OVERLAY family, a tier request must resolve
+        # against THAT family's tier map, not the committed ornith alias. Otherwise a "large"
+        # request silently serves ornith's large model.
+        acme_small = local_tier.Tier(name="small", api_model="acme/small:tag",
+                                     weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        acme_large = local_tier.Tier(name="large", api_model="acme/large:tag",
+                                     weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        fams = {"ornith": dict(local_tier.FAMILIES["ornith"]),
+                "acme": {"small": acme_small, "large": acme_large}}
+        with mock.patch.object(local_tier, "resolve", return_value=acme_small), \
+             mock.patch.object(local_tier, "load_families", return_value=fams):
+            r = model_router.select(task="synthesis")  # wants tier "large"
+            self.assertEqual(r.tier, "large")
+            self.assertEqual(r.model, "acme/large:tag")
+            self.assertNotEqual(r.model, local_tier.FAMILIES["ornith"]["large"].api_model)
+
 
 class TestUnloadMatching(unittest.TestCase):
     def test_latest_suffix_matches_without_rstrip_bug(self):
@@ -250,6 +298,20 @@ class TestUnloadMatching(unittest.TestCase):
         with mock.patch.object(tier_switch, "resident_models", side_effect=[[ids[0]], []]), \
              mock.patch.object(tier_switch, "unload", return_value=True) as un:
             tier_switch.unload_all_tiers()
+        un.assert_called_once()
+
+    def test_resident_pinned_model_is_unloaded(self):
+        # P1-c: a pinned backend (ORNITH_API_MODEL naming something in no family) is resident but
+        # absent from load_families(); the resolved active model must still be an unload candidate,
+        # or a switch leaves both it and the incoming tier resident (RAM over-commit).
+        pinned = local_tier.Tier(name="pinned", api_model="pinned/x:tag",
+                                 weights_gb=0.0, active_b=0.0, total_b=0.0, note="")
+        with mock.patch.object(local_tier, "resolve", return_value=pinned), \
+             mock.patch.object(tier_switch, "resident_models",
+                               side_effect=[["pinned/x:tag"], []]), \
+             mock.patch.object(tier_switch, "unload", return_value=True) as un:
+            freed = tier_switch.unload_all_tiers()
+        self.assertEqual(freed, ["pinned/x:tag"])
         un.assert_called_once()
 
 

@@ -121,7 +121,16 @@ def load_families(env: dict | None = None, overlay_path: Path | None = None
                 if not isinstance(tiers, dict):
                     continue
                 dst = out.setdefault(fam, {})
-                for tname, spec in (tiers.get("tiers", tiers)).items():
+                tier_map = tiers.get("tiers", tiers)
+                if not isinstance(tier_map, dict):
+                    continue
+                for tname, spec in tier_map.items():
+                    # Documented shorthand: a bare string tier value IS the api_model. weights_gb=0
+                    # → fits() treats it as unmeasurable/not-gating, same as a pinned Tier.
+                    if isinstance(spec, str) and spec:
+                        dst[tname] = Tier(name=tname, api_model=spec, weights_gb=0.0,
+                                          active_b=0.0, total_b=0.0, note="")
+                        continue
                     if not isinstance(spec, dict) or "api_model" not in spec:
                         continue
                     dst[tname] = Tier(

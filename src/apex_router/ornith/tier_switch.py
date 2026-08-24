@@ -91,6 +91,13 @@ def unload_all_tiers() -> list[str]:
 
     tier_models = {f for tiers in local_tier.load_families().values()
                    for t in tiers.values() for f in _forms(t.api_model)}
+    # A pinned backend (ORNITH_API_MODEL in no family) is resident but excluded above; add the ONE
+    # resolved active model so a switch never leaves it loaded alongside the incoming tier. This
+    # still evicts nothing unrelated — only forms of the single active model join the candidate set.
+    try:
+        tier_models |= _forms(local_tier.resolve().api_model)
+    except Exception:
+        pass
     freed = []
     for m in resident_models():
         if _forms(m) & tier_models and unload(m):

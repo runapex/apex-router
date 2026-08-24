@@ -44,7 +44,11 @@ class TestRouter(unittest.TestCase):
 
     # ── New: capability scoring — Ornith is chosen WHEN IT FITS, else declines ─
     def test_fit_synthesis_within_envelope(self):
-        route = r.select(task="synthesis", items=12, item_bytes=40_000)
+        # Isolate from the machine-local families overlay so the ACTIVE family is committed ornith
+        # (the chosen tier now resolves through the resident's family, not the ornith alias).
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            route = r.select(task="synthesis", items=12, item_bytes=40_000)
         self.assertTrue(route.fits)
         # The reason now also names the tier the verdict picked.
         self.assertEqual(route.reason, "capability match: synthesis → large tier")
@@ -71,7 +75,9 @@ class TestRouter(unittest.TestCase):
         # its retirement left only the big model up, so bulk work was a mis-route we named rather
         # than accepted. Tiers restore that lane — bulk is now the SMALL tier's job, so the honest
         # verdict is "fits, on small", not "decline".
-        route = r.select(task="bulk_triage", items=8, item_bytes=1_000)
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            route = r.select(task="bulk_triage", items=8, item_bytes=1_000)
         self.assertTrue(route.fits)
         self.assertEqual(route.tier, "small")
         self.assertIn("bulk", route.reason.lower())
