@@ -31,6 +31,47 @@ def _safe(fn, *a, **k):
         return {"_error": type(e).__name__}
 
 
+def _bench_pool() -> dict:
+    """Pooled bench evidence (G4): route-log outcome COUNTS per (task_type, start-tier) plus
+    route-table promotion state. Counts only — no prompts, no paths, no timestamps — so the
+    team's gate cells reach their sample floors from N machines without anyone sharing
+    content. Pooling rule downstream: same (task_type, model) cells sum n/escalated."""
+    from apex_router import route_log
+    counts: dict = {}
+    try:
+        log = route_log.default_log_path()
+        if log.is_file():
+            for line in log.open("r", errors="replace"):
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                tt, model = rec.get("task_type"), rec.get("model")
+                esc = rec.get("escalated")
+                if not isinstance(tt, str) or not isinstance(model, str) or not isinstance(esc, bool):
+                    continue
+                # model ids are capability names, not content — but keep values short for the
+                # redactor (a model id > 40 chars would trip the leak check): keep as-is only
+                # if short, else hash-tag it.
+                m = model if len(model) <= 40 else "h:" + hashlib.sha256(model.encode()).hexdigest()[:12]
+                cell = counts.setdefault(f"{tt}|{m}", {"n": 0, "escalated": 0})
+                cell["n"] += 1
+                cell["escalated"] += int(esc)
+    except Exception:
+        return {}
+    tables = {}
+    for venue in ("skill", "proxy"):
+        tp = Path.home() / ".apex-router" / "tables" / f"route_table.{venue}.json"
+        try:
+            t = json.loads(tp.read_text())
+            cells = t.get("cells", [])
+            tables[venue] = {"cells": len(cells),
+                             "promoted": sum(1 for c in cells if c.get("promoted") is True)}
+        except (OSError, ValueError):
+            continue
+    return {"outcome_counts": counts, "route_tables": tables}
+
+
 def build_report() -> dict:
     # Import here so a partial install (e.g. no codeqa) still exports what it can.
     from apex_router.ornith import offload_report as orep
@@ -47,6 +88,7 @@ def build_report() -> dict:
         "codeqa_validate": _safe(orep.summarize_codeqa_validate),  # local-vs-frontier routing
         "offload": _safe(orep.aggregate_offload, orep.DEFAULT_OFFLOAD_LOG),  # tokens saved by lane
         "escalation": _safe(route_log.read_rates),                 # per-task-type escalation rate
+        "bench_pool": _safe(_bench_pool),                          # pooled bench counts (G4)
         # names + booleans + counts only — NO filesystem paths.
         "repos_health": [
             {"name": r.get("name"), "ok": r.get("ok"),

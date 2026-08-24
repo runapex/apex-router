@@ -39,7 +39,25 @@ esac
 # deliberately low initial cap, NOT a data-fit; the per-repo adaptive threshold
 # (proposed nightly from cache_report.py once >=7d of data exist) raises it per
 # key as the measured distribution justifies. Override per repo/task via env.
-READ_TOKEN_THRESHOLD="${CACHE_HANDOFF_READ_THRESHOLD:-100000000}"
+# Adaptive threshold (B2): env override wins; else the nightly-computed p80 of per-session
+# cumulative reads (scripts/handoff_threshold.py → ~/.apex-router/handoff_threshold.json);
+# else the static 100M fallback. Extract with python3 (jq is not guaranteed); any failure
+# falls through to the static default — the nudge is advisory and must never break a Stop.
+ADAPTIVE_FILE="${APEX_HANDOFF_THRESHOLD_FILE:-$HOME/.apex-router/handoff_threshold.json}"
+if [ -z "${CACHE_HANDOFF_READ_THRESHOLD:-}" ] && [ -f "$ADAPTIVE_FILE" ]; then
+  _adaptive=$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$ADAPTIVE_FILE'))
+    t=d.get('threshold_tokens')
+    print(int(t) if isinstance(t,(int,float)) and t>0 else '')
+except Exception:
+    pass
+" 2>/dev/null)
+  READ_TOKEN_THRESHOLD="${_adaptive:-100000000}"
+else
+  READ_TOKEN_THRESHOLD="${CACHE_HANDOFF_READ_THRESHOLD:-100000000}"
+fi
 MSG_THRESHOLD="${CACHE_HANDOFF_MSG_THRESHOLD:-200}"   # fallback proxy (aggressive)
 TELEMETRY="${APEX_TELEMETRY:-$HOME/.apex/telemetry.jsonl}"
 HANDOFF_DIR="${CACHE_HANDOFF_DIR:-$HOME/.claude/handoffs}"
