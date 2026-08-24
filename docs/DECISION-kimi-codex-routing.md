@@ -27,7 +27,10 @@ model that can serve the workload *as it is shaped today*.
 Under 250k context, `kimi-k2.7-code` (code-specialized, 262k window) serves the same
 traffic at **≈ $44.5 vs $129 (2.9× cheaper)** on the measured window. Policy:
 - venue policy `downshift_model=kimi-k2.7-code`, `downshift_ctx_ceiling=250_000`
-  (registry `venues.codex`; surfaced by `apex-router resolve --venue codex`);
+  (registry `venues.codex`); **within-family routing is live** in
+  `apex-router resolve --venue kimi|codex` (`--ctx N` passes session context):
+  code-shaped task under the floor → k2.7-code, general/unclassified → k2.6,
+  ctx ≥ floor → k3. A low-confidence classification routes general, never code;
 - the nightly **codex context watch** reports p50/p95, the downshift-eligible share
   (25% at decision time), and approaches to the 1M ceiling — so the K1 premise is
   re-measured every night and K1 flips to k2.7-code the day the workload fits;

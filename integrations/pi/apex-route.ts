@@ -51,6 +51,7 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	kimi: { provider: "moonshotai", id: "kimi-k2.6" },
 	// code-specialized Kimi (DECISION-kimi-codex-routing): ~3x cheaper than k3 for <=262k ctx
 	"kimi-code": { provider: "moonshotai", id: "kimi-k2.7-code" },
+	"kimi-deep": { provider: "moonshotai", id: "kimi-k3" },  // 1M ctx — long sessions (K1)
 	frontier: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
 	deep: { provider: "anthropic", id: "claude-opus-4-8", effort: "high" },
 };

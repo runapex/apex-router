@@ -107,8 +107,35 @@ def _reader(table_path: Path):
     return read
 
 
+_CODE_CLASSES = frozenset({"debug", "refactor", "generate", "review"})
+
+
+def _kimi_route(task_type: str, ctx_tokens: int | None, vpol: dict) -> tuple[str, str]:
+    """Within-family Kimi routing (DECISION-kimi-codex-routing K1/K2/K3). Returns
+    (model, reason). The decision that actually kicks:
+      - ctx at/past the deep floor (or unknown-but-venue-codex long session) -> k3
+        (its 1M window is the only fit; load-bearing, measured 73.8% of codex reqs >250k)
+      - code-shaped task, ctx under the floor -> k2.7-code (code-specialized, ~3x cheaper)
+      - anything else, ctx under the floor -> k2.6 (cheapest general)
+    """
+    deep_floor = vpol.get("deep_ctx_floor") or vpol.get("downshift_ctx_ceiling") or 250_000
+    k3 = vpol.get("deep_ctx_model") or vpol.get("default_model") or "kimi-k3"
+    code = vpol.get("code_model") or vpol.get("downshift_model") or "kimi-k2.7-code"
+    general = vpol.get("default_model") if "default_model" in vpol and "code_model" in vpol \
+        else (vpol.get("downshift_model") or "kimi-k2.6")
+    if ctx_tokens is not None and ctx_tokens >= deep_floor:
+        return k3, f"ctx {ctx_tokens:,} >= deep floor {deep_floor:,} → {k3} (1M window load-bearing)"
+    if task_type in _CODE_CLASSES:
+        return code, (f"code-shaped task ({task_type})"
+                      + (f", ctx {ctx_tokens:,}" if ctx_tokens is not None else "")
+                      + f" under floor → {code} (code-specialized, ~3x cheaper)")
+    return general, (f"general task ({task_type or 'unclassified'}) under floor → "
+                     f"{general} (cheapest general)")
+
+
 def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | None = None,
-                 registry: dict | None = None, embed_fn="auto", venue: str = "skill") -> dict:
+                 registry: dict | None = None, embed_fn="auto", venue: str = "skill",
+                 ctx_tokens: int | None = None) -> dict:
     """Resolve a model for free-text `text`. Returns a JSON-able dict with the Decision
     plus the explain payload (cell id, classification, why the table did/didn't win).
 
@@ -127,12 +154,17 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
                                   embed_fn=embed_fn, exemplars=EXEMPLARS)
 
     if vpol:
-        # Venue venue policy: one static default for every task class (the venue's model),
-        # with the downshift alternative carried in the explain payload.
-        vmodel = vpol.get("default_model") or safe_default(reg)
+        # Within-family routing kicks FIRST (task shape + ctx decide among the family's
+        # models); the route table can still override a cell once bench evidence promotes.
+        vmodel, vreason = _kimi_route(
+            # preliminary class from the free request prior; the full classification
+            # below may refine it — re-route after classify if the class changes.
+            _classify.classify_request(tools=tools, sys_markers=sys_markers).task_type,
+            ctx_tokens, vpol)
         static_map = {tt: vmodel for tt in _STATIC_TIER_MAP}
         vsafe = vmodel
     else:
+        vmodel, vreason = None, None
         static_map = static_default_map(reg)
         vsafe = safe_default(reg)
     decision = consumer.resolve(
@@ -166,11 +198,22 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
         "venue": venue,
     }
     if vpol:
+        # Re-route within the family on the FINAL classification (the embedding refine-
+        # ment may have moved the class, e.g. explore -> generate, which flips k2.6 ->
+        # k2.7-code). The route table / static fallback already used the prelim class;
+        # the final route is the honest one. A LOW-CONFIDENCE class is not evidence for
+        # the code tier: treat it as unclassified (general), same conservative rule the
+        # consumer applies before consulting the table.
+        confident_tt = decision.task_type if decision.confidence >= 0.7 else None
+        final_model, final_reason = _kimi_route(confident_tt, ctx_tokens, vpol)
+        if decision.source != "route_table":
+            decision = type(decision)(final_model, decision.task_type,
+                                      decision.confidence, decision.source)
+        out["model"] = decision.model
         out["venue_policy"] = {
-            "default_model": vpol.get("default_model"),
-            "downshift_model": vpol.get("downshift_model"),
-            "downshift_ctx_ceiling": vpol.get("downshift_ctx_ceiling"),
-            "note": "context below the ceiling -> downshift_model is ~2.9x cheaper "
-                    "(measured); above it, default_model's 1M window is load-bearing",
+            "routed_model": final_model,
+            "route_reason": final_reason,
+            "ctx_tokens": ctx_tokens,
+            "deep_ctx_floor": vpol.get("deep_ctx_floor") or vpol.get("downshift_ctx_ceiling"),
         }
     return out

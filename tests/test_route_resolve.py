@@ -109,15 +109,36 @@ class TestVenueResolution(unittest.TestCase):
                              "downshift_ctx_ceiling": 250_000}},
     }
 
-    def test_codex_venue_defaults_to_venue_model(self):
+    def test_codex_venue_routes_within_family(self):
         with tempfile.TemporaryDirectory() as d:
             tp = _table(Path(d), [])
             out = route_resolve.resolve_text("port the config", venue="codex",
                                              table_path=tp, registry=self.VENUE_REG,
                                              embed_fn=None)
-            self.assertEqual(out["model"], "kimi-k3")          # venue default, not a Claude tier
+            # code-shaped task under the ctx floor -> downshift code model (K2), not a Claude tier
+            self.assertEqual(out["model"], "kimi-k2.7-code")
             self.assertEqual(out["venue"], "codex")
-            self.assertEqual(out["venue_policy"]["downshift_model"], "kimi-k2.7-code")
+            self.assertIn("under floor", out["venue_policy"]["route_reason"])
+
+    def test_deep_ctx_forces_k3(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            out = route_resolve.resolve_text("continue the migration", venue="codex",
+                                             ctx_tokens=400_000, table_path=tp,
+                                             registry=self.VENUE_REG, embed_fn=None)
+            self.assertEqual(out["model"], "kimi-k3")   # 1M window load-bearing
+            self.assertIn("deep floor", out["venue_policy"]["route_reason"])
+
+    def test_kimi_venue_general_task_routes_cheapest(self):
+        reg = dict(self.VENUE_REG)
+        reg["venues"] = {"kimi": {"provider": "moonshotai", "default_model": "kimi-k2.6",
+                                  "code_model": "kimi-k2.7-code", "deep_ctx_model": "kimi-k3",
+                                  "deep_ctx_floor": 250_000}}
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            out = route_resolve.resolve_text("x", sys_markers=["explore"], venue="kimi",
+                                             table_path=tp, registry=reg, embed_fn=None)
+            self.assertEqual(out["model"], "kimi-k2.6")
 
     def test_skill_venue_unaffected_by_venue_policy(self):
         with tempfile.TemporaryDirectory() as d:
