@@ -2,8 +2,9 @@
 # WP9 — QLoRA training on Apple Silicon (MLX-LM), path (a): fuse -> GGUF -> ollama tag.
 #
 # Called by overnight_cycle.py (which expects ROOT/'training/train.sh'). Serving stays
-# ONE stack: the fine-tuned adapter is fused into the base, converted to GGUF at the
-# SAME quant as the incumbent, and imported as a SHADOW ollama tag (local-candidate:<id>).
+# ONE stack: the fine-tuned adapter is fused into the local base model (whatever
+# ORNITH_TRAIN_BASE points at), converted to GGUF at the SAME quant as the incumbent,
+# and imported as a SHADOW ollama tag (local-candidate:<id>).
 # qlora_serve.py then gates it (probe + amr.gate) before repointing the `local` family.
 #
 #   train.sh --data <dir> --cycle-id <id> [--dry-run]
@@ -30,7 +31,7 @@ info() { printf '▸ %s\n' "$*"; }
 # --- config (env-overridable) ----------------------------------------------
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"                 # ornith package dir
 VENV_PY="${ORNITH_TRAIN_PYTHON:-$HOME/.apex-router/.venv/bin/python}"
-BASE_MODEL="${ORNITH_TRAIN_BASE:-}"                          # HF/MLX base (safetensors), e.g. mlx-community/…
+BASE_MODEL="${ORNITH_TRAIN_BASE:-}"                          # HF/MLX base (safetensors) — set ORNITH_TRAIN_BASE to your local base model
 INCUMBENT_QUANT="${ORNITH_INCUMBENT_QUANT:-Q4_K_M}"
 LORA_RANK="${ORNITH_LORA_RANK:-16}"
 ITERS="${ORNITH_TRAIN_ITERS:-300}"

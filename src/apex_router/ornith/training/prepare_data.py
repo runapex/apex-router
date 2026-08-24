@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Turn approved, de-identified corrections into an MLX-LM chat dataset for QLoRA.
 
+Base-model-agnostic: the training base is whatever ORNITH_TRAIN_BASE points at;
+this module only shapes the data, it does not select or reference any specific model.
+
 Reads feedback/approved.jsonl (written by record_feedback.py) and emits
   <out>/train.jsonl and <out>/valid.jsonl
 in MLX-LM's chat format: one object per line, {"messages": [ {role, content}, ... ]}.

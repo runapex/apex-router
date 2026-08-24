@@ -50,6 +50,13 @@ def test_deidentification_applied():
     assert rec["deidentified"] is True
 
 
+def test_rag_nightly_has_no_hardcoded_local_model():
+    import inspect
+    import apex_router.rag_nightly as rn
+    src = inspect.getsource(rn)
+    assert "ornith-ai/" not in src and "Ornith-1.5" not in src
+
+
 def test_should_train_three_part_gate():
     def cyc(ci_upper, crowding):
         return {"kind": "cycle", "l1_ci": [0.0, ci_upper], "crowding": crowding}
