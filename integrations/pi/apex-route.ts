@@ -163,6 +163,7 @@ export default function (pi: ExtensionAPI) {
 			if (model) {
 				const ok = await pi.setModel(model);
 				if (ok) {
+					resolvedModelId = id; // for the outcome log (not the literal "auto")
 					ctx.ui.notify(
 						`>>auto → ${provider}/${id} (${resolved?.task_type || "unclassified"})`, "info");
 					return true;
@@ -177,6 +178,7 @@ export default function (pi: ExtensionAPI) {
 	let savedModel: ExtensionContext["model"] | undefined;
 	// Pending one-shot cue bookkeeping for the escalation auto-log.
 	let pendingCue: { family: string; task: string; taskType?: string } | undefined;
+	let resolvedModelId: string | undefined; // >>auto: the model resolve() picked
 
 	async function restoreIfPending(): Promise<void> {
 		if (savedModel) {
@@ -219,11 +221,13 @@ export default function (pi: ExtensionAPI) {
 		const cue = pendingCue;
 		pendingCue = undefined;
 		const msg: any = event.message;
-		const failed =
-			msg?.stopReason === "error" ||
-			msg?.errorMessage ||
-			(Array.isArray(msg?.content) && msg.content.every((c: any) => c.type !== "text" || !String(c.text ?? "").trim()));
-		const startTier = cue.family === "auto" ? "auto" : (routes[cue.family]?.id ?? cue.family);
+		// POSITIVE failure signals only (model-routing doctrine): a provider error. A
+		// tool-call-only message legitimately has no text — that is NOT a failure (was
+		// mis-logged as escalation on the first turn of every agentic run).
+		const failed = msg?.stopReason === "error" || Boolean(msg?.errorMessage);
+		const startTier = cue.family === "auto"
+			? (resolvedModelId ?? "auto")
+			: (routes[cue.family]?.id ?? cue.family);
 		if (cue.taskType) {
 			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok",
 				failed ? "auto: provider error/empty" : "auto");
