@@ -134,6 +134,20 @@ function logOutcome(taskType: string, startTier: string, outcome: "ok" | "escala
 		"--outcome", outcome, "--note", note], { timeout: 10_000 }, () => {});
 }
 
+/** Fail-safe conformance row — shell to route-check --record so Python owns the JSONL schema.
+ * A logging failure must NEVER block the cue: swallow every error (same pattern as logOutcome). */
+function recordConformance(row: {
+	surface: string; task_type: string; requested_tier: string;
+	resolved_model?: string; matched?: boolean;
+}): void {
+	try {
+		execFile(APEX_BIN, ["route-check", "--record", JSON.stringify(row)],
+			{ timeout: 10_000 }, () => {});
+	} catch {
+		// spawning itself failed — never surface into the cue
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	const routes = loadRoutes();
 
@@ -147,6 +161,24 @@ export default function (pi: ExtensionAPI) {
 		if (!model) {
 			ctx.ui.notify(`apex-route: model ${route.provider}/${route.id} not found — check models.json`, "warning");
 			return false;
+		}
+		// Tier-conformance observation (added observation only — does NOT change routing).
+		// >>local is definitionally conformant (the ACTIVE local tier; no expected/resolved
+		// gap possible). A frontier family pins an explicit id, so the resolved model id
+		// SHOULD equal route.id; record the row for coverage and warn if it ever drifts.
+		const resolvedId: string = (model as any)?.id ?? route.id;
+		if (family === "local") {
+			recordConformance({ surface: "pi", task_type: "cue", requested_tier: "local",
+				resolved_model: resolvedId, matched: true });
+		} else {
+			const matched = resolvedId === route.id;
+			if (!matched) {
+				ctx.ui.notify(
+					`apex-route: >>${family} resolved ${resolvedId}, expected ${route.id} (tier drift)`,
+					"warning");
+			}
+			recordConformance({ surface: "pi", task_type: "cue", requested_tier: family,
+				resolved_model: resolvedId, matched });
 		}
 		const ok = await pi.setModel(model);
 		if (!ok) ctx.ui.notify(`apex-route: no API key for ${route.provider}/${route.id}`, "error");

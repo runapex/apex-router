@@ -169,3 +169,22 @@ class TestRouteCheckReadout(unittest.TestCase):
             self.assertEqual(rc.main([]), 0)
         finally:
             del os.environ["APEX_CONFORMANCE_LOG"]
+
+
+class TestRecordWritePath(unittest.TestCase):
+    def test_record_json_appends_a_row(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            os.environ["APEX_CONFORMANCE_LOG"] = str(p)
+            try:
+                rc.main(["--record", json.dumps({"surface":"pi","task_type":"review",
+                         "requested_tier":"deep","resolved_model":"claude-opus-4-8","matched":True})])
+                row = json.loads(Path(p).read_text().splitlines()[0])
+                self.assertEqual(row["surface"], "pi")
+                self.assertTrue(row["matched"])
+            finally:
+                del os.environ["APEX_CONFORMANCE_LOG"]
+
+    def test_record_bad_json_is_noop_exit_zero(self):
+        self.assertEqual(rc.main(["--record", "{bad json"]), 0)   # fail-open, never raises

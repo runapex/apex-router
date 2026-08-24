@@ -130,7 +130,21 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="route-check",
                                  description="per-(surface,task_type) tier-conformance drift rate")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--record")
     a = ap.parse_args(argv)
+    if a.record:
+        # Hidden write-path: a caller (e.g. the pi extension) hands us one JSON row to
+        # append. Fail-open — malformed JSON or a bad dict is a no-op, never a raise, and
+        # log_conformance's own type checks reject a malformed dict.
+        try:
+            d = json.loads(a.record)
+            if isinstance(d, dict):
+                log_conformance(d.get("surface"), d.get("task_type"), d.get("requested_tier"),
+                                resolved_model=d.get("resolved_model"), matched=d.get("matched"),
+                                note=d.get("note", ""))
+        except Exception:
+            pass
+        return 0
     try:
         agg = read_conformance()
     except Exception:
