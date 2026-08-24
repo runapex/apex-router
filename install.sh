@@ -286,19 +286,6 @@ from apex_router.ornith import local_tier, tier_switch
 tier_switch.write_state(local_tier.TIERS['$active'])
 " || warn "could not write the tier file; 'apex-router ornith-tier $active' will fix it"
 
-  # The retired MLX launch helper. Left as a loud stub rather than deleted so an existing launchd
-  # unit or shell alias that still calls it fails with an explanation instead of a confusing
-  # 'no such file' or, worse, silently starting a second resident model.
-  cat > "$INSTALL_DIR/serve-ornith.sh" <<'EOF'
-#!/usr/bin/env bash
-# RETIRED. The Ornith MLX server (mlx_lm.server on :8080) has been replaced by ollama on :11434,
-# which serves both tiers and can switch between them without a restart.
-echo "serve-ornith.sh is retired — Ornith is served by ollama now." >&2
-echo "  apex-router ornith-tier          # show the active tier" >&2
-echo "  apex-router ornith-tier large    # switch (small|large)" >&2
-exit 1
-EOF
-  chmod +x "$INSTALL_DIR/serve-ornith.sh"
   ok "Ornith 1.5 ready (tier: $active) — switch with: apex-router ornith-tier small|large"
   # NB: a bare `[ … ] && fn` returns 1 when the test is false, which under `set -e`
   # would abort the whole installer after ornith (Codex #1). Use an if-block.
@@ -312,10 +299,8 @@ EOF
 # apex-router's OWN venv python and derive every path from $INSTALL_DIR — nothing machine-specific
 # is hardcoded.
 #
-# com.ornith.server (the MLX model server) is GONE: ollama owns model serving now and is already
-# supervised by its own launchd/brew service, so a second always-on unit would just be a way to
-# have two resident models. Any leftover unit from an older install is booted out below, because
-# leaving it loaded would silently hold ~20GB against the tier budget.
+# Model serving is ollama's own service — apex-router deliberately supervises no model server,
+# so a second always-on unit can't hold a second resident model against the tier budget.
 install_ornith_service() {
   if [ "$OS" != "Darwin" ]; then
     warn "Ornith launchd agents are macOS-only; on $OS run the worker manually: $INSTALL_DIR/.venv/bin/python -m apex_router.ornith.ornith_worker"
@@ -346,18 +331,6 @@ PLIST
   # and is read at import by local_tier.resolve(), so switching tiers is one file write plus a
   # restart — not a plist rewrite. A model id baked in here would silently outrank the switch.
 
-  # Boot out a com.ornith.server left over from the MLX era. If it survives, it holds ~20GB of
-  # weights that the tier budget knows nothing about, and `apex-router ornith-tier` will refuse to
-  # switch. The plist is renamed rather than deleted so the change is reversible.
-  if launchctl print "gui/$uid/com.ornith.server" >/dev/null 2>&1; then
-    say "retiring the MLX server unit (com.ornith.server) — ollama serves the model now"
-    launchctl bootout "gui/$uid/com.ornith.server" >/dev/null 2>&1 || true
-  fi
-  # if-block, not `[ … ] && mv`: a bare test-and-command returns 1 when the test is false, which
-  # under `set -e` aborts the whole installer (Codex #1, same trap as the ornith call site).
-  if [ -f "$agents/com.ornith.server.plist" ]; then
-    mv "$agents/com.ornith.server.plist" "$agents/com.ornith.server.plist.retired-mlx"
-  fi
 
   # Worker: must NOT start at bootstrap — it would drain the queue while the tier is still cold and
   # fail those jobs (POSTs aren't retried) (Codex #3).
@@ -442,7 +415,7 @@ verify() {
   ok "apex-router installed at $INSTALL_DIR"
   echo
   echo "  routing works now (pure-stdlib). Optional tiers depend on their services:"
-  echo "    - embedding: start ollama; local bench: run $INSTALL_DIR/serve-ornith.sh (Apple Silicon)"
+  echo "    - embedding: start ollama; local tier: apex-router ornith-tier small|large"
   echo "  add to PATH:  export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\""
 }
 

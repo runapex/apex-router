@@ -44,3 +44,10 @@ tables/
 
 # machine-local apex-route family overrides (personal model choices)
 pi-routes.json
+
+# machine-local runtime state (never commit — public repo)
+models.json
+handoff_threshold.json
+memory_index.db
+judge_probe_baseline.json
+memory_dirs.txt

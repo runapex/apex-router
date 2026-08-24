@@ -13,9 +13,11 @@
  * Each stage runs as a normal turn (you see the output), and your starting model
  * (e.g. the local Ornith tier) is restored at the end.
  *
- * Models are configurable via env (defaults match "sonnet-6" / "opus-4.8"):
- *   LEARN_VALIDATE_MODEL   default anthropic claude-sonnet-4-6
- *   LEARN_EXPLAIN_MODEL    default anthropic claude-opus-4-8
+ * Models resolve from the SHARED model registry `~/.apex-router/models.json` (the
+ * `learn` section: validate_tier/explain_tier through `tiers`) — the same file every
+ * apex-router component reads, so a tier bump moves /learn too. Env still wins:
+ *   LEARN_VALIDATE_MODEL   default: registry sonnet tier
+ *   LEARN_EXPLAIN_MODEL    default: registry opus tier
  *   BOOKSEARCH_BIN         default ~/.local/bin/booksearch
  *
  * Requires: booksearch indexed (`booksearch ingest`), and the anthropic provider
@@ -25,6 +27,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -32,9 +35,27 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const execFileP = promisify(execFile);
 const BIN = process.env.BOOKSEARCH_BIN || join(homedir(), ".local", "bin", "booksearch");
-const VALIDATE_MODEL = process.env.LEARN_VALIDATE_MODEL || "claude-sonnet-4-6";
-const EXPLAIN_MODEL = process.env.LEARN_EXPLAIN_MODEL || "claude-opus-4-8";
-const PROVIDER = process.env.LEARN_PROVIDER || "anthropic";
+
+// Registry-driven defaults (fall back to the built-ins on any read failure).
+function learnModels(): { provider: string; validate: string; explain: string } {
+	const fallback = { provider: "anthropic", validate: "claude-sonnet-5", explain: "claude-opus-4-8" };
+	try {
+		const reg = JSON.parse(readFileSync(join(homedir(), ".apex-router", "models.json"), "utf8"));
+		const tiers = reg?.tiers || {};
+		const spec = reg?.learn || {};
+		return {
+			provider: typeof spec.provider === "string" ? spec.provider : fallback.provider,
+			validate: tiers[spec.validate_tier || "sonnet"] || fallback.validate,
+			explain: tiers[spec.explain_tier || "opus"] || fallback.explain,
+		};
+	} catch {
+		return fallback;
+	}
+}
+const LEARN = learnModels();
+const VALIDATE_MODEL = process.env.LEARN_VALIDATE_MODEL || LEARN.validate;
+const EXPLAIN_MODEL = process.env.LEARN_EXPLAIN_MODEL || LEARN.explain;
+const PROVIDER = process.env.LEARN_PROVIDER || LEARN.provider;
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("learn", {
@@ -84,7 +105,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`learn: no API key for ${PROVIDER}/${VALIDATE_MODEL}`, "error");
 					return;
 				}
-				await ctx.sendUserMessage(
+				await pi.sendUserMessage(
 					`I'm studying **${topic}**. booksearch returned these Top-5 local references ` +
 						`(semantic match over my own library):\n\n${sources}\n\n` +
 						`Validate them: which are authoritative and on-topic for learning ${topic}, flag any weak or ` +
@@ -98,7 +119,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`learn: no API key for ${PROVIDER}/${EXPLAIN_MODEL}`, "error");
 					return;
 				}
-				await ctx.sendUserMessage(
+				await pi.sendUserMessage(
 					`Using the validated sources above, write a comprehensive explanation of **${topic}**, and ` +
 						`correlate it to MY current work: read the relevant files in this session/project and tie the ` +
 						`concepts to my actual code (name the files/functions). Include worked reasoning and concrete ` +

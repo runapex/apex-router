@@ -78,17 +78,36 @@ The active family shows in the status bar (`⟿ local`).
 
 ### Customise the family table
 
-Defaults live in `ROUTES` at the top of `apex-route.ts`. Override without editing
-the extension by dropping a JSON map at `~/.apex-router/pi-routes.json`:
+Families resolve from the **shared model registry** `~/.apex-router/models.json` — the
+same file codeqa's tier_router and `/learn` read, so a tier bump moves every component.
+A family pins `{"provider","id"}`, references a tier `{"provider","tier"}` (resolved via
+the registry's `tiers` map, optionally with `"effort"`), or — for `local` — follows the
+ACTIVE ornith tier (`{"source":"ornith.env"}`, so `>>local` never loads a second tier).
+Per-family overrides without touching the registry still work via
+`~/.apex-router/pi-routes.json` (back-compat overlay):
 
 ```json
 {
-  "local":    { "provider": "ollama",     "id": "qwen2.5-coder:7b" },
-  "frontier": { "provider": "anthropic",  "id": "claude-sonnet-4-5" }
+  "frontier": { "provider": "anthropic",  "id": "claude-sonnet-4-6" }
 }
 ```
 
-Keep the `id` values in sync with `pi --list-models`.
+Keep explicit `id` values in sync with `pi --list-models`.
+
+### Beyond switching
+
+- `>>auto <task>` — `apex-router resolve` classifies the task and picks the model
+  (adaptive core; static floor until gate cells promote).
+- **Per-family effort** — a family's `"effort"` in the registry is applied to the
+  anthropic payload per request (the cache-free output-cost dial).
+- **Session attribution** — the extension adds `x-claude-code-session-id` (pi's session
+  id) to every proxied request, so per-session cost reports include pi traffic.
+- **Escalation auto-log** — a one-shot `>>cue` turn logs ok/escalated to `route-log`
+  (observable failure only: provider error or empty answer).
+- `/apex-offload codegen <spec> --tests <file>` — queue a gated-codegen job on the
+  local tier (the lane that books frontier savings when tests pass).
+- `apex-ground` (separate extension) — runs the deterministic grounding oracle on every
+  assistant message that cites `file:line`; warns on STALE citations.
 
 ## 4. Test
 

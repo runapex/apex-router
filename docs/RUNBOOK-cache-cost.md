@@ -97,13 +97,30 @@ Tunables (env, override in the hook's settings entry or your shell):
 | `CACHE_HANDOFF_DIR` | `~/.claude/handoffs` | where handoff docs are written |
 | `APEX_TELEMETRY` | `~/.apex/telemetry.jsonl` | telemetry source |
 
-> **Start aggressive, relax over time.** The default cap is deliberately LOW (~100M
-> read tokens ≈ $50 of accumulated read cost) so it nudges early on the fat-tail
-> sessions — an intentional policy choice, not a data-fit. Raise it (per repo / task
-> stratum) only when signals show the nudges are premature. The intended evolution is
-> a per-key adaptive threshold proposed nightly from `cache_report.py`'s measured
-> per-session read distribution once ≥ 7 days of data exist — do not hard-code a high
-> value off a short window. Override per repo/task today with the env var above.
+> **Adaptive threshold (implemented).** `scripts/handoff_threshold.py` (run nightly by
+> `apex-router nightly` / the daily watcher) computes the threshold from the measured
+> per-session read distribution — **p80 of per-session cumulative reads**, floored at
+> 25M, capped at 500M, requiring ≥5 sessions (else `insufficient-data` → floor) — and
+> writes `~/.apex-router/handoff_threshold.json`. The nudge hook reads that file;
+> `CACHE_HANDOFF_READ_THRESHOLD` still overrides it, and any read failure falls back to
+> the static 100M. `--check` prints the stored threshold and exits 2 when it's missing
+> or >2 days stale. Do not hard-code a high value off a short window; let the nightly
+> recompute move it.
+
+## 3b-i. Memory retrieval (L2) — `memory_search.py`
+
+Compaction alone has a hole: archived memories become write-only. `memory_search.py`
+closes the hierarchy — L0 hot (`MEMORY.md` prefix) / L1 warm (cluster digests) /
+**L2 cold: embedded, queryable**. It embeds every `*.md` in a memory dir with local
+`nomic-embed` into one SQLite file (incremental by mtime, per-dir scoped removals so
+multiple memory dirs share one index), and answers top-k queries by cosine. The
+nightly pass re-ingests every registered memory dir (`APEX_MEMORY_DIRS`,
+`~/.apex-router/memory_dirs.txt`, or auto-discovered `~/.claude/projects/*/memory`).
+
+```bash
+python scripts/memory_search.py ingest --dir ~/.claude/projects/<slug>/memory
+python scripts/memory_search.py query "yaml frontmatter gotcha" -k 5
+```
 
 ## 3b. Project-memory compaction — `memory_compact.py` + `memory-compact-nudge.sh`
 

@@ -74,9 +74,11 @@ The layer that actually runs work on a local model and **measures whether it pai
 - `offload_lanes.py` — the lane logic:
   - **codegen** — generates code (thinking-OFF), **runs the caller's tests**, escalates on
     failure. Only a passing gated run counts as frontier work saved.
-  - **review** — a recall pre-filter (measured ~1/5 precision), so it **always escalates**
-    for frontier triage and its tokens never count as "saved"; keeps partial findings if
-    the local answer is truncated.
+  - **review** — a recall pre-filter (measured ~1/5 precision) that **always escalates**
+    for frontier triage. Its only possible benefit (cheaper frontier triage) is unmeasured
+    while its tokens are booked pure cost, so the lane is **default-off** (measured
+    net-negative): review jobs escalate immediately without spending local tokens.
+    `ORNITH_REVIEW_LANE=on` re-enables the local pre-filter.
   - **adhoc** — a raw thinking-OFF chat.
 - `offload_telemetry.py` — per-lane JSONL; `frontier_completion_tokens_saved` counts a call
   **only if gated AND ok AND NOT escalated** (see decisions below).
@@ -152,9 +154,8 @@ below), `--dir PATH`, `--verify-only`.
 ### Local model tiers (Ornith 1.5)
 
 Local inference runs on **ollama** (`:11434`) — the same instance that serves `nomic-embed-text`.
-The old MLX server (`mlx_lm.server` on `:8080`, `com.ornith.server`) is **retired**: it pinned one
-model at process start, which made switching sizes a restart-and-reload, and it confined local
-inference to Apple Silicon.
+The old single-model server is **retired** (it pinned one model at process start, which made
+switching sizes a restart-and-reload); ollama serves both tiers and switches on demand.
 
 Two tiers, one resident at a time:
 
@@ -226,7 +227,8 @@ python -m apex_router.ornith.ornith_worker
 python -m apex_router.ornith.queue_task --lane codegen \
   --spec "write clamp(x, lo, hi)" --tests-file test_clamp.py
 
-# review pre-filter — always escalates for triage, tokens never counted as saved
+# review pre-filter — DEFAULT-OFF (measured net-negative): escalates without local
+# tokens unless ORNITH_REVIEW_LANE=on
 python -m apex_router.ornith.queue_task --lane review --diff-file change.diff
 
 # adhoc chat
@@ -318,13 +320,19 @@ The keys it manages are non-secret client wiring (`CLAUDE_CODE_USE_FOUNDRY`,
 
 The [pi](https://github.com/earendil-works/pi) coding agent can point at the apex-router
 proxy and switch **model and family per task** — inline (`>>local fix this test`,
-`>>frontier design the migration`) or with a sticky `/apex-route` command. Frontier and
-Kimi turns flow through the measuring proxy; local turns go straight to the Ornith tiers on
-ollama. Two drop-in pieces live under [`integrations/pi/`](integrations/pi/):
+`>>frontier design the migration`, `>>auto <task>` letting the adaptive core pick) or with
+a sticky `/apex-route` command. Frontier and Kimi turns flow through the measuring proxy;
+local turns go straight to the Ornith tiers on ollama. Families resolve from the shared
+model registry (`~/.apex-router/models.json`) — the same file codeqa and `/learn` read.
+The extensions also: attribute pi traffic per-session through the proxy, apply per-family
+reasoning effort, auto-log cue outcomes to `route-log`, ground citations on every
+assistant message (`apex-ground`), and queue offload jobs (`/apex-offload`). Drop-in
+pieces live under [`integrations/pi/`](integrations/pi/):
 
 ```bash
 cp integrations/pi/models.json ~/.pi/agent/models.json     # route anthropic+moonshotai via the proxy
 pi install integrations/pi/apex-route.ts                    # the per-task router extension
+pi install integrations/pi/apex-ground.ts                   # citation grounding on every turn
 ```
 
 Full instructions, the family table, and testing steps:
