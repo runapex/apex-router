@@ -113,6 +113,31 @@ class TestExpectedModels(unittest.TestCase):
         self.assertEqual(rc.expected_models("nope"), set())
 
 
+class TestResolveEmitter(unittest.TestCase):
+    def test_matched_true_when_resolved_in_expected(self):
+        from apex_router import model_registry as mr
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            rc.log_resolve_conformance("synthesis", "opus", mr.tier_model("opus"), log_path=p)
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertTrue(row["matched"])
+
+    def test_matched_false_catches_drift(self):
+        # a resolved model NOT in the tier's expected set (simulates a misconfigured alias) → matched False
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            rc.log_resolve_conformance("synthesis", "opus", "some-wrong-model", log_path=p)
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertFalse(row["matched"])   # the drift is CAUGHT
+
+    def test_unknown_tier_logs_matched_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            rc.log_resolve_conformance("t", "nope", "anything", log_path=p)
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertIsNone(row["matched"])
+
+
 class TestRouteCheckReadout(unittest.TestCase):
     def test_json_readout_and_unobservable_marker(self):
         import io, contextlib

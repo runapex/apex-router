@@ -216,4 +216,12 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
             "ctx_tokens": ctx_tokens,
             "deep_ctx_floor": vpol.get("deep_ctx_floor") or vpol.get("downshift_ctx_ceiling"),
         }
+    try:
+        from .route_conformance import log_resolve_conformance
+        _tt = out.get("task_type")
+        _tier = _STATIC_TIER_MAP.get(_tt)
+        if _tier:
+            log_resolve_conformance(_tt, _tier, out.get("model"))
+    except Exception:
+        pass
     return out

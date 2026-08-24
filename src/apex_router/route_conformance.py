@@ -73,6 +73,20 @@ def expected_models(tier, *, registry=None) -> set:
         return set()
 
 
+def log_resolve_conformance(task_type, requested_tier, resolved_model, *,
+                            log_path=None, note="") -> bool:
+    """Log a resolve()-surface conformance row. matched = resolved_model ∈ expected_models(tier);
+    an unknown tier (empty expected set) logs matched=None (no false mismatch). Fail-safe."""
+    try:
+        exp = expected_models(requested_tier)
+        matched = (resolved_model in exp) if exp else None
+        return log_conformance("resolve", task_type, requested_tier,
+                               resolved_model=resolved_model, matched=matched,
+                               log_path=log_path, note=note)
+    except Exception:
+        return False
+
+
 def _accumulate(agg: dict, line: str) -> None:
     try:
         rec = json.loads(line)
