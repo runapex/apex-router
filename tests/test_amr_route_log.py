@@ -36,6 +36,17 @@ class TestLogOutcome(unittest.TestCase):
             self.assertTrue(rows[0]["passed"])
             self.assertFalse(rows[0]["escalated"])
 
+    def test_default_ts_is_written_when_caller_omits_it(self):
+        # Regression: the CLI never passed ts, so every live row had ts=null and could
+        # not be era-sliced. An omitted ts must default to a real epoch timestamp.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self.assertTrue(route_log.log_outcome("explore", "sonnet", "ok", log_path=p))
+            row = self._read(p)[0]
+            self.assertIsInstance(row["ts"], float)
+            self.assertGreater(row["ts"], 1_000_000_000)
+
     def test_escalated_outcome_records_passed_false_escalated_true(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

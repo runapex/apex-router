@@ -431,12 +431,21 @@ def run_daily() -> int:
     except Exception as e:  # noqa: BLE001
         esc += f"  (unavailable: {type(e).__name__})\n"
 
+    # Nightly adaptivity pass (route-advise verdicts, handoff threshold, memory index,
+    # judge probe) — fail-open like everything else here; its failure degrades its own
+    # digest section, never the daily run.
+    try:
+        from . import nightly
+        nightly_digest = nightly.run()
+    except Exception as e:  # noqa: BLE001
+        nightly_digest = f"\n## nightly adaptivity\n  (unavailable: {type(e).__name__})\n"
+
     out = Path.home() / ".apex-router" / "offload_daily.md"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "a", encoding="utf-8") as f:
             # offload report inside its own fence; escalation section OUTSIDE it.
-            f.write("\n## daily run\n```\n" + report + "\n```\n" + esc)
+            f.write("\n## daily run\n```\n" + report + "\n```\n" + esc + nightly_digest)
     except Exception as e:  # noqa: BLE001 — a write failure must not error out the scheduled timer
         print(f"(daily digest write failed: {type(e).__name__})")
     print(report)

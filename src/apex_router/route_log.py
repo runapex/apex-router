@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 _VALID_OUTCOMES = ("ok", "escalated")
@@ -81,8 +82,12 @@ def _accumulate(rates: dict, line: str) -> None:
 def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -> bool:
     """Append one outcome record to the log. Returns True on success, False on ANY
     failure (never raises). `outcome` is "ok" (cheap succeeded) or "escalated"
-    (re-dispatched heavy); any other value is rejected and nothing is written."""
+    (re-dispatched heavy); any other value is rejected and nothing is written.
+    `ts` defaults to now: a row without a timestamp can't be era-sliced (cache_report's
+    era gate, route_advise confounder #3), so callers must not have to remember it."""
     try:
+        if ts is None:
+            ts = time.time()
         # Type-strict outcome check: `in` alone is spoofable by an __eq__-overloaded
         # object (Codex code-xval #5) — require an actual str, then membership.
         if not isinstance(outcome, str) or outcome not in _VALID_OUTCOMES:

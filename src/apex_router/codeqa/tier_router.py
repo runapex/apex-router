@@ -76,8 +76,13 @@ def _env(env):
 
 
 def _tier_models(env):
-    """The tier→model map, defaults overlaid with CODEQA_TIER_MODELS ('haiku=<id>,opus=<id>')."""
-    models = dict(_DEFAULT_TIER_MODELS)
+    """The tier→model map: the shared model registry (`apex_router.model_registry`, itself
+    DEFAULTS + the user's ~/.apex-router/models.json overlay), then CODEQA_TIER_MODELS
+    ('haiku=<id>,opus=<id>') on top — env still wins, so existing overrides are unaffected."""
+    from .. import model_registry
+    reg = model_registry.load()
+    models = {t: (model_registry.tier_model(t, registry=reg) or d)
+              for t, d in _DEFAULT_TIER_MODELS.items()}
     for pair in (env.get("CODEQA_TIER_MODELS") or "").split(","):
         if "=" in pair:
             k, v = pair.split("=", 1)

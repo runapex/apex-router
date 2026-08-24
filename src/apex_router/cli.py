@@ -87,12 +87,24 @@ def main(argv=None) -> int:
                           help="minimum samples before a verdict (default 30)")
     advise_p.add_argument("--cost-ratio", type=float, default=None,
                           help="C_heavy / C_cheap; sets the cost break-even escalation rate (default 5.0)")
+    # Live resolve — the first wired consumer of the routing core (classify → cell →
+    # route table → static fallback). `resolve` prints the decision; `route-explain`
+    # adds the why (cell, confidence, table state, fallback reason).
+    for name, helptext in (("resolve", "resolve a task to a model (adaptive core, static-floor safe)"),
+                           ("route-explain", "resolve + show cell/evidence/why for the decision")):
+        rp = sub.add_parser(name, help=helptext)
+        rp.add_argument("--text", required=True, help="the task description to route")
+        rp.add_argument("--json", action="store_true", help="machine-readable output")
+        rp.add_argument("--no-embed", action="store_true",
+                        help="skip the ollama embedding refinement (request prior only)")
     # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
     # delegated to apex_router.proxy_engine.cli; all args after the subcommand are forwarded.
     sub.add_parser("serve", help="run the measuring proxy (needs the [proxy] extra)",
                    add_help=False)
     # Adaptive learning-chains + nightly RAG (args after the subcommand are forwarded).
     sub.add_parser("rag-nightly", help="nightly RAG harvest + L1 gate + QLoRA trigger", add_help=False)
+    sub.add_parser("nightly", help="nightly adaptivity pass (route-advise, handoff threshold, "
+                                   "memory index, judge probe) — the digest lands in offload_daily.md")
     sub.add_parser("chain-bench", help="learning-chain gate verdicts + aggregates (per slot:task_class)",
                    add_help=False)
     sub.add_parser("chain-planner", help="propose a model chain for a task_class (metrics rationale)",
@@ -142,6 +154,36 @@ def main(argv=None) -> int:
                       "log unwritable)", file=sys.stderr)
             except Exception:
                 pass  # a broken stderr must not turn a swallowed failure into a raise
+        return 0
+
+    if args.cmd in ("resolve", "route-explain"):
+        from . import route_resolve
+        out = route_resolve.resolve_text(args.text,
+                                         embed_fn=None if args.no_embed else "auto")
+        if args.json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+        elif args.cmd == "resolve":
+            print(out["model"])
+        else:
+            print(f"model:      {out['model']}")
+            print(f"task_type:  {out['task_type'] or '(unclassified)'} "
+                  f"(confidence {out['confidence']:.2f}, embedding {out['embedding']})")
+            print(f"decision:   {out['source']}")
+            print(f"cell:       {out['cell'] or '-'}  (table: {out['table']})")
+            cell = out["table_cell"]
+            if cell is None:
+                print("table cell: absent → static floor (CANNOT-DECIDE is the safe default)")
+            else:
+                print(f"table cell: promoted={cell['promoted']} chosen={cell['chosen']}")
+            reasons = {
+                "route_table": "promoted, FDR-gated cell — evidence earned this route",
+                "static_default": "cell not promoted / cannot-decide → static floor",
+                "static_default_low_confidence": "classification below the confidence floor "
+                                                 "→ static floor for the best-guess class",
+                "static_default_error": "classifier/reader error → safe default",
+                "static_default_invalid_class": "unusable task class → safe default",
+            }
+            print(f"why:        {reasons.get(out['source'], out['source'])}")
         return 0
 
     if args.cmd == "route-readout":
@@ -206,6 +248,9 @@ def main(argv=None) -> int:
             pa.append("--dry-run")
         return proxy_setup.main(pa)
 
+    if args.cmd == "nightly":
+        from .nightly import main as _ng
+        return _ng()
     if args.cmd == "rag-nightly":
         from .rag_nightly import main as _rn
         return _rn(extra)
