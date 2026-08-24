@@ -37,8 +37,9 @@ conformance verdict.
 
 In the Pi extension, a `>>local` cue resolves to the on-box model. This is
 always conformant by definition: the cue's intent is to route locally, and the
-extension delivers that. Pi rows emitted after a `>>local` resolution carry
-`matched=True` when the local family model is in the tier's expected set.
+extension delivers that. `>>local` rows always carry `matched=True` by
+definition — the active local family IS the resident model, so no expected-set
+lookup is performed and a local cue can never register drift.
 
 ---
 

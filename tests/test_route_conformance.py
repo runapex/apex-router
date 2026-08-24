@@ -173,7 +173,6 @@ class TestRouteCheckReadout(unittest.TestCase):
 
 class TestRecordWritePath(unittest.TestCase):
     def test_record_json_appends_a_row(self):
-        import io, contextlib
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "c.jsonl"
             os.environ["APEX_CONFORMANCE_LOG"] = str(p)
