@@ -12,7 +12,7 @@ DOCTRINE (inherited from impact.py)
     - Records counts / verdicts / lane / model ONLY. No source text, no prompt content.
     - The writer is FAIL-OPEN: an instrument must never break the tool it measures.
 
-TOKEN SHAPE (verified against the live :8080 MLX server, the reference window):
+TOKEN SHAPE (verified against the live local server):
     usage = {"prompt_tokens": P, "completion_tokens": C, "total_tokens": T,
              "prompt_tokens_details": {"cached_tokens": K}}
 """

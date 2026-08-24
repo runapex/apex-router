@@ -31,11 +31,11 @@ WRITE_MULT = 1.25      # cache write, 5-minute TTL
 FRESH_MULT = 1.0       # uncached input
 OUT_MULT = 5.0         # output ($25/1M)
 
-# Offload eras never overlap: ornith-35b (…08-05) then qwen3.8-27b (08-18…). A
-# cutoff anywhere in the gap cleanly credits only the qwen era. Epoch seconds for
-# 2026-08-10T00:00:00Z (between the two eras), passed in rather than computed so
-# the module has no wall-clock dependency.
-QWEN_CUTOVER_TS = 1786406400.0
+# Offload model-eras never overlap: a lane is only credited with rows from the CURRENT
+# local-model era, so a new model is never credited (or blamed) with a retired model's
+# history. The cutoff is epoch seconds for 2026-08-10T00:00:00Z (the era boundary),
+# passed in rather than computed so the module has no wall-clock dependency.
+OFFLOAD_ERA_CUTOVER_TS = 1786406400.0
 
 DEFAULT_TELEMETRY = Path.home() / ".apex" / "telemetry.jsonl"
 DEFAULT_OFFLOAD = Path.home() / ".apex" / "offload_telemetry.jsonl"
@@ -163,10 +163,11 @@ def summarize_cache(records, *, now_ts: float, days: float, top_n: int = 10) -> 
 
 
 def summarize_offload_roi(records, *, now_ts: float, days: float,
-                          qwen_cutover_ts: float = QWEN_CUTOVER_TS) -> dict:
+                          era_cutover_ts: float = OFFLOAD_ERA_CUTOVER_TS) -> dict:
     """Per-lane offload ROI over the window. A lane is offload-positive only when
     net (frontier tokens saved − escalated completion tokens) > 0 AND its rows are
-    from the qwen era — so qwen is never credited with ornith-era history."""
+    from the current local-model era — so the active model is never credited with a
+    retired model's history."""
     lo = now_ts - days * 86400
     lanes: dict[str, dict] = {}
     pre_cutover_rows = 0
@@ -174,8 +175,8 @@ def summarize_offload_roi(records, *, now_ts: float, days: float,
         ts = rec.get("ts")
         if isinstance(ts, (int, float)) and ts < lo:
             continue
-        qwen_era = isinstance(ts, (int, float)) and ts >= qwen_cutover_ts
-        if not qwen_era:
+        current_era = isinstance(ts, (int, float)) and ts >= era_cutover_ts
+        if not current_era:
             pre_cutover_rows += 1
             continue
         lane = rec.get("lane") or "?"
@@ -191,7 +192,14 @@ def summarize_offload_roi(records, *, now_ts: float, days: float,
             L["escalated_completion"] += _num(rec.get("completion_tokens"))
         if rec.get("gated"):
             L["gated"] += 1
-        L["saved"] += _num(rec.get("frontier_completion_tokens_saved"))
+        # Saved is DERIVED from the earned-verdict flags (gated AND ok AND NOT escalated ->
+        # the completion tokens are frontier work avoided), matching offload_telemetry's
+        # aggregate_offload. The raw `frontier_completion_tokens_saved` field (orchestrator
+        # rows) is honored when present; the worker never writes it, so reading it raw made
+        # this gate unable to ever credit an earned gated pass.
+        if rec.get("gated") and rec.get("ok") and not rec.get("escalated"):
+            L["saved"] += _num(rec.get("frontier_completion_tokens_saved")) or \
+                            _num(rec.get("completion_tokens"))
         if rec.get("prompt_tokens") is None:
             L["null_token_rows"] += 1
 
@@ -209,7 +217,7 @@ def summarize_offload_roi(records, *, now_ts: float, days: float,
             "offload_positive": net > 0,
             "null_token_rows": L["null_token_rows"],
         }
-    return {"qwen_era_only": True, "pre_cutover_rows_excluded": pre_cutover_rows, "by_lane": out}
+    return {"current_era_only": True, "pre_cutover_rows_excluded": pre_cutover_rows, "by_lane": out}
 
 
 def build_report(*, telemetry: Path, offload: Path, now_ts: float, days: float,
@@ -247,10 +255,10 @@ def _fmt_text(rep: dict) -> str:
                      f"{s['read_tokens']:>13,} {s['read_usd_per_req']:>7.3f} "
                      f"{str(s['rw_ratio']):>6}")
     r = rep["offload_roi"]
-    lines.append(f"\n=== OFFLOAD ROI GATE — qwen-era only "
+    lines.append(f"\n=== OFFLOAD ROI GATE — current-era only "
                  f"(excluded {r['pre_cutover_rows_excluded']} pre-cutover rows) ===")
     if not r["by_lane"]:
-        lines.append("  (no qwen-era offload rows in window)")
+        lines.append("  (no current-era offload rows in window)")
     for lane, L in r["by_lane"].items():
         verdict = "OFFLOAD-POSITIVE" if L["offload_positive"] else "not worth offloading"
         lines.append(f"  {lane:8} n={L['n']:>3} ok={L['ok_rate']} esc={L['escalation_rate']} "

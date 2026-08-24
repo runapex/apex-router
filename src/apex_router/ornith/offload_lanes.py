@@ -53,7 +53,7 @@ def run_python_tests(code: str, tests: str, *, timeout_s: int = 30) -> tuple[boo
     (`os._exit(0)`, `ctypes` C-level exit, `os.abort`, signals) before its failing tests are reported
     — this defeats even a real `pytest` run, verified. Closing it needs OS/language sandboxing
     (RestrictedPython, a container), a deliberately deferred follow-up. This is ACCEPTABLE under the
-    project's threat model: the local model (our own qwen3.8) is BEST-EFFORT, not adversarial — its
+    project's threat model: the local Ornith tier is BEST-EFFORT, not adversarial — its
     real failure mode is semantically-wrong code (`return a - b` for add), which this gate catches
     reliably. A hostile forge is out of scope here; CROSS-VALIDATION downstream is the real trust gate
     for anything that gets committed (spec: "offload does not bypass cross-validation").

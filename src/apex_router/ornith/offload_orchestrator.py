@@ -109,7 +109,7 @@ def composed_adjudicate(subtask: SubTask, lane_result, *, ground_fn=None, xval_f
 def _default_log(task_type: str, outcome: str) -> None:
     """Log the outcome against the model that ACTUALLY ran.
 
-    This used to hardcode "qwen3.8" — a model retired before Ornith, so every row since has
+    This used to hardcode a retired model id, so every row since has
     mislabelled which local model earned (or lost) the offload. The label now comes from the
     active tier, which also makes the two tiers separable in the readout: small and large have
     very different economics, and a shared label would average them into a meaningless number.

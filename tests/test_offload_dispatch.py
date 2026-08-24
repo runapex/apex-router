@@ -56,8 +56,26 @@ class TestDispatch(unittest.TestCase):
         self.assertFalse(res.escalate)
         self.assertEqual(self.s.calls[0][0], "codegen")
 
-    def test_review_job_routes_to_review_and_always_escalates_ungated(self):
-        res = self._run({"lane": "review", "diff": "def g(): return 1/0"})
+    def test_review_lane_is_default_off_and_escalates_without_local_tokens(self):
+        # Measured net-negative (-5,383 tokens on the live log, 100% escalation): the lane
+        # must not spend local tokens unless explicitly re-enabled.
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ORNITH_REVIEW_LANE", None)
+            res = self._run({"lane": "review", "diff": "def g(): return 1/0"})
+        self.assertEqual(res.lane, "review")
+        self.assertFalse(res.gated)
+        self.assertTrue(res.escalate)            # frontier still does the review
+        self.assertFalse(res.ok)
+        self.assertIn("disabled", res.detail)
+        self.assertEqual(self.s.calls, [])       # no local model call was made
+
+    def test_review_lane_reenabled_by_env_routes_to_review(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"ORNITH_REVIEW_LANE": "on"}):
+            res = self._run({"lane": "review", "diff": "def g(): return 1/0"})
         self.assertEqual(res.lane, "review")
         self.assertFalse(res.gated)              # pre-filter has no correctness gate
         self.assertTrue(res.escalate)            # always escalate for triage

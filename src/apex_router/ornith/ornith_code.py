@@ -9,7 +9,7 @@ the documented failure mode, not an upgrade.
 SCOPE (the offload is only a win inside this envelope):
   - WELL-SPECIFIED, SELF-CONTAINED functions: clear signature + behavior, no repo context, no
     multi-file reasoning. Ornith is a fidelity model, not a reasoner (it asserted a WRONG root
-    cause on a reasoning task — see ornith-vs-qwen-local-model-verdict) — so it generates from a
+    cause on a reasoning task — see the local-model-verdict memory) — so it generates from a
     precise spec, it does not design.
   - The caller MUST verify the output (run the tests). Offload saves Opus/Codex tokens ONLY when
     the generated code is correct; wrong code that Opus then has to fix costs MORE than not

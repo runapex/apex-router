@@ -19,7 +19,7 @@ from .queue_paths import queue_root
 
 # The model label recorded in offload telemetry. Defaults to the historical Ornith 35B value so
 # existing telemetry is unchanged; set APEX_OFFLOAD_MODEL_LABEL when the worker drains a different
-# backend (e.g. qwen3.8 via the proxy) so the rows are labelled accurately, not as ornith-35b.
+# backend so the rows are labelled accurately, not as the default ornith-35b.
 MODEL_LABEL = os.environ.get("APEX_OFFLOAD_MODEL_LABEL", "ornith-35b")
 
 # CODE_ROOT (the package dir) is watched by the version-guard — it must NOT move with the queue.

@@ -1,1 +1,1 @@
-"""Ornith local-model toolkit (MLX client, batch, codegen) + capability router."""
+"""Ornith local-model toolkit (ollama client, batch, codegen) + capability router."""

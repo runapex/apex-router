@@ -3,7 +3,7 @@
 Covers the load-bearing invariants that were verified against live telemetry:
 heartbeat exclusion, null-safety, partial-line tolerance, the pricing math, the
 no-cache counterfactual, per-session ranking, span-vs-window honesty, and the
-qwen-era offload gate.
+current-era offload gate.
 """
 import json
 import sys
@@ -111,18 +111,18 @@ def test_hit_rate_and_rw_ratio():
     assert out["read_write_ratio"] == 9.0
 
 
-# ------------------------------------------------- offload ROI qwen gate ----
+# ------------------------------------------------- offload ROI era gate ----
 def test_offload_excludes_pre_cutover_ornith_rows():
     recs = [
         # ornith era — before cutover — must be excluded entirely
         {"lane": "review", "model": "ornith-35b", "escalated": True,
-         "completion_tokens": 5000, "ts": cr.QWEN_CUTOVER_TS - DAY},
-        # qwen era — counted
-        {"lane": "review", "model": "qwen3.8-27b", "escalated": True,
+         "completion_tokens": 5000, "ts": cr.OFFLOAD_ERA_CUTOVER_TS - DAY},
+        # current era — counted
+        {"lane": "review", "model": "ornith-35b", "escalated": True,
          "completion_tokens": 100, "frontier_completion_tokens_saved": 0,
-         "ts": cr.QWEN_CUTOVER_TS + DAY},
+         "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY},
     ]
-    out = cr.summarize_offload_roi(recs, now_ts=cr.QWEN_CUTOVER_TS + 2 * DAY, days=30)
+    out = cr.summarize_offload_roi(recs, now_ts=cr.OFFLOAD_ERA_CUTOVER_TS + 2 * DAY, days=30)
     assert out["pre_cutover_rows_excluded"] == 1
     assert out["by_lane"]["review"]["n"] == 1
     assert out["by_lane"]["review"]["escalated_completion_tokens"] == 100
@@ -132,19 +132,19 @@ def test_offload_positive_only_when_net_positive():
     recs = [
         {"lane": "codegen", "gated": True, "ok": True,
          "frontier_completion_tokens_saved": 500, "escalated": False,
-         "ts": cr.QWEN_CUTOVER_TS + DAY},
+         "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY},
         {"lane": "review", "escalated": True, "completion_tokens": 900,
-         "frontier_completion_tokens_saved": 0, "ts": cr.QWEN_CUTOVER_TS + DAY},
+         "frontier_completion_tokens_saved": 0, "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY},
     ]
-    out = cr.summarize_offload_roi(recs, now_ts=cr.QWEN_CUTOVER_TS + 2 * DAY, days=30)
+    out = cr.summarize_offload_roi(recs, now_ts=cr.OFFLOAD_ERA_CUTOVER_TS + 2 * DAY, days=30)
     assert out["by_lane"]["codegen"]["offload_positive"] is True   # net +500
     assert out["by_lane"]["review"]["offload_positive"] is False   # net -900
 
 
 def test_offload_null_tokens_flagged_not_crashed():
     recs = [{"lane": "adhoc", "prompt_tokens": None, "completion_tokens": None,
-             "escalated": True, "ts": cr.QWEN_CUTOVER_TS + DAY}]
-    out = cr.summarize_offload_roi(recs, now_ts=cr.QWEN_CUTOVER_TS + 2 * DAY, days=30)
+             "escalated": True, "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY}]
+    out = cr.summarize_offload_roi(recs, now_ts=cr.OFFLOAD_ERA_CUTOVER_TS + 2 * DAY, days=30)
     assert out["by_lane"]["adhoc"]["null_token_rows"] == 1
     assert out["by_lane"]["adhoc"]["escalated_completion_tokens"] == 0  # null → 0
 
@@ -157,7 +157,7 @@ def test_build_report_and_check_exit(tmp_path):
     ])
     off = _write_jsonl(tmp_path, "off.jsonl", [
         {"lane": "review", "escalated": True, "completion_tokens": 5,
-         "ts": cr.QWEN_CUTOVER_TS + DAY},
+         "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY},
     ])
     rep = cr.build_report(telemetry=tel, offload=off, now_ts=NOW, days=7)
     assert rep["cache"]["read_tokens"] == 1000
@@ -168,3 +168,14 @@ def test_build_report_and_check_exit(tmp_path):
     rc = cr.main(["--telemetry", str(tel), "--offload", str(off),
                   "--now", str(NOW), "--days", "7", "--check"])
     assert rc == 2
+
+
+def test_offload_saved_derived_from_flags_when_field_absent():
+    # Worker rows carry NO frontier_completion_tokens_saved field — the gate must derive
+    # savings from gated+ok+not-escalated (matching offload_telemetry.aggregate_offload),
+    # or an earned gated pass can never be credited.
+    recs = [{"lane": "codegen", "gated": True, "ok": True, "escalated": False,
+             "completion_tokens": 42, "ts": cr.OFFLOAD_ERA_CUTOVER_TS + DAY}]
+    out = cr.summarize_offload_roi(recs, now_ts=cr.OFFLOAD_ERA_CUTOVER_TS + 2 * DAY, days=30)
+    assert out["by_lane"]["codegen"]["frontier_tokens_saved"] == 42
+    assert out["by_lane"]["codegen"]["offload_positive"] is True

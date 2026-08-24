@@ -12,7 +12,16 @@ Verdict doctrine (unchanged from offload_lanes / the aggregator):
 """
 from __future__ import annotations
 
+import os
+
 from .offload_lanes import LaneResult
+
+
+def _review_lane_enabled(env=None) -> bool:
+    """Opt-in gate for the local review pre-filter. ONLY affirmative tokens enable it, so a
+    typo/mis-set env fails SAFE (lane stays off — the measured-negative default)."""
+    e = os.environ if env is None else env
+    return (e.get("ORNITH_REVIEW_LANE") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _default_chat(messages, *, max_tokens, enable_thinking):
@@ -55,6 +64,16 @@ def run_job(job: dict, *, chat=_default_chat, codegen=_default_codegen,
         return codegen(spec, tests, max_tokens=min(max_tokens, 2048))
 
     if lane == "review":
+        # DEFAULT-OFF (measured): the review pre-filter always escalates for frontier triage,
+        # so its local tokens are booked pure cost (-5,383 net on the live log) while its only
+        # possible benefit — making the frontier triage cheaper — is never measured. Until that
+        # delta is instrumented, the lane spends NO local tokens: it escalates immediately so the
+        # frontier still does the review. ORNITH_REVIEW_LANE=on re-enables the local pre-filter.
+        if not _review_lane_enabled():
+            return LaneResult("review", ok=False, escalate=True, output="", usage=None,
+                              gated=False,
+                              detail="review lane disabled by default (measured net-negative; "
+                                     "ORNITH_REVIEW_LANE=on to re-enable the local pre-filter)")
         diff = job.get("diff") or job.get("context") or ""
         preamble = job.get("preamble") or _DEFAULT_REVIEW_PREAMBLE
         return review(preamble, diff, max_tokens=min(max_tokens, 1024))

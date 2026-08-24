@@ -1,24 +1,21 @@
 """Capability routing for local inference: the active Ornith tier behind one HTTP endpoint.
 
-Qwen is RETIRED for chat (see docs/superpowers/specs/the reference window-ornith-server-design.md).
-This module now (1) hands out the Route for whichever tier is active, (2) keeps the proven
-workload-envelope guardrails, and (3) guards physical RAM against a second resident model
-(SSM pipeline) while Ornith is up.
+This module (1) hands out the Route for whichever tier is active and (2) keeps the proven
+workload-envelope guardrails. Local serving is ollama via local_tier; older model/server
+identities (Qwen chat, the MLX server and its launchd unit, the SSM co-residency guard)
+were retired with the ollama migration — see git history, not live code.
 
 Backward compatibility: `ornith_clone_projection.py` still imports ORNITH,
 warn_if_unbounded, and rationale — those are preserved.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-import os, subprocess, sys
+import os, sys
 
 from . import local_tier
 
 # ── Model identity (kept for the un-repointed clone-projection driver) ───────
-# Now an API model id (ollama), not an MLX filesystem path — the MLX server is retired.
 ORNITH = local_tier.resolve().api_model
-RETIRED_QWEN = "mlx-community/Qwen3.6-35B-A3B-4bit"  # history only; not routed
-RETIRED_MLX_ORNITH = "mlx-community/Ornith-1.0-35B-4bit"  # history only; served by the retired MLX unit
 
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 BASE_URL = os.environ.get("ORNITH_URL", local_tier.DEFAULT_URL)
@@ -32,14 +29,9 @@ MAX_ITEM_BYTES = 100_000
 ORNITH_MAX_ITEMS = 30
 ORNITH_SECS_PER_ITEM = 150
 
-# The retired MLX launchd unit. Kept only so `assert_ssm_can_start` still refuses on a machine that
-# has not finished the ollama migration; nothing starts this any more.
-SERVICE = f"gui/{os.getuid()}/com.ornith.server"
-
-
 # ── Capability model ──────────────────────────────────────────────────────────
 # The LARGE tier (35B-A3B) is a FIDELITY specialist: verbatim extraction + cross-log synthesis
-# (see ornith-vs-qwen verdict). Task-kinds that MATCH its strengths:
+# (see the local-model-verdict memory). Task-kinds that MATCH its strengths:
 _ORNITH_TASK_KINDS = frozenset({
     "synthesis", "synthesize", "extract", "extraction", "narrate", "review",
     "summarize", "summary", "authoritative", "cross_log", "cross-log",
@@ -49,7 +41,7 @@ _ORNITH_TASK_KINDS = frozenset({
     "code", "codegen", "code_gen",
 })
 # Bulk/interactive reasoning. Under the old single-model setup this was a hard DECLINE, because the
-# only endpoint up was the big one and Qwen (the bulk tier) had been retired. With tiers this is no
+# only endpoint up was the big one and the bulk tier had been retired. With tiers this is no
 # longer a miss — it is the SMALL tier's lane. The verdict changes from "decline" to "route small".
 _BULK_TASK_KINDS = frozenset({"bulk_triage", "bulk", "triage", "chat", "interactive"})
 
@@ -116,13 +108,13 @@ def select(task: str | None = None, items: int | None = None,
     The route NEVER switches tiers by itself — it reports `needs_switch` and names the model it
     wants. Switching is a ~21 GB load that must not happen as a side effect of asking for a route.
 
-    `override` must be None/'ornith'/'ornith-http' — Qwen is retired, so any other value
-    is a hard error. An explicit override FORCES the route even out of envelope, but the
+    `override` must be None/'ornith'/'ornith-http' — the Ornith endpoint is the only local
+    backend, so any other value is a hard error. An explicit override FORCES the route even out of envelope, but the
     verdict is still reported honestly (fits may be False).
     """
     if override not in (None, "ornith", "ornith-http"):
         raise ValueError(
-            f"Unsupported model override {override!r}; Qwen is retired for chat")
+            f"Unsupported model override {override!r}; only the Ornith endpoint is served")
     warn_if_unbounded(items=items, item_bytes=item_bytes)
     fits, reason, wanted = _score_fit(task, items, item_bytes)
     resident = local_tier.resolve()
@@ -149,51 +141,3 @@ def rationale(model_id=None, task=None, items=None) -> str:
     """One-line stderr explanation. Kept for clone-projection compatibility."""
     n = f", ~{items} item(s)" if items is not None else ""
     return f"[router] {task} → Ornith (single always-on HTTP endpoint{n})"
-
-
-def assert_ssm_can_start() -> None:
-    """Refuse to load a second large model while an Ornith tier is resident.
-
-    The old version compared against a hardcoded 52 GB ceiling measured on a different machine;
-    the real bound is this box's physical RAM, so the budget is read from the OS (local_tier).
-
-    HARD invariant: a resident Ornith tier blocks the load. Residency is checked two ways because
-    either alone races: `ollama ps` reports LOADED weights (the thing that actually consumes RAM),
-    and liveness() reports a reachable endpoint. Under the retired MLX unit the first check was
-    `launchctl print` — kept as a third signal so a half-migrated machine still refuses.
-    """
-    loaded = _resident_ollama_models()
-    registered = subprocess.run(["launchctl", "print", SERVICE],
-                                capture_output=True).returncode == 0
-    live = False
-    try:
-        from . import ornith_client
-        live = ornith_client.liveness()
-    except Exception:
-        live = False
-    if loaded or registered or live:
-        total = local_tier.total_ram_gb()
-        detail = f"loaded: {', '.join(loaded)}" if loaded else (
-            "the retired MLX unit is still bootstrapped" if registered else "endpoint is reachable")
-        sys.exit(
-            f"ERROR: an Ornith tier is still resident ({detail}) — refusing to load a second "
-            f"model on a {total:.0f} GB machine. Free it first:\n"
-            f"  apex-router ornith-tier --unload      # unload the resident tier\n"
-            f"  launchctl bootout {SERVICE}           # only if the retired MLX unit is still loaded")
-
-
-def _resident_ollama_models() -> list[str]:
-    """Model names ollama currently has LOADED in memory (not merely pulled to disk).
-
-    `ollama ps` is the only thing that distinguishes resident from on-disk, and residency is what
-    the RAM budget is about. Never raises: if ollama is absent or the output is unparseable we
-    report nothing loaded and fall back to the liveness/launchctl signals.
-    """
-    try:
-        p = subprocess.run(["ollama", "ps"], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if p.returncode != 0:
-        return []
-    lines = [ln for ln in p.stdout.splitlines() if ln.strip()]
-    return [ln.split()[0] for ln in lines[1:]]  # skip the NAME/ID/SIZE header row
