@@ -41,6 +41,33 @@ class TestResolve(unittest.TestCase):
         t = local_tier.resolve(env={"ORNITH_TIER": "  LARGE "}, state_file=Path("/nonexistent"))
         self.assertEqual(t.name, "large")
 
+    def test_pinned_api_model_is_honored_verbatim(self):
+        t = local_tier.resolve(env={"ORNITH_API_MODEL": "some/backend:tag"},
+                               state_file=Path("/nonexistent"))
+        self.assertEqual(t.api_model, "some/backend:tag")
+        self.assertEqual(t.name, "pinned")
+
+    def test_pinned_unknown_id_has_zero_size_so_fits_does_not_gate(self):
+        t = local_tier.resolve(env={"ORNITH_API_MODEL": "some/backend:tag"},
+                               state_file=Path("/nonexistent"))
+        ok, why = local_tier.fits(t, total_gb=1.0)  # absurdly small RAM
+        self.assertTrue(ok)
+        self.assertIn("not gating", why)
+
+    def test_family_plus_tier_resolves_through_overlay(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            p.write_text(json.dumps({"local_families": {"acme": {"tiers": {
+                "big": {"api_model": "acme/model:tag", "weights_gb": 18}}}}}))
+            t = local_tier.resolve(env={"LOCAL_FAMILY": "acme", "ORNITH_TIER": "big"},
+                                   state_file=Path("/nonexistent"), overlay_path=p)
+            self.assertEqual(t.api_model, "acme/model:tag")
+
+    def test_unknown_family_falls_back_to_default_family(self):
+        t = local_tier.resolve(env={"LOCAL_FAMILY": "nope", "ORNITH_TIER": "small"},
+                               state_file=Path("/nonexistent"))
+        self.assertEqual(t.api_model, local_tier.FAMILIES["ornith"]["small"].api_model)
+
 
 class TestTierTable(unittest.TestCase):
     def test_no_27b_exists(self):

@@ -135,16 +135,29 @@ def load_families(env: dict | None = None, overlay_path: Path | None = None
     return out
 
 
-def resolve(env: dict | None = None, state_file: Path | None = None) -> Tier:
-    """Return the active Tier. Precedence: explicit env ORNITH_TIER > state file > DEFAULT_TIER.
-
-    Env wins over the file so a one-off run can pin a tier (`ORNITH_TIER=large apex-router …`)
-    without disturbing the machine-wide setting the daemons read. An unknown name falls back to
-    the default rather than raising: tier selection must never be the reason a batch job dies.
-    """
+def resolve(env: dict | None = None, state_file: Path | None = None,
+            overlay_path: Path | None = None) -> Tier:
+    """Active Tier. Precedence:
+      1. explicit ORNITH_API_MODEL  -> honored verbatim (a synthesized 'pinned' Tier if it maps to
+         no known family/tier), so a pinned backend is always authoritative.
+      2. LOCAL_FAMILY + ORNITH_TIER (env, else the state file), resolved through the merged families.
+      3. DEFAULT_FAMILY/DEFAULT_TIER.
+    Never raises: any unknown value falls back rather than blocking a batch job."""
     source = dict(os.environ) if env is None else dict(env)
-    name = source.get("ORNITH_TIER") or _read_state(state_file).get("ORNITH_TIER") or DEFAULT_TIER
-    return TIERS.get(name.strip().lower(), TIERS[DEFAULT_TIER])
+    pinned = source.get("ORNITH_API_MODEL")
+    families = load_families(env=source, overlay_path=overlay_path)
+    if pinned:
+        for tiers in families.values():
+            for t in tiers.values():
+                if t.api_model == pinned:
+                    return t
+        return Tier(name="pinned", api_model=pinned, weights_gb=0.0,
+                    active_b=0.0, total_b=0.0, note="pinned via ORNITH_API_MODEL")
+    state = _read_state(state_file)
+    fam = (source.get("LOCAL_FAMILY") or state.get("LOCAL_FAMILY") or DEFAULT_FAMILY).strip().lower()
+    tier = (source.get("ORNITH_TIER") or state.get("ORNITH_TIER") or DEFAULT_TIER).strip().lower()
+    tiers = families.get(fam) or families[DEFAULT_FAMILY]
+    return tiers.get(tier) or families[DEFAULT_FAMILY][DEFAULT_TIER]
 
 
 def total_ram_gb() -> float:
@@ -165,6 +178,8 @@ def fits(tier: Tier, total_gb: float | None = None) -> tuple[bool, str]:
     total = total_ram_gb() if total_gb is None else total_gb
     if total <= 0:
         return True, "RAM unknown — not gating"
+    if tier.weights_gb <= 0:
+        return True, f"{tier.api_model}: size unknown — not gating"
     free_after = total - tier.weights_gb
     if free_after < MIN_FREE_GB:
         return False, (f"{tier.api_model} needs ~{tier.weights_gb:.1f} GB; only "
