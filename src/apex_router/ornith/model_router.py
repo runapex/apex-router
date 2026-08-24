@@ -108,13 +108,15 @@ def select(task: str | None = None, items: int | None = None,
     The route NEVER switches tiers by itself — it reports `needs_switch` and names the model it
     wants. Switching is a ~21 GB load that must not happen as a side effect of asking for a route.
 
-    `override` must be None/'ornith'/'ornith-http' — the Ornith endpoint is the only local
-    backend, so any other value is a hard error. An explicit override FORCES the route even out of envelope, but the
-    verdict is still reported honestly (fits may be False).
+    `override` must be None, 'ornith-http', or the name of a configured local family (see
+    `local_tier.load_families()`); any other value is a hard error. An explicit override FORCES
+    the route even out of envelope, but the verdict is still reported honestly (fits may be False).
     """
-    if override not in (None, "ornith", "ornith-http"):
+    _known = set(local_tier.load_families()) | {"ornith-http"}
+    if override is not None and override not in _known:
         raise ValueError(
-            f"Unsupported model override {override!r}; only the Ornith endpoint is served")
+            f"Unsupported model override {override!r}; known local families: "
+            f"{', '.join(sorted(_known))}")
     warn_if_unbounded(items=items, item_bytes=item_bytes)
     fits, reason, wanted = _score_fit(task, items, item_bytes)
     resident = local_tier.resolve()

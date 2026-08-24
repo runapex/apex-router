@@ -191,6 +191,16 @@ class TestRouteSelection(unittest.TestCase):
         with self.assertRaises(ValueError):
             model_router.select(override="qwen")
 
+    def test_override_accepts_a_configured_family(self):
+        # "ornith" is a committed family; overriding to it must not raise.
+        r = model_router.select(task="synthesis", override="ornith")
+        self.assertTrue(r.model)
+
+    def test_unknown_override_message_is_generic(self):
+        with self.assertRaises(ValueError) as cm:
+            model_router.select(override="definitely-not-a-family")
+        self.assertNotIn("Ornith endpoint is the only", str(cm.exception))
+
     def test_needs_switch_flags_a_non_resident_tier(self):
         with mock.patch.object(local_tier, "resolve",
                                return_value=local_tier.TIERS["small"]):
