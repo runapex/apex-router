@@ -65,11 +65,11 @@ _STATIC_TIER_MAP = {
 }
 
 
-def default_table_path() -> Path:
+def default_table_path(venue: str = "skill") -> Path:
     env = os.environ.get("APEX_ROUTE_TABLE")
     if env:
         return Path(env)
-    return Path.home() / ".apex-router" / "tables" / "route_table.skill.json"
+    return Path.home() / ".apex-router" / "tables" / f"route_table.{venue}.json"
 
 
 def static_default_map(registry: dict | None = None) -> dict[str, str]:
@@ -108,24 +108,39 @@ def _reader(table_path: Path):
 
 
 def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | None = None,
-                 registry: dict | None = None, embed_fn="auto") -> dict:
+                 registry: dict | None = None, embed_fn="auto", venue: str = "skill") -> dict:
     """Resolve a model for free-text `text`. Returns a JSON-able dict with the Decision
-    plus the explain payload (cell id, classification, why the table did/didn't win)."""
+    plus the explain payload (cell id, classification, why the table did/didn't win).
+
+    `venue` selects the static-default map + route table: 'skill' (Claude tiers, the
+    default) or a registry venue policy like 'codex' (Kimi venue: default k3 — its 1M
+    window is load-bearing at the venue's p50 346k context — with a documented downshift
+    to k2.7-code under the venue's ctx ceiling, ~2.9x cheaper)."""
     reg = model_registry.load() if registry is None else registry
     if embed_fn == "auto":
         embed_fn = _embed_fn()
-    path = table_path if table_path is not None else default_table_path()
+    path = table_path if table_path is not None else default_table_path(venue)
+    vpol = model_registry.venue(venue, registry=reg) if venue != "skill" else None
 
     def classifier(t, *, tools=None, sys_markers=None):
         return _classify.classify(t, tools=tools, sys_markers=sys_markers,
                                   embed_fn=embed_fn, exemplars=EXEMPLARS)
 
+    if vpol:
+        # Venue venue policy: one static default for every task class (the venue's model),
+        # with the downshift alternative carried in the explain payload.
+        vmodel = vpol.get("default_model") or safe_default(reg)
+        static_map = {tt: vmodel for tt in _STATIC_TIER_MAP}
+        vsafe = vmodel
+    else:
+        static_map = static_default_map(reg)
+        vsafe = safe_default(reg)
     decision = consumer.resolve(
         text, tools=tools, sys_markers=sys_markers,
         classifier=classifier,
-        static_default_map=static_default_map(reg),
+        static_default_map=static_map,
         route_reader=_reader(path),
-        safe_default=safe_default(reg),
+        safe_default=vsafe,
     )
     cell = f"task:{decision.task_type}" if decision.task_type else None
     promoted = None
@@ -139,7 +154,7 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
                     break
         except (OSError, ValueError):
             promoted = None
-    return {
+    out = {
         "model": decision.model,
         "task_type": decision.task_type,
         "confidence": decision.confidence,
@@ -148,4 +163,14 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
         "table": str(path),
         "table_cell": promoted,
         "embedding": "on" if embed_fn else "off",
+        "venue": venue,
     }
+    if vpol:
+        out["venue_policy"] = {
+            "default_model": vpol.get("default_model"),
+            "downshift_model": vpol.get("downshift_model"),
+            "downshift_ctx_ceiling": vpol.get("downshift_ctx_ceiling"),
+            "note": "context below the ceiling -> downshift_model is ~2.9x cheaper "
+                    "(measured); above it, default_model's 1M window is load-bearing",
+        }
+    return out

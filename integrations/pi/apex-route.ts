@@ -49,6 +49,8 @@ const APEX_BIN = process.env.APEX_ROUTER_BIN || join(homedir(), ".local", "bin",
 const DEFAULT_ROUTES: Record<string, Route> = {
 	local: { provider: "ollama", id: "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M" },
 	kimi: { provider: "moonshotai", id: "kimi-k2.6" },
+	// code-specialized Kimi (DECISION-kimi-codex-routing): ~3x cheaper than k3 for <=262k ctx
+	"kimi-code": { provider: "moonshotai", id: "kimi-k2.7-code" },
 	frontier: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
 	deep: { provider: "anthropic", id: "claude-opus-4-8", effort: "high" },
 };

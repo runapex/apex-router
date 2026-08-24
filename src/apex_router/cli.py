@@ -95,6 +95,8 @@ def main(argv=None) -> int:
         rp = sub.add_parser(name, help=helptext)
         rp.add_argument("--text", required=True, help="the task description to route")
         rp.add_argument("--json", action="store_true", help="machine-readable output")
+        rp.add_argument("--venue", default="skill",
+                        help="routing venue: skill (Claude tiers, default) | codex (Kimi policy) | …")
         rp.add_argument("--no-embed", action="store_true",
                         help="skip the ollama embedding refinement (request prior only)")
     # The measuring proxy engine (optional `[proxy]` extra). `serve`/`doctor`/`compile`/… are
@@ -158,7 +160,7 @@ def main(argv=None) -> int:
 
     if args.cmd in ("resolve", "route-explain"):
         from . import route_resolve
-        out = route_resolve.resolve_text(args.text,
+        out = route_resolve.resolve_text(args.text, venue=args.venue,
                                          embed_fn=None if args.no_embed else "auto")
         if args.json:
             print(json.dumps(out, indent=2, sort_keys=True))
@@ -184,6 +186,11 @@ def main(argv=None) -> int:
                 "static_default_invalid_class": "unusable task class → safe default",
             }
             print(f"why:        {reasons.get(out['source'], out['source'])}")
+            vp = out.get("venue_policy")
+            if vp:
+                print(f"venue:      {out['venue']} policy — default {vp['default_model']}; "
+                      f"ctx < {vp['downshift_ctx_ceiling']:,} → {vp['downshift_model']} "
+                      f"(~2.9x cheaper, measured)")
         return 0
 
     if args.cmd == "route-readout":

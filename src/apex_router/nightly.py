@@ -85,6 +85,54 @@ def _memory_dirs(env=None) -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
+def _codex_context_watch(now: float, *, days: float = 14,
+                         telemetry: Path | None = None) -> str:
+    """Per-request context distribution for codex-venue traffic vs the venue policy:
+    the % fitting under the downshift ceiling (k2.7-code-eligible, ~2.9x cheaper) and the
+    % approaching k3's 1M ceiling. This is the codex venue's cost lever — context size,
+    not cache hygiene (kimi cache writes are free; reads ~10%)."""
+    import json as _json
+    from . import model_registry
+    tel = telemetry or (Path.home() / ".apex" / "telemetry.jsonl")
+    vpol = model_registry.venue("codex") or {}
+    ceiling = vpol.get("downshift_ctx_ceiling", 250_000)
+    hard = vpol.get("ceiling_ctx", 1_000_000)
+    ctx: list[int] = []
+    try:
+        lo = now - days * 86400
+        with tel.open("r", errors="replace") as f:
+            for line in f:
+                try:
+                    r = _json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("ev") == "hb" or r.get("client") != "codex":
+                    continue
+                ts = r.get("ts")
+                if not isinstance(ts, (int, float)) or ts < lo:
+                    continue
+                u = (r.get("shadow") or {}).get("usage") or {}
+                total = (r.get("tokens_in") or u.get("input_tokens") or 0) + \
+                        (r.get("cache_read_tokens") or u.get("cache_read_input_tokens") or 0)
+                if total:
+                    ctx.append(total)
+    except OSError:
+        return "  (telemetry unavailable)"
+    if not ctx:
+        return "  (no codex-venue traffic in window)"
+    ctx.sort()
+    n = len(ctx)
+    fits = sum(1 for c in ctx if c <= ceiling)
+    near_hard = sum(1 for c in ctx if c > hard * 0.9)
+    p50, p95 = ctx[n // 2], ctx[min(n - 1, int(n * 0.95))]
+    return (f"```\nrequests={n}  ctx p50={p50:,} p95={p95:,} max={ctx[-1]:,}\n"
+            f"fits downshift (<={ceiling:,} → {vpol.get('downshift_model', '?')}): "
+            f"{fits}/{n} ({fits / n:.0%})  — the 2.9x-cheaper tier only serves these\n"
+            f"near 1M ceiling: {near_hard}/{n}\n"
+            f"lever: hand off / compact codex sessions under {ceiling:,} ctx to unlock "
+            f"{vpol.get('downshift_model', 'the downshift model')}\n```")
+
+
 def run(*, now: float | None = None) -> str:
     """Run all nightly steps; return the Markdown digest section. Never raises."""
     now = time.time() if now is None else now
@@ -108,6 +156,9 @@ def run(*, now: float | None = None) -> str:
         counts = " ".join(line for line in out.splitlines()
                           if line.startswith(("added:", "skipped:", "removed:")))
         parts.append(f"  {d.parent.name}/{d.name}: {counts or first}")
+
+    parts.append("### codex venue context watch (DECISION-kimi-codex-routing)")
+    parts.append(_codex_context_watch(now))
 
     parts.append("### judge drift probe")
     if not (os.environ.get("CODEQA_JUDGE_BASE") or os.environ.get("CHAIN_JUDGE_URL")):

@@ -42,12 +42,37 @@ DEFAULTS: dict = {
     # "local" is special: source=ornith.env — resolved from the ACTIVE tier at read time.
     "pi_families": {
         "kimi": {"provider": "moonshotai", "id": "kimi-k2.6"},
+        "kimi-code": {"provider": "moonshotai", "id": "kimi-k2.7-code"},
         "frontier": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
         "deep": {"provider": "anthropic", "tier": "opus", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
     # /learn pipeline stages resolve through tiers too.
     "learn": {"provider": "anthropic", "validate_tier": "sonnet", "explain_tier": "opus"},
+    # Venue routing policies (DECISION-kimi-codex-routing, measured 2026-08-24):
+    # the codex venue's workload runs at p50 346k context (73.8% of requests >250k),
+    # so the 1M-window kimi-k3 is the only Kimi model that fits it AS USED — k3's window
+    # is load-bearing, and at list price k3 == sonnet-5 ($3/$0.3-read/$15-out) with FREE
+    # cache writes. The cost lever is CONTEXT REDUCTION, not model choice: under
+    # `downshift_ctx_ceiling`, `downshift_model` (k2.7-code, 262k window) is ~2.9x cheaper
+    # and code-specialized. Turbo/highspeed variants are never defaults (2x price,
+    # latency-only benefit).
+    "venues": {
+        "codex": {
+            "provider": "moonshotai",
+            "default_model": "kimi-k3",
+            "downshift_model": "kimi-k2.7-code",
+            "downshift_ctx_ceiling": 250_000,
+            "ceiling_ctx": 1_000_000,
+        },
+        "kimi": {
+            "provider": "moonshotai",
+            "default_model": "kimi-k2.6",
+            "code_model": "kimi-k2.7-code",
+            "deep_ctx_model": "kimi-k3",
+            "deep_ctx_floor": 250_000,
+        },
+    },
 }
 
 
@@ -132,6 +157,13 @@ def families(*, registry: dict | None = None) -> dict[str, dict]:
             entry["effort"] = spec["effort"]
         out[name] = entry
     return out
+
+
+def venue(name: str, *, registry: dict | None = None) -> dict | None:
+    """A venue routing policy (e.g. 'codex', 'kimi'), or None if not configured."""
+    reg = DEFAULTS if registry is None else registry
+    v = (reg.get("venues") or {}).get(name)
+    return dict(v) if isinstance(v, dict) else None
 
 
 def learn(*, registry: dict | None = None) -> dict:

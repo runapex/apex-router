@@ -97,3 +97,39 @@ class TestResolveText(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVenueResolution(unittest.TestCase):
+    VENUE_REG = {
+        "tiers": {"haiku": "H", "sonnet": "S", "opus": "O"},
+        "pi_families": {},
+        "learn": {},
+        "venues": {"codex": {"provider": "moonshotai", "default_model": "kimi-k3",
+                             "downshift_model": "kimi-k2.7-code",
+                             "downshift_ctx_ceiling": 250_000}},
+    }
+
+    def test_codex_venue_defaults_to_venue_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            out = route_resolve.resolve_text("port the config", venue="codex",
+                                             table_path=tp, registry=self.VENUE_REG,
+                                             embed_fn=None)
+            self.assertEqual(out["model"], "kimi-k3")          # venue default, not a Claude tier
+            self.assertEqual(out["venue"], "codex")
+            self.assertEqual(out["venue_policy"]["downshift_model"], "kimi-k2.7-code")
+
+    def test_skill_venue_unaffected_by_venue_policy(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            out = route_resolve.resolve_text("x", venue="skill", table_path=tp,
+                                             registry=self.VENUE_REG, embed_fn=None)
+            self.assertEqual(out["model"], "O")                # opus tier safe default
+            self.assertNotIn("venue_policy", out)
+
+    def test_unknown_venue_falls_back_to_skill_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            out = route_resolve.resolve_text("x", venue="atlantis", table_path=tp,
+                                             registry=self.VENUE_REG, embed_fn=None)
+            self.assertEqual(out["model"], "O")
