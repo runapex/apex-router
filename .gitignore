@@ -51,3 +51,6 @@ handoff_threshold.json
 memory_index.db
 judge_probe_baseline.json
 memory_dirs.txt
+
+# machine-local agent ops notes (deliberately not published)
+AGENTS.md
