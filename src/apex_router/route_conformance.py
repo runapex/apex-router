@@ -73,6 +73,13 @@ def expected_models(tier, *, registry=None) -> set:
         return set()
 
 
+def log_agent_dispatch(task_type, requested_tier, *, log_path=None, note="") -> bool:
+    """Log a Claude Code Agent dispatch. The harness does NOT expose the subagent's resolved model,
+    so this is INTENT ONLY (resolved_model=None, matched=None) — read_conformance keeps it out of the
+    drift denominator. Honest by construction: we never claim a conformance verdict we can't observe."""
+    return log_conformance("agent", task_type, requested_tier, log_path=log_path, note=note)
+
+
 def log_resolve_conformance(task_type, requested_tier, resolved_model, *,
                             log_path=None, note="") -> bool:
     """Log a resolve()-surface conformance row. matched = resolved_model ∈ expected_models(tier);

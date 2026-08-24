@@ -188,3 +188,14 @@ class TestRecordWritePath(unittest.TestCase):
 
     def test_record_bad_json_is_noop_exit_zero(self):
         self.assertEqual(rc.main(["--record", "{bad json"]), 0)   # fail-open, never raises
+
+
+class TestAgentHelper(unittest.TestCase):
+    def test_agent_dispatch_is_intent_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_agent_dispatch("explore", "sonnet", log_path=p))
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertEqual(row["surface"], "agent")
+            self.assertIsNone(row["resolved_model"])
+            self.assertIsNone(row["matched"])
