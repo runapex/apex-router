@@ -126,8 +126,8 @@ ORNITH_API_MODEL=mymodel:8b-q4
 ```
 
 Switch via `apex-router ornith-tier --family mymodel small` (writes `ornith.env`
-and restarts the four launchd consumers). The launchd units read `ornith.env` at
-startup — no plist edits required.
+and restarts the Ornith launchd consumers (`com.ornith.worker`, `com.ornith.overnight`)).
+Those units read `ornith.env` at startup — no plist edits required.
 
 ### Beyond switching
 

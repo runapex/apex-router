@@ -82,8 +82,8 @@ points at the real engine.
 ## Switching the active local model family
 
 `apex-router ornith-tier --family <name> <tier>` writes `~/.apex-router/ornith.env`
-(`LOCAL_FAMILY`, `ORNITH_TIER`, `ORNITH_API_MODEL`) and restarts the four launchd
-consumers (drain worker, nightly cycle, codeqa watchers). The consumers read
+(`LOCAL_FAMILY`, `ORNITH_TIER`, `ORNITH_API_MODEL`) and restarts the Ornith launchd
+consumers it manages (`com.ornith.worker`, `com.ornith.overnight`). They read
 `ornith.env` at startup — no plist edits required.
 
 The declared families live in `~/.apex-router/models.json` under `local_families`.
