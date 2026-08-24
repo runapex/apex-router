@@ -56,7 +56,7 @@ surface; use the `resolve` surface for per-task-type conformance.
 surface  task_type              n  obs   drift
 resolve  synthesis              8    8    0.00
 resolve  debugging              4    4    0.25
-pi       review                12   12    0.00
+pi       cue                   12   12    0.00
 agent    explore                5    -  unobservable
 agent    synthesis              3    -  unobservable
 ```
@@ -203,7 +203,7 @@ The Pi extension calls the CLI's hidden `--record` path to avoid importing the
 Python package directly:
 
 ```bash
-apex-router route-check --record '{"surface":"pi","task_type":"review","requested_tier":"sonnet","resolved_model":"claude-sonnet-4-5","matched":true}'
+apex-router route-check --record '{"surface":"pi","task_type":"cue","requested_tier":"deep","resolved_model":"claude-opus-4-8","matched":true}'
 ```
 
 Fail-open: malformed JSON or a bad dict is a no-op; `route-check` exits 0.

@@ -188,7 +188,14 @@ class TestRouteCheckReadout(unittest.TestCase):
                 buf2 = io.StringIO()
                 with contextlib.redirect_stdout(buf2):
                     rc.main([])
-                self.assertIn("unobservable", buf2.getvalue())
+                human = buf2.getvalue()
+                # the agent (intent-only) surface is marked unobservable...
+                self.assertIn("unobservable", human)
+                # ...while the observed resolve row shows a real numeric drift, NOT unobservable
+                # (matched=True → observed=1, mismatches=0 → drift 0.00).
+                resolve_line = next(l for l in human.splitlines() if l.startswith("resolve"))
+                self.assertIn("0.00", resolve_line)
+                self.assertNotIn("unobservable", resolve_line)
             finally:
                 del os.environ["APEX_CONFORMANCE_LOG"]
 
