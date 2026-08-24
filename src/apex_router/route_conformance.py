@@ -100,7 +100,7 @@ def read_conformance(*, log_path=None) -> dict:
     p = Path(log_path) if log_path is not None else default_conformance_path()
     try:
         text = p.read_text()
-    except OSError:
+    except Exception:
         return agg
     for line in text.splitlines():
         if line.strip():

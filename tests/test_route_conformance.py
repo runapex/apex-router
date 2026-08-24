@@ -38,6 +38,7 @@ class TestLogConformance(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "c.jsonl"
             self.assertFalse(rc.log_conformance("resolve", 123, "opus", log_path=p))
+            self.assertFalse(p.exists())
 
     def test_nan_ts_writes_nothing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -94,6 +95,13 @@ class TestReadConformance(unittest.TestCase):
 
     def test_empty_or_missing_is_empty_dict(self):
         self.assertEqual(rc.read_conformance(log_path=Path("/nonexistent/c.jsonl")), {})
+
+    def test_invalid_utf8_log_is_empty_dict(self):
+        # a log with undecodable bytes raises UnicodeDecodeError (not OSError) — must not propagate
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            p.write_bytes(b'\xff\xfe not valid utf-8 \x80\x81\n')
+            self.assertEqual(rc.read_conformance(log_path=p), {})
 
 
 class TestExpectedModels(unittest.TestCase):
