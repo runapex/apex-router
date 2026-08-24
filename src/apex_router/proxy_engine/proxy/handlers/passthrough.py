@@ -72,7 +72,8 @@ def _requested_model(body: bytes) -> str | None:
 
 
 async def handle(
-    request: Request, upstream: Upstream, telemetry: TelemetryWriter, policy=None
+    request: Request, upstream: Upstream, telemetry: TelemetryWriter, policy=None,
+    store=None,
 ) -> Response:
     t0 = time.perf_counter()
     client_kind = detect_client(request)
@@ -84,6 +85,25 @@ async def handle(
 
     body = await request.body()  # raw inbound bytes — forwarded unchanged in M0
     event.model_requested = _requested_model(body)  # body `model` key (fail-open)
+
+    # §4 matcher wiring: content-derived session identity. The client header (when present)
+    # stays the telemetry session_id — downstream joins (cache-handoff-nudge) key on it —
+    # while header-less traffic (Codex, header-less clients) gets a stable matcher-derived
+    # id instead of null. matcher_event is recorded either way. Fail-open inside: any doubt
+    # leaves session_id/matcher_event untouched and never affects the forward.
+    if store is not None:
+        from apex_router.proxy_engine.session.wire import identify_into_store
+        ident = identify_into_store(
+            body=body, client=client_kind, wire_hint=event.session_id,
+            agent_id=event.agent_id, store=store,
+            epoch_id=policy.policy_epoch if policy is not None else "m0",
+        )
+        if ident is not None:
+            derived_sid, turn, mev = ident
+            event.turn = turn
+            event.matcher_event = mev
+            if event.session_id is None:
+                event.session_id = derived_sid
     event.tokens_in = 0  # token accounting lands in M3 (needs body parse); M0 stays byte-pure
 
     # Composition side-read (R1's regressor X): the SAME byte-only shadow compute the shadow handler

@@ -15,10 +15,12 @@ from typing import Literal
 
 BustCause = Literal["none", "ttl", "transform", "client_edit", "frontier_rerender", "unknown"]
 GuardAction = Literal["none", "fallback", "invalidate"]
-# Matcher outcome per request. "unwired" = the session matcher is not yet on the shadow path (it
+# Matcher outcome per request. "unwired" = the matcher was not consulted for this row (no store
+# on the handler path, or the fail-open guard dropped identification); any other value is a real
+# §4 match event from the wired request path (session/wire.py). It documents the pre-wiring era.
 # runs in the M0-derived identity layer, not decide()); the field exists so the TUI schema is total
-# and shows "matcher not yet live" rather than a missing key. Real values land when the matcher
-# wires into the request path (a later step, not Step 2 field-completeness).
+# and shows "not identified" rather than a missing key. Real events (extend/new/client_edit/
+# compaction) have landed since session/wire.py joined both handlers.
 MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction"]
 
 # TELEMETRY_SCHEMA_VERSION — every emitted line carries this so a consumer can detect drift and, on

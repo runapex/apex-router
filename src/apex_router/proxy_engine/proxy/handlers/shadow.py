@@ -41,6 +41,7 @@ async def handle(
     upstream: Upstream,
     telemetry: TelemetryWriter,
     policy: PolicyVersion | None,
+    store=None,
 ) -> Response:
     t0 = time.perf_counter()
     client_kind = detect_client(request)
@@ -59,6 +60,23 @@ async def handle(
     # (a routing decision IS requested≠resolved; data not logged now is a study you can't run).
     # Read-only over a copy: the bytes forwarded upstream are still the untouched original.
     event.model_requested = _requested_model(body)
+
+    # §4 matcher wiring (same contract as the passthrough handler — telemetry contract: no
+    # field is handler-exclusive): content-derived identity for header-less traffic; the
+    # client header stays the telemetry session_id when present. Fail-open inside.
+    if store is not None:
+        from apex_router.proxy_engine.session.wire import identify_into_store
+        ident = identify_into_store(
+            body=body, client=client_kind, wire_hint=event.session_id,
+            agent_id=event.agent_id, store=store,
+            epoch_id=policy.policy_epoch if policy is not None else "m0",
+        )
+        if ident is not None:
+            derived_sid, turn, mev = ident
+            event.turn = turn
+            event.matcher_event = mev
+            if event.session_id is None:
+                event.session_id = derived_sid
 
     # (1) Shadow compute: full pipeline decision over a COPY of the body. Byte-only, plane-clean,
     # fail-open — a parse/decide failure drops the prediction, never the request.

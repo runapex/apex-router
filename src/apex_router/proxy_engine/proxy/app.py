@@ -145,10 +145,12 @@ def create_app(cfg: Config | None = None) -> Starlette:
         # Shadow mode: full pipeline + usage capture, passthrough emission. Otherwise pure M0.
         if cfg.shadow_mode:
             return await shadow_handler.handle(
-                request, state["upstream"], state["telemetry"], state.get("policy")
+                request, state["upstream"], state["telemetry"], state.get("policy"),
+                store=state["store"],
             )
         return await passthrough.handle(
-            request, state["upstream"], state["telemetry"], state.get("policy")
+            request, state["upstream"], state["telemetry"], state.get("policy"),
+            store=state["store"],
         )
 
     routes = [
