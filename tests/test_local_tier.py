@@ -199,7 +199,19 @@ class TestRouteSelection(unittest.TestCase):
     def test_unknown_override_message_is_generic(self):
         with self.assertRaises(ValueError) as cm:
             model_router.select(override="definitely-not-a-family")
-        self.assertNotIn("Ornith endpoint is the only", str(cm.exception))
+        # Positive lock on the GENERIC message — fails against the old Ornith-only string.
+        self.assertIn("known local families:", str(cm.exception))
+
+    def test_override_accepts_overlay_family(self):
+        # A family present only via a (mocked) loaded overlay is accepted — this exercises the
+        # DYNAMIC lookup, which the hardcoded-tuple code could not satisfy. Keep the REAL ornith
+        # tiers in the mocked dict so resolve() (which reads families[DEFAULT_FAMILY][DEFAULT_TIER])
+        # still works; add the overlay-only family as a new KEY.
+        fams = dict(local_tier.load_families())
+        fams["synthetic-local"] = {}
+        with mock.patch.object(local_tier, "load_families", return_value=fams):
+            r = model_router.select(task="synthesis", override="synthetic-local")
+            self.assertTrue(r.model)
 
     def test_needs_switch_flags_a_non_resident_tier(self):
         with mock.patch.object(local_tier, "resolve",
