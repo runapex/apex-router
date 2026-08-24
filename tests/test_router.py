@@ -1,8 +1,10 @@
 import sys, unittest
 from pathlib import Path
+from unittest import mock
 ML = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ML))
 import apex_router.ornith.model_router as r
+from apex_router.ornith import local_tier
 
 
 class TestRouter(unittest.TestCase):
@@ -20,8 +22,13 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(r.select(task="x", override="ornith").backend, "ornith-http")
 
     def test_select_qwen_override_rejected(self):
-        with self.assertRaises(ValueError):
-            r.select(task="x", override="qwen")
+        # Isolate from the machine-local families overlay: r.select() builds its known-family set
+        # via local_tier.load_families(), which reads ~/.apex-router/models.json by default. Patch
+        # it to the committed-only set so the override is genuinely not a known family.
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            with self.assertRaises(ValueError):
+                r.select(task="x", override="qwen")
 
     def test_envelope_constants_present(self):
         self.assertEqual(r.MAX_ITEM_BYTES, 100_000)

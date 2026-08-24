@@ -188,8 +188,13 @@ class TestRouteSelection(unittest.TestCase):
         self.assertFalse(r.fits)
 
     def test_qwen_override_still_rejected(self):
-        with self.assertRaises(ValueError):
-            model_router.select(override="qwen")
+        # Isolate from the machine-local families overlay so the assertion holds regardless of
+        # what the developer's ~/.apex-router/models.json declares: patch load_families to the
+        # committed-only set, so the override is genuinely not a known family.
+        with mock.patch.object(local_tier, "load_families",
+                               return_value={"ornith": dict(local_tier.FAMILIES["ornith"])}):
+            with self.assertRaises(ValueError):
+                model_router.select(override="qwen")
 
     def test_override_accepts_a_configured_family(self):
         # "ornith" is a committed family; overriding to it must not raise.
