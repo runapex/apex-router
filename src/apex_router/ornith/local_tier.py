@@ -188,15 +188,27 @@ def fits(tier: Tier, total_gb: float | None = None) -> tuple[bool, str]:
     return True, f"~{tier.weights_gb:.1f} GB of {total:.0f} GB, {free_after:.1f} GB free after load"
 
 
+def family_of(tier: Tier) -> str:
+    """Which family a Tier belongs to, derived from the merged families by matching api_model.
+    A tier that maps to no known family (e.g. a synthesized 'pinned' Tier) is reported under the
+    default family — the state file always names a concrete family."""
+    for fam, tiers in load_families().items():
+        if any(t.api_model == tier.api_model for t in tiers.values()):
+            return fam
+    return DEFAULT_FAMILY
+
+
 def client_env(tier: Tier | None = None, url: str | None = None) -> dict[str, str]:
     """The ORNITH_* environment that points ornith_client at `tier`.
 
     These are exactly the three knobs ornith_client binds at import: the endpoint, the API model id
-    (which ollama REQUIRES — the MLX server let clients omit it), and the thinking style.
+    (which ollama REQUIRES — the MLX server let clients omit it), and the thinking style. It also
+    records LOCAL_FAMILY so resolve() can round-trip the family, not just the tier.
     """
     t = resolve() if tier is None else tier
     return {
         "ORNITH_TIER": t.name,
+        "LOCAL_FAMILY": family_of(t),
         "ORNITH_URL": url or os.environ.get("ORNITH_URL") or DEFAULT_URL,
         "ORNITH_API_MODEL": t.api_model,
         "ORNITH_THINKING_STYLE": THINKING_STYLE,

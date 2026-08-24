@@ -118,8 +118,11 @@ def main(argv=None) -> int:
     # Local-model tier: which Ornith size is resident. Bare `ornith-tier` reports; a positional
     # name switches. Switching is never implicit — it costs a multi-GB model load.
     tier_p = sub.add_parser("ornith-tier",
-                            help="show or switch the resident local Ornith tier (small|large)")
+                            help="show or switch the resident local model (family/tier); "
+                                 "default family is ornith")
     tier_p.add_argument("tier", nargs="?", help="tier to switch to (omit to report status)")
+    tier_p.add_argument("--family",
+                        help="local family to switch to (default: the active/committed family)")
     tier_p.add_argument("--json", action="store_true", help="machine-readable status")
     tier_p.add_argument("--unload", action="store_true",
                         help="unload every resident tier and exit (frees RAM; changes no config)")
@@ -275,7 +278,8 @@ def main(argv=None) -> int:
             print(f"unloaded: {', '.join(freed) if freed else 'nothing resident'}")
             return 0
         if args.tier:
-            return tier_switch.switch(args.tier, warm_after=not args.no_warm,
+            return tier_switch.switch(args.tier, family=args.family,
+                                      warm_after=not args.no_warm,
                                       reload_units=not args.no_reload)
         st = tier_switch.status()
         if args.json:

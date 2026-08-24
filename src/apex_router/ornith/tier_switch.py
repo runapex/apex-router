@@ -89,7 +89,8 @@ def unload_all_tiers() -> list[str]:
     def _forms(m: str) -> set[str]:
         return {m, m[: -len(":latest")]} if m.endswith(":latest") else {m, f"{m}:latest"}
 
-    tier_models = {f for t in local_tier.TIERS.values() for f in _forms(t.api_model)}
+    tier_models = {f for tiers in local_tier.load_families().values()
+                   for t in tiers.values() for f in _forms(t.api_model)}
     freed = []
     for m in resident_models():
         if _forms(m) & tier_models and unload(m):
@@ -155,15 +156,21 @@ def reload_consumers(units: tuple[str, ...] = CONSUMER_UNITS) -> dict[str, str]:
     return out
 
 
-def switch(name: str, *, warm_after: bool = True, reload_units: bool = True,
-           state_path: Path | None = None) -> int:
-    """Perform the full switch. Returns a process exit code and prints progress to stdout."""
+def switch(name: str, *, family: str | None = None, warm_after: bool = True,
+           reload_units: bool = True, state_path: Path | None = None) -> int:
+    """Perform the full switch. Returns a process exit code and prints progress to stdout.
+
+    `family` selects which local family the tier belongs to (default: the committed default
+    family), resolved through the merged families so machine-local overlays are switchable too."""
     key = name.strip().lower()
-    if key not in local_tier.TIERS:
-        print(f"unknown tier {name!r}; known: {', '.join(sorted(local_tier.TIERS))}",
-              file=sys.stderr)
+    fams = local_tier.load_families()
+    fam = (family or local_tier.DEFAULT_FAMILY).strip().lower()
+    tiers = fams.get(fam)
+    if not tiers or key not in tiers:
+        print(f"unknown tier {name!r} in family {fam!r} (have: "
+              f"{', '.join(sorted(tiers or {}))})", file=sys.stderr)
         return 2
-    tier = local_tier.TIERS[key]
+    tier = tiers[key]
 
     ok, why = local_tier.fits(tier)
     print(f"tier {tier.name}: {tier.api_model}\n  capacity: {why}")

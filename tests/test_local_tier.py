@@ -147,6 +147,17 @@ class TestClientEnv(unittest.TestCase):
             p.write_text(local_tier.render_state(local_tier.TIERS["large"]))
             self.assertEqual(local_tier.resolve(env={}, state_file=p).name, "large")
 
+    def test_client_env_includes_family(self):
+        env = local_tier.client_env(local_tier.FAMILIES["ornith"]["large"])
+        self.assertEqual(env["LOCAL_FAMILY"], "ornith")
+
+    def test_render_state_roundtrips_family_and_tier(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "ornith.env"
+            p.write_text(local_tier.render_state(local_tier.FAMILIES["ornith"]["large"]))
+            t = local_tier.resolve(env={}, state_file=p, overlay_path=Path("/nonexistent"))
+            self.assertEqual(t.name, "large")
+
 
 class TestRouteSelection(unittest.TestCase):
     def test_route_carries_explicit_model(self):
@@ -207,6 +218,13 @@ class TestUnloadMatching(unittest.TestCase):
             self.assertEqual(tier_switch.unload_all_tiers(), [])
         un.assert_not_called()
 
+    def test_unload_scope_covers_all_family_tiers(self):
+        ids = [t.api_model for tiers in local_tier.load_families().values() for t in tiers.values()]
+        with mock.patch.object(tier_switch, "resident_models", side_effect=[[ids[0]], []]), \
+             mock.patch.object(tier_switch, "unload", return_value=True) as un:
+            tier_switch.unload_all_tiers()
+        un.assert_called_once()
+
 
 class TestSwitchGuards(unittest.TestCase):
     def test_unknown_tier_exits_2(self):
@@ -256,6 +274,22 @@ class TestSwitchGuards(unittest.TestCase):
             self.assertTrue(p.exists())
             self.assertFalse(list(p.parent.glob("*.tmp")))
             self.assertEqual(local_tier.resolve(env={}, state_file=p).name, "large")
+
+    def test_switch_accepts_family_and_tier(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(local_tier, "total_ram_gb", return_value=36.0), \
+             mock.patch.object(tier_switch, "pulled_models",
+                               return_value=[local_tier.FAMILIES["ornith"]["large"].api_model]), \
+             mock.patch.object(tier_switch, "unload_all_tiers", return_value=[]), \
+             mock.patch.object(tier_switch, "warm", return_value=(True, "ok")), \
+             mock.patch.object(tier_switch, "reload_consumers", return_value={}):
+            rc = tier_switch.switch("large", family="ornith",
+                                    state_path=Path(d) / "ornith.env")
+            # resolve INSIDE the with — the state file lives in the TemporaryDirectory, which is
+            # removed on exit (matching the sibling test_state_write_is_atomic_and_parses).
+            self.assertEqual(rc, 0)
+            self.assertEqual(local_tier.resolve(env={}, state_file=Path(d) / "ornith.env",
+                                                overlay_path=Path("/nonexistent")).name, "large")
 
 
 class TestHealthProbe(unittest.TestCase):
