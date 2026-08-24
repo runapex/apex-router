@@ -64,10 +64,15 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
 
 def expected_models(tier, *, registry=None) -> set:
     """Allowed model id(s) for a frontier tier name, from model_registry. Unknown tier → empty set
-    (the emitter then logs matched=None rather than a false mismatch)."""
+    (the emitter then logs matched=None rather than a false mismatch).
+
+    When no registry is supplied, load the ACTIVE registry (DEFAULTS + the user's models.json
+    overlay) — the same registry resolve_text routes with. Using the hardcoded DEFAULTS instead
+    would falsely flag an overlay-overridden tier id as drift (P1-a)."""
     try:
         from . import model_registry
-        m = model_registry.tier_model(tier, registry=registry)
+        reg = model_registry.load() if registry is None else registry
+        m = model_registry.tier_model(tier, registry=reg)
         return {m} if isinstance(m, str) and m else set()
     except Exception:
         return set()
@@ -98,6 +103,10 @@ def _accumulate(agg: dict, line: str) -> None:
     try:
         rec = json.loads(line)
     except Exception:
+        return
+    # A valid non-object JSON (null / [] / "str") parses fine but has no .get — guard the type
+    # so read_conformance can never raise on it (fail-safe invariant, P2-c).
+    if not isinstance(rec, dict):
         return
     surface = rec.get("surface")
     task_type = rec.get("task_type")

@@ -1,4 +1,5 @@
 import json, os, stat, tempfile, unittest
+from unittest import mock
 from pathlib import Path
 from apex_router import route_conformance as rc
 
@@ -93,6 +94,19 @@ class TestReadConformance(unittest.TestCase):
             agg = rc.read_conformance(log_path=p)
             self.assertEqual(agg["resolve\tt"]["observed"], 1)
 
+    def test_valid_nonobject_json_lines_do_not_raise(self):
+        # P2-c: null / [] / "string" are valid JSON but have no .get — read_conformance
+        # must skip them, never raise (fail-safe invariant), and still aggregate the good row.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            Path(p).write_text(
+                'null\n[]\n"astring"\n'
+                '{"surface":"resolve","task_type":"t","requested_tier":"opus",'
+                '"matched":true,"ts":1}\n')
+            agg = rc.read_conformance(log_path=p)
+            self.assertEqual(agg["resolve\tt"]["observed"], 1)
+            self.assertEqual(agg["resolve\tt"]["n"], 1)
+
     def test_empty_or_missing_is_empty_dict(self):
         self.assertEqual(rc.read_conformance(log_path=Path("/nonexistent/c.jsonl")), {})
 
@@ -111,6 +125,21 @@ class TestExpectedModels(unittest.TestCase):
 
     def test_unknown_tier_returns_empty_set(self):
         self.assertEqual(rc.expected_models("nope"), set())
+
+    def test_expected_models_uses_active_overlay_not_defaults(self):
+        # P1-a: an overlay that overrides a tier id must be reflected in expected_models,
+        # else an overlay-overridden tier is falsely flagged as drift by the resolve emitter.
+        with tempfile.TemporaryDirectory() as d:
+            overlay = Path(d) / "models.json"
+            overlay.write_text(json.dumps({"tiers": {"sonnet": "my-custom-sonnet-id"}}))
+            with mock.patch.dict(os.environ, {"APEX_MODEL_REGISTRY": str(overlay)}):
+                self.assertEqual(rc.expected_models("sonnet"), {"my-custom-sonnet-id"})
+                # and the resolve emitter logs matched=True for the custom id (not drift):
+                p = Path(d) / "c.jsonl"
+                rc.log_resolve_conformance("generate", "sonnet", "my-custom-sonnet-id",
+                                           log_path=p)
+                row = json.loads(Path(p).read_text().splitlines()[0])
+                self.assertTrue(row["matched"])
 
 
 class TestResolveEmitter(unittest.TestCase):

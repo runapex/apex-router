@@ -167,22 +167,24 @@ export default function (pi: ExtensionAPI) {
 		// gap possible). A frontier family pins an explicit id, so the resolved model id
 		// SHOULD equal route.id; record the row for coverage and warn if it ever drifts.
 		const resolvedId: string = (model as any)?.id ?? route.id;
-		if (family === "local") {
-			recordConformance({ surface: "pi", task_type: "cue", requested_tier: "local",
-				resolved_model: resolvedId, matched: true });
-		} else {
-			const matched = resolvedId === route.id;
-			if (!matched) {
-				ctx.ui.notify(
-					`apex-route: >>${family} resolved ${resolvedId}, expected ${route.id} (tier drift)`,
-					"warning");
-			}
-			recordConformance({ surface: "pi", task_type: "cue", requested_tier: family,
-				resolved_model: resolvedId, matched });
+		const matched = family === "local" ? true : resolvedId === route.id;
+		if (family !== "local" && !matched) {
+			ctx.ui.notify(
+				`apex-route: >>${family} resolved ${resolvedId}, expected ${route.id} (tier drift)`,
+				"warning");
 		}
 		const ok = await pi.setModel(model);
-		if (!ok) ctx.ui.notify(`apex-route: no API key for ${route.provider}/${route.id}`, "error");
-		return ok;
+		if (!ok) {
+			ctx.ui.notify(`apex-route: no API key for ${route.provider}/${route.id}`, "error");
+			return false;
+		}
+		// Record the conformance row ONLY after a REAL dispatch: a switch that fails (no API
+		// key) or a bare sticky cue that never dispatches must not inflate the observation
+		// count with a "conformant dispatch" that did not happen (P2-e).
+		recordConformance({ surface: "pi", task_type: "cue",
+			requested_tier: family === "local" ? "local" : family,
+			resolved_model: resolvedId, matched });
+		return true;
 	}
 
 	/** >>auto: let the adaptive core pick. Returns the family-less switch success. */

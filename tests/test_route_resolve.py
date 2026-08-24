@@ -4,8 +4,10 @@ Hermetic: embedding is disabled (embed_fn=None) or stubbed; the route table is a
 the registry is injected. No ollama, no network, no home-dir state.
 """
 import json
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from apex_router import route_resolve
@@ -154,3 +156,62 @@ class TestVenueResolution(unittest.TestCase):
             out = route_resolve.resolve_text("x", venue="atlantis", table_path=tp,
                                              registry=self.VENUE_REG, embed_fn=None)
             self.assertEqual(out["model"], "O")
+
+
+class TestConformanceEmitGate(unittest.TestCase):
+    """P1-b: the tier-conformance emitter fires ONLY for static skill resolutions. A venue
+    route (kimi/codex) or a promoted route-table cell INTENTIONALLY returns a model off the
+    static tier map, so emitting a conformance row for it would be false drift."""
+
+    VENUE_REG = {
+        "tiers": {"haiku": "H", "sonnet": "S", "opus": "O"},
+        "pi_families": {},
+        "learn": {},
+        "venues": {"codex": {"provider": "moonshotai", "default_model": "kimi-k3",
+                             "downshift_model": "kimi-k2.7-code",
+                             "downshift_ctx_ceiling": 250_000}},
+    }
+
+    def _rows(self, log_path):
+        if not log_path.exists():
+            return []
+        return [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
+
+    def test_venue_route_emits_no_conformance_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            log = Path(d) / "c.jsonl"
+            with mock.patch.dict(os.environ, {"APEX_CONFORMANCE_LOG": str(log)}):
+                out = route_resolve.resolve_text("port the config", venue="codex",
+                                                 table_path=tp, registry=self.VENUE_REG,
+                                                 embed_fn=None)
+            self.assertEqual(out["model"], "kimi-k2.7-code")  # venue route (off static map)
+            self.assertEqual(self._rows(log), [])             # NO conformance row written
+
+    def test_promoted_route_table_cell_emits_no_conformance_row(self):
+        cells = [{"cell_id": "task:refactor", "parent_task_type": "S",
+                  "promoted": True, "chosen_model": "H",
+                  "ranking": [{"model": "H", "quality": 0.9, "quality_ci": [0.8, 0.99],
+                               "cost_usd": 0.01, "latency": 1.0, "provenance": "objective",
+                               "n": 50}]}]
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), cells)
+            log = Path(d) / "c.jsonl"
+            with mock.patch.dict(os.environ, {"APEX_CONFORMANCE_LOG": str(log)}):
+                out = route_resolve.resolve_text("x", sys_markers=["refactor"],
+                                                 table_path=tp, registry=REG, embed_fn=None)
+            self.assertEqual(out["source"], "route_table")   # promoted cell (off static map)
+            self.assertEqual(self._rows(log), [])            # NO conformance row written
+
+    def test_static_skill_resolution_still_emits_a_row(self):
+        # the legitimate case must still be observed: a static skill resolve logs one row.
+        with tempfile.TemporaryDirectory() as d:
+            tp = _table(Path(d), [])
+            log = Path(d) / "c.jsonl"
+            with mock.patch.dict(os.environ, {"APEX_CONFORMANCE_LOG": str(log)}):
+                out = route_resolve.resolve_text("hello", table_path=tp, registry=REG,
+                                                 embed_fn=None)
+            rows = self._rows(log)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["surface"], "resolve")
+            self.assertEqual(rows[0]["task_type"], out["task_type"])

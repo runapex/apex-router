@@ -41,6 +41,13 @@ extension delivers that. `>>local` rows always carry `matched=True` by
 definition — the active local family IS the resident model, so no expected-set
 lookup is performed and a local cue can never register drift.
 
+### Pi cue rows are bucketed under `task_type="cue"`
+
+A bare `>><family>` cue is an explicit family switch, not a classified task, so every Pi
+conformance row is logged under `task_type="cue"` (there is no per-task classification to
+record) — which means `route-check` cannot give a per-task drift breakdown for the Pi
+surface; use the `resolve` surface for per-task-type conformance.
+
 ---
 
 ## Reading `apex-router route-check`

@@ -220,7 +220,13 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
         from .route_conformance import log_resolve_conformance
         _tt = out.get("task_type")
         _tier = _STATIC_TIER_MAP.get(_tt)
-        if _tier:
+        # Only STATIC skill resolutions are tier-conformance-checkable: a venue (kimi/codex) or a
+        # promoted route-table cell INTENTIONALLY returns a model off the static tier map, so
+        # comparing it to _STATIC_TIER_MAP would be false drift. `venue_policy` is present in `out`
+        # iff a venue policy applied (out["venue"] itself is always set — it defaults to "skill");
+        # source == "route_table" marks a promoted cell.
+        _is_static = "venue_policy" not in out and out.get("source") != "route_table"
+        if _tier and _is_static:
             log_resolve_conformance(_tt, _tier, out.get("model"))
     except Exception:
         pass
