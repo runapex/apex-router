@@ -61,7 +61,7 @@ family, and the prefix is stripped before the model sees it. (`>>` is used
 rather than `@` because pi reserves `@` for file mentions.)
 
 ```
->>local    fix this flaky test          # local Ornith tier (ollama, no proxy hop)
+>>local    fix this flaky test          # active local family (ollama, no proxy hop)
 >>kimi      summarise this diff          # Kimi K2 (via the apex proxy)
 >>frontier design the migration plan     # Claude Sonnet (via the apex proxy)
 >>deep     audit this for race hazards   # Claude Opus (via the apex proxy)
@@ -93,6 +93,41 @@ Per-family overrides without touching the registry still work via
 ```
 
 Keep explicit `id` values in sync with `pi --list-models`.
+
+#### Declaring a machine-local family (`local_families` overlay)
+
+The `>>local` family resolves to whichever entry `LOCAL_FAMILY` names in the
+`local_families` section of `~/.apex-router/models.json`. Ornith ships as the
+default, but you can declare any ollama-served model here without touching source.
+
+**Shape** (`~/.apex-router/models.json` fragment):
+
+```json
+{
+  "local_families": {
+    "ornith": {
+      "small": "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
+      "large": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"
+    },
+    "mymodel": {
+      "small": "mymodel:8b-q4",
+      "large": "mymodel:27b-q4"
+    }
+  }
+}
+```
+
+**Selection** — `~/.apex-router/ornith.env` pins the active family and tier:
+
+```
+LOCAL_FAMILY=mymodel
+ORNITH_TIER=small
+ORNITH_API_MODEL=mymodel:8b-q4
+```
+
+Switch via `apex-router ornith-tier --family mymodel small` (writes `ornith.env`
+and restarts the four launchd consumers). The launchd units read `ornith.env` at
+startup — no plist edits required.
 
 ### Beyond switching
 

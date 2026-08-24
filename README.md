@@ -122,7 +122,9 @@ The non-obvious calls, and why:
    other. They install together but run independently.
 
 7. **Pure-stdlib core.** The routing decision has zero third-party deps so it runs on a
-   box with only the Claude and Codex CLIs and no model server.
+   box with only the Claude, Codex, and Kimi CLIs and no model server. The harness
+   deploys to **both the Claude CLI and Pi** — the same `models.json` registry and
+   `ornith.env` state serve both.
 
 ---
 
@@ -151,13 +153,24 @@ the measuring proxy + its extra), `--proxy-config <file>` (wire Claude Code thro
 `--skills-marketplace <git-url>` (print the wiring for a private team skill marketplace — see
 below), `--dir PATH`, `--verify-only`.
 
-### Local model tiers (Ornith 1.5)
+### Local model families (default: Ornith 1.5)
+
+A **family** is a named group of tiers (typically `small` and `large`) declared in the
+`~/.apex-router/models.json` overlay under the `local_families` key. The active family
+and tier are selected by `~/.apex-router/ornith.env` via two variables:
+
+- `LOCAL_FAMILY` — which family is active (e.g. `ornith`, `mymodel`, …)
+- `ORNITH_TIER` — which tier within that family is active (`small` or `large`)
+
+**Ornith 1.5 ships as the default family.** Adding another local model is a config edit
+(`local_families` entry in the overlay + `apex-router ornith-tier --family <name> <tier>`)
+— not a source change.
 
 Local inference runs on **ollama** (`:11434`) — the same instance that serves `nomic-embed-text`.
 The old single-model server is **retired** (it pinned one model at process start, which made
 switching sizes a restart-and-reload); ollama serves both tiers and switches on demand.
 
-Two tiers, one resident at a time:
+Two tiers in the default Ornith 1.5 family, one resident at a time:
 
 | Tier | Model | Weights | Shape |
 |---|---|---|---|
@@ -168,16 +181,20 @@ Two tiers, one resident at a time:
 > workstation. The 35B-A3B is the practical "big" tier — being MoE, it decodes near a 3B model.
 
 ```bash
-apex-router ornith-tier            # what's configured, pulled, and actually resident
-apex-router ornith-tier large      # unload the old tier, write the new one, warm it, restart consumers
-apex-router ornith-tier --unload   # free the RAM without changing the configured tier
-apex-router ornith-tier --json     # machine-readable
+# default Ornith family commands (back-compat; --family defaults to "ornith"):
+apex-router ornith-tier                         # what's configured, pulled, and actually resident
+apex-router ornith-tier large                   # unload old tier, write the new one, warm it, restart consumers
+apex-router ornith-tier --unload                # free RAM without changing the configured tier
+apex-router ornith-tier --json                  # machine-readable
+
+# with --family, the same command manages any declared local family:
+apex-router ornith-tier --family mymodel small  # switch the active family+tier for "mymodel"
 ```
 
-The active tier lives in `~/.apex-router/ornith.env` and is the single source of truth: the launchd
-units carry **no** model id, so switching never means editing a plist. Switching is never implicit —
-`model_router.select()` reports `needs_switch` and names the model it wants, but will not trigger a
-multi-GB load as a side effect of asking for a route.
+`LOCAL_FAMILY` and `ORNITH_TIER` in `~/.apex-router/ornith.env` are the single source of
+truth: the launchd units carry **no** model id, so switching never means editing a plist.
+Switching is never implicit — `model_router.select()` reports `needs_switch` and names the
+model it wants, but will not trigger a multi-GB load as a side effect of asking for a route.
 
 Capacity is checked against **physical RAM**, not a hardcoded ceiling, and a switch unloads the
 outgoing tier *before* warming the incoming one — both tiers resident is ~27 GB.

@@ -79,6 +79,28 @@ still nudges with raw index sizes, just without writing a proposed index. So a d
 box with the default path won't error; it's just less useful until the env var
 points at the real engine.
 
+## Switching the active local model family
+
+`apex-router ornith-tier --family <name> <tier>` writes `~/.apex-router/ornith.env`
+(`LOCAL_FAMILY`, `ORNITH_TIER`, `ORNITH_API_MODEL`) and restarts the four launchd
+consumers (drain worker, nightly cycle, codeqa watchers). The consumers read
+`ornith.env` at startup — no plist edits required.
+
+The declared families live in `~/.apex-router/models.json` under `local_families`.
+Ornith 1.5 ships as the default family. To add another local model, add an entry to
+`local_families` (one key per tier) and switch with `--family`:
+
+```bash
+# add an entry to ~/.apex-router/models.json:
+#   "local_families": { "mymodel": { "small": "mymodel:8b-q4", "large": "mymodel:27b-q4" } }
+
+apex-router ornith-tier --family mymodel small   # switch and reload consumers
+apex-router ornith-tier                          # confirm the active family+tier
+```
+
+Back-compat: `apex-router ornith-tier <tier>` (no `--family`) continues to manage
+the `ornith` family, so existing scripts are unaffected.
+
 ## Skills update (separate repo)
 
 The workflow-discipline skills live in a **different** repo. To get the latest

@@ -9,7 +9,10 @@
  *   2. ~/.apex-router/pi-routes.json overlay (back-compat)
  *   3. built-in defaults
  *
- *   >>local    fix this flaky test         -> active Ornith tier (ollama, direct)
+ *   >>local    fix this flaky test         -> active local family/tier (ollama, direct)
+ *                                             (built-in fallback: the shipped default local family,
+ *                                              Ornith; a machine overlay may point `local` at another
+ *                                              family via `local_families` in ~/.apex-router/models.json)
  *   >>kimi     summarise this diff         -> Kimi (via the apex proxy)
  *   >>frontier design the migration plan   -> sonnet tier (via the apex proxy)
  *   >>deep     audit this for race hazards -> opus tier (via the apex proxy)
