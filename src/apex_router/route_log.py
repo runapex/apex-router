@@ -75,7 +75,14 @@ def _accumulate(rates: dict, line: str) -> None:
     if not isinstance(tt, str) or not isinstance(escalated, bool):
         return
     ts = rec.get("ts")
-    bad_ts = (isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts))
+    if isinstance(ts, bool):
+        bad_ts = True
+    elif isinstance(ts, int):
+        bad_ts = False
+    elif isinstance(ts, float):
+        bad_ts = not math.isfinite(ts)
+    else:
+        bad_ts = True
     cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0, "null_ts": 0})
     cell["n"] += 1
     cell["escalated"] += 1 if escalated else 0

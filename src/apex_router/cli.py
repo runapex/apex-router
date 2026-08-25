@@ -71,6 +71,8 @@ def main(argv=None) -> int:
     route_log_p.add_argument("--outcome", required=True,
                              help="ok = cheap succeeded; escalated = re-dispatched heavy")
     route_log_p.add_argument("--note", default="")
+    route_log_p.add_argument("--context-size", type=int, default=None)
+    route_log_p.add_argument("--session-id", type=str, default=None)
     # Readout: aggregate the outcome log into per-task-type escalation rates — the
     # Phase-1 payoff ("when we start explore cheap, how often does it bounce to opus?").
     readout_p = sub.add_parser(
@@ -164,7 +166,9 @@ def main(argv=None) -> int:
         # exits 0 — a rejected/failed write is reported on stderr, not via exit code.
         from . import route_log
         ok = route_log.log_outcome(args.task_type, args.start_tier, args.outcome,
-                                   note=args.note)
+                                   note=args.note,
+                                   context_size=args.context_size,
+                                   session_id=args.session_id)
         if not ok:
             try:
                 print(f"route-log: not recorded (outcome={args.outcome!r} invalid or "

@@ -108,6 +108,25 @@ class TestAdviseOne(unittest.TestCase):
         for n, esc in [(0, 0), (5, -1), (5, 9)]:
             self.assertEqual(ra.advise_one(n, esc)["verdict"], ra.INCONCLUSIVE)
 
+    def test_invalid_null_ts_sanitized_on_early_return(self):
+        # A non-int null_ts must be cleaned BEFORE the n<=0 early return so it never
+        # reaches _rec or leaks into the output.
+        r = ra.advise_one(0, 0, null_ts="x")
+        self.assertEqual(r["verdict"], ra.INCONCLUSIVE)
+        self.assertNotIn("null_ts", r)
+
+    def test_bool_null_ts_sanitized(self):
+        r = ra.advise_one(0, 0, null_ts=True)
+        self.assertEqual(r["verdict"], ra.INCONCLUSIVE)
+        self.assertNotIn("null_ts", r)
+
+    def test_valid_positive_null_ts_surfaces_on_early_return(self):
+        # n < min_n is an early-return path; a valid positive null_ts must still warn.
+        r = ra.advise_one(5, 3, null_ts=7)
+        self.assertEqual(r["verdict"], ra.INCONCLUSIVE)
+        self.assertEqual(r["null_ts"], 7)
+        self.assertIn("7 null-ts rows", r["reason"])
+
 
 class TestAdviseAggregate(unittest.TestCase):
     def test_verdicts_over_injected_rates(self):

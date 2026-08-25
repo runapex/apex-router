@@ -171,7 +171,8 @@ def main(argv=None) -> int:
             if isinstance(d, dict):
                 log_conformance(d.get("surface"), d.get("task_type"), d.get("requested_tier"),
                                 resolved_model=d.get("resolved_model"), matched=d.get("matched"),
-                                note=d.get("note", ""))
+                                note=d.get("note", ""), context_size=d.get("context_size"),
+                                session_id=d.get("session_id"))
         except Exception:
             pass
         return 0

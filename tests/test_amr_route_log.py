@@ -286,6 +286,21 @@ class TestReadRates(unittest.TestCase):
             rates = route_log.read_rates(log_path=p)
             self.assertEqual(rates["explore"]["null_ts"], 0)
 
+    def test_huge_int_timestamp_does_not_zero_rates(self):
+        # math.isfinite(10**309) would overflow; int timestamps must be treated as
+        # finite so the whole log is not discarded and the row does not count as null.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            route_log.log_outcome("explore", "sonnet", "ok", log_path=p, ts=10**309)
+            route_log.log_outcome("explore", "sonnet", "escalated", log_path=p, ts=2.0)
+            route_log.log_outcome("generate", "sonnet", "ok", log_path=p, ts=3.0)
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(rates["explore"]["n"], 2)
+            self.assertEqual(rates["explore"]["escalated"], 1)
+            self.assertEqual(rates["explore"]["null_ts"], 0)
+            self.assertEqual(rates["generate"]["n"], 1)
+
 
 class TestRouteLogCLI(unittest.TestCase):
     def _read(self, path):
@@ -324,6 +339,28 @@ class TestRouteLogCLI(unittest.TestCase):
             rc = self._run(
                 ["route-log", "--task-type", "explore", "--start-tier", "sonnet",
                  "--outcome", "bogus"], p)
+            self.assertEqual(rc, 0)
+            self.assertFalse(p.exists())
+
+    def test_cli_threads_context_size_and_session_id(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            rc = self._run(
+                ["route-log", "--task-type", "explore", "--start-tier", "sonnet",
+                 "--outcome", "ok", "--context-size", "500", "--session-id", "cli-sess"], p)
+            self.assertEqual(rc, 0)
+            row = self._read(p)[0]
+            self.assertEqual(row["context_size"], 500)
+            self.assertEqual(row["session_id"], "cli-sess")
+
+    def test_cli_negative_context_size_rejected_no_write(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            rc = self._run(
+                ["route-log", "--task-type", "explore", "--start-tier", "sonnet",
+                 "--outcome", "ok", "--context-size", "-1"], p)
             self.assertEqual(rc, 0)
             self.assertFalse(p.exists())
 

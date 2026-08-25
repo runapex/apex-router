@@ -99,6 +99,10 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
     `significant` here reflects only the per-cell CI-vs-break_even test; the multiplicity (BH) gate is
     applied in `advise()` across task-types (a lone `advise_one` has no family to correct against).
     """
+    # Sanitize null_ts first: every early-return path must pass a clean int to _rec so an invalid
+    # null_ts (bool, non-int, negative) never leaks into the output or raises downstream.
+    if isinstance(null_ts, bool) or not isinstance(null_ts, int) or null_ts < 0:
+        null_ts = 0
     # Input validation — an independent review showed z<=0 gives a zero-width "always significant" CI,
     # min_n<1 / cost_ratio<=1 defeat the guards, and a non-finite z/cost_ratio (argparse accepts
     # `nan`/`inf`) sails past the comparisons into a NaN break-even + a non-JSON `NaN` token. Reject
@@ -115,8 +119,6 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
                     null_ts=null_ts)
     if min_n < 1:
         min_n = 1
-    if isinstance(null_ts, bool) or not isinstance(null_ts, int) or null_ts < 0:
-        null_ts = 0
 
     rate = escalated / n
     be = _break_even(cost_ratio)
