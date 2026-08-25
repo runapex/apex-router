@@ -219,6 +219,25 @@ _NON_DERIVABLE_RE = re.compile(
     r'rationale|by convention|for readability|better to|deliberately (chose|avoid)|'
     r'our (approach|convention|preference)|chosen over|instead of)\b', re.I)
 
+# flow / cross-component cues: a claim that traces a CHAIN of relationships across components with a
+# flow arrow (`A → B → C`, `x ⇄ y`) is NOT a literal value lookup — its truth is a MULTI-HOP
+# relationship the local verifier cannot resolve: it must chain several definition sites, and a flow
+# frequently crosses INTO ANOTHER REPO whose symbols are not in this tree at all (a digest for one
+# repo naming another repo's handlers). Given only a partial/one-repo evidence slice the local model
+# HEDGES and mislabels a true chain CONTRADICTED (measured: a real cross-repo flow bullet struck by
+# local, correct on frontier). So a flow claim is INFERENCE → frontier: the tier that reasons about
+# missing-half evidence and returns SUPPORTED/UNVERIFIABLE instead of a false strike. Local-model
+# agnostic — this is about the LOCAL tier hedging on partial evidence, not any specific model.
+# Unicode flow arrows only (the digests' sole flow marker; bare ASCII '->' is code syntax, not prose).
+_FLOW_RE = re.compile(r'[\u2190-\u21ff\u27f0-\u27ff]|-->|==>')
+
+
+def describes_flow(claim: str) -> bool:
+    """True if the claim traces a data/control FLOW across components (a flow arrow chain). Such a
+    claim is a multi-hop relationship — often cross-repo — that the cheap local verifier resolves
+    unreliably, so it must route to frontier rather than be lookup-checked against one repo."""
+    return bool(_FLOW_RE.search(claim))
+
 
 def classify_claim(claim: str) -> ClaimType:
     """Classify a claim into the verifier tier that can decide it, in PRIORITY order (most-specific
@@ -229,8 +248,10 @@ def classify_claim(claim: str) -> ClaimType:
                       it). The no-symbol guard is load-bearing: a code fact that merely CONTAINS
                       preference-ish words ('apex should never rewrite', 'the team module sets X') DOES
                       name symbols, so it is NOT skipped (Codex #1/#2).
-      INFERENCE     — truth follows by reasoning from code (default→state / conditional→consequence);
-                      the local model HEDGES here, so it routes to frontier.
+      INFERENCE     — truth follows by reasoning from code (default→state / conditional→consequence),
+                      OR it traces a FLOW/cross-component chain (often cross-repo). The local model
+                      HEDGES on both — and false-CONTRADICTS a chain it can only half-resolve — so
+                      these route to frontier.
       VALUE         — a direct constant/name lookup the local verifier handles well (the default)
     """
     if is_runtime_claim(claim):
@@ -241,7 +262,10 @@ def classify_claim(claim: str) -> ClaimType:
     # not extract_symbols — because the latter keeps any 4+ char English word ('readability').
     if _NON_DERIVABLE_RE.search(claim) and not has_code_shaped_symbol(claim):
         return ClaimType.NON_DERIVABLE
-    if _INFERENCE_RE.search(claim):
+    # A flow/cross-component chain is reasoning over MULTIPLE (often cross-repo) definition sites, not a
+    # literal lookup — route it to frontier so a partial one-repo evidence slice doesn't make the cheap
+    # local verifier false-strike a true chain (the misroute that struck correct cross-repo bullets).
+    if _INFERENCE_RE.search(claim) or describes_flow(claim):
         return ClaimType.INFERENCE
     return ClaimType.VALUE
 
@@ -541,7 +565,22 @@ def validate_memory(text: str, root: Path, *,
     # (or max_workers<=1) runs inline so the trivial/test path spawns no threads.
     def _run(job):
         _, s, chosen, _ = job
-        return check_claim(s, root, verify_fn=chosen, runtime_facts=runtime_facts)
+        verdict, ran = check_claim(s, root, verify_fn=chosen, runtime_facts=runtime_facts)
+        # CONFIRM-BEFORE-STRIKE: a CONTRADICTED from the LOCAL verifier is a DESTRUCTIVE verdict
+        # (it strikes the claim) produced by the tier that measurably HEDGES on partial / one-repo /
+        # cross-repo evidence — the exact failure that struck true cross-repo claims. So a local strike
+        # is not trusted on its own: escalate it to the frontier verifier and keep the strike ONLY if
+        # frontier CONFIRMS. Leniency (SUPPORTED/UNVERIFIABLE) is free and never escalated, so cost is
+        # bounded by the (rare) strike rate, not the claim count. Local-model agnostic: 'local' is
+        # whatever verifier was injected (qwen via ollama here, or any other) — the escalation is about
+        # the LOCAL tier's known hedging, not a specific model. Only fires in routed mode (a distinct
+        # local+frontier pair exists); pure --local or pure-frontier runs are unaffected.
+        escalated = False
+        if (verdict is Verdict.CONTRADICTED and local_verify_fn is not None
+                and chosen is local_verify_fn and verify_fn is not local_verify_fn):
+            verdict, ran = check_claim(s, root, verify_fn=verify_fn, runtime_facts=runtime_facts)
+            escalated = True
+        return verdict, ran, escalated
     if len(jobs) > 1 and max_workers > 1:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as ex:
             results = list(ex.map(_run, jobs))
@@ -554,14 +593,17 @@ def validate_memory(text: str, root: Path, *,
     tier_calls: dict[str, int] = {}                      # frontier tier → count (the model-picker split)
     struck: list[str] = []
     strike_at: dict[int, str] = {}                       # line_idx → replacement marker line
-    for (i, s, _chosen, ctype), (verdict, ran) in zip(jobs, results):
+    for (i, s, _chosen, ctype), (verdict, ran, escalated) in zip(jobs, results):
         if ran:
             n_checked += 1
-            if local_verify_fn is not None and ctype is ClaimType.VALUE:
+            # an escalated claim spent a PAID frontier call (the free local one preceded it) → count it
+            # as frontier so est_frontier_tokens stays honest; only a non-escalated VALUE call is free.
+            if local_verify_fn is not None and ctype is ClaimType.VALUE and not escalated:
                 n_local += 1
             else:
                 n_frontier += 1
-                # Same deterministic route the frontier verifier used → tally which tier decided it.
+                # Same deterministic route the frontier verifier used → tally which tier decided it. An
+                # escalated VALUE claim was confirmed by the frontier route for its own type (value).
                 tier = tier_router.resolve(_CTYPE_TASK.get(ctype, "value")).tier
                 tier_calls[tier] = tier_calls.get(tier, 0) + 1
         if verdict is Verdict.CONTRADICTED:

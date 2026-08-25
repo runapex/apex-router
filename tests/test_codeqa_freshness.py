@@ -19,6 +19,7 @@ from apex_router.codeqa.freshness import (
     run_oracle_command,
     memory_fingerprint,
     classify_claim,
+    describes_flow,
     route_verifier,
     metrics_record,
     ClaimType,
@@ -389,6 +390,27 @@ def test_classify_conditional_inference_routes_to_frontier():
     assert classify_claim("setting has_policy false disables the transform path") is ClaimType.INFERENCE
 
 
+def test_classify_flow_chain_routes_to_frontier():
+    # A claim that traces a FLOW across components (arrow chain) is a multi-hop, often CROSS-REPO
+    # relationship the local verifier resolves unreliably (it false-CONTRADICTS a chain it can only
+    # half-see). It must be INFERENCE → frontier, NOT VALUE → local. Regression for the misroute that
+    # struck a true cross-repo bullet naming another repo's symbols not in this tree. Local-model
+    # agnostic — the hedging is a property of the LOCAL tier on partial evidence, not any one model.
+    assert classify_claim(
+        "PolicyEngine.get_agent_policies → gzip JSON → another repo's venPlatformHandler parses"
+    ) is ClaimType.INFERENCE
+    assert classify_claim("venVtapServer uploads flows → collector ingests → flow_analytics") is ClaimType.INFERENCE
+    assert classify_claim("the request ⇄ response pair crosses evservice") is ClaimType.INFERENCE
+
+
+def test_classify_no_false_flow_on_code_arrows_and_plain_values():
+    # describes_flow must NOT fire on a bare value claim or on ASCII code arrows (lambda/Rust '->',
+    # hash-rocket '=>') that are code SYNTAX, not a prose flow — those stay VALUE → local (cheap).
+    assert classify_claim("the CACHE_SERVED_ALARM_FLOOR is 0.700") is ClaimType.VALUE
+    assert not describes_flow("the closure |x| -> u32 returns the id")
+    assert not describes_flow("the hash uses key => value pairs")
+
+
 def test_classify_value_beats_inference_when_both_signals_present():
     # a claim with BOTH a bare number AND 'defaults' is an inference about a value → INFERENCE wins
     # (the reasoning, not the literal, is the hard part the local model misses).
@@ -417,9 +439,12 @@ def test_validate_memory_routes_value_to_local_inference_to_frontier(tmp_path):
     # validate_memory routes each claim by classify_claim — VALUE → local (free), INFERENCE → frontier.
     (tmp_path / "doctor.py").write_text("CACHE_SERVED_ALARM_FLOOR = 0.700\n")
     (tmp_path / "shadow.py").write_text("has_policy: bool = False\n")
+    # A TRUE value claim stays LOCAL-only (SUPPORTED never escalates — that's the token saving); a
+    # stale INFERENCE claim goes straight to FRONTIER. (Confirm-before-strike escalation of a local
+    # CONTRADICTED is covered by test_local_contradiction_is_confirmed_by_frontier_before_striking.)
     memory = (
-        "- the CACHE_SERVED_ALARM_FLOOR is 0.500, a round threshold.\n"           # VALUE  → local
-        "- has_policy defaults to true so transforms fire on every block.\n"      # INFERENCE → frontier
+        "- the CACHE_SERVED_ALARM_FLOOR is 0.700, a round threshold.\n"           # VALUE (true) → local
+        "- has_policy defaults to true so transforms fire on every block.\n"      # INFERENCE (stale) → frontier
     )
     seen = {"local": [], "frontier": []}
     def local_v(claim, code):
@@ -429,10 +454,45 @@ def test_validate_memory_routes_value_to_local_inference_to_frontier(tmp_path):
         seen["frontier"].append(claim)
         return "CONTRADICTED" if "defaults to true" in claim and "= False" in code else "SUPPORTED"
     result = validate_memory(memory, tmp_path, verify_fn=frontier_v, local_verify_fn=local_v)
-    assert result.n_struck == 2                              # both false claims caught
-    assert any("0.500" in c for c in seen["local"])          # VALUE went to LOCAL (free)
+    assert result.n_struck == 1                              # only the stale INFERENCE claim struck
+    assert any("0.700" in c for c in seen["local"])          # VALUE went to LOCAL (free)
     assert any("defaults to true" in c for c in seen["frontier"])  # INFERENCE went to FRONTIER
-    assert not any("0.500" in c for c in seen["frontier"])   # the VALUE claim did NOT hit frontier
+    assert not any("0.700" in c for c in seen["frontier"])   # the true VALUE claim did NOT hit frontier (saving)
+
+
+def test_local_contradiction_is_confirmed_by_frontier_before_striking(tmp_path):
+    # CONFIRM-BEFORE-STRIKE: a CONTRADICTED from the LOCAL verifier (the hedging tier) must be
+    # re-checked by frontier and kept ONLY if frontier agrees. Regression for the misroute where the
+    # cheap local model false-struck TRUE cross-repo claims. Local-model agnostic: 'local' is whatever
+    # verifier is injected (qwen via ollama, ornith, etc.) — here local says CONTRADICTED but frontier
+    # says SUPPORTED → NOT struck (frontier wins the destructive verdict).
+    (tmp_path / "doctor.py").write_text("CACHE_SERVED_ALARM_FLOOR = 0.700\n")
+    memory = "- The CACHE_SERVED_ALARM_FLOOR in doctor.py is 0.700.\n"   # TRUE claim
+    calls = {"local": 0, "frontier": 0}
+    def local(claim, code):
+        calls["local"] += 1
+        return "CONTRADICTED"                     # cheap model hedges/errs on this true claim
+    def frontier(claim, code):
+        calls["frontier"] += 1
+        return "SUPPORTED"                        # correct tier confirms it is fine
+    result = validate_memory(memory, tmp_path, verify_fn=frontier, local_verify_fn=local)
+    assert result.n_struck == 0                   # the true claim survives — no false strike
+    assert calls["local"] == 1 and calls["frontier"] == 1   # escalated exactly once
+    assert result.n_frontier == 1 and result.n_local == 0   # counted as a PAID frontier call (honest)
+
+
+def test_frontier_confirmed_contradiction_still_strikes(tmp_path):
+    # The escalation must NOT make the gate toothless: when frontier CONFIRMS the local contradiction,
+    # the claim is still struck. A genuinely stale VALUE claim (local + frontier both CONTRADICTED).
+    (tmp_path / "doctor.py").write_text("CACHE_SERVED_ALARM_FLOOR = 0.700\n")
+    memory = "- The CACHE_SERVED_ALARM_FLOOR in doctor.py is 0.500.\n"   # WRONG claim
+    def local(claim, code):
+        return "CONTRADICTED"
+    def frontier(claim, code):
+        return "CONTRADICTED"                     # correct tier agrees it is stale
+    result = validate_memory(memory, tmp_path, verify_fn=frontier, local_verify_fn=local)
+    assert result.n_struck == 1                   # confirmed stale → struck
+    assert result.struck_claims and "0.500" in result.struck_claims[0]
 
 
 def test_validate_memory_records_skipped_non_derivable_claims(tmp_path):
