@@ -90,7 +90,8 @@ def _two_sided_p(escalated: int, n: int, break_even: float) -> float:
 
 
 def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
-               cost_ratio: float = _DEFAULT_COST_RATIO, z: float = _DEFAULT_Z) -> dict:
+               cost_ratio: float = _DEFAULT_COST_RATIO, z: float = _DEFAULT_Z,
+               null_ts: int = 0) -> dict:
     """Cost-efficiency verdict for one task-type's (n, escalated) counts. Pure, deterministic.
 
     Returns {verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, assumes, reason}.
@@ -103,14 +104,19 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
     # `nan`/`inf`) sails past the comparisons into a NaN break-even + a non-JSON `NaN` token. Reject
     # anything non-finite or out of range rather than emit a spurious verdict.
     if n <= 0 or escalated < 0 or escalated > n:
-        return _rec(INCONCLUSIVE, 0.0, 0.0, 0.0, 0.0, max(n, 0), False, 1.0, "", "no or invalid samples")
+        return _rec(INCONCLUSIVE, 0.0, 0.0, 0.0, 0.0, max(n, 0), False, 1.0, "",
+                    "no or invalid samples", null_ts=null_ts)
     if not math.isfinite(z) or z <= 0:
-        return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "", f"invalid z={z} (must be finite and > 0)")
+        return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "",
+                    f"invalid z={z} (must be finite and > 0)", null_ts=null_ts)
     if not math.isfinite(cost_ratio) or cost_ratio <= 1.0:
         return _rec(INCONCLUSIVE, escalated / n, 0.0, 1.0, 0.0, n, False, 1.0, "",
-                    f"invalid cost_ratio={cost_ratio} (must be finite and > 1: heavy must cost more than cheap)")
+                    f"invalid cost_ratio={cost_ratio} (must be finite and > 1: heavy must cost more than cheap)",
+                    null_ts=null_ts)
     if min_n < 1:
         min_n = 1
+    if isinstance(null_ts, bool) or not isinstance(null_ts, int) or null_ts < 0:
+        null_ts = 0
 
     rate = escalated / n
     be = _break_even(cost_ratio)
@@ -118,20 +124,21 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
 
     if n < min_n:
         return _rec(INCONCLUSIVE, rate, lo, hi, be, n, False, 1.0, "",
-                    f"n={n} < min_n={min_n} (insufficient evidence)")
+                    f"n={n} < min_n={min_n} (insufficient evidence)", null_ts=null_ts)
     # The Wilson CI supplies the DIRECTION; the two-sided p feeds the multiplicity correction. n>=min_n
     # cells that don't clear the CI are still "tested" (part of the BH family) — advise() decides that.
     p = _two_sided_p(escalated, n, be)
     if lo > be:
         return _rec(COST_FAVORS_HEAVY_START, rate, lo, hi, be, n, True, p, _ASSUMES,
                     f"escalation CI lower {lo:.2f} > cost break-even {be:.2f}: cheap-first costs more on average",
-                    tested=True)
+                    tested=True, null_ts=null_ts)
     if hi < be:
         return _rec(COST_FAVORS_CHEAP_START, rate, lo, hi, be, n, True, p, _ASSUMES,
                     f"escalation CI upper {hi:.2f} < cost break-even {be:.2f}: cheap-first is cheaper",
-                    tested=True)
+                    tested=True, null_ts=null_ts)
     return _rec(INCONCLUSIVE, rate, lo, hi, be, n, False, p, "",
-                f"CI [{lo:.2f},{hi:.2f}] straddles cost break-even {be:.2f}", tested=True)
+                f"CI [{lo:.2f},{hi:.2f}] straddles cost break-even {be:.2f}", tested=True,
+                null_ts=null_ts)
 
 
 def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _DEFAULT_COST_RATIO,
@@ -158,7 +165,11 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
             esc = cell.get("escalated")
             if not isinstance(n, int) or not isinstance(esc, int):
                 continue
-            out[tt] = advise_one(n, esc, min_n=min_n, cost_ratio=cost_ratio, z=z)
+            null_ts = cell.get("null_ts", 0)
+            if isinstance(null_ts, bool) or not isinstance(null_ts, int) or null_ts < 0:
+                null_ts = 0
+            out[tt] = advise_one(n, esc, min_n=min_n, cost_ratio=cost_ratio, z=z,
+                                 null_ts=null_ts)
 
         # Pass 2: BH multiplicity correction. The FAMILY is every TESTED cell (met min_n), so family
         # membership is independent of the outcome — building it from only the CI-significant cells
@@ -176,18 +187,21 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
                     out[tt] = _rec(INCONCLUSIVE, r["rate"], r["ci_low"], r["ci_high"], r["break_even"],
                                    r["n"], False, r["p_value"], "",
                                    f"per-cell significant but did not survive BH across {len(family)} "
-                                   f"tested task-types (multiplicity) — keep the default", tested=True)
+                                   f"tested task-types (multiplicity) — keep the default", tested=True,
+                                   null_ts=r.get("null_ts", 0))
         return out
     except Exception:
         return {}
 
 
 def _rec(verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, assumes, reason,
-         tested=False) -> dict:
+         tested=False, null_ts: int = 0) -> dict:
     # `tested` = this cell met min_n and produced a real p-value, so it is a member of the BH family
     # regardless of whether it crossed the CI. `significant` = it crossed the per-cell Wilson gate.
     # Keeping them distinct is the fix for selecting the hypothesis family by significance.
-    return {
+    if null_ts > 0:
+        reason = f"{reason} !! {null_ts} null-ts rows (provenance unknown)"
+    rec = {
         "verdict": verdict,
         "rate": rate,
         "ci_low": ci_low,
@@ -200,3 +214,6 @@ def _rec(verdict, rate, ci_low, ci_high, break_even, n, significant, p_value, as
         "assumes": assumes,
         "reason": reason,
     }
+    if null_ts > 0:
+        rec["null_ts"] = null_ts
+    return rec

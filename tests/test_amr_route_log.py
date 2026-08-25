@@ -47,6 +47,27 @@ class TestLogOutcome(unittest.TestCase):
             self.assertIsInstance(row["ts"], float)
             self.assertGreater(row["ts"], 1_000_000_000)
 
+    def test_optional_context_size_and_session_id_round_trip(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self.assertTrue(route_log.log_outcome(
+                "explore", "sonnet", "ok", log_path=p, ts=1.0,
+                context_size=500, session_id="sess-42"))
+            row = self._read(p)[0]
+            self.assertEqual(row["context_size"], 500)
+            self.assertEqual(row["session_id"], "sess-42")
+
+    def test_optional_fields_omitted_when_none(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self.assertTrue(route_log.log_outcome(
+                "explore", "sonnet", "ok", log_path=p, ts=1.0))
+            row = self._read(p)[0]
+            self.assertNotIn("context_size", row)
+            self.assertNotIn("session_id", row)
+
     def test_escalated_outcome_records_passed_false_escalated_true(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -141,6 +162,38 @@ class TestLogOutcomeHardening(unittest.TestCase):
             self.assertFalse(ok)
             self.assertFalse(p.exists())
 
+    def test_invalid_context_size_rejected_no_write(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            for bad in (True, -1, "500"):
+                with self.subTest(bad=bad):
+                    self.assertFalse(route_log.log_outcome(
+                        "explore", "sonnet", "ok", log_path=p, ts=1.0,
+                        context_size=bad))
+                    self.assertFalse(p.exists())
+
+    def test_invalid_session_id_rejected_no_write(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self.assertFalse(route_log.log_outcome(
+                "explore", "sonnet", "ok", log_path=p, ts=1.0,
+                session_id=123))
+            self.assertFalse(p.exists())
+
+    def test_logging_failure_with_extra_fields_never_raises(self):
+        # Fail-safe invariant holds even when extra validation paths fire.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            blocker = Path(d) / "not_a_dir"
+            blocker.write_text("i am a file")
+            p = blocker / "route_log.jsonl"
+            ok = route_log.log_outcome(
+                "explore", "sonnet", "ok", log_path=p,
+                context_size=500, session_id="s")
+            self.assertFalse(ok)
+
 
 class TestReadRates(unittest.TestCase):
     """The readout side: aggregate the write-only log into per-task-type escalation
@@ -207,6 +260,31 @@ class TestReadRates(unittest.TestCase):
             rates = route_log.read_rates(log_path=p)
             self.assertEqual(rates["explore"]["n"], 2)
             self.assertEqual(rates["explore"]["escalated"], 1)
+
+    def test_null_ts_counts_missing_or_nonfinite_timestamps(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self._write(p, [
+                {"task_type": "explore", "escalated": False, "ts": None},
+                {"task_type": "explore", "escalated": False},
+                {"task_type": "explore", "escalated": True, "ts": "not-a-number"},
+                {"task_type": "explore", "escalated": False, "ts": 1.0},
+            ])
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(rates["explore"]["n"], 4)
+            self.assertEqual(rates["explore"]["null_ts"], 3)
+
+    def test_valid_rows_have_null_ts_zero(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "route_log.jsonl"
+            self._write(p, [
+                {"task_type": "explore", "escalated": False, "ts": 1.0},
+                {"task_type": "explore", "escalated": True, "ts": 2.0},
+            ])
+            rates = route_log.read_rates(log_path=p)
+            self.assertEqual(rates["explore"]["null_ts"], 0)
 
 
 class TestRouteLogCLI(unittest.TestCase):

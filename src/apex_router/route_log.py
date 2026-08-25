@@ -14,6 +14,7 @@ The log path resolves arg > env (`APEX_ROUTER_LOG`) > home (`~/.apex-router/rout
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import time
@@ -73,13 +74,18 @@ def _accumulate(rates: dict, line: str) -> None:
     # escalated must be a real bool (so bool("false")/1/0 can't inflate the rate).
     if not isinstance(tt, str) or not isinstance(escalated, bool):
         return
-    cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0})
+    ts = rec.get("ts")
+    bad_ts = (isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts))
+    cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0, "null_ts": 0})
     cell["n"] += 1
     cell["escalated"] += 1 if escalated else 0
+    if bad_ts:
+        cell["null_ts"] += 1
     cell["rate"] = cell["escalated"] / cell["n"]
 
 
-def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -> bool:
+def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
+                context_size=None, session_id=None) -> bool:
     """Append one outcome record to the log. Returns True on success, False on ANY
     failure (never raises). `outcome` is "ok" (cheap succeeded) or "escalated"
     (re-dispatched heavy); any other value is rejected and nothing is written.
@@ -93,6 +99,11 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -
         if not isinstance(outcome, str) or outcome not in _VALID_OUTCOMES:
             return False
         escalated = outcome == "escalated"
+        if context_size is not None:
+            if isinstance(context_size, bool) or not isinstance(context_size, int) or context_size < 0:
+                return False
+        if session_id is not None and not isinstance(session_id, str):
+            return False
         record = {
             "ts": ts,
             "task_type": task_type,
@@ -101,6 +112,10 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="") -
             "escalated": escalated,
             "note": note,
         }
+        if context_size is not None:
+            record["context_size"] = context_size
+        if session_id is not None:
+            record["session_id"] = session_id
         # Serialize BEFORE opening the file so a non-serializable field (e.g. a NaN/Inf
         # ts, which is not valid JSON) fails here and writes nothing, rather than
         # leaving a partial/unparseable line (Codex code-xval #6). allow_nan=False makes

@@ -14,6 +14,29 @@ import unittest
 from apex_router import route_advise as ra
 
 
+class TestNullTsProvenanceWarning(unittest.TestCase):
+    def test_reason_warns_when_null_ts_rows_present(self):
+        rates = {"generate": {"n": 100, "escalated": 95, "null_ts": 7}}
+        out = ra.advise(rates=rates)
+        self.assertEqual(out["generate"]["verdict"], ra.COST_FAVORS_HEAVY_START)
+        self.assertEqual(out["generate"]["null_ts"], 7)
+        self.assertIn("7 null-ts rows (provenance unknown)", out["generate"]["reason"])
+
+    def test_no_warning_when_null_ts_zero(self):
+        rates = {"generate": {"n": 100, "escalated": 95, "null_ts": 0}}
+        out = ra.advise(rates=rates)
+        self.assertNotIn("null-ts", out["generate"]["reason"])
+        self.assertNotIn("null_ts", out["generate"])
+
+    def test_verdict_logic_unchanged_by_null_ts(self):
+        # Same counts with and without null_ts should yield the same verdict.
+        base = {"n": 100, "escalated": 95}
+        with_null = {"n": 100, "escalated": 95, "null_ts": 12}
+        self.assertEqual(
+            ra.advise(rates={"t": base})["t"]["verdict"],
+            ra.advise(rates={"t": with_null})["t"]["verdict"])
+
+
 class TestBreakEven(unittest.TestCase):
     def test_break_even_tracks_cost_ratio(self):
         # cost_ratio 5 → break-even 0.80; ratio 2 → 0.50; ratio 10 → 0.90.

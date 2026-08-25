@@ -29,7 +29,8 @@ def default_conformance_path() -> Path:
 
 
 def log_conformance(surface, task_type, requested_tier, resolved_model=None,
-                    matched=None, *, log_path=None, ts=None, note="") -> bool:
+                    matched=None, *, log_path=None, ts=None, note="",
+                    context_size=None, session_id=None) -> bool:
     """Append one conformance row. Returns True on success, False on ANY failure (never raises)."""
     try:
         if ts is None:
@@ -47,9 +48,18 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
             return False
         if not isinstance(ts, (int, float)) or not math.isfinite(ts):
             return False
+        if context_size is not None:
+            if isinstance(context_size, bool) or not isinstance(context_size, int) or context_size < 0:
+                return False
+        if session_id is not None and not isinstance(session_id, str):
+            return False
         record = {"ts": ts, "surface": surface, "task_type": task_type,
                   "requested_tier": requested_tier, "resolved_model": resolved_model,
                   "matched": matched, "note": note if isinstance(note, str) else ""}
+        if context_size is not None:
+            record["context_size"] = context_size
+        if session_id is not None:
+            record["session_id"] = session_id
         line = json.dumps(record, allow_nan=False) + "\n"
         p = Path(log_path) if log_path is not None else default_conformance_path()
         if p.exists() and not stat.S_ISREG(p.stat().st_mode):
@@ -78,15 +88,18 @@ def expected_models(tier, *, registry=None) -> set:
         return set()
 
 
-def log_agent_dispatch(task_type, requested_tier, *, log_path=None, note="") -> bool:
+def log_agent_dispatch(task_type, requested_tier, *, log_path=None, note="",
+                       context_size=None, session_id=None) -> bool:
     """Log a Claude Code Agent dispatch. The harness does NOT expose the subagent's resolved model,
     so this is INTENT ONLY (resolved_model=None, matched=None) — read_conformance keeps it out of the
     drift denominator. Honest by construction: we never claim a conformance verdict we can't observe."""
-    return log_conformance("agent", task_type, requested_tier, log_path=log_path, note=note)
+    return log_conformance("agent", task_type, requested_tier, log_path=log_path, note=note,
+                           context_size=context_size, session_id=session_id)
 
 
 def log_resolve_conformance(task_type, requested_tier, resolved_model, *,
-                            log_path=None, note="") -> bool:
+                            log_path=None, note="", context_size=None,
+                            session_id=None) -> bool:
     """Log a resolve()-surface conformance row. matched = resolved_model ∈ expected_models(tier);
     an unknown tier (empty expected set) logs matched=None (no false mismatch). Fail-safe."""
     try:
@@ -94,7 +107,8 @@ def log_resolve_conformance(task_type, requested_tier, resolved_model, *,
         matched = (resolved_model in exp) if exp else None
         return log_conformance("resolve", task_type, requested_tier,
                                resolved_model=resolved_model, matched=matched,
-                               log_path=log_path, note=note)
+                               log_path=log_path, note=note,
+                               context_size=context_size, session_id=session_id)
     except Exception:
         return False
 

@@ -21,6 +21,25 @@ class TestLogConformance(unittest.TestCase):
             self.assertEqual(row["resolved_model"], "claude-opus-4-8")
             self.assertTrue(row["matched"])
 
+    def test_context_size_and_session_id_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_conformance(
+                "resolve", "synthesis", "opus", resolved_model="m", matched=True,
+                log_path=p, ts=1.0, context_size=1234, session_id="sess-9"))
+            row = self._read(p)[0]
+            self.assertEqual(row["context_size"], 1234)
+            self.assertEqual(row["session_id"], "sess-9")
+
+    def test_optional_fields_omitted_when_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_conformance(
+                "resolve", "synthesis", "opus", log_path=p, ts=1.0))
+            row = self._read(p)[0]
+            self.assertNotIn("context_size", row)
+            self.assertNotIn("session_id", row)
+
     def test_intent_only_agent_row(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "c.jsonl"
@@ -46,6 +65,30 @@ class TestLogConformance(unittest.TestCase):
             p = Path(d) / "c.jsonl"
             self.assertFalse(rc.log_conformance("resolve", "t", "opus", log_path=p, ts=float("nan")))
             self.assertFalse(p.exists())
+
+    def test_invalid_context_size_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            for bad in (True, -1, "500"):
+                with self.subTest(bad=bad):
+                    self.assertFalse(rc.log_conformance(
+                        "resolve", "t", "opus", log_path=p, ts=1.0,
+                        context_size=bad))
+                    self.assertFalse(p.exists())
+
+    def test_invalid_session_id_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertFalse(rc.log_conformance(
+                "resolve", "t", "opus", log_path=p, ts=1.0,
+                session_id=123))
+            self.assertFalse(p.exists())
+
+    def test_logging_failure_with_extra_fields_never_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(rc.log_conformance(
+                "resolve", "t", "opus", log_path=Path(d),
+                context_size=500, session_id="s"))
 
     def test_nonregular_target_refused(self):
         # a directory is not a regular file → refuse, return False, never raise
@@ -140,6 +183,28 @@ class TestExpectedModels(unittest.TestCase):
                                            log_path=p)
                 row = json.loads(Path(p).read_text().splitlines()[0])
                 self.assertTrue(row["matched"])
+
+
+class TestExtraFieldThreading(unittest.TestCase):
+    def test_resolve_conformance_threads_context_size_and_session_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_resolve_conformance(
+                "synthesis", "opus", "claude-opus-4-8", log_path=p,
+                context_size=999, session_id="resolve-sess"))
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertEqual(row["context_size"], 999)
+            self.assertEqual(row["session_id"], "resolve-sess")
+
+    def test_agent_dispatch_threads_context_size_and_session_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_agent_dispatch(
+                "explore", "sonnet", log_path=p,
+                context_size=111, session_id="agent-sess"))
+            row = json.loads(Path(p).read_text().splitlines()[0])
+            self.assertEqual(row["context_size"], 111)
+            self.assertEqual(row["session_id"], "agent-sess")
 
 
 class TestResolveEmitter(unittest.TestCase):
