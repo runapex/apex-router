@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>apex-router — adaptive model routing, measured</title>
+<meta name="description" content="Adaptive model routing — measured, per-task-class model selection — plus a measuring proxy, a local offload subsystem, and the freshness toolkit the routing evidence is built from." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<script>
+  /* set theme before paint to avoid flash */
+  (function () {
+    var s = localStorage.getItem('apex-theme');
+    var t = s || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    /* pi.dev palette */
+    --bg-deep:      #0d1116;
+    --bg-canvas:    #161d27;
+    --panel:        #212730;
+    --panel-soft:   #252f3d;
+    --line:         #49505980;
+    --line-strong:  #757d8975;
+    --text:         #ebe7e4;
+    --copy:         #ebe7e4bf;
+    --muted:        #9fa4abad;
+    --muted-strong: #d5d8dbcc;
+    --accent:       #6a9fcc;
+    --accent-soft:  #6a9fcc24;
+    --accent-faint: #6a9fcc0e;
+    --rust:         #b86b52;
+    --sage:         #a3a473;
+    --sunkissed:    #e1b06e;
+    --success:      #5db87a;
+    --warning:      #e8993a;
+    --error:        #e8704f;
+
+    --serif: 'Lora', 'Plantin MT Pro', Georgia, serif;
+    --mono:  'JetBrains Mono', 'Commit Mono', 'SFMono-Regular', ui-monospace, Menlo, monospace;
+
+    --grid-minor: hsl(218 60% 80% / 0.010);
+    --grid-major: hsl(218 60% 80% / 0.028);
+    --vignette: radial-gradient(ellipse 60% 40% at 50% -8%, rgba(106,159,204,0.10) 0%, transparent 70%),
+                radial-gradient(ellipse 90% 60% at 50% 120%, rgba(13,17,22,0.9) 0%, transparent 60%);
+    --nav-bg: linear-gradient(180deg, #212730f2, #0d1116e6);
+    --term-bg: linear-gradient(180deg, #161d27f2, #0d1116f2);
+    --card-bg: linear-gradient(180deg, #212730a0, #161d2760);
+    --card-bg-hover: linear-gradient(180deg, #252f3db0, #161d2770);
+    --dim: #6a7280;
+    --maxw: 1180px;
+  }
+
+  /* ── LIGHT THEME (pi.dev-style) ────────────── */
+  html[data-theme="light"] {
+    color-scheme: light;
+    --bg-deep:      #f3f2f0;
+    --bg-canvas:    #eae7e3;
+    --panel:        #ffffff;
+    --panel-soft:   #f6f4f1;
+    --line:         #252f3d24;
+    --line-strong:  #252f3d40;
+    --text:         #252f3d;
+    --copy:         #252f3dcc;
+    --muted:        #5c5752cc;
+    --muted-strong: #252f3de6;
+    --accent:       #2f6ea5;
+    --accent-soft:  #2f6ea524;
+    --accent-faint: #2f6ea50e;
+    --grid-minor:   hsl(218 40% 30% / 0.020);
+    --grid-major:   hsl(218 40% 30% / 0.055);
+    --vignette: radial-gradient(ellipse 60% 40% at 50% -8%, rgba(47,110,165,0.08) 0%, transparent 70%),
+                radial-gradient(ellipse 90% 60% at 50% 120%, rgba(218,203,194,0.5) 0%, transparent 60%);
+    --nav-bg: linear-gradient(180deg, #fffffff2, #f3f2f0e6);
+    --term-bg: linear-gradient(180deg, #fffffff5, #f6f4f1f5);
+    --card-bg: linear-gradient(180deg, #ffffffb0, #f6f4f170);
+    --card-bg-hover: linear-gradient(180deg, #ffffff, #f6f4f1);
+    --dim: #8b847d;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--mono);
+    background: var(--bg-deep);
+    color: var(--copy);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    font-weight: 400;
+    font-size: 15px;
+  }
+
+  /* ── PAGE GRID OVERLAY ─────────────────────── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(var(--grid-minor) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-minor) 1px, transparent 1px),
+      linear-gradient(var(--grid-major) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-major) 1px, transparent 1px);
+    background-size: 32px 32px, 32px 32px, 256px 256px, 256px 256px;
+  }
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      var(--vignette);
+  }
+
+  ::selection { background: #6a9fcc3d; color: #fff; }
+
+  /* ── SHARED LAYOUT ─────────────────────────── */
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 32px; position: relative; z-index: 1; }
+
+  .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .label::before {
+    content: '';
+    width: 22px;
+    height: 1px;
+    background: var(--accent);
+    opacity: 0.7;
+  }
+
+  h1, h2, h3, .serif { font-family: var(--serif); font-weight: 400; color: var(--text); }
+
+  .section-title {
+    font-family: var(--serif);
+    font-size: clamp(1.9rem, 4vw, 2.6rem);
+    line-height: 1.02;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  .section-title em { font-style: italic; color: var(--accent); }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── NAV ───────────────────────────────────── */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    background: var(--nav-bg);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0 32px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-mark {
+    font-family: var(--mono);
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 15px;
+    border: 1px solid var(--accent-soft);
+    background: var(--accent-faint);
+    padding: 2px 7px;
+    border-radius: 5px;
+  }
+  .brand-name { font-family: var(--mono); font-size: 14px; color: var(--text); font-weight: 500; }
+  .nav-links { display: flex; align-items: center; gap: 26px; }
+  .nav-links a { font-size: 13px; color: var(--muted); }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 7px;
+    border: 1px solid var(--line-strong); background: #ffffff05;
+    color: var(--muted); cursor: pointer; font-size: 14px;
+    transition: border-color .2s, background .2s, color .2s;
+    font-family: var(--mono);
+  }
+  .theme-toggle:hover { border-color: var(--accent); color: var(--text); background: var(--accent-faint); }
+  .theme-toggle .sun { display: none; }
+  .theme-toggle .moon { display: block; }
+  html[data-theme="light"] .theme-toggle .sun { display: block; }
+  html[data-theme="light"] .theme-toggle .moon { display: none; }
+  .nav-gh {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 13px; color: var(--text);
+    border: 1px solid var(--line-strong);
+    padding: 6px 14px; border-radius: 7px;
+    background: #ffffff05;
+    transition: border-color .2s, background .2s;
+  }
+  .nav-gh:hover { border-color: var(--accent); background: var(--accent-faint); text-decoration: none; }
+
+  /* ── HERO ──────────────────────────────────── */
+  .hero { padding: 150px 0 90px; }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: clamp(2rem, 4vw, 4.5rem);
+    align-items: center;
+  }
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 13px; margin-bottom: 26px;
+    background: #ffffff04;
+  }
+  .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .hero h1 {
+    font-family: var(--serif);
+    font-size: clamp(2.4rem, 5vw, 3.9rem);
+    line-height: 1.03;
+    letter-spacing: -0.015em;
+    margin-bottom: 24px;
+    color: var(--text);
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero-sub {
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--copy);
+    max-width: 480px;
+    margin-bottom: 32px;
+  }
+  .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    padding: 11px 20px; border-radius: 8px; cursor: pointer;
+    transition: all .2s cubic-bezier(.22,1,.36,1); border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--accent); color: #0d1116; font-weight: 700; }
+  .btn-primary:hover { background: #7fb0d8; transform: translateY(-1px); text-decoration: none; box-shadow: 0 8px 22px #6a9fcc33; }
+  .btn-ghost { border-color: var(--line-strong); color: var(--text); background: #ffffff04; }
+  .btn-ghost:hover { border-color: var(--accent); background: var(--accent-faint); text-decoration: none; }
+
+  /* ── ASCII TERMINAL FRAME ──────────────────── */
+  .term {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--term-bg);
+    overflow: hidden;
+    box-shadow: 0 24px 60px -20px #00000090, inset 0 1px 0 #ffffff08;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    background: #ffffff04;
+  }
+  .term-dots { display: flex; gap: 6px; }
+  .term-dots i { width: 10px; height: 10px; border-radius: 50%; background: #757d8955; display: block; }
+  .term-title {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    letter-spacing: 0.06em; margin-left: 6px;
+  }
+  .term-title .live { color: var(--success); }
+  .term-body {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 18px 20px;
+    white-space: pre;
+    overflow-x: auto;
+    min-height: 340px;
+    color: var(--muted-strong);
+  }
+  .term-body .a { color: var(--accent); }
+  .term-body .g { color: var(--success); }
+  .term-body .y { color: var(--sunkissed); }
+  .term-body .r { color: var(--error); }
+  .term-body .s { color: var(--sage); }
+  .term-body .d { color: var(--dim); }
+  .term-body .w { color: var(--text); }
+  .term-body .rust { color: var(--rust); }
+  .cursor { color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
+
+  /* ── SECTIONS ──────────────────────────────── */
+  section { position: relative; z-index: 1; }
+  .band { padding: 90px 0; border-top: 1px solid var(--line); }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: clamp(2rem, 4vw, 4.5rem);
+    align-items: center;
+  }
+  .split.rev { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+  .split.rev .copy-col { order: 2; }
+  .copy-col .label { margin-bottom: 18px; }
+  .copy-col .section-title { margin-bottom: 18px; }
+  .copy-col p {
+    font-family: var(--mono); font-size: 14px; line-height: 1.65;
+    color: var(--copy); margin-bottom: 14px; max-width: 460px;
+  }
+  .copy-col code {
+    font-family: var(--mono); font-size: 12.5px;
+    color: var(--accent); background: var(--accent-faint);
+    border: 1px solid var(--accent-soft); border-radius: 4px; padding: 1px 5px;
+  }
+  .feat-list { list-style: none; margin-top: 20px; }
+  .feat-list li {
+    font-family: var(--mono); font-size: 13px; color: var(--copy);
+    padding: 7px 0 7px 22px; position: relative; line-height: 1.5;
+  }
+  .feat-list li::before {
+    content: '▸'; position: absolute; left: 0; color: var(--accent); font-size: 12px;
+  }
+
+  /* ── FOUR LAYERS ───────────────────────────── */
+  .layers-head { text-align: center; margin-bottom: 56px; }
+  .layers-head .label { justify-content: center; margin-bottom: 16px; }
+  .layers-head .label::before { display: none; }
+  .layers-head p { font-family: var(--mono); font-size: 14px; color: var(--copy); max-width: 520px; margin: 14px auto 0; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+  .card {
+    border: 1px solid var(--line); border-radius: 12px; padding: 26px 24px;
+    background: var(--card-bg);
+    transition: all .25s cubic-bezier(.22,1,.36,1);
+  }
+  .card:hover { border-color: var(--accent-soft); transform: translateY(-3px); background: var(--card-bg-hover); }
+  .card-tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .card-tag b { color: var(--accent); font-weight: 700; }
+  .card h3 { font-family: var(--serif); font-size: 20px; color: var(--text); margin-bottom: 10px; }
+  .card p { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--copy); }
+  .card .chip {
+    display: inline-block; margin-top: 16px; font-family: var(--mono); font-size: 11px;
+    color: var(--sage); border: 1px solid #a3a47333; border-radius: 5px; padding: 3px 8px; background: #a3a4730d;
+  }
+
+  /* ── PRINCIPLES ────────────────────────────── */
+  .principles-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    background: var(--line);
+    gap: 1px; margin-top: 48px;
+  }
+  .principle { background: var(--bg-deep); padding: 30px 30px; transition: background .2s; }
+  .principle:hover { background: #212730a0; }
+  .principle .n { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 0.1em; margin-bottom: 14px; }
+  .principle h4 { font-family: var(--serif); font-size: 17px; color: var(--text); margin-bottom: 10px; line-height: 1.25; }
+  .principle p { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--copy); }
+
+  /* ── INTEGRATIONS ──────────────────────────── */
+  .integ { text-align: center; }
+  .integ .label { justify-content: center; margin-bottom: 28px; }
+  .integ .label::before { display: none; }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .ichip {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 13px; color: var(--copy);
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; background: #ffffff03;
+  }
+  .ichip i { width: 7px; height: 7px; border-radius: 50%; display: block; }
+
+  /* ── HONESTY ───────────────────────────────── */
+  .honesty {
+    border: 1px solid var(--accent-soft); border-radius: 14px;
+    background: linear-gradient(180deg, #6a9fcc0e, #6a9fcc03);
+    padding: 40px 44px; display: grid; grid-template-columns: auto 1fr; gap: 28px; align-items: start;
+  }
+  .honesty .mark { font-family: var(--serif); font-size: 34px; color: var(--accent); line-height: 1; }
+  .honesty h3 { font-family: var(--serif); font-size: 22px; color: var(--text); margin-bottom: 12px; }
+  .honesty p { font-family: var(--mono); font-size: 13.5px; line-height: 1.65; color: var(--copy); max-width: 680px; }
+  .honesty-items { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 20px; }
+  .honesty-items div { font-family: var(--mono); font-size: 12.5px; color: var(--copy); }
+  .honesty-items .yes::before { content: '✓ '; color: var(--success); }
+  .honesty-items .no::before  { content: '✗ '; color: var(--error); }
+
+  /* ── INSTALL ───────────────────────────────── */
+  .install { text-align: center; }
+  .install .label { justify-content: center; margin-bottom: 16px; }
+  .install .label::before { display: none; }
+  .install .section-title { margin-bottom: 14px; }
+  .install > .wrap > p { font-family: var(--mono); font-size: 14px; color: var(--copy); max-width: 520px; margin: 0 auto 40px; }
+  .install .term { max-width: 720px; margin: 0 auto; text-align: left; }
+  .install .term-body { min-height: auto; }
+  .flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; max-width: 720px; margin: 24px auto 0; text-align: left; }
+  .flag { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: #21273060; }
+  .flag code { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent); margin-bottom: 5px; }
+  .flag span { font-family: var(--mono); font-size: 12px; color: var(--copy); }
+
+  /* ── FOOTER ────────────────────────────────── */
+  footer { border-top: 1px solid var(--line); padding: 44px 0; margin-top: 40px; }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; }
+  .foot-brand { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .foot-brand b { color: var(--text); font-weight: 500; }
+  .foot-links { display: flex; gap: 22px; flex-wrap: wrap; }
+  .foot-links a { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .foot-links a:hover { color: var(--text); }
+
+  /* ── RESPONSIVE ────────────────────────────── */
+  @media (max-width: 900px) {
+    .hero-grid, .split, .split.rev { grid-template-columns: 1fr; }
+    .split.rev .copy-col { order: 0; }
+    .hero-demo, .demo-col { margin-top: 8px; }
+    .nav-links { display: none; }
+  }
+  @media (max-width: 560px) {
+    .wrap, nav .wrap { padding: 0 18px; }
+    .honesty { grid-template-columns: 1fr; padding: 28px 22px; }
+    .term-body { font-size: 11px; }
+    footer .wrap { flex-direction: column; align-items: flex-start; }
+  }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2f5f8a47; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #2f5f8a66; }
+</style>
+</head>
+<body>
+
+<!-- ── NAV ───────────────────────────────────── -->
+<nav>
+  <div class="wrap">
+    <div class="brand">
+      <span class="brand-mark">◇</span>
+      <span class="brand-name">apex-router</span>
+    </div>
+    <div class="nav-links">
+      <a href="#architecture">Architecture</a>
+      <a href="#proxy">Proxy</a>
+      <a href="#offload">Offload</a>
+      <a href="#principles">Principles</a>
+      <a href="#install">Install</a>
+    </div>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle light / dark">
+        <span class="moon">◐</span><span class="sun">◑</span>
+      </button>
+      <a class="nav-gh" href="https://github.com/runapex/apex-router">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ──────────────────────────────────── -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <div class="hero-badge"><span class="dot"></span> adaptive · evidence-first · MIT</div>
+        <h1>Route to the <em>right model.</em><br>Every time — for real.</h1>
+        <p class="hero-sub">
+          apex-router learns which model is actually best for each kind of task
+          from evidence, behind a statistically sound promotion gate, and routes
+          to it. It never guesses, never flatters itself, and never routes to a
+          model your machine can't run.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">Install →</a>
+          <a class="btn btn-ghost" href="https://github.com/runapex/apex-router">View source</a>
+        </div>
+      </div>
+
+      <div class="hero-demo">
+        <div class="term">
+          <div class="term-bar">
+            <span class="term-dots"><i></i><i></i><i></i></span>
+            <span class="term-title">apex-router · <span class="live">● routing</span></span>
+          </div>
+          <div class="term-body" id="anim-routing"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ARCHITECTURE / LAYERS ─────────────────── -->
+<section class="band" id="architecture">
+  <div class="wrap">
+    <div class="layers-head">
+      <span class="label">Architecture</span>
+      <h2 class="section-title" style="margin-top:14px">Four layers, <em>deliberately decoupled.</em></h2>
+      <p>Adopt any one layer alone. Only the routing core is required — and it ships zero third-party dependencies.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-tag"><b>Layer 1</b> · required</div>
+        <h3>Routing Core</h3>
+        <p>Two-signal task classifier, promotion gate with out-of-sample confirmation and FDR correction, and a route table that falls back to your static defaults on any uncertainty. Pure stdlib.</p>
+        <span class="chip">apex_router</span>
+      </div>
+      <div class="card">
+        <div class="card-tag"><b>Layer 2</b> · optional</div>
+        <h3>Measuring Proxy</h3>
+        <p>Fronts your provider, forwards every request byte-identically, and measures composition + usage for an offline policy tuner. A strict superset of a plain passthrough.</p>
+        <span class="chip">apex-router[proxy]</span>
+      </div>
+      <div class="card">
+        <div class="card-tag"><b>Layer 3</b> · optional</div>
+        <h3>Offload Subsystem</h3>
+        <p>Run work on a local model off the interactive path and measure whether it saved frontier tokens. Codegen counts only if the tests pass. Review is default-off — measured net-negative.</p>
+        <span class="chip">apex_router.ornith</span>
+      </div>
+      <div class="card">
+        <div class="card-tag"><b>Layer 4</b> · optional</div>
+        <h3>Toolkit — codeqa</h3>
+        <p>Grounded code Q&amp;A: ripgrep retrieval + local model answering with <code style="font-size:11px">file:line</code> citations, plus a freshness gate that checks a doc's claims against live code.</p>
+        <span class="chip">apex_router.codeqa</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PROXY (animated) ──────────────────────── -->
+<section class="band" id="proxy">
+  <div class="wrap">
+    <div class="split">
+      <div class="copy-col">
+        <span class="label">The measuring proxy</span>
+        <h2 class="section-title">Byte-identical forward.<br><em>Measured, not modified.</em></h2>
+        <p>Every request passes through untouched and reaches your provider verbatim. The proxy only <em>tees</em> usage and composition into local telemetry — for an offline policy tuner.</p>
+        <ul class="feat-list">
+          <li>Nothing leaves your machine — no phone-home, ever</li>
+          <li>Emits token counts, byte-class sizes, timing — never prompt text</li>
+          <li>Works with Anthropic + OpenAI wire formats out of the box</li>
+          <li><code>apex-router serve</code> · <code>apex-router proxy doctor</code></li>
+        </ul>
+      </div>
+      <div class="demo-col">
+        <div class="term">
+          <div class="term-bar">
+            <span class="term-dots"><i></i><i></i><i></i></span>
+            <span class="term-title">proxy · <span class="live">● 127.0.0.1:8788</span></span>
+          </div>
+          <div class="term-body" id="anim-proxy"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── OFFLOAD (animated) ────────────────────── -->
+<section class="band" id="offload">
+  <div class="wrap">
+    <div class="split rev">
+      <div class="demo-col">
+        <div class="term">
+          <div class="term-bar">
+            <span class="term-dots"><i></i><i></i><i></i></span>
+            <span class="term-title">ornith-worker · <span class="live">● draining queue</span></span>
+          </div>
+          <div class="term-body" id="anim-offload"></div>
+        </div>
+      </div>
+      <div class="copy-col">
+        <span class="label">The offload subsystem</span>
+        <h2 class="section-title">Local work, <em>gated by your tests.</em></h2>
+        <p>Codegen runs on the local model with thinking OFF, then runs <em>the caller's tests</em>. The saving is booked only when the code passes — otherwise it escalates to the frontier.</p>
+        <ul class="feat-list">
+          <li><code>frontier_completion_tokens_saved</code> counts only when gated + ok + not escalated</li>
+          <li>A wrong local answer the frontier must redo costs <em>more</em> than not offloading</li>
+          <li>Single-GPU serialized worker, one job at a time, one telemetry row each</li>
+          <li>Review lane is default-off — measured net-negative</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PRINCIPLES ────────────────────────────── -->
+<section class="band" id="principles">
+  <div class="wrap">
+    <span class="label">Design decisions</span>
+    <h2 class="section-title" style="margin-top:14px; max-width:640px">The non-obvious calls, <em>and why.</em></h2>
+    <div class="principles-grid">
+      <div class="principle"><div class="n">01</div><h4>Static default is the floor, always</h4><p>A data-starved cell defers to your hand-authored default. Worst case, you get exactly your static routing — no regression is possible on install.</p></div>
+      <div class="principle"><div class="n">02</div><h4>Promotions need statistical evidence</h4><p>Out-of-sample confirmation + FDR correction + replication across capture windows. A model that only looks better on its own sample does not get promoted.</p></div>
+      <div class="principle"><div class="n">03</div><h4>The savings metric refuses to flatter itself</h4><p><code>frontier_completion_tokens_saved</code> counts a local call only when it was gated, passed, and not escalated. A raw completion contributes zero.</p></div>
+      <div class="principle"><div class="n">04</div><h4>Codegen is gated by tests, or it doesn't count</h4><p>A wrong local answer the frontier must redo costs more than not offloading. The codegen lane runs the tests and escalates on failure.</p></div>
+      <div class="principle"><div class="n">05</div><h4>No agentic grading of untrusted code</h4><p>codeqa's frontier judge is opt-in and HTTP-only — never routed through the agentic Claude/Codex CLIs that could execute scanned source.</p></div>
+      <div class="principle"><div class="n">06</div><h4>Pure-stdlib core runs anywhere</h4><p>The routing decision has zero third-party deps, so it runs on a box with only the Claude, Codex, and Kimi CLIs — no model server required.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── INTEGRATIONS ──────────────────────────── -->
+<section class="band integ">
+  <div class="wrap">
+    <span class="label">Works with your existing tools</span>
+    <div class="chips">
+      <span class="ichip"><i style="background:#e1b06e"></i>Claude Code</span>
+      <span class="ichip"><i style="background:#5db87a"></i>OpenAI Codex</span>
+      <span class="ichip"><i style="background:#b86b52"></i>Kimi · Moonshot AI</span>
+      <span class="ichip"><i style="background:#6a9fcc"></i>pi coding agent</span>
+      <span class="ichip"><i style="background:#a3a473"></i>ollama</span>
+      <span class="ichip"><i style="background:#d5d8db"></i>opencode</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── HONESTY ───────────────────────────────── -->
+<section class="band">
+  <div class="wrap">
+    <div class="honesty">
+      <div class="mark">◇</div>
+      <div>
+        <h3>Honesty is load-bearing.</h3>
+        <p>The proxy is measure-only. On a local, free model, the honest answer to "how much did apex save?" is exactly what the telemetry shows — not an inferred dollar figure. The standing rule: savings are token-equivalent, not dollars. Measurement, not attribution.</p>
+        <div class="honesty-items">
+          <div class="yes">Unified per-request telemetry</div>
+          <div class="yes">Cache-health observation</div>
+          <div class="yes">Latency + usage logging</div>
+          <div class="no">Dollar savings on local models</div>
+          <div class="no">Compression savings (doctrine-off)</div>
+          <div class="yes">No telemetry egress, ever</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── INSTALL ───────────────────────────────── -->
+<section class="band install" id="install">
+  <div class="wrap">
+    <span class="label">Install</span>
+    <h2 class="section-title">One command. <em>Arch-aware. Idempotent.</em></h2>
+    <p>The installer is composable — adopt only what you need. The routing core ships immediately; the proxy, local tiers, and watchers are all opt-in.</p>
+    <div class="term">
+      <div class="term-bar">
+        <span class="term-dots"><i></i><i></i><i></i></span>
+        <span class="term-title">bash — installing apex-router</span>
+      </div>
+      <div class="term-body" id="anim-install"></div>
+    </div>
+    <div class="flags">
+      <div class="flag"><code>--proxy</code><span>measuring proxy + offline tuner</span></div>
+      <div class="flag"><code>--watch</code><span>drain + daily report watchers</span></div>
+      <div class="flag"><code>--ornith-serve</code><span>local queue worker daemon</span></div>
+      <div class="flag"><code>--ornith-tier large</code><span>pull the 35B-A3B MoE tier</span></div>
+      <div class="flag"><code>--no-ornith</code><span>skip local model pulls</span></div>
+      <div class="flag"><code>--verify-only</code><span>check install, change nothing</span></div>
+    </div>
+    <div style="margin-top:36px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+      <a class="btn btn-primary" href="https://github.com/runapex/apex-router">View on GitHub ↗</a>
+      <a class="btn btn-ghost" href="https://github.com/runapex/apex-router/blob/main/README.md">Read the README</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ────────────────────────────────── -->
+<footer>
+  <div class="wrap">
+    <div class="foot-brand"><b>apex-router</b> · MIT License · no telemetry egress · runapex/apex-router</div>
+    <div class="foot-links">
+      <a href="https://github.com/runapex/apex-router">GitHub</a>
+      <a href="https://github.com/runapex/apex-router/blob/main/README.md">README</a>
+      <a href="https://github.com/runapex/apex-router/tree/main/docs">Docs</a>
+      <a href="https://github.com/runapex/apex-router/blob/main/LICENSE">License</a>
+      <a href="https://github.com/runapex/apex-router-skills">Skills</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* ── THEME TOGGLE (persisted, respects OS preference) ── */
+(function () {
+  const root = document.documentElement;
+  const saved = localStorage.getItem('apex-theme');
+  const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+  const initial = saved || (prefersLight ? 'light' : 'dark');
+  root.setAttribute('data-theme', initial);
+  const btn = document.getElementById('themeToggle');
+  btn.addEventListener('click', () => {
+    const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    localStorage.setItem('apex-theme', next);
+  });
+})();
+
+/* ─────────────────────────────────────────────────────────
+   Tiny ASCII animation engine — frame streams into <pre>.
+   Each animation is a generator producing HTML strings.
+   IntersectionObserver starts them when scrolled into view.
+   ───────────────────────────────────────────────────────── */
+
+function runAnim(el, framesFn, fps) {
+  let frames = framesFn();
+  let i = 0;
+  const interval = 1000 / (fps || 10);
+  let timer = null;
+  function tick() {
+    if (i >= frames.length) { i = 0; frames = framesFn(); }
+    el.innerHTML = frames[i++];
+  }
+  function start() { if (!timer) { tick(); timer = setInterval(tick, interval); } }
+  function stop()  { if (timer) { clearInterval(timer); timer = null; } }
+  return { start, stop, el };
+}
+
+const cur = '<span class="cursor">█</span>';
+function pad(s, n) { s = String(s); return s + ' '.repeat(Math.max(0, n - s.length)); }
+
+/* ── 1. ROUTING (hero) ─────────────────────── */
+function routingFrames() {
+  const scenarios = [
+    { task: 'fix the failing auth test',      cls: 'debug',    p1: 0.91, cell: 'debug/py',    model: 'sonnet-5',   tier: 'frontier', ok: true  },
+    { task: 'rename this local variable',      cls: 'refactor', p1: 0.88, cell: 'refactor/py', model: 'ornith-9b',  tier: 'local',    ok: true  },
+    { task: 'design the migration strategy',   cls: 'explore',  p1: 0.79, cell: 'explore/*',   model: 'opus-5',     tier: 'frontier', ok: true  },
+    { task: 'generate a clamp(x,lo,hi) fn',    cls: 'generate', p1: 0.94, cell: 'generate/py', model: 'ornith-35b', tier: 'local',    ok: true  },
+  ];
+  const F = [];
+  for (const s of scenarios) {
+    const head = '<span class="d">$ apex-router route</span>\n\n';
+    // typewriter the task
+    for (let k = 1; k <= s.task.length; k += 2) {
+      F.push(head + '<span class="w">task:</span> <span class="y">' + s.task.slice(0, k) + '</span>' + cur + '\n');
+    }
+    const base = head + '<span class="w">task:</span> <span class="y">' + s.task + '</span>\n\n';
+    // classify — fill a signal bar
+    for (let b = 0; b <= 10; b++) {
+      const bar = '█'.repeat(b) + '░'.repeat(10 - b);
+      F.push(base + '<span class="d">┌ classify ─────────────────┐</span>\n' +
+        '<span class="d">│</span> signal <span class="a">' + bar + '</span> <span class="d">│</span>\n' +
+        '<span class="d">└───────────────────────────┘</span>\n');
+    }
+    const clsBlock = base +
+      '<span class="d">┌ classify ─────────────────┐</span>\n' +
+      '<span class="d">│</span> class  <span class="s">' + pad(s.cls, 10) + '</span> p=<span class="a">' + s.p1.toFixed(2) + '</span> <span class="d">│</span>\n' +
+      '<span class="d">└───────────────────────────┘</span>\n\n';
+    // route table lookup
+    F.push(clsBlock + '<span class="d">resolve cell </span><span class="w">' + s.cell + '</span> <span class="d">…</span> ' + cur);
+    F.push(clsBlock + '<span class="d">resolve cell </span><span class="w">' + s.cell + '</span>\n' +
+      '<span class="d">└→ table hit</span>  <span class="' + (s.tier==='local'?'s':'a') + '">' + s.model + '</span> <span class="d">(' + s.tier + ')</span>\n');
+    // dispatch progress
+    for (let b = 0; b <= 12; b += 2) {
+      const bar = '━'.repeat(b) + '╌'.repeat(12 - b);
+      F.push(clsBlock + '<span class="d">resolve cell </span><span class="w">' + s.cell + '</span>\n' +
+        '<span class="d">└→</span> <span class="' + (s.tier==='local'?'s':'a') + '">' + s.model + '</span> <span class="a">' + bar + '</span>\n');
+    }
+    // result
+    const tick = s.tier === 'local' ? '<span class="g">✓ local · frontier tokens saved</span>' : '<span class="a">✓ routed · frontier</span>';
+    const res = clsBlock + '<span class="d">resolve cell </span><span class="w">' + s.cell + '</span>\n' +
+      '<span class="d">└→</span> <span class="' + (s.tier==='local'?'s':'a') + '">' + s.model + '</span>\n\n' + tick + '\n';
+    for (let h = 0; h < 13; h++) F.push(res);
+  }
+  return F;
+}
+
+/* ── 2. PROXY LOG ──────────────────────────── */
+function proxyFrames() {
+  const rows = [
+    { m: 'POST /v1/messages',         c: 'claude', in: 8717, out: 412, cache: '0/8717',    ms: 1840 },
+    { m: 'POST /v1/messages',         c: 'claude', in: 9021, out: 233, cache: '8600/9021', ms: 920  },
+    { m: 'POST /v1/chat/completions', c: 'codex',  in: 1204, out: 88,  cache: '—',         ms: 640  },
+    { m: 'POST /v1/messages',         c: 'claude', in: 9188, out: 771, cache: '8600/9188', ms: 1510 },
+  ];
+  const F = [];
+  const head = '<span class="d">telemetry ── measure-only, no egress</span>\n';
+  let log = [];
+  let tin = 0, tout = 0;
+  for (const r of rows) {
+    // incoming
+    F.push(head + '\n' + log.join('\n') + (log.length?'\n':'') +
+      '<span class="a">→</span> <span class="w">' + r.m + '</span> ' + cur);
+    F.push(head + '\n' + log.join('\n') + (log.length?'\n':'') +
+      '<span class="a">→</span> <span class="w">' + r.m + '</span>  <span class="d">forward byte-identical</span> ' + cur);
+    // response streams
+    for (let g = 3; g <= 9; g += 3) {
+      F.push(head + '\n' + log.join('\n') + (log.length?'\n':'') +
+        '<span class="a">→</span> <span class="w">' + r.m + '</span>  <span class="g">◀ ' + '·'.repeat(g) + '</span> ' + cur);
+    }
+    tin += r.in; tout += r.out;
+    log.push('<span class="g">✓</span> <span class="d">' + pad(r.c, 6) + '</span> in=<span class="a">' + pad(r.in, 5) + '</span> out=<span class="y">' + pad(r.out, 4) + '</span> cache <span class="s">' + pad(r.cache, 9) + '</span> <span class="d">' + r.ms + 'ms</span>');
+    if (log.length > 4) log.shift();
+    const foot = '\n<span class="d">── Σ tokens in=</span><span class="a">' + tin + '</span> <span class="d">out=</span><span class="y">' + tout + '</span>\n';
+    for (let h = 0; h < 8; h++) F.push(head + '\n' + log.join('\n') + '\n' + foot);
+  }
+  return F;
+}
+
+/* ── 3. OFFLOAD WORKER ─────────────────────── */
+function offloadFrames() {
+  const F = [];
+  const jobs = [
+    { id: 'a1f3', lane: 'codegen', spec: 'clamp(x, lo, hi)',     tests: 4, pass: 4, ok: true,  saved: 118 },
+    { id: 'b7c2', lane: 'codegen', spec: 'parse_semver(s)',      tests: 6, pass: 3, ok: false, saved: 0   },
+    { id: 'c9e0', lane: 'adhoc',   spec: 'summarize notes.md',    tests: 0, pass: 0, ok: true,  saved: 0   },
+  ];
+  let totalSaved = 0;
+  let done = [];
+  for (const j of jobs) {
+    const head = '<span class="d">jobs/inbox → worker (single-GPU, serialized)</span>\n\n';
+    const doneBlock = () => done.map(d=>d).join('\n') + (done.length?'\n\n':'');
+    // poll
+    F.push(head + doneBlock() + '<span class="d">poll jobs/inbox …</span> ' + cur);
+    F.push(head + doneBlock() + '<span class="a">▶ pick</span> <span class="w">' + j.id + '</span> <span class="d">lane=</span><span class="s">' + j.lane + '</span>\n<span class="d">spec: ' + j.spec + '</span>\n');
+    // local model thinking-off generation
+    for (let b = 0; b <= 12; b += 3) {
+      const bar = '━'.repeat(b) + '╌'.repeat(12 - b);
+      F.push(head + doneBlock() + '<span class="a">▶</span> <span class="w">' + j.id + '</span> <span class="d">ornith · thinking OFF</span>\n<span class="s">gen</span> <span class="a">' + bar + '</span>\n');
+    }
+    if (j.lane === 'codegen') {
+      // run tests
+      for (let t = 1; t <= j.tests; t++) {
+        const ln = [];
+        for (let k = 1; k <= j.tests; k++) {
+          if (k < t) ln.push('<span class="g">✓</span>');
+          else if (k === t) ln.push(k <= j.pass ? '<span class="g">✓</span>' : '<span class="r">✗</span>');
+          else ln.push('<span class="d">·</span>');
+        }
+        F.push(head + doneBlock() + '<span class="a">▶</span> <span class="w">' + j.id + '</span> <span class="d">run caller tests</span>\n<span class="d">tests [</span>' + ln.join('') + '<span class="d">] ' + Math.min(t,j.pass) + '/' + j.tests + '</span>\n');
+      }
+      if (j.ok) {
+        totalSaved += j.saved;
+        done.push('<span class="g">✓ ' + j.id + '</span> <span class="d">gated · ok · not escalated →</span> <span class="g">saved ' + j.saved + ' tok</span>');
+      } else {
+        done.push('<span class="y">↑ ' + j.id + '</span> <span class="d">tests ' + j.pass + '/' + j.tests + ' →</span> <span class="y">escalate frontier · saved 0</span>');
+      }
+    } else {
+      done.push('<span class="a">• ' + j.id + '</span> <span class="d">adhoc chat · booked cost, saved 0</span>');
+    }
+    if (done.length > 3) done.shift();
+    const foot = '<span class="d">── Σ frontier_completion_tokens_saved = </span><span class="g">' + totalSaved + '</span>\n';
+    for (let h = 0; h < 9; h++) F.push(head + done.join('\n') + '\n\n' + foot);
+  }
+  return F;
+}
+
+/* ── 4. INSTALL (typewriter) ───────────────── */
+function installFrames() {
+  const lines = [
+    { t: '<span class="d">$</span> <span class="w">curl -fsSL https://raw.githubusercontent.com/runapex/apex-router/main/install.sh | bash</span>', type: true },
+    { t: '', type: false },
+    { t: '<span class="a">→</span> detecting arch ……… <span class="g">darwin/arm64</span>', type: false },
+    { t: '<span class="a">→</span> python ≥3.11, uv …… <span class="g">ok</span>', type: false },
+    { t: '<span class="a">→</span> apex-router pkg …… <span class="g">installed</span> <span class="d">(pure stdlib)</span>', type: false },
+    { t: '<span class="a">→</span> ollama + nomic-embed <span class="g">ok</span>', type: false },
+    { t: '<span class="a">→</span> ornith 9b tier ……… <span class="g">pulled</span>', type: false },
+    { t: '<span class="a">→</span> starter route table <span class="g">written</span> <span class="d">(→ static defaults)</span>', type: false },
+    { t: '', type: false },
+    { t: '<span class="g">✓ apex-router ready.</span> <span class="d">routing core is live.</span>', type: false },
+    { t: '<span class="d">$</span> <span class="w">apex-router verify</span>', type: false },
+    { t: '<span class="g">✓ routing works</span> <span class="d">(exit 0)</span>', type: false },
+  ];
+  const F = [];
+  let shown = [];
+  for (const line of lines) {
+    if (line.type) {
+      // typewriter the raw text (strip tags for measuring length is complex — just reveal in chunks)
+      const plain = line.t;
+      // reveal by growing substring on the visible text portion
+      const parts = plain.split('</span>');
+      let acc = '';
+      for (let p = 0; p < parts.length; p++) {
+        acc += parts[p] + (p < parts.length - 1 ? '</span>' : '');
+        F.push(shown.concat([acc + cur]).join('\n'));
+      }
+      shown.push(plain);
+    } else {
+      shown.push(line.t);
+      for (let h = 0; h < 3; h++) F.push(shown.join('\n') + (line===lines[lines.length-1] ? '\n' + cur : ''));
+    }
+  }
+  for (let h = 0; h < 14; h++) F.push(shown.join('\n') + '\n' + cur);
+  return F;
+}
+
+/* ── wire up with IntersectionObserver ─────── */
+const anims = [
+  runAnim(document.getElementById('anim-routing'), routingFrames, 10),
+  runAnim(document.getElementById('anim-proxy'),   proxyFrames,    9),
+  runAnim(document.getElementById('anim-offload'), offloadFrames,  9),
+  runAnim(document.getElementById('anim-install'), installFrames, 12),
+];
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const a = anims.find(x => x.el === e.target);
+    if (!a) continue;
+    if (e.isIntersecting) a.start(); else a.stop();
+  }
+}, { threshold: 0.15 });
+anims.forEach(a => io.observe(a.el));
+</script>
+
+</body>
+</html>
