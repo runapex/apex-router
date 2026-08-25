@@ -20,6 +20,29 @@ REG = {
 }
 
 
+class _EnvIsolatedTestCase(unittest.TestCase):
+    """Every test in this file can reach a default-path conformance emit via resolve_text().
+    Isolate both log env vars to per-test temp files and restore the previous values after."""
+
+    def setUp(self):
+        self._prev_conformance_log = os.environ.get("APEX_CONFORMANCE_LOG")
+        self._prev_router_log = os.environ.get("APEX_ROUTER_LOG")
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["APEX_CONFORMANCE_LOG"] = str(Path(self._tmp.name) / "conformance.jsonl")
+        os.environ["APEX_ROUTER_LOG"] = str(Path(self._tmp.name) / "route_log.jsonl")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._prev_conformance_log is None:
+            os.environ.pop("APEX_CONFORMANCE_LOG", None)
+        else:
+            os.environ["APEX_CONFORMANCE_LOG"] = self._prev_conformance_log
+        if self._prev_router_log is None:
+            os.environ.pop("APEX_ROUTER_LOG", None)
+        else:
+            os.environ["APEX_ROUTER_LOG"] = self._prev_router_log
+
+
 def _table(tmp: Path, cells) -> Path:
     p = tmp / "route_table.skill.json"
     p.write_text(json.dumps({"schema_version": 1, "venue": "skill",
@@ -27,7 +50,7 @@ def _table(tmp: Path, cells) -> Path:
     return p
 
 
-class TestResolveText(unittest.TestCase):
+class TestResolveText(_EnvIsolatedTestCase):
     def test_empty_table_falls_back_to_static_map(self):
         with tempfile.TemporaryDirectory() as d:
             tp = _table(Path(d), [])
@@ -101,7 +124,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestVenueResolution(unittest.TestCase):
+class TestVenueResolution(_EnvIsolatedTestCase):
     VENUE_REG = {
         "tiers": {"haiku": "H", "sonnet": "S", "opus": "O"},
         "pi_families": {},
@@ -158,7 +181,7 @@ class TestVenueResolution(unittest.TestCase):
             self.assertEqual(out["model"], "O")
 
 
-class TestConformanceEmitGate(unittest.TestCase):
+class TestConformanceEmitGate(_EnvIsolatedTestCase):
     """P1-b: the tier-conformance emitter fires ONLY for static skill resolutions. A venue
     route (kimi/codex) or a promoted route-table cell INTENTIONALLY returns a model off the
     static tier map, so emitting a conformance row for it would be false drift."""

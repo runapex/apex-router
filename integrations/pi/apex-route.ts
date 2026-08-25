@@ -140,9 +140,27 @@ async function resolveTask(task: string): Promise<{ model?: string; task_type?: 
 }
 
 /** Fail-safe outcome log — must never break a turn (route-log exits 0 by contract). */
-function logOutcome(taskType: string, startTier: string, outcome: "ok" | "escalated", note = ""): void {
-	execFile(APEX_BIN, ["route-log", "--task-type", taskType, "--start-tier", startTier,
-		"--outcome", outcome, "--note", note], { timeout: 10_000 }, () => {});
+function logOutcome(
+	taskType: string,
+	startTier: string,
+	outcome: "ok" | "escalated",
+	note = "",
+	sessionId?: string,
+	contextSize?: number,
+): void {
+	const args = [
+		"route-log", "--task-type", taskType, "--start-tier", startTier,
+		"--outcome", outcome, "--note", note,
+	];
+	if (sessionId) args.push("--session-id", sessionId);
+	if (typeof contextSize === "number" && Number.isFinite(contextSize) && contextSize >= 0) {
+		args.push("--context-size", String(Math.floor(contextSize)));
+	}
+	try {
+		execFile(APEX_BIN, args, { timeout: 10_000 }, () => {});
+	} catch {
+		// spawning must never break the turn
+	}
 }
 
 /** Fail-safe conformance row — shell to route-check --record so Python owns the JSONL schema.
@@ -280,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 	// Escalation auto-log: when a one-shot cue turn finishes, record ok/escalated.
 	// "escalated" = the cheap turn observably failed (provider error or empty answer) —
 	// observable failure only, never a quality judgment (that's cross-validate's job).
-	pi.on("turn_end", async (event, _ctx) => {
+	pi.on("turn_end", async (event, ctx) => {
 		if (!pendingCue) return;
 		const cue = pendingCue;
 		pendingCue = undefined;
@@ -292,14 +310,31 @@ export default function (pi: ExtensionAPI) {
 		const startTier = cue.family === "auto"
 			? (resolvedModelId ?? "auto")
 			: (routes[cue.family]?.id ?? cue.family);
+		// Session id and context-size are best-effort telemetry; gather them safely and
+		// pass only when genuinely available. Any failure here must not stop the log.
+		let sessionId: string | undefined;
+		let contextSize: number | undefined;
+		try {
+			sessionId = process.env.PI_SESSION_ID || undefined;
+		} catch {
+			// env read should never throw, but keep the turn safe
+		}
+		try {
+			const usage = ctx.getContextUsage();
+			if (usage && typeof usage.tokens === "number" && Number.isFinite(usage.tokens)) {
+				contextSize = Math.max(0, Math.floor(usage.tokens));
+			}
+		} catch {
+			// context usage is advisory; leave unset if unavailable
+		}
+		const note = failed ? "auto: provider error/empty" : "auto";
 		if (cue.taskType) {
-			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok",
-				failed ? "auto: provider error/empty" : "auto");
+			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok", note, sessionId, contextSize);
 		} else {
 			// classify once, then log — both fail-safe CLI calls.
 			resolveTask(cue.task).then((r) =>
 				logOutcome(r?.task_type || "adhoc", startTier, failed ? "escalated" : "ok",
-					failed ? "auto: provider error/empty" : "auto"));
+					note, sessionId, contextSize));
 		}
 	});
 
