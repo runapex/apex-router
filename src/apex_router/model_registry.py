@@ -49,6 +49,11 @@ DEFAULTS: dict = {
         "kimi-code": {"provider": "moonshotai", "id": "kimi-k2.7-code"},
         "frontier": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
         "deep": {"provider": "anthropic", "tier": "opus", "effort": "high"},
+        # GPT-5.6 tiers are explicit pi families. They use the Codex provider so they
+        # work with the ChatGPT/Codex subscription without an OpenAI API key.
+        "gpt-luna": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
+        "gpt-terra": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
+        "gpt-sol": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
     # /learn pipeline stages resolve through tiers too.

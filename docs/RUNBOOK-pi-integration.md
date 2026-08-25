@@ -63,8 +63,11 @@ rather than `@` because pi reserves `@` for file mentions.)
 ```
 >>local    fix this flaky test          # active local family (ollama, no proxy hop)
 >>kimi      summarise this diff          # Kimi K2 (via the apex proxy)
->>frontier design the migration plan     # Claude Sonnet (via the apex proxy)
->>deep     audit this for race hazards   # Claude Opus (via the apex proxy)
+>>frontier  design the migration plan     # Claude Sonnet (via the apex proxy)
+>>deep      audit this for race hazards   # Claude Opus (via the apex proxy)
+>>gpt-luna  locate the config loader      # GPT-5.6 Luna (Codex)
+>>gpt-terra implement a feature           # GPT-5.6 Terra (Codex)
+>>gpt-sol   audit a concurrency design    # GPT-5.6 Sol (Codex)
 ```
 
 **Sticky switch** — changes the active model until you change it again:
@@ -83,6 +86,10 @@ same file codeqa's tier_router and `/learn` read, so a tier bump moves every com
 A family pins `{"provider","id"}`, references a tier `{"provider","tier"}` (resolved via
 the registry's `tiers` map, optionally with `"effort"`), or — for `local` — follows the
 ACTIVE ornith tier (`{"source":"ornith.env"}`, so `>>local` never loads a second tier).
+The built-in GPT-5.6 families use Pi's `openai-codex` provider: `gpt-luna` (low
+reasoning), `gpt-terra` (medium), and `gpt-sol` (high). They use the existing Codex
+provider directly; they are not sent through the Anthropic/Kimi measuring proxy.
+
 Per-family overrides without touching the registry still work via
 `~/.apex-router/pi-routes.json` (back-compat overlay):
 
@@ -136,8 +143,9 @@ Those units read `ornith.env` at startup — no plist edits required.
 
 - `>>auto <task>` — `apex-router resolve` classifies the task and picks the model
   (adaptive core; static floor until gate cells promote).
-- **Per-family effort** — a family's `"effort"` in the registry is applied to the
-  anthropic payload per request (the cache-free output-cost dial).
+- **Per-family effort** — a family's `"effort"` in the registry is applied through
+  Pi's thinking-level API per request: `output_config.effort` for Anthropic and
+  `reasoning_effort` for OpenAI/Codex (the cache-free output-cost dial).
 - **Session attribution** — the extension adds `x-claude-code-session-id` (pi's session
   id) to every proxied request, so per-session cost reports include pi traffic.
 - **Escalation auto-log** — a one-shot `>>cue` turn logs ok/escalated to `route-log`
@@ -154,7 +162,7 @@ Those units read `ornith.env` at startup — no plist edits required.
 curl -s localhost:8788/status | jq '.status, .posture'
 
 # models.json is valid and the proxied families load
-pi --list-models | grep -E 'anthropic|moonshotai' | head
+pi --list-models | grep -E 'anthropic|moonshotai|openai-codex' | head
 
 # the extension loads cleanly (no throw on startup) and registers its command
 pi -e integrations/pi/apex-route.ts --list-models >/dev/null && echo "extension OK"

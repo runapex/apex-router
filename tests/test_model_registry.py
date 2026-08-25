@@ -50,6 +50,15 @@ class TestModelRegistry(unittest.TestCase):
     def test_tier_model_returns_none_for_unknown(self):
         self.assertIsNone(model_registry.tier_model("nonexistent"))
 
+    def test_gpt_5_6_families_use_the_codex_provider_and_matching_effort(self):
+        fams = model_registry.families()
+        self.assertEqual(fams["gpt-luna"],
+                         {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"})
+        self.assertEqual(fams["gpt-terra"],
+                         {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"})
+        self.assertEqual(fams["gpt-sol"],
+                         {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"})
+
     def test_families_resolves_tier_family_and_omits_unresolvable(self):
         with tempfile.TemporaryDirectory() as tmp:
             overlay = {"pi_families": {"frontier": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"}}}

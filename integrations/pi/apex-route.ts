@@ -14,9 +14,12 @@
  *                                              Ornith; a machine overlay may point `local` at another
  *                                              family via `local_families` in ~/.apex-router/models.json)
  *   >>kimi     summarise this diff         -> Kimi (via the apex proxy)
- *   >>frontier design the migration plan   -> sonnet tier (via the apex proxy)
- *   >>deep     audit this for race hazards -> opus tier (via the apex proxy)
- *   >>auto     <task>                      -> apex-router resolve picks the model
+ *   >>frontier  design the migration plan   -> sonnet tier (via the apex proxy)
+ *   >>deep      audit this for race hazards -> opus tier (via the apex proxy)
+ *   >>gpt-luna  find the config loader      -> GPT-5.6 Luna (Codex)
+ *   >>gpt-terra implement the feature       -> GPT-5.6 Terra (Codex)
+ *   >>gpt-sol   audit this for race hazards -> GPT-5.6 Sol (Codex)
+ *   >>auto      <task>                      -> apex-router resolve picks the model
  *                                             (adaptive core; static floor until cells promote)
  *
  * Also on board:
@@ -43,7 +46,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 const execFileP = promisify(execFile);
 
-type Route = { provider: string; id: string; effort?: string };
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type Route = { provider: string; id: string; effort?: ThinkingLevel };
 
 const APEX_HOME = join(homedir(), ".apex-router");
 const APEX_BIN = process.env.APEX_ROUTER_BIN || join(homedir(), ".local", "bin", "apex-router");
@@ -57,6 +61,9 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	"kimi-deep": { provider: "moonshotai", id: "kimi-k3" },  // 1M ctx — long sessions (K1)
 	frontier: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
 	deep: { provider: "anthropic", id: "claude-opus-4-8", effort: "high" },
+	"gpt-luna": { provider: "openai-codex", id: "gpt-5.6-luna", effort: "low" },
+	"gpt-terra": { provider: "openai-codex", id: "gpt-5.6-terra", effort: "medium" },
+	"gpt-sol": { provider: "openai-codex", id: "gpt-5.6-sol", effort: "high" },
 };
 
 function readJson(path: string): any | undefined {
@@ -65,6 +72,10 @@ function readJson(path: string): any | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+	return typeof value === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
 function activeOrnithModel(): string | undefined {
@@ -100,7 +111,7 @@ function loadRoutes(): Record<string, Route> {
 		} else {
 			continue;
 		}
-		if (typeof spec.effort === "string" && spec.effort) entry.effort = spec.effort;
+		if (isThinkingLevel(spec.effort)) entry.effort = spec.effort;
 		routes[name] = entry as Route;
 	}
 	// Back-compat overlay: an explicit pi-routes.json still wins per family.
@@ -178,6 +189,9 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`apex-route: no API key for ${route.provider}/${route.id}`, "error");
 			return false;
 		}
+		// Thinking level is provider-neutral in pi: this reaches OpenAI/Codex as
+		// reasoning_effort and Anthropic as output_config.effort.
+		if (route.effort) pi.setThinkingLevel(route.effort);
 		// Record the conformance row ONLY after a REAL dispatch: a switch that fails (no API
 		// key) or a bare sticky cue that never dispatches must not inflate the observation
 		// count with a "conformant dispatch" that did not happen (P2-e).
@@ -195,12 +209,15 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("apex-route >>auto: resolve failed — staying on current model", "warning");
 			return false;
 		}
-		// Find the model across providers we actually have registered.
-		for (const provider of ["anthropic", "moonshotai", "ollama"]) {
+		// Find the model across providers we actually have registered. Keep Codex before
+		// direct OpenAI so an authenticated ChatGPT/Codex subscription is preferred.
+		for (const provider of ["anthropic", "moonshotai", "ollama", "openai-codex", "openai"]) {
 			const model = ctx.modelRegistry.find(provider, id);
 			if (model) {
 				const ok = await pi.setModel(model);
 				if (ok) {
+					const route = Object.values(routes).find((r) => r.provider === provider && r.id === id);
+					if (route?.effort) pi.setThinkingLevel(route.effort);
 					resolvedModelId = id; // for the outcome log (not the literal "auto")
 					ctx.ui.notify(
 						`>>auto → ${provider}/${id} (${resolved?.task_type || "unclassified"})`, "info");
@@ -214,14 +231,19 @@ export default function (pi: ExtensionAPI) {
 
 	// Inline task cue: `>><family> <task>` switches for JUST this task, then restores.
 	let savedModel: ExtensionContext["model"] | undefined;
+	let savedThinkingLevel: ExtensionContext["thinkingLevel"] | undefined;
 	// Pending one-shot cue bookkeeping for the escalation auto-log.
 	let pendingCue: { family: string; task: string; taskType?: string } | undefined;
 	let resolvedModelId: string | undefined; // >>auto: the model resolve() picked
 
 	async function restoreIfPending(): Promise<void> {
-		if (savedModel) {
-			await pi.setModel(savedModel);
-			savedModel = undefined;
+		const model = savedModel;
+		const thinkingLevel = savedThinkingLevel;
+		savedModel = undefined;
+		savedThinkingLevel = undefined;
+		if (model) {
+			await pi.setModel(model);
+			if (thinkingLevel) pi.setThinkingLevel(thinkingLevel);
 		}
 	}
 
@@ -233,6 +255,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const [, family, rest] = m;
 		const snapshot = ctx.model;
+		const snapshotThinkingLevel = ctx.thinkingLevel;
 		const switched = family === "auto" && rest?.trim()
 			? await switchAuto(rest, ctx)
 			: await switchTo(family, ctx);
@@ -244,7 +267,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`apex-route: switched to ${family} (sticky)`, "info");
 			return { action: "handled" };
 		}
-		if (!savedModel) savedModel = snapshot;
+		if (!savedModel) {
+			savedModel = snapshot;
+			savedThinkingLevel = snapshotThinkingLevel;
+		}
 		// task_type for the outcome log: reuse resolve's classification when we already
 		// called it (>>auto), else classify cheaply in the background at turn end.
 		pendingCue = { family, task: rest };
