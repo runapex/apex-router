@@ -88,6 +88,13 @@ def main(argv=None) -> int:
     # Hidden write-path (single schema owner): a caller shells `route-check --record <json>`
     # to append one conformance row via log_conformance, fail-open.
     check_p.add_argument("--record", help=argparse.SUPPRESS)
+    # Phase-0 training-table join: route_log outcomes x conformance features. Produces the
+    # labeled table used by the router learner. Read-only and fail-safe like route-check.
+    join_p = sub.add_parser(
+        "route-join",
+        help="Phase-0 labeled training table: route_log x conformance join")
+    join_p.add_argument("--json", action="store_true")
+    join_p.add_argument("--out", type=Path, help="write joined table JSONL to PATH")
     # Advise: turn the escalation rates into an evidence-backed routing recommendation per
     # task-type, gated on statistical significance (Wilson CI + a sample floor). Recommends only;
     # it never mutates a config or a skill — the caller reads the advice and decides.
@@ -239,6 +246,15 @@ def main(argv=None) -> int:
         elif args.json:
             argv = ["--json"]
         return route_conformance.main(argv)
+
+    if args.cmd == "route-join":
+        from . import route_join
+        argv = []
+        if args.json:
+            argv.append("--json")
+        if args.out:
+            argv += ["--out", str(args.out)]
+        return route_join.main(argv)
 
     if args.cmd == "route-advise":
         # Read-only, fail-safe (same contract as route-readout): never break a caller. Emits a
