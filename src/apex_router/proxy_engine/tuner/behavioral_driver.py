@@ -51,6 +51,7 @@ def build_driver(
     token_provider=default_token_provider,
     max_tokens: int = 512,
     budget_tokens: int | None = None,
+    call_api=None,
 ):
     """Build an `ask_model(prompt, tools)` bound to a live model, plus a `.spent` token tally.
 
@@ -58,26 +59,31 @@ def build_driver(
     reads APEX_BEARER_TOKEN). `budget_tokens` (output+input across all calls) caps spend — the next
     call past it raises BudgetExceeded rather than quietly overrunning. The retrieval tool is served
     from a per-call StubResolver the gate registered.
+
+    call_api: injectable (body -> response dict) for offline A/B tests against state_driver;
+    None = POST to the apex upstream (default, production behavior unchanged).
     """
-    bearer = token or token_provider()
     tally = {"in": 0, "out": 0}
 
     def _spent() -> int:
         return tally["in"] + tally["out"]
 
-    def _post(body: dict) -> dict:
-        req = urllib.request.Request(
-            base_url.rstrip("/") + "/v1/messages",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "authorization": f"Bearer {bearer}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    if call_api is None:
+        bearer = token or token_provider()
+
+        def call_api(body: dict) -> dict:  # noqa: F811 — intentional rebind as the live POST
+            req = urllib.request.Request(
+                base_url.rstrip("/") + "/v1/messages",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "content-type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                    "authorization": f"Bearer {bearer}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                return json.loads(resp.read().decode("utf-8"))
 
     def ask_model(prompt: str, tools: list, *, resolver: StubResolver | None = None) -> dict:
         if budget_tokens is not None and _spent() >= budget_tokens:
@@ -91,7 +97,7 @@ def build_driver(
         for _ in range(MAX_TOOL_ROUNDS):
             body = {"model": DRIVER_MODEL, "max_tokens": max_tokens,
                     "messages": messages, "tools": api_tools}
-            resp = _post(body)
+            resp = call_api(body)
             usage = resp.get("usage") or {}
             tally["in"] += (usage.get("input_tokens") or 0) + (usage.get("cache_read_input_tokens") or 0)
             tally["out"] += usage.get("output_tokens") or 0
