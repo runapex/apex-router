@@ -1,0 +1,4 @@
+{"prompt":"Reverse the string 'hello'.","expect_contains":"olleh"}
+{"prompt":"What is 17 + 25?","expect_contains":"42"}
+{"prompt":"Name the data structure with LIFO order.","expect_contains":"stack"}
+{"prompt":"Complete: def add(a,b): return","expect_contains":"a + b"}

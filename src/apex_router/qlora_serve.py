@@ -93,6 +93,9 @@ def evaluate(cycle_id: str, *, generate_base_fn, generate_cand_fn, gate_fn,
     Returns a decision dict; only promotes (repoints) when BOTH bars pass.
     """
     probe = load_probe(probe_path)
+    if not probe:
+        return {"promoted": False, "reason": "general probe unavailable or empty",
+                "probe_pre": None, "probe_post": None}
     pre = run_probe(probe, generate_base_fn)
     post = run_probe(probe, generate_cand_fn)
     if post < pre - PROBE_DROP_LIMIT:

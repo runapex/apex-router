@@ -40,12 +40,21 @@ class Rates:
 # move;
 # the regime string carries the date so a stale table is visible.
 _LIST_PRICE_DATE = "2026-07-list"
+_KIMI_PRICE_DATE = "2026-08-pi-catalog"
 
 _TABLE: tuple[tuple[str, str, Rates], ...] = (
     # Anthropic — opus tier: input 15 / cache-read 1.5 (0.1×) / cache-write 18.75 (1.25×) / output 75
     ("opus", "anthropic", Rates(15.0, 1.5, 18.75, 75.0, f"list:opus/anthropic:{_LIST_PRICE_DATE}")),
     ("sonnet", "anthropic", Rates(3.0, 0.3, 3.75, 15.0, f"list:sonnet/anthropic:{_LIST_PRICE_DATE}")),
     ("haiku", "anthropic", Rates(0.8, 0.08, 1.0, 4.0, f"list:haiku/anthropic:{_LIST_PRICE_DATE}")),
+    # Moonshot/Kimi over the OpenAI-compatible wire. Rates are pinned in
+    # docs/DECISION-kimi-codex-routing.md from the 2026-08 pi catalog. Cache writes are free.
+    ("kimi-k2.7-code", "openai", Rates(0.95, 0.19, 0.0, 4.0,
+                                       f"list:kimi-k2.7-code/openai:{_KIMI_PRICE_DATE}")),
+    ("kimi-k2.6", "openai", Rates(0.95, 0.16, 0.0, 4.0,
+                                  f"list:kimi-k2.6/openai:{_KIMI_PRICE_DATE}")),
+    ("kimi-k3", "openai", Rates(3.0, 0.3, 0.0, 15.0,
+                                 f"list:kimi-k3/openai:{_KIMI_PRICE_DATE}")),
     # OpenAI (Codex) — gpt-5 tier: input 15 / cache-read 1.5 / NO cache-write (automatic caching) /
     # output 60.
     # cache_write=0.0 is STRUCTURAL, not unknown: the OpenAI Responses usage carries no write field
@@ -54,29 +63,26 @@ _TABLE: tuple[tuple[str, str, Rates], ...] = (
 )
 
 
-# Cheaper SKUs that SHARE a flagship substring but are NOT the flagship price. Substring matching is
-# needed to strip vendor prefixes (`<gateway>-gpt-5.x` → gpt-5 family), but it would also map
-# `gpt-5-mini`/`gpt-5-nano` — much cheaper tiers — onto the full gpt-5 rate (a ~60× overprice). The
-# markers force such a model to the labeled `unknown` rate instead of a wrong flagship number, until
-# a real row for the SKU is priced. (cross-validation: a substring match must not silently mis-SKU.)
-# Matched as DELIMITED TOKENS, not raw substrings, so a flagship routed through a proxy whose NAME
-# merely contains the letters (`litellm-gpt-5` has "lite", `satellite-…` has "lite") is NOT refused
-# (cross-validation — my own substring fix introduced that regression; this is the delimited repair).
-_CHEAPER_VARIANT_MARKERS = frozenset({"mini", "nano", "small", "lite"})
+# Differently-priced SKUs that SHARE a base-model substring. Substring matching is needed to strip
+# vendor prefixes (`<gateway>-gpt-5.x` → gpt-5 family), but it would also map cheap
+# `gpt-5-mini`/`nano` or premium `kimi-k3-turbo`/`highspeed` variants onto the base rate. Markers
+# force these models to labeled `unknown` until their own rate is pinned. Matched as DELIMITED TOKENS,
+# not raw substrings, so `litellm-gpt-5` (contains the letters "lite") is not refused.
+_UNPRICED_VARIANT_MARKERS = frozenset({"mini", "nano", "small", "lite", "turbo", "highspeed"})
 
 
 def _has_variant_token(model: str) -> bool:
-    """True iff a cheaper-variant marker appears as a whole DELIMITED token in the model name.
-    `gpt-5-mini` → tokens {gpt,5,mini} → matches `mini`; `litellm-gpt-5` → {litellm,gpt,5} → no."""
+    """True iff a differently-priced variant marker is a whole DELIMITED model-name token."""
     tokens = set(re.split(r"[^a-z0-9]+", model))
-    return bool(tokens & _CHEAPER_VARIANT_MARKERS)
+    return bool(tokens & _UNPRICED_VARIANT_MARKERS)
 
 
 def rates_for(model: str | None, endpoint_id: str | None) -> Rates:
     """Look up $/M rates for a (model, endpoint). Endpoint exact; model family matched by SUBSTRING
-    (to strip vendor prefixes), EXCEPT a delimited cheaper-variant token (`mini`/`nano`/…) forces
-    `unknown` so a cheaper SKU is never billed at the flagship rate. The returned regime NAMES the
-    actual model so every substring match is auditable. Unknown → a labeled zero-rate `unknown`
+    (to strip vendor prefixes), EXCEPT a delimited differently-priced variant token
+    (`mini`/`nano`/`turbo`/…) forces `unknown` so a variant is never billed at the base rate.
+    The returned regime NAMES the actual model so every substring match is auditable. Unknown →
+    a labeled zero-rate `unknown`
     regime (a dollar figure on it reads as un-priced, never faked)."""
     m = (model or "").lower()
     ep = (endpoint_id or "").lower()
@@ -84,6 +90,6 @@ def rates_for(model: str | None, endpoint_id: str | None) -> Rates:
         for sub, endpoint, base in _TABLE:
             if sub in m and endpoint == ep:
                 # Rebuild the regime to carry the ACTUAL model, not just the family substring.
-                regime = f"list:{sub}/{endpoint}:{_LIST_PRICE_DATE}({model})"
+                regime = f"{base.pricing_regime}({model})"
                 return Rates(base.input, base.cache_read, base.cache_write, base.output, regime)
     return Rates(0.0, 0.0, 0.0, 0.0, f"unknown:{model!r}/{endpoint_id!r}")

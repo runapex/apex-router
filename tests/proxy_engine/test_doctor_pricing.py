@@ -17,6 +17,25 @@ def test_openai_gpt5_has_no_cache_write_and_is_labeled():
     assert "list:gpt-5/openai" in r.pricing_regime
 
 
+def test_kimi_openai_wire_rates_are_pinned_and_labeled():
+    expected = {
+        "kimi-k3": (3.0, 0.3, 15.0),
+        "kimi-k2.7-code": (0.95, 0.19, 4.0),
+        "kimi-k2.6": (0.95, 0.16, 4.0),
+    }
+    for model, (input_rate, read_rate, output_rate) in expected.items():
+        r = rates_for(model, "openai")
+        assert (r.input, r.cache_read, r.cache_write, r.output) == (
+            input_rate, read_rate, 0.0, output_rate,
+        )
+        assert f"list:{model}/openai:2026-08-pi-catalog" in r.pricing_regime
+
+
+def test_kimi_premium_variants_stay_unpriced_until_their_rate_is_pinned():
+    for model in ("kimi-k3-turbo", "kimi-k2.7-code-highspeed"):
+        assert rates_for(model, "openai").pricing_regime.startswith("unknown:")
+
+
 def test_unknown_pair_is_labeled_unknown_with_zero_rates():
     # a dollar figure on unpriced traffic must read as un-priced, never faked
     r = rates_for("some-future-model", "some-endpoint")

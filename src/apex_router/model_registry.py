@@ -63,7 +63,7 @@ DEFAULTS: dict = {
     # so the 1M-window kimi-k3 is the only Kimi model that fits it AS USED — k3's window
     # is load-bearing, and at list price k3 == sonnet-5 ($3/$0.3-read/$15-out) with FREE
     # cache writes. The cost lever is CONTEXT REDUCTION, not model choice: under
-    # `downshift_ctx_ceiling`, `downshift_model` (k2.7-code, 262k window) is ~2.9x cheaper
+    # `downshift_ctx_ceiling`, `downshift_model` (k2.7-code, 262k window) is cheaper
     # and code-specialized. Turbo/highspeed variants are never defaults (2x price,
     # latency-only benefit).
     "venues": {

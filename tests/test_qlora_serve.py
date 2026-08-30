@@ -48,3 +48,22 @@ def test_probe_regression_rejects(tmp_path, monkeypatch):
     dec = evaluate("cyc8", generate_base_fn=base, generate_cand_fn=cand, gate_fn=lambda: True)
     assert dec["promoted"] is False and "probe regressed" in dec["reason"]
     assert not (tmp_path/"ptr.json").exists()   # incumbent untouched
+
+
+def test_missing_probe_fails_closed(tmp_path, monkeypatch):
+    pointer = tmp_path / "ptr.json"
+    monkeypatch.setenv("APEX_LOCAL_POINTER", str(pointer))
+    dec = evaluate(
+        "cyc9",
+        generate_base_fn=lambda _p: "good",
+        generate_cand_fn=lambda _p: "good",
+        gate_fn=lambda: True,
+        probe_path=tmp_path / "missing.jsonl",
+    )
+    assert dec == {
+        "promoted": False,
+        "reason": "general probe unavailable or empty",
+        "probe_pre": None,
+        "probe_post": None,
+    }
+    assert not pointer.exists()

@@ -5,6 +5,18 @@ route table, nightly context watch, pi `kimi-code` family).
 
 ## Measured basis (live telemetry, `~/.apex/telemetry.jsonl`)
 
+> **2026-08-30 measurement correction (supersedes the context figures below):** OpenAI-wire
+> `tokens_in` is the total prompt and `cache_read_tokens` is a subset; adding them double-counted
+> cached tokens. On the latest local 14-day query, 592 context-bearing Codex requests spanning
+> 2.19 days have p50 **101,770**, p95 **268,277**, max **289,436**, and **539/592 (91%)** fit
+> the 250k downshift ceiling. The available span is too short to call the >70% reversal trigger
+> sustained, and 53 requests still exceed the policy's 250k downshift ceiling, so the safe no-context
+> default remains k3 while per-request context-aware downshifting continues. On the 352 eligible
+> k3 requests, corrected wire-aware pricing is **$19.64 on k3 vs $10.47 on k2.7-code = 1.88×**
+> (quality held constant), not 2.9×. `nightly.py` now applies provider-wire semantics and
+> regression-tests this invariant. The historical snapshot below is retained as decision provenance,
+> but its context percentiles, spend, eligibility rate, and 2.9× counterfactual are invalid.
+
 - Codex-venue traffic is **100% kimi-k3**: 252 requests, 2 sessions, 37.9M cached-read
   + 38.6M fresh input tokens, 137k output. Modeled cost at pi-catalog list rates
   (k3: $3 in / $0.30 cache-read / $0 cache-write / $15 out per 1M): **≈ $129**.
@@ -24,8 +36,9 @@ list-price-identical to sonnet-5 with free cache writes, so there is no cheaper
 model that can serve the workload *as it is shaped today*.
 
 **K2 — The codex cost lever is CONTEXT REDUCTION, and it is now instrumented.**
-Under 250k context, `kimi-k2.7-code` (code-specialized, 262k window) serves the same
-traffic at **≈ $44.5 vs $129 (2.9× cheaper)** on the measured window. Policy:
+Under 250k context, `kimi-k2.7-code` (code-specialized, 262k window) is cheaper; on the
+corrected 2026-08-30 eligible-k3 slice it prices at **$10.47 vs $19.64 (k3/k2.7 cost ratio 1.88×)**.
+This remains a price counterfactual, not evidence that output quality is equal. Policy:
 - venue policy `downshift_model=kimi-k2.7-code`, `downshift_ctx_ceiling=250_000`
   (registry `venues.codex`); **within-family routing is live** in
   `apex-router resolve --venue kimi|codex` (`--ctx N` passes session context):

@@ -115,7 +115,7 @@ def _kimi_route(task_type: str, ctx_tokens: int | None, vpol: dict) -> tuple[str
     (model, reason). The decision that actually kicks:
       - ctx at/past the deep floor (or unknown-but-venue-codex long session) -> k3
         (its 1M window is the only fit; load-bearing, measured 73.8% of codex reqs >250k)
-      - code-shaped task, ctx under the floor -> k2.7-code (code-specialized, ~3x cheaper)
+      - code-shaped task, ctx under the floor -> k2.7-code (code-specialized and cheaper)
       - anything else, ctx under the floor -> k2.6 (cheapest general)
     """
     deep_floor = vpol.get("deep_ctx_floor") or vpol.get("downshift_ctx_ceiling") or 250_000
@@ -128,7 +128,7 @@ def _kimi_route(task_type: str, ctx_tokens: int | None, vpol: dict) -> tuple[str
     if task_type in _CODE_CLASSES:
         return code, (f"code-shaped task ({task_type})"
                       + (f", ctx {ctx_tokens:,}" if ctx_tokens is not None else "")
-                      + f" under floor → {code} (code-specialized, ~3x cheaper)")
+                      + f" under floor → {code} (code-specialized, cheaper)")
     return general, (f"general task ({task_type or 'unclassified'}) under floor → "
                      f"{general} (cheapest general)")
 
@@ -142,7 +142,7 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
     `venue` selects the static-default map + route table: 'skill' (Claude tiers, the
     default) or a registry venue policy like 'codex' (Kimi venue: default k3 — its 1M
     window is load-bearing at the venue's p50 346k context — with a documented downshift
-    to k2.7-code under the venue's ctx ceiling, ~2.9x cheaper)."""
+    to the cheaper k2.7-code under the venue's ctx ceiling)."""
     reg = model_registry.load() if registry is None else registry
     if embed_fn == "auto":
         embed_fn = _embed_fn()

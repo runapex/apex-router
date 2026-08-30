@@ -85,10 +85,48 @@ def _memory_dirs(env=None) -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
+def _token_count(*values) -> int:
+    """First positive integer telemetry count; zero/malformed values fall through."""
+    for value in values:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 0
+
+
+def _request_context_tokens(row: dict) -> int:
+    """Prompt context on either provider wire without double-counting cached tokens.
+
+    OpenAI reports ``input_tokens`` as the TOTAL prompt and cached tokens as a subset.
+    Anthropic reports fresh input, cache reads, and cache writes as disjoint pools. This
+    is the same wire invariant used by proxy_engine.readout.doctor._fresh_input.
+    """
+    usage = row.get("usage")
+    if not isinstance(usage, dict):
+        shadow = row.get("shadow")
+        usage = shadow.get("usage") if isinstance(shadow, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    total_or_fresh = _token_count(row.get("tokens_in"), usage.get("input_tokens"))
+    endpoint = (row.get("endpoint_id") or "").lower()
+    # Codex telemetry is the OpenAI-compatible wire. Older rows can lack endpoint_id,
+    # so client=codex preserves inclusive-input semantics rather than double-counting cache.
+    if endpoint == "openai" or (not endpoint and row.get("client") == "codex"):
+        return total_or_fresh
+    cache_read = _token_count(
+        row.get("cache_read_tokens"), usage.get("cache_read_tokens"),
+        usage.get("cache_read_input_tokens"),
+    )
+    cache_write = _token_count(
+        row.get("cache_write_tokens"), usage.get("cache_creation_tokens"),
+        usage.get("cache_creation_input_tokens"),
+    )
+    return total_or_fresh + cache_read + cache_write
+
+
 def _codex_context_watch(now: float, *, days: float = 14,
                          telemetry: Path | None = None) -> str:
     """Per-request context distribution for codex-venue traffic vs the venue policy:
-    the % fitting under the downshift ceiling (k2.7-code-eligible, ~2.9x cheaper) and the
+    the % fitting under the downshift ceiling (k2.7-code-eligible and cheaper) and the
     % approaching k3's 1M ceiling. This is the codex venue's cost lever — context size,
     not cache hygiene (kimi cache writes are free; reads ~10%)."""
     import json as _json
@@ -106,14 +144,14 @@ def _codex_context_watch(now: float, *, days: float = 14,
                     r = _json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(r, dict):
+                    continue
                 if r.get("ev") == "hb" or r.get("client") != "codex":
                     continue
                 ts = r.get("ts")
                 if not isinstance(ts, (int, float)) or ts < lo:
                     continue
-                u = (r.get("shadow") or {}).get("usage") or {}
-                total = (r.get("tokens_in") or u.get("input_tokens") or 0) + \
-                        (r.get("cache_read_tokens") or u.get("cache_read_input_tokens") or 0)
+                total = _request_context_tokens(r)
                 if total:
                     ctx.append(total)
     except OSError:
@@ -127,7 +165,7 @@ def _codex_context_watch(now: float, *, days: float = 14,
     p50, p95 = ctx[n // 2], ctx[min(n - 1, int(n * 0.95))]
     return (f"```\nrequests={n}  ctx p50={p50:,} p95={p95:,} max={ctx[-1]:,}\n"
             f"fits downshift (<={ceiling:,} → {vpol.get('downshift_model', '?')}): "
-            f"{fits}/{n} ({fits / n:.0%})  — the 2.9x-cheaper tier only serves these\n"
+            f"{fits}/{n} ({fits / n:.0%})  — the cheaper tier only serves these\n"
             f"near 1M ceiling: {near_hard}/{n}\n"
             f"lever: hand off / compact codex sessions under {ceiling:,} ctx to unlock "
             f"{vpol.get('downshift_model', 'the downshift model')}\n```")

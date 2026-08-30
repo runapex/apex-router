@@ -21,10 +21,10 @@ The workload apex-router already serves is different on every axis that matters 
 
 | Axis | Standalone-prompt routing | Agentic-turn routing (measured here) |
 |---|---|---|
-| Context | ~10²–10⁴ tokens | p50 342k, max 578k per turn (frozen snapshot 2026-08-25) |
+| Context | ~10²–10⁴ tokens | p50 102k, max 289k per turn (592 context-bearing rows, corrected OpenAI-wire semantics, 2026-08-30 readout) |
 | Economics | output-dominated | cache-read + fresh-input dominated (99.97% cache-hit on the Claude side) |
 | Decision unit | one request | one turn inside a session with a *shared cached prefix* |
-| Price spread | across vendors | 2.91× *within one vendor family* (k3 vs k2.7-code on identical traffic) |
+| Price spread | across vendors | 1.88× *within one vendor family* on the corrected 2026-08-30 eligible slice (k3 vs k2.7-code; token-mix dependent) |
 | Failure cost | one bad answer | a bounced turn + a retry + the failed attempt's tokens in the shared prefix |
 
 The honest framing (unchanged from the handoff): **the RouteLLM recipe, correctly
@@ -115,8 +115,8 @@ Report three regions separately — collapsing them is how self-confirming evals
 across the family of tested cells; cost-savings as a session-level bootstrap CI whose
 lower bound must clear 0 *and* whose model-dependent share is disclosed; promotion only
 on an out-of-sample beat over π₀ above the noise floor. **Kill criterion (armed):** if
-π₁ cannot beat the context-size venue rule out-of-sample, keep the rule — its 2.91×
-counterfactual price ratio already captures most of the cheap win, and a negative
+π₁ cannot beat the context-size venue rule out-of-sample, keep the rule — its corrected
+1.88× current-slice counterfactual price ratio already captures a material cheap win, and a negative
 result is a valid, publishable outcome.
 
 ## 5. Feature and label spec (already instrumented — F1/F4 shipped @ 7fef50b/7cbd2d4)
