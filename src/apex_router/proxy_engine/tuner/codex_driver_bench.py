@@ -68,10 +68,20 @@ def render_transcript(turns: list[tuple[str, str]]) -> str:
 
 
 def run_arm(arm: str, prompt: str, resolver, model_call, *,
-            max_rounds: int = MAX_ROUNDS) -> dict:
+            max_rounds: int = MAX_ROUNDS, drift: dict | None = None) -> dict:
     """One arm of the A/B. Returns the row; never raises on model misbehavior (protocol
     errors are counted, and two consecutive ones end the arm — the GPT-structured-output
-    signal, same role as the codegen lane's taxonomy)."""
+    signal, same role as the codegen lane's taxonomy).
+
+    drift (optional, the paper's experiment-3 state-recovery probe): {"ref", "new", "alert"}.
+    After the model retrieves drift["ref"] the FIRST time, the environment silently changes:
+    the resolver is swapped to drift["new"] content and the NEXT round carries the corrective
+    alert. The arms differ exactly as the paper predicts matters — the transcript keeps the
+    STALE v1 fragment in its history alongside the alert; the state arm's Σ is REPLACED with
+    v2, so only the alert text and current state survive. `used_revised` in the row records
+    whether the final answer reflects the post-drift value; `alert_delivered` guards the
+    inconclusive case (model answered before the alert round).
+    """
     turns: list[tuple[str, str]] = [("USER", prompt)]
     state: dict = {"retrieved": {}, "rounds_used": 0}
     observation: str | None = None
@@ -79,8 +89,22 @@ def run_arm(arm: str, prompt: str, resolver, model_call, *,
     tokens = 0
     protocol_errors = 0
     consecutive_bad = 0
+    drift_pending = False
+    alert_delivered = False
 
     for _ in range(max_rounds):
+        if drift_pending:
+            # the corrective alert arrives between rounds; the environment has already moved
+            drift_pending = False
+            alert_delivered = True
+            resolver._map[drift["ref"]] = drift["new"]
+            if arm == "transcript":
+                # v1 stays in history; the alert (carrying v2) is appended — the anchor contest
+                turns.append(("USER", drift["alert"]))
+            else:
+                # Σ is REPLACED: v1 is gone from the model's operative context entirely
+                state["retrieved"][drift["ref"]] = drift["new"]
+                observation = drift["alert"]
         if arm == "transcript":
             rendered = render_transcript(turns)
         else:  # state
@@ -94,11 +118,14 @@ def run_arm(arm: str, prompt: str, resolver, model_call, *,
         if kind == "answer":
             return {"arm": arm, "answer": payload, "refs": refs, "tokens": tokens,
                     "rounds": state["rounds_used"], "protocol_errors": protocol_errors,
-                    "finished": True}
+                    "finished": True, "alert_delivered": alert_delivered}
         if kind == "retrieve":
             consecutive_bad = 0
             refs.append(payload)
             served = resolver.resolve(payload)
+            if (drift is not None and payload == drift["ref"]
+                    and not alert_delivered and not drift_pending):
+                drift_pending = True  # first retrieval of the drifting value -> alert next round
             if served is not None:
                 state["retrieved"][payload] = served
                 # confirmation only — the content lives in Σ; re-sending it as O double-sends
@@ -124,7 +151,7 @@ def run_arm(arm: str, prompt: str, resolver, model_call, *,
             break
     return {"arm": arm, "answer": "", "refs": refs, "tokens": tokens,
             "rounds": state["rounds_used"], "protocol_errors": protocol_errors,
-            "finished": False}
+            "finished": False, "alert_delivered": alert_delivered}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -154,6 +181,61 @@ def codex_call_factory(model: str | None = None, *, timeout_s: int = 300):
         tokens = int(m.group(1).replace(",", "")) if m else 0
         return proc.stdout.strip(), tokens
     return call
+
+
+STALE_MARK = "deploy-window-alpha"
+REVISED_MARK = "deploy-window-alpha-REVISED"
+
+
+def build_drift() -> dict:
+    """The experiment-3 drift spec over the shared probe: svc-alpha's window silently changes
+    to REVISED after the model first retrieves it. The alert carries the new value factually
+    (no 'use only this' instruction — a directive alert would flatten the anchoring signal)."""
+    _, refs, resolver = crushed_probe()
+    ref = next(r for r in refs if STALE_MARK in resolver.resolve(r))
+    old = resolver.resolve(ref)
+    new = old.replace(STALE_MARK, REVISED_MARK)
+    assert new != old, "probe fragment does not contain the drift marker"
+    alert = (f"ALERT: external change — the fragment behind {ref} was REVISED outside this "
+             f"session. New content:\n{new}")
+    return {"ref": ref, "new": new, "alert": alert}
+
+
+def _drift_verdict(answer: str) -> dict:
+    return {"used_revised": REVISED_MARK in answer,
+            "used_stale": STALE_MARK in answer.replace(REVISED_MARK, "")}
+
+
+def run_drift_experiment(*, model: str | None = None, model_call=None,
+                         max_rounds: int = 12) -> list[dict]:
+    """Paper experiment 3 on GPT: silent mid-run drift + corrective alert. Per arm, did the
+    final answer track the revised value (recovery) or the stale one (anchoring)?"""
+    crushed, refs, resolver = crushed_probe()
+    prompt = build_probe_prompt(crushed, refs)
+    drift = build_drift()
+    call = model_call or codex_call_factory(model)
+    rows = []
+    for arm in ("transcript", "state"):
+        row = run_arm(arm, prompt, resolver, call, max_rounds=max_rounds, drift=drift)
+        row.update(_drift_verdict(row["answer"]))
+        rows.append(row)
+    return rows
+
+
+def render_drift(rows: list[dict]) -> str:
+    lines = ["GPT DRIFT experiment (silent mid-run change + corrective alert — paper exp. 3)",
+             "=" * 76]
+    for r in rows:
+        if not r["alert_delivered"]:
+            lines.append(f"[{r['arm']}] INCONCLUSIVE — model answered before the alert round")
+            continue
+        verdict = ("RECOVERED (revised value)" if r["used_revised"] and not r["used_stale"]
+                   else "ANCHORED (stale value)" if r["used_stale"] and not r["used_revised"]
+                   else "MIXED (both values in answer)")
+        lines.append(f"[{r['arm']}] {verdict} rounds={r['rounds']} tokens={r['tokens']} "
+                     f"protocol_errors={r['protocol_errors']}")
+        lines.append(f"  answer: {r['answer'][:300]}")
+    return "\n".join(lines)
 
 
 def run_gpt_bench(*, model: str | None = None, model_call=None,
@@ -190,10 +272,16 @@ def _cli(argv=None) -> int:
     p = argparse.ArgumentParser(prog="codex-driver-bench")
     p.add_argument("--model", help="codex model id (default: user's codex config)")
     p.add_argument("--rounds", type=int, default=MAX_ROUNDS)
+    p.add_argument("--drift", action="store_true",
+                   help="run the drift/anchoring experiment (paper exp. 3) instead of the A/B")
     p.add_argument("--report", help="write rows JSON here")
     args = p.parse_args(argv)
-    rows = run_gpt_bench(model=args.model, max_rounds=args.rounds)
-    print(render(rows))
+    if args.drift:
+        rows = run_drift_experiment(model=args.model, max_rounds=args.rounds + 3)
+        print(render_drift(rows))
+    else:
+        rows = run_gpt_bench(model=args.model, max_rounds=args.rounds)
+        print(render(rows))
     if args.report:
         from pathlib import Path
         Path(args.report).write_text(json.dumps(rows, indent=2))
