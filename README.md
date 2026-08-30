@@ -21,6 +21,7 @@ choice on any uncertainty.
 - [Install](#install)
 - [The measuring proxy](#the-measuring-proxy-optional-proxy-extra)
 - [The offload subsystem](#the-offload-subsystem)
+- [SKILL.state execution state (measured, default-off)](#skillstate-execution-state-measured-default-off)
 - [Background watchers](#background-watchers)
 - [Proxy client setup](#proxy-client-setup)
 - [Team skills (private marketplace)](#team-skills-private-marketplace)
@@ -125,6 +126,14 @@ The non-obvious calls, and why:
    box with only the Claude, Codex, and Kimi CLIs and no model server. The harness
    deploys to **both the Claude CLI and Pi** — the same `models.json` registry and
    `ornith.env` state serve both.
+
+8. **Imported ideas are benched, not believed.** SKILL.state (arXiv:2608.26263 — replace
+   growing transcripts with explicit execution state) was adapted in four places, each
+   behind a flag with an A/B harness. Measured across three settings (local codegen, GPT
+   tool loop, drift recovery): behavioral parity everywhere, token parity at apex's real
+   horizons. So everything ships **default-off** — the harnesses are the product; re-run
+   them when the model, corpus, or horizon changes. See
+   [docs/DESIGN-skill-state.md](docs/DESIGN-skill-state.md).
 
 ---
 
@@ -256,6 +265,28 @@ python -m apex_router.ornith.offload_report
 ```
 
 The worker picks up anything in `jobs/inbox/` within 5s, serialized (single GPU).
+
+---
+
+## SKILL.state execution state (measured, default-off)
+
+Adaptation of arXiv:2608.26263 (replace an append-only conversation with an explicit,
+mutable execution state per step: prompt = immutable spec + state + latest observation;
+reasoning discarded after each validated state update). Four adaptations, each with an
+A/B harness — and, per the project doctrine, each **off by default** because the
+measurements said so:
+
+| piece | flag / command | measured result |
+|---|---|---|
+| state codegen lane (local) | `ORNITH_CODEGEN_STATE_LANE=on` | 17/17 first-attempt passes both arms → repair loop never engages; pure overhead today |
+| codegen A/B bench | `python -m apex_router.ornith.state_bench [--suite s.jsonl]` | pass-rate CIs, tokens/pass, taxonomy (paper §5.7 labels) |
+| (P,Σ,O) frontier driver + bench | `python -m apex_router.proxy_engine.tuner.driver_bench [--live]` | behavior parity; token parity at 4-round horizon |
+| GPT bench via codex exec | `python -m apex_router.proxy_engine.tuner.codex_driver_bench [--drift]` | identical refs/answers both arms; **drift: both recovered** — no anchoring on a frontier model |
+| structured session handoff | automatic (cache-handoff-nudge hook) | 6-field state block replaces prose handoff; `python -m apex_router.handoff_state validate <file>` |
+| `/learn` chain contract | automatic (pi extension) | VALIDATE emits a JSON verdict Σ; EXPLAIN consumes (P, Σ); fail-open to legacy |
+
+The design record — including the negative results and when to re-run — lives in
+[docs/DESIGN-skill-state.md](docs/DESIGN-skill-state.md).
 
 ---
 
