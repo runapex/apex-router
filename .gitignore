@@ -55,3 +55,6 @@ memory_dirs.txt
 
 # machine-local agent ops notes (deliberately not published)
 AGENTS.md
+
+# benchmark suites are deliberate fixtures, not telemetry
+!benchmarks/*.jsonl
