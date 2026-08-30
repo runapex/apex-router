@@ -160,10 +160,33 @@ doc="$HANDOFF_DIR/$session_id.md"
   echo "cost scales ~O(turns^2)). Starting a fresh session caps that growth."
   echo
   echo "## To continue in a fresh session"
-  echo "1. Skim the last few exchanges below for open threads."
-  echo "2. Start a new Claude Code session and paste the summary you need."
+  echo "1. Fill in the structured continuation state below BEFORE stopping — record"
+  echo "   current state, not history (decisions and facts, not reasoning)."
+  echo "2. Start a new Claude Code session and paste ONLY the FILLED state block"
+  echo "   (validate first: python -m apex_router.handoff_state validate <this file>)."
+  echo "   The transcript tail below is fallback context, not the handoff."
   echo
-  echo "## Recent context (transcript tail)"
+  # >>> handoff-state-template (source of truth: apex_router.handoff_state.render_template;
+  # tests/test_handoff_state.py pins this heredoc in sync — edit the module, re-embed)
+  cat <<'HANDOFF_STATE_TEMPLATE'
+## Structured continuation state
+
+Fill this in BEFORE stopping — once FILLED, it is the only context the fresh session
+needs. Record current state, not history: discard reasoning, keep decisions and facts.
+If any field is still _…_ the handoff is INCOMPLETE — do not paste it; fill it
+first. Check with: python -m apex_router.handoff_state validate <this file>.
+(SKILL.state handoff — schema: apex_router.handoff_state.FIELDS)
+
+- **goal**: _…_ one sentence: what this session is trying to achieve
+- **constraints**: _…_ hard requirements and the do-not-touch list
+- **decisions**: _…_ decisions ALREADY made, each with its reason — do not re-litigate
+- **files_touched**: _…_ paths created/modified, one per line, with what changed
+- **open_issues**: _…_ unresolved problems, failing tests, blockers
+- **next_action**: _…_ the single step the fresh session should take FIRST
+HANDOFF_STATE_TEMPLATE
+  # <<< handoff-state-template
+  echo
+  echo "## Recent context (transcript tail, fallback)"
   if [ -n "$transcript" ] && [ -f "$transcript" ]; then
     TRANSCRIPT="$transcript" python3 - <<'PY' 2>/dev/null || true
 import json, os
@@ -208,6 +231,6 @@ PY
 # `set -e` from turning a broken-pipe/jq error into a nonzero hook exit.
 jq -n --arg d "$doc" --arg r "$reason" \
   '{hookSpecificOutput: {hookEventName: "Stop",
-    additionalContext: ("This session " + $r + ". Prefix re-read cost grows with session length — consider starting a fresh session. Handoff written to " + $d)}}' \
+    additionalContext: ("This session " + $r + ". Prefix re-read cost grows with session length — start a fresh session. BEFORE stopping, fill the Structured continuation state block in " + $d + " (state, not history); the fresh session needs only that block.")}}' \
   && touch "$STAMP" 2>/dev/null || true
 exit 0
