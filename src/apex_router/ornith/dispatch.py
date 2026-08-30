@@ -24,6 +24,13 @@ def _review_lane_enabled(env=None) -> bool:
     return (e.get("ORNITH_REVIEW_LANE") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _state_lane_enabled(env=None) -> bool:
+    """Opt-in gate for the SKILL.state codegen lane (state_codegen.py). ONLY affirmative tokens
+    enable it, so a typo/mis-set env fails SAFE (one-shot lane — the measured default)."""
+    e = os.environ if env is None else env
+    return (e.get("ORNITH_CODEGEN_STATE_LANE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _default_chat(messages, *, max_tokens, enable_thinking):
     from . import ornith_client as oc
     # adhoc output is advisory — a truncated answer is still partially usable, so keep it rather than
@@ -61,6 +68,11 @@ def run_job(job: dict, *, chat=_default_chat, codegen=_default_codegen,
             # cannot gate without tests -> do NOT run ungated code; escalate to the frontier.
             return LaneResult("codegen", ok=False, escalate=True, output="",
                               usage=None, detail="codegen job missing spec/tests", gated=False)
+        # SKILL.state self-repair lane (prototype, arXiv:2608.26263): opt-in via env, and ONLY
+        # when the default runner is in place — an injected codegen stub is never bypassed.
+        if codegen is _default_codegen and _state_lane_enabled():
+            from .state_codegen import state_codegen_lane
+            return state_codegen_lane(spec, tests, max_tokens=min(max_tokens, 2048))
         return codegen(spec, tests, max_tokens=min(max_tokens, 2048))
 
     if lane == "review":
