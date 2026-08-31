@@ -89,12 +89,26 @@ so marginal growth is the signal; same no-prefix-cache cost caveat as codex). Of
   retrieves all 6 and reports the real codes. So at this horizon the state arm's edge is
   **correctness under an early-stopping model**, not just token profile — a stronger result
   than the GPT/offline parity finding.
-- **Drift.** On the un-guessable probe, sonnet neither anchors nor recovers — it **ABSTAINS**
-  (answers early after the alert, ~1 ref retrieved, "value not present in document" for
-  svc-alpha). Distinct from GPT (both arms recovered). N small; protocol brittleness (model
-  emits prose instead of a directive; two consecutive → arm aborts) adds noise and is itself
-  a robustness note on the CLI-directive harness.
-- **Injection-refusal confound (important).** sonnet treats the plain corrective alert as a
+- **Drift (re-measured 2026-08-31 on the FIXED harness).** The first-pass "sonnet ABSTAINS"
+  reading was an artifact of a shared-resolver bug (P1 below): the transcript arm's revised-
+  fragment swap leaked into the state arm, which then never experienced the drift. With a
+  fresh per-arm resolver, sonnet **RECOVERS**, matching GPT. Aggregate over independent trials
+  (each arm scored RECOVERED/ANCHORED/MIXED/NEITHER; no ANCHORED or NEITHER observed):
+  - sonnet/plain (N=8): state RECOVERED 8/8; transcript RECOVERED 5/8, **MIXED 3/8** (the
+    MIXED = the injection-refusal note, next bullet — stale kept in-table while the alert's
+    revised value is named in prose).
+  - sonnet/authoritative (N=5): state 5/5 and transcript 5/5 **RECOVERED** — the trusted-
+    channel wording removes the injection-refusal MIXED entirely.
+  So Claude does **not** anchor at this horizon/salience; the state arm is if anything *cleaner*
+  (no injection-refusal MIXED). Token profile at the 4-round horizon: state ≈ 115–142% of
+  transcript (Σ-resend overhead dominates; parity/robustness is the point here, not cost).
+- **Local model (qwen3.8:27b via ollama, free) drift — same harness.** plain (N=4) and
+  authoritative (N=3): **both arms RECOVERED every trial, zero protocol errors**. A reasoning
+  model does not fall into sonnet's injection-refusal MIXED (it reasons past the alert), and
+  its token profile is near-parity (state ≈ 97–99% of transcript). So the paper's robustness
+  advantage does not separate the arms at this horizon on an open-weight local model either —
+  consistent with the frontier result. (qwen is slow: ~9 min/trial, ~12 calls each.)
+- **Injection-refusal confound (important; the sonnet/plain MIXED above).** sonnet treats the plain corrective alert as a
   **prompt-injection attempt** and refuses it in a prose note — a *safety* behavior that a
   naive verdict scored as anchoring. Added `build_drift(authoritative=True)` +
   `--authoritative`: SAME transport, wording only — it drops the injection cue (frames the
@@ -103,16 +117,23 @@ so marginal growth is the signal; same no-prefix-cache cost caveat as codex). Of
   not hold for Claude by default.
 - **Probe integrity (found in cross-validate).** `claude -p --bare` still exposes Read/Bash,
   so a model run inside this repo could read the opaque codes from source instead of
-  retrieving. `claude_driver_bench` now passes `--disallowedTools` for the file/exec tools and
-  runs from a neutral cwd — retrieval is the only path to the codes.
-- **Two verdict-scoring bugs found live and fixed** (`codex_driver_bench._drift_verdict` /
-  `render_drift`), each with a pinning test: (1) whole-answer substring match scored a
-  refuse-and-explain answer as MIXED — now **scoped to the service's own answer line**
-  (`identity=svc-alpha host`), with a `scoped` low-confidence flag on fallback; (2) a model
-  abbreviating `deploy-window-qxlmtv`→`qxlmtv` scored as *neither* (silent false-negative) —
-  marks are now **distinct bare opaque codes** (no containment); (3) a NEITHER answer
-  (abstain/not-found/unfinished) was mislabeled MIXED by a render fall-through — verdict is
-  now a proper 4-way (RECOVERED/ANCHORED/MIXED/NEITHER).
+  retrieving. `claude_driver_bench` now passes a fail-closed empty allowlist (`--tools ""`, so
+  even Task/Skill a denylist would miss are gone) and runs from a neutral cwd — retrieval is
+  the only path to the codes.
+- **Verdict-scoring bugs found live + across two codex cross-validate passes, all fixed**
+  (`codex_driver_bench._drift_verdict` / `render_drift`), each with a pinning test: (1) whole-
+  answer substring match scored a refuse-and-explain answer as MIXED — now **scoped to the
+  service's record block** (contiguous non-blank lines, so a multi-line pretty-JSON record
+  keeps host+value together while a blank-separated prose note is excluded), with a `scoped`
+  low-confidence flag on fallback; (2) a model abbreviating `deploy-window-qxlmtv`→`qxlmtv`
+  scored as *neither* (silent false-negative) — marks are now **distinct bare opaque codes**
+  (no containment); (3) a NEITHER answer was mislabeled MIXED by a render fall-through —
+  now a proper 4-way (RECOVERED/ANCHORED/MIXED/NEITHER); (4) `scoped=True` but neither value
+  in the block (value split out of the record) → **self-contradiction guard** widens to the
+  whole answer and downgrades to low-confidence rather than asserting a false NEITHER; (5)
+  **P1: drift arms shared one resolver** — the transcript arm's revised-fragment swap leaked
+  into the state arm (it never drifted), invalidating the first-pass "abstains" reading; each
+  arm now gets a fresh content-addressed probe/resolver.
 
 ### 4. Structured handoffs and chain contracts
 
@@ -138,16 +159,21 @@ so marginal growth is the signal; same no-prefix-cache cost caveat as codex). Of
 - **Known bugs found by running, fixed before commit:** probe content tripping json_crush's
   Δ7 lexeme guard (zero elisions); identical leaves collapsing to one content-addressed ref;
   double-sending fragments in both Σ and observation.
-- **Claude-family run (2026-08-31)** closed the opus open item via `claude_driver_bench.py`
-  and surfaced a guessable-probe bug (now opaque codes), an injection-refusal confound (now
-  the `--authoritative` drift variant), and three verdict-scoring bugs — all fixed with
-  pinning tests. Net Claude findings: behavior transfers but early-stopping makes the state
-  arm *more correct* on the un-guessable probe; Claude ABSTAINS under drift and REFUSES the
-  plain alert as injection (unlike GPT's recovery).
+- **Claude-family + local run (2026-08-31)** closed the opus open item via
+  `claude_driver_bench.py` and surfaced a guessable-probe bug (now opaque codes), an injection-
+  refusal confound (now the `--authoritative` drift variant), and five verdict/harness bugs
+  incl. the shared-resolver P1 — all fixed with pinning tests. Net drift findings **after the
+  P1 fix, re-measured (sonnet N=13, qwen3.8:27b N=7)**: NEITHER model anchors at this horizon
+  — both RECOVER; sonnet's only non-recovery is the plain-alert injection-refusal MIXED, gone
+  under `--authoritative`; qwen recovers both arms every trial. Behavior transfers; early-
+  stopping makes the state arm *more correct* on the un-guessable A/B probe.
 - **Re-run triggers:** local model change or first-attempt failure rate rises (state lane);
-  longer-horizon workloads appear (drivers); a subtler drift test is wanted (codex/claude
-  bench `--drift` / `--authoritative` variants).
+  longer-horizon workloads appear (drivers); the harder drift variants (no explicit alert /
+  multi-drift / distractor noise) remain the untested case (codex/claude/ollama bench
+  `--drift` / `--authoritative`).
 - **Open:** `/learn` contract-hold instrumentation (verdict-parse rate per run) + one live
   `/learn`; handoff hook's first natural fire, then `handoff_state validate` on the output;
-  Claude drift under `--authoritative` at larger N (protocol brittleness inflates NEITHER);
-  no-alert / multi-drift / distractor variants still untested on any model.
+  the HARDER drift variants (no explicit alert, multiple simultaneous drifts, distractor
+  noise) are still untested on any model — the current alert is explicit and the horizon short
+  (4–12 rounds), exactly where the paper predicts the two approaches converge, so a negative
+  result here does not rule out the paper's robustness advantage at length/low-salience.
