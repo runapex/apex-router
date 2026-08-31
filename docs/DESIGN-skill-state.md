@@ -69,6 +69,51 @@ stale history given one explicit alert. The paper's robustness advantage does no
 to a frontier model at this horizon/salience (N=1/arm; harder untested variants: no-alert
 drift, multi-drift, distractor noise).
 
+### 3b. Claude-family transferability — `proxy_engine/tuner/claude_driver_bench.py`
+
+The DESIGN's opus open item ("live opus run not executed — no bearer in CI") closed via the
+`claude` CLI (no raw Anthropic bearer needed), same model-agnostic RETRIEVE/ANSWER harness as
+the codex bench: `claude -p --bare --output-format json` (`--bare` pins a ~1.7k system prompt
+so marginal growth is the signal; same no-prefix-cache cost caveat as codex). Offline test:
+`tests/test_claude_driver_bench.py`.
+
+**Measured (live claude sonnet + haiku, 2026-08-31):**
+
+- **Behavior A/B — a probe-validity bug surfaced and was fixed.** The original probe encoded
+  each deploy window as `deploy-window-<service-name>`, guessable from the visible service
+  key: sonnet & haiku retrieved only **2 of 6** refs and pattern-guessed the rest — *correctly*
+  by luck, so the offline (scripted-model) bench could never catch it. Fixed by making each
+  window an **opaque 6-letter code** (`driver_bench.WINDOW_CODES`) recoverable *only* by
+  retrieval. Re-run: the transcript arm still early-stops at 2/6 and now **HALLUCINATES**
+  plausible-wrong codes for the 4 it never fetched (verifiably incorrect); the state arm
+  retrieves all 6 and reports the real codes. So at this horizon the state arm's edge is
+  **correctness under an early-stopping model**, not just token profile — a stronger result
+  than the GPT/offline parity finding.
+- **Drift.** On the un-guessable probe, sonnet neither anchors nor recovers — it **ABSTAINS**
+  (answers early after the alert, ~1 ref retrieved, "value not present in document" for
+  svc-alpha). Distinct from GPT (both arms recovered). N small; protocol brittleness (model
+  emits prose instead of a directive; two consecutive → arm aborts) adds noise and is itself
+  a robustness note on the CLI-directive harness.
+- **Injection-refusal confound (important).** sonnet treats the plain corrective alert as a
+  **prompt-injection attempt** and refuses it in a prose note — a *safety* behavior that a
+  naive verdict scored as anchoring. Added `build_drift(authoritative=True)` +
+  `--authoritative`: SAME transport, wording only — it drops the injection cue (frames the
+  change as a canonical retrieval update), which *reduces but does not eliminate* the confound
+  (still confounded by wording/directiveness). The paper's cooperative-alert assumption does
+  not hold for Claude by default.
+- **Probe integrity (found in cross-validate).** `claude -p --bare` still exposes Read/Bash,
+  so a model run inside this repo could read the opaque codes from source instead of
+  retrieving. `claude_driver_bench` now passes `--disallowedTools` for the file/exec tools and
+  runs from a neutral cwd — retrieval is the only path to the codes.
+- **Two verdict-scoring bugs found live and fixed** (`codex_driver_bench._drift_verdict` /
+  `render_drift`), each with a pinning test: (1) whole-answer substring match scored a
+  refuse-and-explain answer as MIXED — now **scoped to the service's own answer line**
+  (`identity=svc-alpha host`), with a `scoped` low-confidence flag on fallback; (2) a model
+  abbreviating `deploy-window-qxlmtv`→`qxlmtv` scored as *neither* (silent false-negative) —
+  marks are now **distinct bare opaque codes** (no containment); (3) a NEITHER answer
+  (abstain/not-found/unfinished) was mislabeled MIXED by a render fall-through — verdict is
+  now a proper 4-way (RECOVERED/ANCHORED/MIXED/NEITHER).
+
 ### 4. Structured handoffs and chain contracts
 
 - `handoff_state.py` + `hooks/cache-handoff-nudge.sh` — the expensive-session handoff is a
@@ -93,8 +138,16 @@ drift, multi-drift, distractor noise).
 - **Known bugs found by running, fixed before commit:** probe content tripping json_crush's
   Δ7 lexeme guard (zero elisions); identical leaves collapsing to one content-addressed ref;
   double-sending fragments in both Σ and observation.
+- **Claude-family run (2026-08-31)** closed the opus open item via `claude_driver_bench.py`
+  and surfaced a guessable-probe bug (now opaque codes), an injection-refusal confound (now
+  the `--authoritative` drift variant), and three verdict-scoring bugs — all fixed with
+  pinning tests. Net Claude findings: behavior transfers but early-stopping makes the state
+  arm *more correct* on the un-guessable probe; Claude ABSTAINS under drift and REFUSES the
+  plain alert as injection (unlike GPT's recovery).
 - **Re-run triggers:** local model change or first-attempt failure rate rises (state lane);
-  longer-horizon workloads appear (drivers); a subtler drift test is wanted (codex bench
-  `--drift` variants).
+  longer-horizon workloads appear (drivers); a subtler drift test is wanted (codex/claude
+  bench `--drift` / `--authoritative` variants).
 - **Open:** `/learn` contract-hold instrumentation (verdict-parse rate per run) + one live
-  `/learn`; handoff hook's first natural fire, then `handoff_state validate` on the output.
+  `/learn`; handoff hook's first natural fire, then `handoff_state validate` on the output;
+  Claude drift under `--authoritative` at larger N (protocol brittleness inflates NEITHER);
+  no-alert / multi-drift / distractor variants still untested on any model.

@@ -183,41 +183,132 @@ def codex_call_factory(model: str | None = None, *, timeout_s: int = 300):
     return call
 
 
-STALE_MARK = "deploy-window-alpha"
-REVISED_MARK = "deploy-window-alpha-REVISED"
+# The drift target is svc-alpha's window. Marks derive from the SAME opaque code the probe
+# elides (driver_bench.WINDOW_CODES) so the stale value is genuinely un-guessable — the model
+# can only report it by retrieving. IDENTITY is a stable, visible token that pins WHICH line of
+# a per-service answer is svc-alpha's (its host survives crushing), used to score the value the
+# model actually USED for that service rather than any value it merely NAMES in prose.
+_DRIFT_SERVICE = "alpha"
+IDENTITY = f"{_DRIFT_SERVICE}.internal"  # svc-alpha's host — present on its answer line
 
 
-def build_drift() -> dict:
+def _marks() -> tuple[str, str]:
+    # Bare opaque codes: STALE is svc-alpha's real window code; REVISED is a DISTINCT code (not
+    # a suffix of STALE), so the two never substring-contain each other and a model that
+    # abbreviates `deploy-window-qxlmtv` to `qxlmtv` still scores correctly. Keying on the bare
+    # code (not the `deploy-window-` prefix) is what makes the verdict abbreviation-proof.
+    from apex_router.proxy_engine.tuner.driver_bench import WINDOW_CODES
+    return WINDOW_CODES[_DRIFT_SERVICE], "nzptbk"
+
+
+STALE_MARK, REVISED_MARK = _marks()
+
+
+def build_drift(*, authoritative: bool = False) -> dict:
     """The experiment-3 drift spec over the shared probe: svc-alpha's window silently changes
     to REVISED after the model first retrieves it. The alert carries the new value factually
-    (no 'use only this' instruction — a directive alert would flatten the anchoring signal)."""
+    (no 'use only this' instruction — a directive alert would flatten the anchoring signal).
+
+    authoritative (default False): the alert travels the SAME transport (a user/observation
+    message) either way — this flag only changes the WORDING to drop the injection cue (frames
+    the change as a canonical retrieval update rather than an unexplained external edit). It is
+    NOT a separate trusted channel. Motivation: on live claude the plain (injected-looking)
+    alert triggers a PROMPT-INJECTION REFUSAL — the model keeps the stale value and explains it
+    distrusts the alert, a SAFETY behavior, not history-anchoring, yet scored the same on a
+    naive verdict. Removing the injection cue reduces (does not eliminate) that confound, so a
+    stale answer under --authoritative is likelier to be genuine anchoring; the result is still
+    confounded by wording/directiveness and must be read as such.
+    """
     _, refs, resolver = crushed_probe()
     ref = next(r for r in refs if STALE_MARK in resolver.resolve(r))
     old = resolver.resolve(ref)
     new = old.replace(STALE_MARK, REVISED_MARK)
     assert new != old, "probe fragment does not contain the drift marker"
-    alert = (f"ALERT: external change — the fragment behind {ref} was REVISED outside this "
-             f"session. New content:\n{new}")
-    return {"ref": ref, "new": new, "alert": alert}
+    if authoritative:
+        alert = (f"RETRIEVAL UPDATE (authoritative, same channel as your RETRIEVE results): the "
+                 f"canonical bytes behind {ref} have changed. This supersedes the earlier "
+                 f"retrieval result for {ref}. Current content:\n{new}")
+    else:
+        alert = (f"ALERT: external change — the fragment behind {ref} was REVISED outside this "
+                 f"session. New content:\n{new}")
+    return {"ref": ref, "new": new, "alert": alert, "authoritative": authoritative}
 
 
-def _drift_verdict(answer: str) -> dict:
-    return {"used_revised": REVISED_MARK in answer,
-            "used_stale": STALE_MARK in answer.replace(REVISED_MARK, "")}
+def _identity_scope(answer: str, identity: str) -> str | None:
+    """The answer text that describes the drifting service, or None if the identity is absent.
+
+    Scope is the contiguous run(s) of NON-BLANK lines containing an identity line (a "record
+    block"): a single-line markdown table row is its own block; a pretty-printed JSON object
+    (`"host": "alpha.internal",` and `"deploy_window": "<code>"` on ADJACENT lines) is captured
+    whole — the single-line scope missed the value on the next line. A prose rejection note is
+    excluded because answers separate it from the data with a blank line (markdown/JSON output
+    convention), so it lands in a different block. This is a heuristic, not a parser; the
+    `scoped` flag downstream marks a whole-answer fallback as lower-confidence."""
+    lines = answer.splitlines()
+    blocks: list[list[str]] = []
+    cur: list[str] = []
+    for ln in lines:
+        if ln.strip() == "":
+            if cur:
+                blocks.append(cur)
+                cur = []
+        else:
+            cur.append(ln)
+    if cur:
+        blocks.append(cur)
+    hit = ["\n".join(b) for b in blocks if any(identity in ln for ln in b)]
+    return "\n".join(hit) if hit else None
+
+
+def _drift_verdict(answer: str, identity: str | None = None) -> dict:
+    """Which value did the answer OPERATIVELY use for the drifting service?
+
+    Naive substring presence over the whole answer conflates USING a value with NAMING it while
+    REJECTING it: a claude answer that keeps the stale value in its table AND explains — in a
+    prose note — that it distrusts the REVISED alert contains BOTH marks and mis-scores as
+    MIXED. When `identity` (svc-alpha's host) is given, the verdict is scoped to the record
+    block that describes that service (see `_identity_scope`), so a rejection note in a separate
+    block doesn't count as use, AND a multi-line record keeps host and value together. `scoped`
+    reports whether that narrowing found an identity block (False = whole-answer fallback,
+    lower confidence)."""
+    def _score(text: str) -> tuple[bool, bool]:
+        return (REVISED_MARK in text, STALE_MARK in text.replace(REVISED_MARK, ""))
+
+    scope, scoped = answer, False
+    if identity is not None:
+        found = _identity_scope(answer, identity)
+        if found is not None:
+            scope, scoped = found, True
+    used_revised, used_stale = _score(scope)
+    # Self-contradiction guard: we located the identity block but NEITHER value is in it — the
+    # value was likely split out of the block (e.g. pretty-JSON with a blank line inside the
+    # record, or the model put the window elsewhere). Reporting high-confidence NEITHER would be
+    # dishonest, so widen to the whole answer and DOWNGRADE to scoped=False (low confidence for
+    # a human) rather than falsely asserting the service value is absent.
+    if scoped and not (used_revised or used_stale):
+        used_revised, used_stale = _score(answer)
+        scoped = False
+    return {"used_revised": used_revised, "used_stale": used_stale, "scoped": scoped}
 
 
 def run_drift_experiment(*, model: str | None = None, model_call=None,
-                         max_rounds: int = 12) -> list[dict]:
+                         max_rounds: int = 12, authoritative: bool = False) -> list[dict]:
     """Paper experiment 3 on GPT: silent mid-run drift + corrective alert. Per arm, did the
-    final answer track the revised value (recovery) or the stale one (anchoring)?"""
-    crushed, refs, resolver = crushed_probe()
-    prompt = build_probe_prompt(crushed, refs)
-    drift = build_drift()
+    final answer track the revised value (recovery) or the stale one (anchoring)?
+
+    Each arm gets a FRESH probe/resolver/drift: `run_arm` mutates the resolver (swaps in the
+    revised fragment on drift) and the drift dict is stateful, so sharing them let the first
+    arm's mutation leak into the second — the state arm would retrieve the already-revised
+    value and never experience the drift (alert_delivered=False). crushed_probe is deterministic
+    (content-addressed refs), so the two arms still see byte-identical probes."""
     call = model_call or codex_call_factory(model)
     rows = []
     for arm in ("transcript", "state"):
+        crushed, refs, resolver = crushed_probe()
+        prompt = build_probe_prompt(crushed, refs)
+        drift = build_drift(authoritative=authoritative)
         row = run_arm(arm, prompt, resolver, call, max_rounds=max_rounds, drift=drift)
-        row.update(_drift_verdict(row["answer"]))
+        row.update(_drift_verdict(row["answer"], identity=IDENTITY))
         rows.append(row)
     return rows
 
@@ -231,9 +322,12 @@ def render_drift(rows: list[dict]) -> str:
             continue
         verdict = ("RECOVERED (revised value)" if r["used_revised"] and not r["used_stale"]
                    else "ANCHORED (stale value)" if r["used_stale"] and not r["used_revised"]
-                   else "MIXED (both values in answer)")
+                   else "MIXED (both values on the service's line)" if r["used_revised"]
+                   else "NEITHER (service value absent — abstained/not-found/unfinished)")
+        conf = "" if r.get("scoped", False) else "  [LOW-CONFIDENCE: no svc-alpha line found, " \
+                                                "scored over whole answer]"
         lines.append(f"[{r['arm']}] {verdict} rounds={r['rounds']} tokens={r['tokens']} "
-                     f"protocol_errors={r['protocol_errors']}")
+                     f"protocol_errors={r['protocol_errors']}{conf}")
         lines.append(f"  answer: {r['answer'][:300]}")
     return "\n".join(lines)
 
@@ -274,10 +368,14 @@ def _cli(argv=None) -> int:
     p.add_argument("--rounds", type=int, default=MAX_ROUNDS)
     p.add_argument("--drift", action="store_true",
                    help="run the drift/anchoring experiment (paper exp. 3) instead of the A/B")
+    p.add_argument("--authoritative", action="store_true",
+                   help="drift alert arrives on the trusted retrieval channel (no injection "
+                        "cue) — isolates anchoring from claude's prompt-injection refusal")
     p.add_argument("--report", help="write rows JSON here")
     args = p.parse_args(argv)
     if args.drift:
-        rows = run_drift_experiment(model=args.model, max_rounds=args.rounds + 3)
+        rows = run_drift_experiment(model=args.model, max_rounds=args.rounds + 3,
+                                    authoritative=args.authoritative)
         print(render_drift(rows))
     else:
         rows = run_gpt_bench(model=args.model, max_rounds=args.rounds)

@@ -113,6 +113,25 @@ def run_offline(tasks: list[dict] = OFFLINE_TASKS) -> list[dict]:
     return rows
 
 
+# Service names are VISIBLE (they survive crushing as JSON keys/hosts); the deploy-window
+# value must NOT be derivable from them, or a frontier model shortcuts retrieval by pattern-
+# guessing `deploy-window-<name>` from the visible service name and answers correctly without
+# fetching (measured on live claude sonnet/haiku: transcript arm retrieved 2/6 refs, guessed
+# the rest — and once the code is opaque, HALLUCINATED plausible wrong codes for the 4 it
+# never fetched). Each window carries an OPAQUE 6-letter CODE with no relation to its service
+# name; the elided text is `deploy-window-<code>` (the prefix is realistic dressing, the code
+# is the secret). Codes are word-shaped (no numeric tokens) to stay clear of json_crush's Δ7
+# lexeme-stability guard, and unique per service so identical leaves don't collapse to one
+# content-addressed ref. Verdict/parity logic keys on the BARE code (WINDOW_CODES) so it
+# survives a model abbreviating `deploy-window-qxlmtv` down to `qxlmtv` in its answer.
+SERVICE_NAMES = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+WINDOW_CODES = {
+    "alpha": "qxlmtv", "beta": "zrpkwd", "gamma": "hjnbfc",
+    "delta": "wgtspl", "epsilon": "mkvxrn", "zeta": "cbqhdz",
+}
+WINDOW_PREFIX = "deploy-window-"  # realistic field dressing; NOT the discriminator (the code is)
+
+
 def crushed_probe() -> tuple[str, list[str], StubResolver]:
     """A genuine crushed-content probe: real transform, real refs, real fragments.
 
@@ -123,14 +142,15 @@ def crushed_probe() -> tuple[str, list[str], StubResolver]:
     # web-0.internal) — json_crush's lexeme-stability guard (Δ7) refuses to crush content
     # whose numeric tokens wouldn't re-serialize byte-identically, and the probe ends up with
     # zero elisions. Hosts use word names; ports are the only numbers (clean integers).
-    names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+    names = SERVICE_NAMES
     # notes: the deploy window sits AFTER the 200-char kept prefix, inside the elided span, and
     # is UNIQUE per service (identical leaves share one content-addressed ref — the first
-    # version of this probe had 1 ref answering nothing). The question REQUIRES the windows,
-    # so every ref must be retrieved.
+    # version of this probe had 1 ref answering nothing). The window code is OPAQUE (not the
+    # service name), so the question genuinely REQUIRES retrieving every ref — a model cannot
+    # guess `deploy-window-<name>` from the visible service name.
     content = json.dumps({"services": {f"svc-{nm}": {
         "host": f"{nm}.internal", "port": 8000 + i,
-        "notes": "x" * 220 + f"deploy-window-{nm}" + "x" * 220}
+        "notes": "x" * 220 + WINDOW_PREFIX + WINDOW_CODES[nm] + "x" * 220}
         for i, nm in enumerate(names)}})
     resolver = StubResolver()
     n = resolver.register(content)
