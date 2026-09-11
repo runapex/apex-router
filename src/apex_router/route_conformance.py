@@ -30,8 +30,17 @@ def default_conformance_path() -> Path:
 
 def log_conformance(surface, task_type, requested_tier, resolved_model=None,
                     matched=None, *, log_path=None, ts=None, note="",
-                    context_size=None, session_id=None) -> bool:
-    """Append one conformance row. Returns True on success, False on ANY failure (never raises)."""
+                    context_size=None, session_id=None,
+                    reusable_tokens=None, cache_compat_id=None) -> bool:
+    """Append one conformance row. Returns True on success, False on ANY failure (never raises).
+
+    Δ2 (LLM Systems Digest, Unified AI Gateway): cache availability is part of ROUTE STATE, not an
+    afterthought. Two OPTIONAL fields make the continuation state a route decision preserves/destroys
+    observable per dispatch: `reusable_tokens` (the cached prefix a route could reuse — the value a
+    switch would forfeit) and `cache_compat_id` (an identity for which cached prefix is compatible).
+    Additive + fail-safe like context_size/session_id: absent unless supplied, never enters the
+    drift-rate denominator. Cross-model cache MAPPING stays experimental (digest caveat) — this only
+    RECORDS availability, it does not act on it."""
     try:
         if ts is None:
             ts = time.time()
@@ -53,6 +62,14 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
                 return False
         if session_id is not None and not isinstance(session_id, str):
             return False
+        # Δ2 route-state fields: reusable_tokens is a non-negative int (like context_size — a bool is
+        # NOT an int here); cache_compat_id is a str (like session_id). A bad type rejects the whole
+        # row rather than logging a mistyped field that a reader would trip on.
+        if reusable_tokens is not None:
+            if isinstance(reusable_tokens, bool) or not isinstance(reusable_tokens, int) or reusable_tokens < 0:
+                return False
+        if cache_compat_id is not None and not isinstance(cache_compat_id, str):
+            return False
         record = {"ts": ts, "surface": surface, "task_type": task_type,
                   "requested_tier": requested_tier, "resolved_model": resolved_model,
                   "matched": matched, "note": note if isinstance(note, str) else ""}
@@ -60,6 +77,10 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
             record["context_size"] = context_size
         if session_id is not None:
             record["session_id"] = session_id
+        if reusable_tokens is not None:
+            record["reusable_tokens"] = reusable_tokens
+        if cache_compat_id is not None:
+            record["cache_compat_id"] = cache_compat_id
         line = json.dumps(record, allow_nan=False) + "\n"
         p = Path(log_path) if log_path is not None else default_conformance_path()
         if p.exists() and not stat.S_ISREG(p.stat().st_mode):
@@ -172,7 +193,9 @@ def main(argv=None) -> int:
                 log_conformance(d.get("surface"), d.get("task_type"), d.get("requested_tier"),
                                 resolved_model=d.get("resolved_model"), matched=d.get("matched"),
                                 note=d.get("note", ""), context_size=d.get("context_size"),
-                                session_id=d.get("session_id"))
+                                session_id=d.get("session_id"),
+                                reusable_tokens=d.get("reusable_tokens"),
+                                cache_compat_id=d.get("cache_compat_id"))
         except Exception:
             pass
         return 0

@@ -39,6 +39,58 @@ class TestLogConformance(unittest.TestCase):
             row = self._read(p)[0]
             self.assertNotIn("context_size", row)
             self.assertNotIn("session_id", row)
+            self.assertNotIn("reusable_tokens", row)   # Δ2 fields absent unless supplied
+            self.assertNotIn("cache_compat_id", row)
+
+    def test_delta2_route_state_fields_round_trip(self):
+        # Δ2: cache availability as route state — reusable_tokens + cache_compat_id round-trip.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_conformance(
+                "pi", "code", "kimi", resolved_model="kimi-k2.7-code", matched=True,
+                log_path=p, ts=1.0, reusable_tokens=37000, cache_compat_id="sess-9:kimi"))
+            row = self._read(p)[0]
+            self.assertEqual(row["reusable_tokens"], 37000)
+            self.assertEqual(row["cache_compat_id"], "sess-9:kimi")
+
+    def test_delta2_zero_reusable_tokens_is_valid(self):
+        # 0 reusable tokens is a MEANINGFUL value (a cold route with nothing to forfeit), distinct
+        # from None (unmeasured) — it must be written, not dropped.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertTrue(rc.log_conformance(
+                "pi", "code", "kimi", log_path=p, ts=1.0, reusable_tokens=0))
+            row = self._read(p)[0]
+            self.assertEqual(row["reusable_tokens"], 0)
+            self.assertIn("reusable_tokens", row)
+
+    def test_delta2_invalid_reusable_tokens_rejected(self):
+        # negative, bool, and non-int reject the whole row (like context_size) — no mistyped field.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            for bad in (-1, True, 3.5, "x"):
+                self.assertFalse(rc.log_conformance(
+                    "pi", "code", "kimi", log_path=p, ts=1.0, reusable_tokens=bad))
+            self.assertFalse(Path(p).exists())  # nothing written
+
+    def test_delta2_invalid_cache_compat_id_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            self.assertFalse(rc.log_conformance(
+                "pi", "code", "kimi", log_path=p, ts=1.0, cache_compat_id=123))
+            self.assertFalse(Path(p).exists())
+
+    def test_delta2_fields_stay_out_of_drift_denominator(self):
+        # a Δ2 row with matched=None (intent-only) must NOT enter the drift denominator just because
+        # it carries reusable_tokens — the honesty invariant is unchanged by the new fields.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.jsonl"
+            rc.log_conformance("agent", "code", "kimi", log_path=p, ts=1.0,
+                               reusable_tokens=1000)  # matched=None
+            agg = rc.read_conformance(log_path=p)
+            cell = agg["agent\tcode"]
+            self.assertEqual(cell["observed"], 0)  # intent-only, not in denominator
+            self.assertEqual(cell["n"], 1)
 
     def test_intent_only_agent_row(self):
         with tempfile.TemporaryDirectory() as d:

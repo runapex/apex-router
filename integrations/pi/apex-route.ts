@@ -164,10 +164,17 @@ function logOutcome(
 }
 
 /** Fail-safe conformance row — shell to route-check --record so Python owns the JSONL schema.
- * A logging failure must NEVER block the cue: swallow every error (same pattern as logOutcome). */
+ * A logging failure must NEVER block the cue: swallow every error (same pattern as logOutcome).
+ *
+ * Δ2 (route+cache state): the schema accepts `reusable_tokens` (cached prefix a route could reuse —
+ * the value a switch would forfeit) and `cache_compat_id` (which cached prefix is compatible). They
+ * are OPTIONAL and left UNSET here: pi exposes no cache-read-token signal at the switch point (same
+ * documented limitation as apex-nudges.ts's turn-count fallback), so populating them would be a
+ * fabricated number. The contract is wired end-to-end; a surface that CAN observe reuse fills them. */
 function recordConformance(row: {
 	surface: string; task_type: string; requested_tier: string;
 	resolved_model?: string; matched?: boolean;
+	reusable_tokens?: number; cache_compat_id?: string;
 }): void {
 	try {
 		execFile(APEX_BIN, ["route-check", "--record", JSON.stringify(row)],
