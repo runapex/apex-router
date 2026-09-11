@@ -216,7 +216,9 @@ def _compile(args: argparse.Namespace) -> int:
     policy_corpus_hash = composition_hash(diagnose(corpus))
     compiler_hash = _compiler_hash(pricing, band)
     repo_root = Path(__file__).resolve().parent.parent
-    validators_path = repo_root / "apex" / "pipeline" / "validators.py"
+    # validators live at proxy_engine/pipeline/ (the `apex`→`proxy_engine` package rename left this
+    # path stale, breaking `apex compile`'s evidence-signing step with a FileNotFoundError).
+    validators_path = repo_root / "proxy_engine" / "pipeline" / "validators.py"
     try:
         manifest = build_evidence_manifest(
             repo_root=repo_root,
