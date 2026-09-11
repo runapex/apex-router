@@ -82,10 +82,24 @@ def main() -> None:
     # Version-guard: snapshot our own source at startup. If the code on disk changes, exit cleanly so
     # the supervisor (launchd KeepAlive / systemd Restart) relaunches on fresh code — a long-lived
     # daemon must never keep running a stale bugfix (measured: a fix sat unused ~19h once).
+    #
+    # OPT-OUT + DEBOUNCE (drain_worker.log restart-thrash fix): when the watched CODE_ROOT is the
+    # operator's live edit checkout (the shipped launchd plist points PYTHONPATH at ~/dev/apex-router/src),
+    # a naive guard exits on the first keystroke of a multi-save edit and launchd relaunches it into the
+    # next save — a visible restart loop. Two env knobs, both defaulting to today's production behavior:
+    #   APEX_VERSION_GUARD=0        → disable the guard entirely (recommended when running from a live
+    #                                 dev tree; the daemon then runs until it crashes or is restarted).
+    #   APEX_VERSION_GUARD_SETTLE_S → seconds a source change must persist before it counts as stale
+    #                                 (default 0 = fire immediately, unchanged). Set e.g. 15 on a dev box.
     from .version_guard import Guard
-    guard = Guard(CODE_ROOT)   # watch the CODE, not the queue
+    guard_enabled = os.environ.get("APEX_VERSION_GUARD", "1").strip().lower() not in ("0", "false", "no", "off")
+    try:
+        settle_s = float(os.environ.get("APEX_VERSION_GUARD_SETTLE_S", "0"))
+    except ValueError:
+        settle_s = 0.0
+    guard = Guard(CODE_ROOT, settle_s=settle_s) if guard_enabled else None   # watch the CODE, not the queue
     while True:
-        if guard.is_stale():
+        if guard is not None and guard.is_stale():
             print("worker source changed on disk — exiting for supervisor to restart on fresh code")
             return
         if MAINT.exists():

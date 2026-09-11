@@ -18,6 +18,7 @@ never crash the daemon it protects.
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 
@@ -45,11 +46,38 @@ def fingerprint(root: Path) -> str:
 class Guard:
     """Snapshots a source tree's fingerprint at construction; `is_stale()` reports whether the code
     on disk has changed since. Intended use: construct at daemon startup, check each loop iteration,
-    exit when stale so the supervisor restarts with fresh code."""
+    exit when stale so the supervisor restarts with fresh code.
 
-    def __init__(self, root: Path):
+    DEBOUNCE (`settle_s`): a daemon whose watched tree is ALSO the operator's live edit checkout
+    would exit on the FIRST byte of a multi-save edit, then launchd relaunches it into the next
+    save — an observable restart-thrash loop (see drain_worker.log). With `settle_s > 0`, a change
+    is only reported stale once the SAME changed fingerprint has persisted unchanged for `settle_s`
+    seconds — i.e. the operator stopped typing. `settle_s=0.0` (default) preserves the original
+    fire-immediately behavior and every existing test. The guard still catches a landed bugfix; it
+    just waits for the edit burst to settle first.
+    """
+
+    def __init__(self, root: Path, settle_s: float = 0.0):
         self.root = Path(root)
         self.baseline = fingerprint(self.root)
+        self.settle_s = max(0.0, float(settle_s))
+        # Debounce bookkeeping: the last observed CHANGED fingerprint and when we first saw it.
+        self._pending_fp: str | None = None
+        self._pending_since: float = 0.0
 
     def is_stale(self) -> bool:
-        return fingerprint(self.root) != self.baseline
+        current = fingerprint(self.root)
+        if current == self.baseline:
+            self._pending_fp = None  # reverted to baseline (edit undone / temp file gone)
+            return False
+        if self.settle_s <= 0.0:
+            return True  # original behavior: any change is immediately stale
+        now = time.monotonic()
+        if current != self._pending_fp:
+            # A new (or first) changed state — start/restart the settle timer. A still-moving
+            # edit burst keeps resetting this, so we never exit mid-save.
+            self._pending_fp = current
+            self._pending_since = now
+            return False
+        # Same changed fingerprint as last check — stale only once it has held for settle_s.
+        return (now - self._pending_since) >= self.settle_s

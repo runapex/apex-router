@@ -72,6 +72,37 @@ class TestGuard(unittest.TestCase):
             f.write_text("x = 999\n")
             self.assertTrue(g.is_stale())       # code changed on disk
 
+    def test_debounce_waits_for_edit_burst_to_settle(self):
+        # settle_s > 0: a change is NOT stale until the same changed fingerprint has held for the
+        # settle window — this is what stops the live-edit-tree restart thrash (drain_worker.log).
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            f = p / "a.py"
+            f.write_text("x = 1\n")
+            g = version_guard.Guard(p, settle_s=0.05)
+            self.assertFalse(g.is_stale())          # baseline
+            f.write_text("x = 2\n")                  # first save of a burst
+            self.assertFalse(g.is_stale())          # change seen, timer armed — not yet stale
+            f.write_text("x = 3\n")                  # burst still moving — timer resets
+            self.assertFalse(g.is_stale())
+            time.sleep(0.06)                        # operator stopped typing; window elapses
+            self.assertTrue(g.is_stale())           # now stale on a STABLE changed fingerprint
+
+    def test_debounce_reverted_edit_is_not_stale(self):
+        # if the tree returns to baseline (edit undone / temp file removed), it is never stale.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            f = p / "a.py"
+            f.write_text("x = 1\n")
+            g = version_guard.Guard(p, settle_s=0.05)
+            f.write_text("x = 2\n")
+            self.assertFalse(g.is_stale())
+            time.sleep(0.06)
+            f.write_text("x = 1\n")                  # reverted to baseline content
+            self.assertFalse(g.is_stale())          # back to baseline → not stale
+
     def test_guard_survives_transient_read_error(self):
         # a file deleted mid-scan must not raise — a stale check failure should never crash the daemon
         import tempfile
