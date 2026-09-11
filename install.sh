@@ -20,6 +20,10 @@
 #         --ornith-tier N  which tier to pull+activate: small (~5.6GB, default) | large (~21GB) | both
 #         --ornith-serve  (macOS) install the Ornith stack as always-on launchd agents
 #                         (queue worker + nightly cycle), not just the model pull
+#         --ollama-keepwarm [MODEL]  (macOS) install a launchd agent that keeps the active local
+#                         model resident in ollama (keep_alive:-1) so bursty pi/codex turns never hit
+#                         a multi-minute cold-load stall. Pins VRAM (opt-in). MODEL defaults to the
+#                         active ornith tier (apex-router ornith-tier --json).
 #         --no-embed    skip ollama / nomic-embed
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
@@ -54,6 +58,8 @@ ORNITH_WORKER_INSTALLED=0
 DO_EMBED=1
 DO_WATCH=0
 DO_PROXY=0
+DO_KEEPWARM=0        # --ollama-keepwarm: launchd agent that pins the active local model resident
+KEEPWARM_MODEL=""    # optional explicit model tag; empty => resolve the active ornith tier
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
 DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
@@ -92,6 +98,7 @@ while [ $# -gt 0 ]; do
     --no-ornith) DO_ORNITH=0 ;;
     --ornith-tier) ORNITH_TIER="${2:-small}"; shift ;;
     --ornith-serve) DO_ORNITH_SERVE=1 ;;   # macOS: install the Ornith stack as launchd agents
+    --ollama-keepwarm) DO_KEEPWARM=1; case "${2:-}" in -*|"") : ;; *) KEEPWARM_MODEL="$2"; shift ;; esac ;;
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
@@ -318,7 +325,7 @@ install_ornith_service() {
 <key>Label</key><string>$1</string>
 <key>ProgramArguments</key><array>$2</array>
 <key>WorkingDirectory</key><string>$INSTALL_DIR</string>
-<key>EnvironmentVariables</key><dict><key>ORNITH_URL</key><string>http://127.0.0.1:11434</string><key>APEX_ORNITH_QUEUE</key><string>${APEX_ORNITH_QUEUE:-$INSTALL_DIR/queue}</string></dict>
+<key>EnvironmentVariables</key><dict><key>ORNITH_URL</key><string>http://127.0.0.1:11434</string><key>APEX_ORNITH_QUEUE</key><string>${APEX_ORNITH_QUEUE:-$INSTALL_DIR/queue}</string><key>APEX_VERSION_GUARD_SETTLE_S</key><string>15</string></dict>
 $3
 $4
 <key>StandardOutPath</key><string>$logs/$1.out</string>
@@ -374,6 +381,63 @@ PLIST
   echo "        apex-router ornith-tier $ORNITH_TIER      # loads + waits for the model to answer"
   echo "        launchctl kickstart gui/$uid/com.ornith.worker"
   echo "    Verify:  apex-router ornith-tier --json"
+}
+
+# --------------------------------------------------------------------------- #
+# 4b. ollama keep-warm agent (opt-in --ollama-keepwarm) — pin the active local model resident so
+# bursty pi/codex turns never hit a cold-load stall. macOS launchd StartInterval agent; the script
+# (scripts/ollama-keepwarm.sh) applies a per-request keep_alive:-1 pin (brew-proof; see the script).
+# Pins VRAM, so it is opt-in. The active model is resolved from `apex-router ornith-tier --json`
+# unless MODEL was passed explicitly. Idempotent: re-bootstraps the label.
+# --------------------------------------------------------------------------- #
+install_ollama_keepwarm() {
+  [ "$DO_KEEPWARM" = "1" ] || return 0
+  if [ "$OS" != "Darwin" ]; then
+    warn "--ollama-keepwarm is macOS-only (launchd); on $OS run scripts/ollama-keepwarm.sh from cron/systemd with APEX_KEEPWARM_MODEL set"
+    return 0
+  fi
+  local agents="$HOME/Library/LaunchAgents" logs="$INSTALL_DIR/logs" uid; uid="$(id -u)"
+  local script="$INSTALL_DIR/scripts/ollama-keepwarm.sh"
+  mkdir -p "$agents" "$logs"
+  [ -f "$script" ] || { warn "  keepwarm script not found at $script — skipping"; return 0; }
+  chmod +x "$script" 2>/dev/null || true
+  # Resolve the model to pin: explicit flag wins; else the active ornith tier's configured_model.
+  local model="$KEEPWARM_MODEL"
+  if [ -z "$model" ]; then
+    model="$("$INSTALL_DIR/.venv/bin/apex-router" ornith-tier --json 2>/dev/null \
+      | "$INSTALL_DIR/.venv/bin/python" -c 'import json,sys; print((json.load(sys.stdin) or {}).get("configured_model",""))' 2>/dev/null)"
+  fi
+  if [ -z "$model" ]; then
+    warn "  could not resolve the active local model (pass --ollama-keepwarm <model>) — skipping"
+    return 0
+  fi
+  local label=com.apex.ollama-keepwarm
+  cat > "$agents/$label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>$script</string></array>
+<key>EnvironmentVariables</key><dict><key>APEX_KEEPWARM_MODEL</key><string>$model</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>240</integer>
+<key>ProcessType</key><string>Background</string>
+<key>LowPriorityIO</key><true/>
+<key>Nice</key><integer>5</integer>
+<key>StandardOutPath</key><string>$logs/$label.log</string>
+<key>StandardErrorPath</key><string>$logs/$label.log</string>
+</dict></plist>
+PLIST
+  plutil -lint "$agents/$label.plist" >/dev/null || { warn "  $label.plist failed lint — skipping"; return 0; }
+  launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+  local tries=0 loaded=0
+  while [ "$tries" -lt 3 ]; do
+    if launchctl bootstrap "gui/$uid" "$agents/$label.plist" >/dev/null 2>&1; then loaded=1; break; fi
+    tries=$((tries+1)); sleep 1
+  done
+  [ "$loaded" = "1" ] \
+    && ok "ollama keep-warm agent loaded (pinning $model; re-pins every 240s, survives ollama restart)" \
+    || warn "  failed to load $label — re-run: launchctl bootstrap gui/$uid $agents/$label.plist"
 }
 
 # --------------------------------------------------------------------------- #
@@ -720,6 +784,7 @@ main() {
   install_package
   install_embed
   install_ornith
+  install_ollama_keepwarm
   check_clients_and_table
   install_watchers
   install_hooks
