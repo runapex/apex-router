@@ -18,10 +18,11 @@ mkdir -p "$CODEQA_REPOS"
 ```
 
 Local model reachable (needed only for `ask`/`ground`, not for `doctor`/`retrieve`). codeqa reaches
-the model at `ORNITH_URL` (default `http://127.0.0.1:8080`); this works whether that endpoint is a
-direct model server or a proxy fronting an OpenAI-compatible backend:
+the model at `ORNITH_URL` (default `http://127.0.0.1:11434` — ollama; the Ornith 35B MLX server on
+:8080 is retired). This works whether that endpoint is a direct model server or a proxy fronting an
+OpenAI-compatible backend:
 ```bash
-BASE="${ORNITH_URL:-http://127.0.0.1:8080}"
+BASE="${ORNITH_URL:-http://127.0.0.1:11434}"
 curl -s -m 3 -o /dev/null -w '%{http_code}\n' "$BASE/v1/models" | grep -q 200 \
   && echo "model up" || echo "model DOWN"
 ```
