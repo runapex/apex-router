@@ -260,6 +260,16 @@ export default function (pi: ExtensionAPI) {
 	// Pending one-shot cue bookkeeping for the escalation auto-log.
 	let pendingCue: { family: string; task: string; taskType?: string } | undefined;
 	let resolvedModelId: string | undefined; // >>auto: the model resolve() picked
+	// Escalation-log auto-capture (the training-data fix): route_log was empty because ONLY the
+	// one-shot cue path logged, and that requires manually typing `>>`. Every REGULAR agentic turn
+	// ran on a real tier and observably succeeded/failed — that is exactly the (tier, task_type,
+	// ok|escalated) row the outcome-router trains on. We capture it once per user task on `agent_end`
+	// (which fires ONCE per run, unlike turn_end which fires per sub-turn — logging per sub-turn would
+	// over-count and mis-log tool continuations). `lastUserInput` feeds background task-type
+	// classification; `cueHandledThisRun` guards against double-logging a cue run the turn_end path
+	// already recorded.
+	let lastUserInput: string | undefined;
+	let cueHandledThisRun = false;
 
 	async function restoreIfPending(): Promise<void> {
 		const model = savedModel;
@@ -273,6 +283,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("input", async (event, ctx) => {
+		// Remember the user's task text for background task-type classification at agent_end.
+		// A bare `>>cue` line is a control command, not a task — the cue path owns those.
+		if (typeof event.text === "string" && event.text.trim() && !/^>>/.test(event.text.trim())) {
+			lastUserInput = event.text;
+		}
 		const m = /^>>\s*([a-zA-Z0-9_-]+)(?:\s+([\s\S]+))?$/.exec(event.text);
 		if (!m || (m[1] !== "auto" && !routes[m[1]])) {
 			await restoreIfPending();
@@ -309,6 +324,7 @@ export default function (pi: ExtensionAPI) {
 		if (!pendingCue) return;
 		const cue = pendingCue;
 		pendingCue = undefined;
+		cueHandledThisRun = true; // the agent_end auto-capture must NOT double-log this run
 		const msg: any = event.message;
 		// POSITIVE failure signals only (model-routing doctrine): a provider error. A
 		// tool-call-only message legitimately has no text — that is NOT a failure (was
@@ -343,6 +359,48 @@ export default function (pi: ExtensionAPI) {
 				logOutcome(r?.task_type || "adhoc", startTier, failed ? "escalated" : "ok",
 					note, sessionId, contextSize));
 		}
+	});
+
+	// Escalation auto-capture on EVERY regular agentic turn (the route_log training-data fix).
+	// Fires ONCE per user task (agent_end), only when the tier that ran is a KNOWN apex-route family
+	// (a turn on an unmanaged model tells us nothing about apex's tiers). Records (tier, task_type,
+	// ok|escalated) so per-tier outcome rates actually accumulate — the label the outcome-router
+	// trains on. All fail-safe / fire-and-forget: nothing here can delay or break a turn.
+	pi.on("agent_end", async (event, ctx) => {
+		// A cue run already logged via turn_end — don't double-count it. Reset the guard either way.
+		if (cueHandledThisRun) { cueHandledThisRun = false; return; }
+		// Only log turns that ran on a tier apex-route manages (else no signal about our tiers).
+		let family: string | undefined;
+		try {
+			family = Object.entries(routes).find(
+				([, r]) => r.provider === ctx.model?.provider && r.id === ctx.model?.id,
+			)?.[0];
+		} catch {
+			return; // model lookup must never break the turn
+		}
+		if (!family) return;
+		const tier = routes[family]?.id ?? family;
+		// Observable failure only (model-routing doctrine): a provider error on ANY message in the run.
+		// A tool-call-only run legitimately has no text — NOT a failure. Never a quality judgment.
+		const msgs: any[] = Array.isArray(event.messages) ? event.messages : [];
+		const failed = msgs.some((m) => m?.stopReason === "error" || Boolean(m?.errorMessage));
+		const task = lastUserInput;
+		lastUserInput = undefined;
+		if (!task || !task.trim()) return; // no task text (e.g. resumed/tool-only run) → nothing to classify
+		let sessionId: string | undefined;
+		let contextSize: number | undefined;
+		try { sessionId = process.env.PI_SESSION_ID || undefined; } catch { /* keep turn safe */ }
+		try {
+			const usage = ctx.getContextUsage();
+			if (usage && typeof usage.tokens === "number" && Number.isFinite(usage.tokens)) {
+				contextSize = Math.max(0, Math.floor(usage.tokens));
+			}
+		} catch { /* advisory */ }
+		const note = failed ? "turn: provider error" : "turn";
+		// Classify the task type in the background (fire-and-forget, fail-safe), then log the outcome.
+		resolveTask(task).then((r) =>
+			logOutcome(r?.task_type || "adhoc", tier, failed ? "escalated" : "ok",
+				note, sessionId, contextSize));
 	});
 
 	// Session identity: attribute pi traffic per-session through the proxy (B1).
