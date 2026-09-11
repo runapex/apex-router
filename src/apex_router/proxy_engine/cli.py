@@ -28,6 +28,41 @@ def _serve(args: argparse.Namespace) -> int:
         overrides["port"] = args.port
     cfg = Config(**overrides) if overrides else CONFIG
     cfg.ensure_home()
+    # Preflight the bind: uvicorn.run() surfaces an in-use port as a raw `[Errno 48] address already
+    # in use` traceback, and if a supervisor retries `serve` it loops on that failure (observed:
+    # serve.log against :8789 while the launchd qwen-proxy already owned it). Fail FAST and LOUD with
+    # the likely owner instead — there is exactly one intended owner per port (single-owner policy).
+    import errno
+    import socket
+    # Resolve the ACTUAL address family for cfg.host (IPv6 `::1`, an IPv4 dotted-quad, or a hostname
+    # that resolves to either) instead of hardcoding AF_INET — a hardcoded AF_INET probe would fail to
+    # bind an IPv6 host with a family mismatch and mis-report it as "port in use" (a false positive on
+    # a free IPv6 port). getaddrinfo picks the family uvicorn itself will use. Fail-open on resolution
+    # error: if we can't resolve, skip the preflight and let uvicorn bind (never block serve on a
+    # probe quirk). Only EADDRINUSE is translated to the single-owner message; any OTHER bind error
+    # propagates to uvicorn so we don't swallow an unrelated failure behind a wrong diagnosis.
+    try:
+        family = socket.getaddrinfo(cfg.host, cfg.port, type=socket.SOCK_STREAM)[0][0]
+    except (OSError, IndexError):
+        family = None
+    if family is not None:
+        probe = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((cfg.host, cfg.port))
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise  # a family mismatch / permission error is uvicorn's to surface, not a false "in use"
+            print(
+                f"apex serve: cannot bind {cfg.host}:{cfg.port} (address already in use). "
+                f"Another process already owns this port — likely a launchd apex proxy "
+                f"(check: lsof -nP -iTCP:{cfg.port} -sTCP:LISTEN). "
+                f"Stop that owner or pass a different --port; do not run a second serve on the same port.",
+                file=sys.stderr,
+            )
+            return 1
+        finally:
+            probe.close()
     print(
         f"apex {APEX_VERSION} serving on http://{cfg.host}:{cfg.port} "
         f"→ anthropic={cfg.anthropic_upstream}",
