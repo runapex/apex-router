@@ -45,7 +45,14 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction"]
 # 42/127 errors mis-billed ~600_000ms). v4 bills apex only its own pre_forward cost and records the
 # upstream wait-until-failure separately. Consumers pooling pre-v4 apex_added_ms across error rows
 # will see an inflated tail; filter is_error or split on schema_version >= 4.
-TELEMETRY_SCHEMA_VERSION = 4
+# v5: added `error_cause` — the DISCRIMINATING label for an errored row. Pre-v5, `is_error` was one
+# undifferentiated bool: a read-timeout, a connection reset/pool-exhaustion, and an HTTP 5xx were
+# indistinguishable, so a burst of failures couldn't be root-caused (live finding: a Sep-16/17 codex
+# error cluster was mislabeled a "429 rate-limit storm" — the data literally could not confirm it was
+# a 429 vs a connection-level raise). v5 records the exception class on the upstream-raise path
+# (`ReadTimeout`/`ConnectError`/`PoolTimeout`/...) and `http_<status>` on a >=400 response, so an
+# error's MECHANISM is provable from telemetry, not inferred. None on success rows.
+TELEMETRY_SCHEMA_VERSION = 5
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -120,6 +127,13 @@ class TelemetryEvent:
     # upstream-failure tail. See the the reference window finding: 42/127 errors showed ~600_000ms mis-billed.
     upstream_error_wait_ms: float = 0.0
     is_error: bool = False
+    # error_cause — WHY a row errored, provable not inferred (v5). Upstream-raise path: the exception
+    # class name (`ReadTimeout`, `ConnectError`, `PoolTimeout`, ...). Response path: `http_<status>`
+    # for any status >= 400 (so a 429 rate-limit is captured even though it does NOT set is_error,
+    # which triggers only on >= 500). None on clean success. This is the field that distinguishes a
+    # concurrency/pool problem from an upstream rate-limit from a timeout — the prerequisite for any
+    # targeted guard.
+    error_cause: str | None = None
     # content_encoding — the response Content-Encoding the usage scanner saw (gzip/br/identity/...).
     # None when unset (non-shadow line, or no header). Logged so a `usage=null` row is attributable
     # to its encoding: the pre-registered acceptance test joins this against usage-present to

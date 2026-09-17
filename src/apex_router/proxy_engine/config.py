@@ -40,9 +40,22 @@ class Config:
     # Paths
     home: Path = field(default_factory=lambda: Path(_env("APEX_HOME", str(Path.home() / ".apex"))))
 
-    # TTFT budget — apex's added-latency ceiling (an invariant wall). Set low enough that a real
-    # regression trips it: measured apex_added_ms p99 is well under 1ms, and the inline transforms
-    # add ~1ms p99 on 128KB blocks, so 20ms = measured overhead + inline margin.
+    # TTFT budget — apex's added-latency ceiling (an invariant wall). NOTE (2026-09, measured on
+    # 12.3k live shadow requests): apex_added_ms is p50=5.8ms / p90=16ms / p99=35.8ms / max=245ms,
+    # and 5.0% (623 reqs) EXCEED this 20ms budget — the wall is currently breached, not comfortably
+    # clear. Cause is NOT wire latency: `apex_added_ms` = `pre_forward_ms`, which includes the
+    # SYNCHRONOUS shadow-compute (block decomposition) done before forwarding. Breaches correlate
+    # with body size — median context_bytes 355KB vs 44KB overall, n_blocks 123 vs 14 — i.e. large
+    # requests pay O(blocks) decomposition on the critical path. The lone max (245ms, context_bytes=0)
+    # is the az-auth token mint (`az` subprocess), a separate cold-path cost. The earlier "<1ms p99"
+    # claim was a small-block microbench, not live traffic. NOTE: moving the compute off the request
+    # path is NOT a valid fix — it only LOOKS observation-only today because no policy is admitted; by
+    # design (decide.py/freeze.py) the per-block decision PRODUCES the bytes to forward, so once a
+    # transform is admitted the compute is load-bearing BEFORE the forward and cannot be deferred.
+    # The honest levers are therefore: (a) make decompose faster (cost is ~3.3ms/100KB, linear in
+    # body size), or (b) raise this budget to a measured p99+margin. Left at 20ms so the breach stays
+    # VISIBLE rather than hidden; lowering OVERSIZE_FRONTIER_BYTES is rejected — it blinds R1's X on
+    # exactly the largest blocks it most needs.
     ttft_budget_ms: int = int(_env("APEX_TTFT_BUDGET_MS", "20"))
 
     # Retention (§3.1): GC rows older than N days on startup

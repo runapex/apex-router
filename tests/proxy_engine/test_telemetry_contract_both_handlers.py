@@ -187,6 +187,84 @@ def test_composition_bytes_by_class_present_on_both_handlers(handler):
 
 
 @pytest.mark.parametrize("handler", HANDLERS)
+def test_error_cause_records_exception_class_on_raise_path(handler):
+    """v5: a send_stream that RAISES (read-timeout/connection reset/pool-exhaustion) must record the
+    exception CLASS in error_cause, so a burst of failures is root-causable instead of an
+    undifferentiated is_error bool (the mislabeled '429 storm' finding)."""
+    class _RaisingUp:
+        def build_url(self, k, p, q):
+            return "http://up" + p
+
+        def endpoint_id(self, client_kind):
+            return "anthropic"
+
+        async def inject_auth(self, headers, client_kind, *, raw_headers=None):
+            return headers
+
+        async def send_stream(self, m, u, *, headers, content):
+            raise httpx.PoolTimeout("pool exhausted under concurrent load")
+
+    async def go():
+        tel = _Tel()
+        if handler == "passthrough":
+            await passthrough.handle(_Req(), _RaisingUp(), tel)
+        else:
+            await shadow_h.handle(_Req(), _RaisingUp(), tel, None)
+        return tel.ev[0]
+
+    ev = asyncio.run(go())
+    assert ev.is_error is True
+    assert ev.error_cause == "PoolTimeout", (
+        f"raise-path error_cause must be the exception class, got {ev.error_cause!r}"
+    )
+
+
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_error_cause_records_http_status_even_when_not_is_error(handler):
+    """v5: a 429 (or any >=400 <500) response must be LABELED http_<status> even though is_error only
+    trips on >=500 — a rate-limit is exactly the case the is_error rule ignores but a guard needs."""
+    class _Resp429:
+        def __init__(self):
+            self.status_code = 429
+            self.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        async def aiter_raw(self):
+            yield b""
+
+        async def aclose(self):
+            pass
+
+    class _Up429:
+        def build_url(self, k, p, q):
+            return "http://up" + p
+
+        def endpoint_id(self, client_kind):
+            return "anthropic"
+
+        async def inject_auth(self, headers, client_kind, *, raw_headers=None):
+            return headers
+
+        async def send_stream(self, m, u, *, headers, content):
+            return _Resp429()
+
+    async def go():
+        tel = _Tel()
+        if handler == "passthrough":
+            resp = await passthrough.handle(_Req(), _Up429(), tel)
+        else:
+            resp = await shadow_h.handle(_Req(), _Up429(), tel, None)
+        async for _ in resp.body_iterator:
+            pass
+        return tel.ev[0]
+
+    ev = asyncio.run(go())
+    assert ev.is_error is False, "429 is < 500 — must NOT trip is_error (rule unchanged)"
+    assert ev.error_cause == "http_429", (
+        f"a 429 must be LABELED even without is_error, got {ev.error_cause!r}"
+    )
+
+
+@pytest.mark.parametrize("handler", HANDLERS)
 def test_shared_side_reads_present_on_both_handlers(handler):
     """The already-shared fields must stay present — a total contract so a new field can be added to
     this list and pinned across both handlers at once (the agent_id/endpoint_id lesson)."""

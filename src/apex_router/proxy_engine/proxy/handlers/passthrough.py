@@ -145,8 +145,9 @@ async def handle(
         response = await upstream.send_stream(
             request.method, url, headers=fwd_headers, content=body
         )
-    except Exception:
+    except Exception as exc:
         event.is_error = True
+        event.error_cause = type(exc).__name__  # provable mechanism (ReadTimeout/ConnectError/PoolTimeout/…), not inferred
         # apex's OWN cost is pre_forward_ms (matches the success path + the field's contract); the
         # time blocked on the upstream before it raised goes to upstream_error_wait_ms, NOT to
         # apex_added_ms — else a 600s read-timeout is mis-billed as apex latency (a measurement window).
@@ -188,6 +189,10 @@ async def handle(
         finally:
             event.apex_added_ms = pre_forward_ms  # apex's own request-path cost
             event.is_error = event.is_error or response.status_code >= 500
+            # a >=400 status is a labeled cause even when it does NOT flag is_error (429/4xx < 500):
+            # captures rate-limits/client errors the is_error>=500 rule intentionally ignores.
+            if event.error_cause is None and response.status_code >= 400:
+                event.error_cause = f"http_{response.status_code}"
             if scanner.usage.captured:
                 event.usage = scanner.usage.to_dict()
                 event.tokens_in = scanner.usage.input_tokens  # provider truth, not a token guess

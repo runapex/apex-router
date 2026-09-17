@@ -60,7 +60,21 @@ _TABLE: tuple[tuple[str, str, Rates], ...] = (
     # cache_write=0.0 is STRUCTURAL, not unknown: the OpenAI Responses usage carries no write field
     # (verified from a raw-wire capture), so there is nothing to price and no write premium is paid.
     ("gpt-5", "openai", Rates(15.0, 1.5, 0.0, 60.0, f"list:gpt-5/openai:{_LIST_PRICE_DATE}")),
+    # OpenAI (Codex) — gpt-6 tier (e.g. it-entra-gpt-6-astra). No AUDITED list price exists yet, so
+    # these are the gpt-5 rates carried forward as a PLACEHOLDER. The `provisional:` regime (not
+    # `list:`) makes the assumption visible per the F-i doctrine — a reader sees the dollar figure is
+    # an assumed rate, not an audited one. Replace with the real gpt-6 list price (and flip the regime
+    # to `list:`) the moment it is pinned. Placed AFTER gpt-5 so `gpt-5.x` still matches gpt-5 first.
+    ("gpt-6", "openai", Rates(15.0, 1.5, 0.0, 60.0, f"provisional:gpt-6-as-gpt5/openai:{_LIST_PRICE_DATE}")),
 )
+
+# Endpoint-label aliases: the wire emits a deployment-specific `endpoint_id` that is NOT the pricing
+# key. `foundry` is the Azure-AI-Foundry Anthropic wire (ANTHROPIC_FOUNDRY_BASE_URL) — the same rates
+# as the `anthropic` upstream. Without this alias, ALL Claude traffic tagged `foundry` misses the
+# table and reads as $0-unknown (verified: 10,763 Claude requests carried endpoint_id=foundry). The
+# alias is safe because the family invariant holds in the data: foundry only ever carries Claude,
+# openai only ever carries gpt/kimi. NORMALIZED before the table lookup, never stored.
+_ENDPOINT_ALIASES: dict[str, str] = {"foundry": "anthropic"}
 
 
 # Differently-priced SKUs that SHARE a base-model substring. Substring matching is needed to strip
@@ -86,6 +100,7 @@ def rates_for(model: str | None, endpoint_id: str | None) -> Rates:
     regime (a dollar figure on it reads as un-priced, never faked)."""
     m = (model or "").lower()
     ep = (endpoint_id or "").lower()
+    ep = _ENDPOINT_ALIASES.get(ep, ep)  # normalize deployment endpoint label → pricing endpoint key
     if not _has_variant_token(m):
         for sub, endpoint, base in _TABLE:
             if sub in m and endpoint == ep:

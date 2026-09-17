@@ -43,6 +43,27 @@ def test_unknown_pair_is_labeled_unknown_with_zero_rates():
     assert r.pricing_regime.startswith("unknown:"), "unpriced traffic must be labeled unknown"
 
 
+def test_foundry_endpoint_aliases_to_anthropic_rates():
+    # the wire tags the Azure-Foundry Anthropic deployment endpoint_id='foundry'; it must price at
+    # anthropic rates, not miss the table and read as $0-unknown (regression: 10,763 Claude reqs).
+    r = rates_for("it-entra-claude-opus-4-8", "foundry")
+    assert r.input == 15.0 and r.cache_read == 1.5 and r.cache_write == 18.75 and r.output == 75.0
+    assert "list:opus/anthropic" in r.pricing_regime
+    # sonnet + haiku over foundry too
+    assert rates_for("it-entra-claude-sonnet-4-6", "foundry").cache_write == 3.75
+    assert rates_for("it-entra-claude-haiku-4-5", "foundry").input == 0.8
+
+
+def test_gpt6_is_priced_provisionally_and_labeled_as_such():
+    # gpt-6 (e.g. it-entra-gpt-6-astra) has no audited list price yet: priced at gpt-5 rates but the
+    # regime must say `provisional`, never `list`, so the assumption is visible (F-i doctrine).
+    r = rates_for("it-entra-gpt-6-astra", "openai")
+    assert (r.input, r.cache_read, r.cache_write, r.output) == (15.0, 1.5, 0.0, 60.0)
+    assert r.pricing_regime.startswith("provisional:"), "gpt-6 rate is assumed, must not read as audited list"
+    # gpt-5.x must still bind to the audited gpt-5 row, not the provisional gpt-6 one
+    assert "list:gpt-5/openai" in rates_for("it-entra-gpt-5.6-sol", "openai").pricing_regime
+
+
 def test_endpoint_disambiguates_same_model_shape():
     # anthropic vs openai are distinct even though both could look 'gpt/claude'-ish; endpoint is exact
     assert rates_for("opus", "anthropic").pricing_regime != rates_for("gpt-5", "openai").pricing_regime

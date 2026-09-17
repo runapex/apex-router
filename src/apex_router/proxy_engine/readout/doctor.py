@@ -103,6 +103,13 @@ def error_panel(rows: list[dict], total_requests: int) -> dict:
     the timeout wait is reported as LATENCY hours, never dollars (error rows have usage=null)."""
     from collections import Counter
     by_class = Counter(classify_error(d) for d in rows)
+    # by_cause (schema v5+): the PROVABLE mechanism the row recorded — exception class on the
+    # upstream-raise path (`PoolTimeout`/`ReadTimeout`/`ConnectError`/…) or `http_<status>` on a
+    # >=400 response (captures 429s that don't trip is_error). Distinct from `by_class`, which is a
+    # behavioral SIGNATURE inferred without a cause (all schema versions). A pre-v5 row carried no
+    # cause, so it is labeled `unlabeled(pre-v5)` — an honest gap, never bucketed under a guessed
+    # mechanism (the same discipline that kept classify_error attribution-free).
+    by_cause = Counter(d.get("error_cause") or "unlabeled(pre-v5)" for d in rows)
     timeouts = [d for d in rows if classify_error(d) == "upstream_timeout"]
     wait_ms = sum(d.get("upstream_error_wait_ms") or 0 for d in timeouts)
     by_endpoint = Counter((d.get("endpoint_id") or "?") for d in timeouts)
@@ -114,6 +121,7 @@ def error_panel(rows: list[dict], total_requests: int) -> dict:
         "denominator": total_requests,
         "rate": (len(rows) / total_requests) if total_requests else None,
         "by_class": dict(by_class),
+        "by_cause": dict(by_cause),
         "timeout": {
             "count": len(timeouts),
             "cumulative_wait_hours": round(wait_ms / 1000 / 3600, 1),  # LATENCY, not $
@@ -691,6 +699,19 @@ def format_report(report: dict) -> str:
             n = e["by_class"].get(cls, 0)
             if n:
                 L.append(f"  {n:>3} {cls:18} {_notes[cls]}")
+        # PROVABLE cause rollup (v5+): the direct mechanism, not a behavioral guess. Shown separately
+        # so a mislabel like the '429 storm' can't recur — an http_429 vs a PoolTimeout is now visible.
+        bc = e.get("by_cause") or {}
+        labeled = {k: v for k, v in bc.items() if k != "unlabeled(pre-v5)"}
+        if labeled:
+            L.append("  provable cause (v5+):")
+            for cause, n in sorted(labeled.items(), key=lambda kv: -kv[1]):
+                L.append(f"    {n:>3} {cause}")
+            pre = bc.get("unlabeled(pre-v5)", 0)
+            if pre:
+                L.append(f"    {pre:>3} unlabeled(pre-v5)  (rows predating error_cause — no mechanism recorded)")
+        elif bc.get("unlabeled(pre-v5)"):
+            L.append(f"  provable cause (v5+): none yet — all {bc['unlabeled(pre-v5)']} error rows predate the error_cause field")
         to = e["timeout"]
         if to["count"]:
             # LATENCY hours, explicitly NOT dollars (error rows have usage=null → no billable tokens)

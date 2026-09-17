@@ -429,6 +429,21 @@ def test_error_panel_counts_rate_and_latency_hours_not_dollars():
     assert panel["timeout"]["cumulative_wait_hours"] == round(1_200_000 / 1000 / 3600, 1)
 
 
+def test_error_panel_by_cause_labels_v5_and_marks_pre_v5_unlabeled():
+    # by_cause is the PROVABLE mechanism (v5+): exception class or http_<status>. It must NOT guess a
+    # cause for pre-v5 rows (no error_cause field) — those are the honest `unlabeled(pre-v5)` bucket,
+    # never folded into a real mechanism. This is the field that makes the '429 vs PoolTimeout'
+    # distinction the mislabeled-storm finding needed.
+    from apex_router.proxy_engine.readout.doctor import error_panel
+    pool = {**_err(wait=5), "schema_version": 5, "error_cause": "PoolTimeout"}
+    http429 = {**_err(wait=5), "schema_version": 5, "is_error": False, "error_cause": "http_429"}
+    old = _err(wait=600_000)  # schema 4 → no error_cause
+    panel = error_panel([pool, http429, old], total_requests=50)
+    assert panel["by_cause"] == {"PoolTimeout": 1, "http_429": 1, "unlabeled(pre-v5)": 1}
+    # the behavioral by_class is unchanged and independent of by_cause
+    assert "by_class" in panel and sum(panel["by_class"].values()) == 3
+
+
 def test_error_panel_survives_all_optional_fields_null():
     from apex_router.proxy_engine.readout.doctor import classify_error, error_panel
     bare = {"schema_version": 4, "is_error": True, "usage": None}
