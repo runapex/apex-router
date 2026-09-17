@@ -444,6 +444,26 @@ def test_error_panel_by_cause_labels_v5_and_marks_pre_v5_unlabeled():
     assert "by_class" in panel and sum(panel["by_class"].values()) == 3
 
 
+def test_current_telemetry_schema_is_supported_by_doctor():
+    # drift guard: the version the wire EMITS must be in doctor's SUPPORTED_SCHEMA, else every fresh
+    # row reads as unsupported and is dropped from the dollar totals (silent data loss). This test
+    # forced the v5 fix: bumping TELEMETRY_SCHEMA_VERSION without extending SUPPORTED_SCHEMA is a bug.
+    from apex_router.proxy_engine.readout.doctor import SUPPORTED_SCHEMA
+    from apex_router.proxy_engine.telemetry.events import TELEMETRY_SCHEMA_VERSION
+    assert TELEMETRY_SCHEMA_VERSION in SUPPORTED_SCHEMA, (
+        f"doctor SUPPORTED_SCHEMA={SUPPORTED_SCHEMA} must include the emitted "
+        f"TELEMETRY_SCHEMA_VERSION={TELEMETRY_SCHEMA_VERSION}"
+    )
+
+
+def test_v5_generative_row_counts_toward_dollars_not_dropped_as_unsupported():
+    # the concrete consequence of the SUPPORTED_SCHEMA gap: a normal v5 usage row must be generative
+    # (priced), not silently excluded. Guards the exact regression the bump introduced.
+    from apex_router.proxy_engine.readout.doctor import is_generative
+    row = {"schema_version": 5, "is_error": False, "usage": {"input_tokens": 10}}
+    assert is_generative(row) is True
+
+
 def test_error_panel_survives_all_optional_fields_null():
     from apex_router.proxy_engine.readout.doctor import classify_error, error_panel
     bare = {"schema_version": 4, "is_error": True, "usage": None}
