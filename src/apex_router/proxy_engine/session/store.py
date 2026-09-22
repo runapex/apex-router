@@ -68,6 +68,24 @@ CREATE INDEX IF NOT EXISTS idx_sessions_lastseen ON sessions (last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_prefix_session ON prefix_hashes (session_id);
 """
 
+# Additive columns each table MUST have, with the exact DDL fragment to add a missing one.
+# `CREATE TABLE IF NOT EXISTS` (SCHEMA above) is a NO-OP on a table that already exists, so a DB
+# created before a column was added keeps the OLD shape forever — the matcher then throws
+# `no such column: sys_prompt_hash` on every request and fail-open swallows it (100% matcher_event=
+# "unwired", null session_id on header-less traffic). SQLite `ALTER TABLE ADD COLUMN` is safe only
+# for NULLable / constant-default columns (all of these qualify), so reconciliation is additive and
+# idempotent: a fresh DB already has them (skip), an old DB gains them (heal). NEVER drop/rewrite.
+_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "sessions": {
+        "sys_prompt_hash": "sys_prompt_hash TEXT",
+        "agent_id": "agent_id TEXT",
+        "project_id": "project_id TEXT",
+        "client_session_id": "client_session_id TEXT",
+        "wire_hint": "wire_hint TEXT",
+        "turn": "turn INTEGER DEFAULT 0",
+    },
+}
+
 # Tables carrying a per-session recency column used for GC.
 _GC_BY_SESSION = ("freeze", "prefix_hashes", "chain", "ccr")
 
@@ -127,10 +145,15 @@ class _LockedConn:
             self._conn.executescript(script)
 
     @contextmanager
-    def transaction(self):
-        """Hold the lock across BEGIN..COMMIT/ROLLBACK so the whole transaction is atomic."""
+    def transaction(self, *, immediate: bool = False):
+        """Hold the lock across BEGIN..COMMIT/ROLLBACK so the whole transaction is atomic.
+
+        `immediate=True` issues `BEGIN IMMEDIATE`, which takes the RESERVED write-lock up front:
+        a second connection entering its own IMMEDIATE transaction blocks (up to busy_timeout)
+        instead of racing — used by the schema migration so two concurrent Store opens serialize
+        their ALTERs rather than both snapshotting the old schema and colliding (xval F1)."""
         with self._lock:
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             try:
                 yield self
                 self._conn.execute("COMMIT")
@@ -164,13 +187,63 @@ class Store:
         )
         raw.row_factory = sqlite3.Row
         self._conn = _LockedConn(raw, self._lock)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        # busy_timeout so a concurrent writer/checkpoint yields "wait" not "database is
-        # locked". WAL alone does not prevent lock errors.
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.executescript(SCHEMA)
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            # busy_timeout so a concurrent writer/checkpoint yields "wait" not "database is
+            # locked". WAL alone does not prevent lock errors.
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.executescript(SCHEMA)
+            self._reconcile_additive_columns()
+        except BaseException:
+            # A failure after connect must not leak the open connection/file handle OR leave a
+            # dangling BEGIN IMMEDIATE holding the writer lock (which would block every other
+            # constructor — xval improvement #1). Catch BaseException (not just Exception) so an
+            # INTERRUPT mid-migration (KeyboardInterrupt/SystemExit) also rolls back + closes.
+            # Best-effort rollback first (no-op if no txn is open), then close; re-raise the original.
+            try:
+                raw.rollback()
+            except BaseException:  # noqa: BLE001 — cleanup must not mask the original failure
+                pass
+            raw.close()
+            raise
+
+    def _reconcile_additive_columns(self) -> None:
+        """Add any declared additive column missing from an existing table (schema-drift heal).
+
+        Load-bearing: an `.apex/state.db` created before the §4 matcher columns landed keeps the
+        pre-matcher `sessions` shape, so `candidate_sessions` raises `no such column` on EVERY
+        request and the fail-open path books `matcher_event="unwired"` — silently disabling session
+        identity and prefix-bust detection. `CREATE TABLE IF NOT EXISTS` cannot fix an existing
+        table; this does, additively and idempotently. Fail-CLOSED on a genuine migration error
+        (not the swallow-everything path): a half-migrated store is worse than a clean refusal.
+
+        Atomicity + concurrency (xval F1): the whole reconcile runs inside a single
+        `BEGIN IMMEDIATE` transaction, so (a) a second concurrent opener blocks on the write-lock
+        instead of racing our snapshot→ALTER window, and (b) on any un-swallowable error every ALTER
+        in this pass ROLLS BACK together — no half-migrated schema is committed. The idempotent
+        duplicate-column swallow is kept as belt-and-suspenders for a writer OUTSIDE this lock
+        (e.g. a raw sqlite connection); IMMEDIATE removes the in-process race that motivated it.
+        """
+        with self._conn.transaction(immediate=True):
+            for table, cols in _ADDITIVE_COLUMNS.items():
+                # Case-fold: SQLite identifiers are case-INSENSITIVE, so a legacy `SYS_PROMPT_HASH`
+                # already satisfies `sys_prompt_hash` — comparing case-sensitively would try to ADD
+                # a "duplicate" and abort startup forever (xval F2).
+                existing = {r[1].lower() for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                if not existing:
+                    continue  # table absent entirely (SCHEMA creates it) — nothing to reconcile
+                for name, ddl in cols.items():
+                    if name.lower() in existing:
+                        continue
+                    try:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+                    except sqlite3.OperationalError as e:
+                        # A duplicate here means the column now exists (the goal) — treat as success.
+                        # Any OTHER OperationalError (locked, disk) rolls the whole pass back → raise.
+                        if "duplicate column name" not in str(e).lower():
+                            raise
 
     # ---- lifecycle ----
     def gc(self, *, now: float | None = None) -> int:

@@ -5,9 +5,20 @@ and this client. Kept separate so the wire code never re-creates connections (TT
 """
 from __future__ import annotations
 
+import asyncio
+import math
+import random
+import time
+
 import httpx
 
 from apex_router.proxy_engine.config import Config
+
+# Hard safety caps for the connect-retry budget (independent of config, so a hostile/typo'd
+# value can never hang or DoS the request path — xval F3).
+_MAX_CONNECT_RETRIES = 10
+_MAX_CONNECT_BACKOFF_S = 30.0
+_MAX_CONNECT_TOTAL_BACKOFF_S = 60.0  # cumulative backoff ceiling across all retries of one request
 
 # Hop-by-hop headers must not be forwarded (RFC 7230 §6.1); also drop framing that the
 # HTTP client/server layer recomputes (content-length, transfer-encoding, host). Everything
@@ -171,7 +182,8 @@ class Upstream:
         return base + raw_path + (("?" + qs) if qs else "")
 
     async def send_stream(
-        self, method: str, url: str, *, headers: list[tuple[bytes, bytes]], content: bytes
+        self, method: str, url: str, *, headers: list[tuple[bytes, bytes]], content: bytes,
+        stats: dict | None = None,
     ) -> httpx.Response:
         """Send and return a streaming response. Caller MUST `await response.aclose()`
         (done in the handler's stream `finally`). Using send(stream=True) keeps the body
@@ -184,12 +196,67 @@ class Upstream:
         Result: apex adds nothing the client didn't send — true passthrough, and no invented
         accept-encoding that could make the upstream gzip a response the client didn't ask for.
         """
-        req = self._client.build_request(method, url, headers=headers, content=content)
         provided = {k.lower() for k, _ in headers}
         keep = provided | {b"host", b"content-length"}
-        scrubbed = [(k, v) for k, v in req.headers.raw if k.lower() in keep]
-        req.headers = httpx.Headers(scrubbed)
-        return await self._client.send(req, stream=True)
+        # Connect-only retry: httpx.ConnectError/ConnectTimeout is raised BEFORE the request is
+        # written to a socket (the connection never came up), so the upstream never saw the POST —
+        # retrying cannot double-submit. A ReadError/ReadTimeout is NOT retried here (it propagates on
+        # attempt 1): once connected, the request may already be processing upstream, so a retry
+        # could yield a duplicate non-idempotent completion. `send(stream=True)` returns at response
+        # headers — before the handler forwards any byte to the client.
+        #
+        # Scope of the no-double-submit guarantee (xval — NOT universal): it holds for the SHIPPING
+        # config only — a bytes `content` (both callers buffer `request.body()`, so a fresh request
+        # re-sends identical bytes) over stock httpcore, which establishes TCP/TLS BEFORE writing the
+        # application request, so a ConnectError means the POST was never written. It would NOT hold
+        # for a streamed/consumed body (an already-drained async generator replays empty) or a custom
+        # httpx event-hook that raises ConnectError AFTER the request is accepted. Keep `content` a
+        # bytes object and add no such hook, and the guarantee stands.
+        #
+        # `stats` (optional out-param): total seconds slept in backoff are recorded under
+        # 'connect_backoff_s' and 'connect_retries' so the CALLER can bill that apex-controlled sleep
+        # to apex_added_ms, not to upstream latency (xval F4 — the sleep happens inside this call,
+        # which the handler times as the upstream window).
+        # Clamp the retry budget at point-of-use: a hostile/typo'd config (inf, negative, or a huge
+        # count that makes 2**i overflow) must not hang the request path or DoS it with an
+        # astronomical sleep (xval F3). CAP total attempts and per-sleep seconds to sane bounds.
+        retries = self._cfg.upstream_connect_retries
+        retries = 0 if not isinstance(retries, int) or retries < 0 else min(retries, _MAX_CONNECT_RETRIES)
+        backoff = self._cfg.upstream_connect_backoff_s
+        if not math.isfinite(backoff) or backoff < 0:
+            backoff = 0.0
+        attempts = retries + 1
+        slept_total = 0.0  # total-duration budget: stop retrying once cumulative backoff hits the cap
+        for i in range(attempts):
+            # Build a FRESH request each attempt: a consumed/aborted request object must not be
+            # re-sent, and the scrub is cheap.
+            req = self._client.build_request(method, url, headers=headers, content=content)
+            scrubbed = [(k, v) for k, v in req.headers.raw if k.lower() in keep]
+            req.headers = httpx.Headers(scrubbed)
+            try:
+                return await self._client.send(req, stream=True)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if i == attempts - 1 or slept_total >= _MAX_CONNECT_TOTAL_BACKOFF_S:
+                    raise  # exhausted (attempts OR total-backoff budget) — handler books the error
+                # exp backoff, per-sleep capped; then JITTERED (equal-jitter: half fixed + half
+                # random in [0, half]) so many clients recovering from the same upstream blip don't
+                # re-connect in lockstep (thundering herd). Also bounded by the remaining total
+                # budget so cumulative sleep never exceeds _MAX_CONNECT_TOTAL_BACKOFF_S.
+                capped = min(backoff * (2**i), _MAX_CONNECT_BACKOFF_S)
+                half = capped / 2.0
+                delay = half + random.uniform(0.0, half)
+                delay = min(delay, _MAX_CONNECT_TOTAL_BACKOFF_S - slept_total)
+                slept_total += delay  # budget accounting uses SCHEDULED delay (the cap's currency)
+                # But telemetry must bill the ELAPSED sleep, not the scheduled one: under event-loop
+                # contention `asyncio.sleep(d)` can take materially longer than `d`, and that real
+                # wall-time is what F4 subtracts from the upstream window. Measuring scheduled time
+                # would under-remove and re-bill the slack to the upstream (xval #3).
+                _t0 = time.perf_counter()
+                await asyncio.sleep(delay)
+                elapsed = time.perf_counter() - _t0
+                if stats is not None:
+                    stats["connect_backoff_s"] = stats.get("connect_backoff_s", 0.0) + elapsed
+                    stats["connect_retries"] = stats.get("connect_retries", 0) + 1
 
     async def aclose(self) -> None:
         await self._client.aclose()

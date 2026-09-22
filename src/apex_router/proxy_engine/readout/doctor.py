@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from apex_router.proxy_engine.readout.pricing import Rates
 
-SUPPORTED_SCHEMA = {2, 3, 4, 5}  # v4 added upstream_error_wait_ms; v5 added error_cause; doctor's fields are v2-compatible
+SUPPORTED_SCHEMA = {2, 3, 4, 5, 6}  # v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; doctor's fields are v2-compatible
 
 # Cache-served floor below which a large session is flagged for prefix instability. A BOUND, not a
 # policy: derived from CORRECTED two-wire data (the reference window, served = read/(read+FRESH), wire-aware —

@@ -88,6 +88,44 @@ class TestIdentifyIntoStore(unittest.TestCase):
         out = self._ident([_msg(0)])
         self.assertIsNotNone(out)
 
+    def test_matcher_error_surfaced_via_stats_but_still_fail_open(self):
+        # xval improvement #3: if the matcher THROWS (e.g. a schema-drift OperationalError), the
+        # caller must still get None (fail-open) BUT the exception class must be recorded in stats
+        # so the handler can emit matcher_event="error" instead of the ambiguous "unwired".
+        class _BoomStore:
+            def candidate_sessions(self, **kw):
+                import sqlite3
+                raise sqlite3.OperationalError("no such column: sys_prompt_hash")
+            def get_chain(self, sid):
+                return []
+        stats = {}
+        out = identify_into_store(
+            body=_body([_msg(0)], system="sys"), client="codex", wire_hint=None,
+            agent_id=None, store=_BoomStore(), epoch_id="e0", stats=stats)
+        self.assertIsNone(out)  # fail-open preserved
+        self.assertEqual(stats.get("matcher_error"), "OperationalError")
+
+    def test_not_consulted_leaves_no_matcher_error(self):
+        # A None return with NO exception (e.g. empty messages) must NOT set matcher_error —
+        # that would falsely flag "matcher outage" on an honest not-applicable row.
+        stats = {}
+        out = identify_into_store(
+            body=json.dumps({"messages": []}).encode(), client="codex", wire_hint=None,
+            agent_id=None, store=self.store, epoch_id="e0", stats=stats)
+        self.assertIsNone(out)
+        self.assertNotIn("matcher_error", stats)
+
+    def test_nonjson_body_is_not_a_matcher_error(self):
+        # xval #2: a non-chat request (empty/non-JSON body, e.g. GET /v1/models) is not-applicable,
+        # NOT a matcher failure — it must NOT set matcher_error (which would pollute outage stats).
+        for bad in (b"", b"not json", b"[1,2,3]"):
+            stats = {}
+            out = identify_into_store(
+                body=bad, client="codex", wire_hint=None, agent_id=None,
+                store=self.store, epoch_id="e0", stats=stats)
+            self.assertIsNone(out)
+            self.assertNotIn("matcher_error", stats, f"body {bad!r} wrongly flagged a matcher error")
+
 
 class TestAppLevelWiring(unittest.TestCase):
     """App-level: a request through the real proxy (mock upstream) emits a real matcher_event

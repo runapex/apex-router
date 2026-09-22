@@ -54,17 +54,35 @@ def identify_into_store(
     store,
     epoch_id: str,
     now: float | None = None,
+    stats: dict | None = None,
 ) -> tuple[str, int, str] | None:
     """Identify the request's session and persist the result. Returns
     (session_id, turn, matcher_event), or None on ANY doubt (fail-open: identity is an
-    attribution aid, never worth affecting traffic). Never raises."""
+    attribution aid, never worth affecting traffic). Never raises.
+
+    `stats` (optional out-param): on an EXCEPTION (fail-open still returns None) the exception
+    class name is recorded under 'matcher_error' so the caller can emit it as telemetry instead of
+    the ambiguous `matcher_event="unwired"` — which otherwise conflates 'matcher threw' (a real
+    fault, e.g. the schema-drift outage this fixes) with 'matcher not consulted' (xval improvement
+    #3). A None return with NO 'matcher_error' means honest not-applicable (no messages / not a
+    dict), not an error."""
+    # PARSE phase (not the matcher): a non-JSON body / non-chat request (e.g. `GET /v1/models`) is
+    # NOT a matcher failure — it's honestly not-applicable. Returning None here must NOT set
+    # matcher_error, or every non-chat request would falsely read as a session-identity outage
+    # (xval #2). Only failures AFTER the matcher is actually consulted set matcher_error.
     try:
         obj = json.loads(body)
-        if not isinstance(obj, dict):
-            return None
-        msgs = _messages_of(obj)
-        if msgs is None:
-            return None
+    except Exception:  # noqa: BLE001 — unparseable body → not-applicable, never an error
+        return None
+    if not isinstance(obj, dict):
+        return None
+    msgs = _messages_of(obj)
+    if msgs is None:
+        return None
+
+    # MATCH + PERSIST phase: a raise here IS a real matcher/store fault (the schema-drift outage
+    # lives here) — record its mechanism for telemetry, still fail-open (return None).
+    try:
         now = time.time() if now is None else now
         sys_hash = _sys_prompt_hash(obj)
         m = matcher.identify(
@@ -98,5 +116,9 @@ def identify_into_store(
         else:
             return None
         return (m.session_id, m.turn, m.event)
-    except Exception:  # noqa: BLE001 — fail-open is the contract
+    except Exception as e:  # noqa: BLE001 — fail-open is the contract
+        # Surface the failure MECHANISM for telemetry (improvement #3) without breaking fail-open:
+        # still return None so traffic is never affected, but let the caller record WHY.
+        if stats is not None:
+            stats["matcher_error"] = type(e).__name__
         return None

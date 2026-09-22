@@ -38,7 +38,7 @@ class _SlowBoom:
     async def inject_auth(self, headers, client_kind, *, raw_headers=None):
         return headers  # injection disabled by default → passthrough no-op
 
-    async def send_stream(self, m, u, *, headers, content):
+    async def send_stream(self, m, u, *, headers, content, stats=None):
         await asyncio.sleep(_UPSTREAM_STALL_S)
         raise httpx.ConnectError("upstream unreachable", request=httpx.Request(m, u))
 
@@ -104,3 +104,79 @@ def test_passthrough_error_path_attributes_wait_to_upstream_not_apex():
 
 def test_shadow_error_path_attributes_wait_to_upstream_not_apex():
     _assert_error_attribution(_drive(shadow))
+
+
+# --- F4: connect-retry backoff must be billed to apex, not upstream (xval) ---
+
+_BACKOFF_S = 0.15
+
+
+class _BackoffThenOk:
+    """Upstream that reports a connect-retry backoff via stats, then returns a normal 200 stream.
+    The backoff sleep happens INSIDE send_stream (which the handler times as the upstream window),
+    so the handler must subtract it from upstream TTFB and add it to apex_added_ms (xval F4)."""
+
+    def build_url(self, k, p, q):
+        return "http://up" + p
+
+    def endpoint_id(self, client_kind):
+        return "anthropic"
+
+    async def inject_auth(self, headers, client_kind, *, raw_headers=None):
+        return headers
+
+    async def send_stream(self, m, u, *, headers, content, stats=None):
+        # Simulate a connect failure recovered after one backoff sleep: actually sleep so the
+        # handler's wall-clock upstream window really contains the backoff we then attribute away.
+        await asyncio.sleep(_BACKOFF_S)
+        if stats is not None:
+            stats["connect_backoff_s"] = _BACKOFF_S
+            stats["connect_retries"] = 1
+
+        class _Resp:
+            status_code = 200
+            headers = httpx.Headers({"content-type": "text/plain"})
+
+            async def aiter_raw(self):
+                yield b"hello"
+
+            async def aclose(self):
+                pass
+
+        return _Resp()
+
+
+def _drive_ok(handler_module) -> TelemetryEvent:
+    rec = _Recorder()
+
+    async def go():
+        resp = await handler_module.handle(_Req(), _BackoffThenOk(), rec, None)
+        if hasattr(resp, "body_iterator"):
+            async for _ in resp.body_iterator:
+                pass
+
+    asyncio.run(go())
+    assert len(rec.events) == 1
+    return rec.events[0]
+
+
+def _assert_backoff_billed_to_apex(ev: TelemetryEvent):
+    backoff_ms = _BACKOFF_S * 1000.0
+    # apex CHOSE to sleep the backoff → it is apex-added latency, not upstream latency.
+    assert ev.apex_added_ms >= backoff_ms * 0.8, (
+        f"apex_added_ms={ev.apex_added_ms:.1f}ms must include the {backoff_ms:.0f}ms connect backoff"
+    )
+    # the upstream first-byte window must NOT include the backoff apex slept.
+    assert ev.t_upstream_ttfb_ms < backoff_ms * 0.5, (
+        f"t_upstream_ttfb_ms={ev.t_upstream_ttfb_ms:.1f}ms wrongly includes apex's backoff sleep"
+    )
+    # client-observed ttft legitimately includes the backoff (the client really waited).
+    assert ev.ttft_ms >= backoff_ms * 0.8
+
+
+def test_passthrough_bills_connect_backoff_to_apex_not_upstream():
+    _assert_backoff_billed_to_apex(_drive_ok(passthrough))
+
+
+def test_shadow_bills_connect_backoff_to_apex_not_upstream():
+    _assert_backoff_billed_to_apex(_drive_ok(shadow))

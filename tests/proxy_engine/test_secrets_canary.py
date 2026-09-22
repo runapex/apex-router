@@ -66,7 +66,11 @@ class _UpOK:
     async def inject_auth(self, headers, client_kind, *, raw_headers=None):
         return headers  # injection disabled by default → passthrough no-op
 
-    async def send_stream(self, m, u, *, headers, content):
+    def __init__(self):
+        self.called = False
+
+    async def send_stream(self, m, u, *, headers, content, stats=None):
+        self.called = True
         return _RespOK()
 
 
@@ -83,11 +87,15 @@ class _UpBoom:
     async def inject_auth(self, headers, client_kind, *, raw_headers=None):
         return headers  # injection disabled by default → passthrough no-op
 
-    async def send_stream(self, m, u, *, headers, content):
+    def __init__(self):
+        self.called = False
+
+    async def send_stream(self, m, u, *, headers, content, stats=None):
         # `headers` is the handler's fwd_headers — already a list[(bytes, bytes)] from
         # filter_request_headers (NOT str pairs). httpx.Request accepts bytes header pairs
         # directly; the constructed request then CARRIES the sentinel auth value, so
         # `dict(exc.request.headers)` would expose it — exactly the surface the canary guards.
+        self.called = True
         req = httpx.Request(m, u, headers=list(headers))
         raise httpx.ConnectError("upstream unreachable", request=req)
 
@@ -196,10 +204,15 @@ def _run_case(tmp_path: Path, handler_call_factory) -> None:
 
 async def _run_both_paths(tel, handler_call_factory):
     bodies = []
-    # success path
-    bodies.append(await _drive_to_completion(handler_call_factory(_UpOK()), tel))
-    # forced-upstream-error path (the realistic leak trigger)
-    bodies.append(await _drive_to_completion(handler_call_factory(_UpBoom()), tel))
+    # success path — assert the mock was actually REACHED (guards against a silent signature
+    # mismatch turning both paths into an early 502 before send_stream, making the canary vacuous).
+    up_ok = _UpOK()
+    bodies.append(await _drive_to_completion(handler_call_factory(up_ok), tel))
+    assert up_ok.called, "success path never reached send_stream — canary would be vacuous"
+    # forced-upstream-error path (the realistic leak trigger) — also must reach the mock.
+    up_boom = _UpBoom()
+    bodies.append(await _drive_to_completion(handler_call_factory(up_boom), tel))
+    assert up_boom.called, "error path never reached send_stream — canary would be vacuous"
     tel._bodies = bodies
 
 

@@ -89,7 +89,7 @@ def _make_upstream(content_encoding: str | None):
         async def inject_auth(self, headers, client_kind, *, raw_headers=None):
             return headers  # injection disabled by default → passthrough no-op
 
-        async def send_stream(self, m, u, *, headers, content):
+        async def send_stream(self, m, u, *, headers, content, stats=None):
             return Resp()
 
     return _Up()
@@ -201,7 +201,7 @@ def test_error_cause_records_exception_class_on_raise_path(handler):
         async def inject_auth(self, headers, client_kind, *, raw_headers=None):
             return headers
 
-        async def send_stream(self, m, u, *, headers, content):
+        async def send_stream(self, m, u, *, headers, content, stats=None):
             raise httpx.PoolTimeout("pool exhausted under concurrent load")
 
     async def go():
@@ -244,7 +244,7 @@ def test_error_cause_records_http_status_even_when_not_is_error(handler):
         async def inject_auth(self, headers, client_kind, *, raw_headers=None):
             return headers
 
-        async def send_stream(self, m, u, *, headers, content):
+        async def send_stream(self, m, u, *, headers, content, stats=None):
             return _Resp429()
 
     async def go():

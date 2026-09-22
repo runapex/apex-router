@@ -21,7 +21,7 @@ GuardAction = Literal["none", "fallback", "invalidate"]
 # runs in the M0-derived identity layer, not decide()); the field exists so the TUI schema is total
 # and shows "not identified" rather than a missing key. Real events (extend/new/client_edit/
 # compaction) have landed since session/wire.py joined both handlers.
-MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction"]
+MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", "error"]
 
 # TELEMETRY_SCHEMA_VERSION — every emitted line carries this so a consumer can detect drift and, on
 # a version it doesn't know, say so rather than guess field meanings. Bump on ANY change to the
@@ -52,7 +52,16 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction"]
 # a 429 vs a connection-level raise). v5 records the exception class on the upstream-raise path
 # (`ReadTimeout`/`ConnectError`/`PoolTimeout`/...) and `http_<status>` on a >=400 response, so an
 # error's MECHANISM is provable from telemetry, not inferred. None on success rows.
-TELEMETRY_SCHEMA_VERSION = 5
+# v6: added `matcher_error`, `connect_retries`, `connect_backoff_ms` + `matcher_event="error"` (xval
+# improvement #3). Pre-v6, a matcher EXCEPTION (e.g. the state.db schema-drift outage: `no such
+# column: sys_prompt_hash` on every request) was swallowed by fail-open and booked as the ambiguous
+# `matcher_event="unwired"` — indistinguishable from 'matcher legitimately not consulted', so a total
+# session-identity outage was INVISIBLE in telemetry. And connect-retry recoveries (v-nothing) left no
+# trace: a request that succeeded only after N backoff sleeps looked identical to a clean one. v6
+# records the matcher failure MECHANISM (`matcher_error` = exception class; `matcher_event="error"`)
+# and the retry cost (`connect_retries` count + `connect_backoff_ms` apex-slept), so both a matcher
+# outage and a flaky-upstream recovery are provable from telemetry, not silent.
+TELEMETRY_SCHEMA_VERSION = 6
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -95,8 +104,14 @@ class TelemetryEvent:
     # the freeze/CCR key is (session_id, agent_id), so sub-agent traffic must be attributable apart
     # from the main stream. None for main-session requests.
     agent_id: str | None = None
-    # matcher outcome ("unwired" until the matcher joins the request path — see MatcherEvent)
+    # matcher outcome ("unwired" until the matcher joins the request path — see MatcherEvent).
+    # "error" (v6) means the matcher was consulted but THREW (fail-open returned None); the
+    # exception class is in matcher_error. This is distinct from "unwired" (not consulted).
     matcher_event: MatcherEvent = "unwired"
+    # matcher_error (v6) — the exception class name when the matcher threw (e.g. "OperationalError"
+    # from a schema-drift `no such column`), else None. Makes a session-identity OUTAGE visible in
+    # telemetry instead of hidden behind a "unwired" that also means "not consulted".
+    matcher_error: str | None = None
     # tokens
     tokens_in: int = 0
     tokens_out: int = 0
@@ -126,6 +141,12 @@ class TelemetryEvent:
     # already captured the wait). A latency panel reads apex_added_ms for apex cost, this for the
     # upstream-failure tail. See the the reference window finding: 42/127 errors showed ~600_000ms mis-billed.
     upstream_error_wait_ms: float = 0.0
+    # connect-retry accounting (v6): how many times send_stream retried a ConnectError before this
+    # row resolved, and the total backoff apex SLEPT (already billed into apex_added_ms, not
+    # upstream latency — see F4). 0/0.0 on the common no-retry path. A recovered-after-retry request
+    # is otherwise indistinguishable from a clean one; these make flaky-upstream recovery provable.
+    connect_retries: int = 0
+    connect_backoff_ms: float = 0.0
     is_error: bool = False
     # error_cause — WHY a row errored, provable not inferred (v5). Upstream-raise path: the exception
     # class name (`ReadTimeout`, `ConnectError`, `PoolTimeout`, ...). Response path: `http_<status>`

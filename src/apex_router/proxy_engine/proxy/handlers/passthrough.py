@@ -93,10 +93,12 @@ async def handle(
     # leaves session_id/matcher_event untouched and never affects the forward.
     if store is not None:
         from apex_router.proxy_engine.session.wire import identify_into_store
+        matcher_stats: dict = {}
         ident = identify_into_store(
             body=body, client=client_kind, wire_hint=event.session_id,
             agent_id=event.agent_id, store=store,
             epoch_id=policy.policy_epoch if policy is not None else "m0",
+            stats=matcher_stats,
         )
         if ident is not None:
             derived_sid, turn, mev = ident
@@ -104,6 +106,11 @@ async def handle(
             event.matcher_event = mev
             if event.session_id is None:
                 event.session_id = derived_sid
+        elif matcher_stats.get("matcher_error"):
+            # matcher was consulted but THREW (v6) — surface the mechanism instead of leaving the
+            # default "unwired", which also means "not consulted" (improvement #3).
+            event.matcher_event = "error"
+            event.matcher_error = matcher_stats["matcher_error"]
     event.tokens_in = 0  # token accounting lands in M3 (needs body parse); M0 stays byte-pure
 
     # Composition side-read (R1's regressor X): the SAME byte-only shadow compute the shadow handler
@@ -141,18 +148,23 @@ async def handle(
     pre_forward_ms = (time.perf_counter() - t0) * 1000.0
 
     t_send = time.perf_counter()  # AROUND the upstream call — for t_upstream_ttfb_ms at first byte
+    send_stats: dict = {}  # out-param: connect-retry backoff apex slept (xval F4), billed to apex
     try:
         response = await upstream.send_stream(
-            request.method, url, headers=fwd_headers, content=body
+            request.method, url, headers=fwd_headers, content=body, stats=send_stats
         )
     except Exception as exc:
         event.is_error = True
         event.error_cause = type(exc).__name__  # provable mechanism (ReadTimeout/ConnectError/PoolTimeout/…), not inferred
-        # apex's OWN cost is pre_forward_ms (matches the success path + the field's contract); the
-        # time blocked on the upstream before it raised goes to upstream_error_wait_ms, NOT to
+        # apex's OWN cost is pre_forward_ms PLUS any connect-retry backoff apex chose to sleep (that
+        # sleep is inside send_stream, so it must NOT be billed as upstream wait — xval F4). The time
+        # genuinely blocked on the upstream before it raised goes to upstream_error_wait_ms, NOT to
         # apex_added_ms — else a 600s read-timeout is mis-billed as apex latency (a measurement window).
-        event.apex_added_ms = pre_forward_ms
-        event.upstream_error_wait_ms = (time.perf_counter() - t_send) * 1000.0
+        backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
+        event.apex_added_ms = pre_forward_ms + backoff_ms
+        event.upstream_error_wait_ms = (time.perf_counter() - t_send) * 1000.0 - backoff_ms
+        event.connect_retries = send_stats.get("connect_retries", 0)  # v6: retries before this failed
+        event.connect_backoff_ms = backoff_ms
         telemetry.emit(event)
         # fail-open: a 502 the client can retry, never a hang
         return Response(b'{"error":"apex upstream unreachable"}', status_code=502,
@@ -178,8 +190,12 @@ async def handle(
             async for chunk in response.aiter_raw():
                 if first:
                     now = time.perf_counter()
-                    event.ttft_ms = (now - t0) * 1000.0  # arrival → first byte to client
-                    event.t_upstream_ttfb_ms = (now - t_send) * 1000.0  # send → upstream first byte
+                    event.ttft_ms = (now - t0) * 1000.0  # arrival → first byte to client (incl. backoff — real client wait)
+                    # send → upstream first byte, MINUS apex's connect-retry backoff (that sleep is
+                    # apex-controlled, not upstream latency — xval F4); the backoff is added to
+                    # apex_added_ms in the finally so the ttft = apex + upstream decomposition holds.
+                    backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
+                    event.t_upstream_ttfb_ms = (now - t_send) * 1000.0 - backoff_ms
                     first = False
                 scanner.feed(chunk)  # copy-scan; never raises (fail-open inside)
                 yield chunk  # forward the ORIGINAL bytes, unchanged
@@ -187,7 +203,10 @@ async def handle(
             event.is_error = True  # client disconnect / upstream stream error (xval #8)
             raise
         finally:
-            event.apex_added_ms = pre_forward_ms  # apex's own request-path cost
+            # apex's own request-path cost = pre-forward compute + any connect-retry backoff slept
+            event.apex_added_ms = pre_forward_ms + send_stats.get("connect_backoff_s", 0.0) * 1000.0
+            event.connect_retries = send_stats.get("connect_retries", 0)  # v6
+            event.connect_backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
             event.is_error = event.is_error or response.status_code >= 500
             # a >=400 status is a labeled cause even when it does NOT flag is_error (429/4xx < 500):
             # captures rate-limits/client errors the is_error>=500 rule intentionally ignores.

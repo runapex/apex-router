@@ -401,7 +401,7 @@ def test_both_handlers_populate_agent_id_and_upstream_ttfb():
         async def inject_auth(self, headers, client_kind, *, raw_headers=None):
             return headers  # injection disabled by default → passthrough no-op
 
-        async def send_stream(self, m, u, *, headers, content):
+        async def send_stream(self, m, u, *, headers, content, stats=None):
             return _Resp()
 
     class _Tel:

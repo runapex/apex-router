@@ -36,6 +36,14 @@ class Config:
     openai_upstream: str = _env("APEX_OPENAI_UPSTREAM", DEFAULT_OPENAI_UPSTREAM)
     upstream_connect_timeout_s: float = float(_env("APEX_CONNECT_TIMEOUT", "10"))
     upstream_read_timeout_s: float = float(_env("APEX_READ_TIMEOUT", "600"))
+    # Connect-only retry: a ConnectError/ConnectTimeout means the TCP connection was NEVER
+    # established, so the upstream never received the request — retry is provably safe (no
+    # double-submission of a non-idempotent POST). A ReadError is deliberately NOT retried: the
+    # request may already be in flight upstream, so a retry risks a duplicate completion. Measured
+    # need: on a 3.7-day live window the cross-validation reviewer model saw 20 ConnectError +
+    # 7 ReadError on ~1.2k calls (3.3%), the highest of any model. Bounded attempts + backoff.
+    upstream_connect_retries: int = int(_env("APEX_CONNECT_RETRIES", "2"))
+    upstream_connect_backoff_s: float = float(_env("APEX_CONNECT_BACKOFF", "0.25"))
 
     # Paths
     home: Path = field(default_factory=lambda: Path(_env("APEX_HOME", str(Path.home() / ".apex"))))
