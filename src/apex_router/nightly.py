@@ -205,6 +205,15 @@ def run(*, now: float | None = None) -> str:
         rc, out = _run_script("judge_probe.py")
         parts.append("```\n" + (out or f"(exit {rc})") + "\n```")
 
+    # Skill-quality benchmark (the SkillOpt borrow) — runs each skill doc over time behind
+    # apex's gate, on a rotating fresh-task slice per night. Fail-open; measure-only. Off by
+    # default unless a local model is up and skills exist, so it never blocks the daily run.
+    try:
+        from . import skillopt_bench
+        parts.append(skillopt_bench.run_nightly())
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"\n### skill-quality bench\n  (unavailable: {type(e).__name__})\n")
+
     return "\n".join(parts) + "\n"
 
 

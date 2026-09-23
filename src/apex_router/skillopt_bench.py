@@ -484,3 +484,153 @@ def format_verdict(v: SkillVerdict) -> str:
         f"  (measure-only: a PROMOTED skill is a candidate for a human to adopt at the\n"
         f"   skill/agent layer; this harness never deploys it into live traffic.)"
     )
+
+
+# ── nightly automation ─────────────────────────────────────────────────────────
+# Wired into `nightly.run()` (which the daily launchd unit already calls), so the skill
+# benchmark runs ON A SCHEDULE with no new agent. Fail-open: any failure degrades this
+# section of the digest, never the daily run. Still measure-only — it reports verdicts.
+
+_STATE_DIR = Path.home() / ".apex-router" / "skillbench"
+
+
+def _assign_window_slice(tasks: list[SkillTask], window_id: str, per_window: int,
+                         assign_path: Path) -> list[SkillTask]:
+    """Return a DISJOINT task slice for `window_id`, persisted so windows never share a task.
+
+    astra F4/pass2-F1: each task must belong to exactly ONE window, or the gate rejects the
+    evidence as pseudoreplication / cross-window pairing. A rotating hash offset can't guarantee
+    disjointness on a small corpus, so we PERSIST an assignment {window_id: [task_ids]} and hand
+    each new window the next block of UNUSED tasks. Re-running the same window_id returns its
+    already-assigned tasks (idempotent). When the corpus is exhausted the slice is empty and the
+    caller reports 'corpus exhausted' — the honest signal that fresh tasks are needed to keep
+    accruing replication (the harness never fabricates fresh evidence)."""
+    ordered = sorted(tasks, key=lambda t: t.id)
+    by_id = {t.id: t for t in ordered}
+    assign: dict = {}
+    if assign_path.exists():
+        try:
+            assign = json.loads(assign_path.read_text())
+        except Exception:  # noqa: BLE001 — a corrupt assignment file restarts assignment
+            assign = {}
+    if window_id in assign:  # idempotent re-run
+        return [by_id[i] for i in assign[window_id] if i in by_id]
+    used = {i for ids in assign.values() for i in ids}
+    fresh = [t for t in ordered if t.id not in used]
+    # BALANCED block: each window must carry BOTH splits, else the gate can't get confirmation
+    # evidence across >=2 windows (a window with 0 confirmation tasks starves replication). Draw
+    # half from each split so promotion AND confirmation are represented every window.
+    fresh_promo = [t for t in fresh if _split_for(t.id) == "promotion"]
+    fresh_conf = [t for t in fresh if _split_for(t.id) == "confirmation"]
+    half = max(1, per_window // 2)
+    take = fresh_promo[:half] + fresh_conf[:half]
+    if not take:
+        return []
+    assign[window_id] = [t.id for t in take]
+    assign_path.parent.mkdir(parents=True, exist_ok=True)
+    assign_path.write_text(json.dumps(assign))
+    return take
+
+
+def run_nightly(*, skills_dir: str | Path | None = None,
+                task_files: list[str | Path] | None = None,
+                model_call: Callable[[list, str], str] | None = None,
+                model_id: str | None = None, window_id: str | None = None,
+                per_window: int = 6, k: int = 5, m_windows: int = 2,
+                state_dir: str | Path | None = None) -> str:
+    """Run the skill benchmark for every skill doc, over time, and return a Markdown digest.
+
+    Automation contract (all fail-open):
+      * discovers `benchmarks/skills/*.md` (override via skills_dir),
+      * draws a ROTATING disjoint task slice for THIS window (fresh evidence — F4),
+      * rolls the target model (default: resident local Ornith tier) on both arms,
+      * dedup-appends this run's rows to a per-skill persistent store (windows accrue),
+      * grades the WHOLE accumulated history behind apex's gate,
+      * appends each verdict to the over-time ledger and returns the digest.
+
+    A skill only reports PROMOTED once its lift replicates across >= m_windows distinct windows
+    of DISTINCT tasks — i.e. it kept winning on fresh tasks over multiple nights. Never deploys.
+    """
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    skills_dir = Path(skills_dir) if skills_dir else repo_root / "benchmarks" / "skills"
+    state = Path(state_dir) if state_dir else _STATE_DIR
+    window_id = window_id or _default_window_id()
+
+    if task_files is None:
+        task_files = [repo_root / "benchmarks" / "codegen_probe.jsonl",
+                      repo_root / "benchmarks" / "codegen_hard.jsonl"]
+    tasks: list[SkillTask] = []
+    for tf in task_files:
+        try:
+            tasks += load_tasks(tf)
+        except Exception:  # noqa: BLE001 — a missing/bad task file degrades, never breaks
+            continue
+    # de-dupe task ids across files (last wins), keep deterministic
+    tasks = list({t.id: t for t in tasks}.values())
+
+    skill_paths = sorted(skills_dir.glob("*.md")) if skills_dir.is_dir() else []
+    if not skill_paths or not tasks:
+        return ("\n### skill-quality bench\n  (no skills or tasks found — add "
+                f"`{skills_dir}/*.md` and a task JSONL to enable)\n")
+
+    if model_id is None or model_call is None:
+        try:
+            from .ornith import local_tier
+            from .ornith.ornith_client import chat_messages
+            resolved_id = model_id or local_tier.resolve().api_model
+
+            def _call(messages, arm):
+                return chat_messages(messages, max_tokens=2048, enable_thinking=False,
+                                     raise_on_truncation=False, model=resolved_id).answer
+            model_call = model_call or _call
+            model_id = resolved_id
+        except Exception as e:  # noqa: BLE001 — no local model → skip, don't break the digest
+            return f"\n### skill-quality bench\n  (skipped: local model unavailable — {type(e).__name__})\n"
+
+    lines = ["\n### skill-quality bench (SkillOpt borrow, measure-only)"]
+    state.mkdir(parents=True, exist_ok=True)
+    slice_tasks = _assign_window_slice(tasks, window_id, per_window,
+                                       state / "window_tasks.json")
+    if not slice_tasks:
+        lines.append(f"  (corpus exhausted at window {window_id}: every task is already assigned "
+                     f"to an earlier window — add more tasks to keep accruing replication)")
+        return "\n".join(lines) + "\n"
+    for sp in skill_paths:
+        skill_id = f"skill:{sp.stem}"
+        try:
+            skill_text = sp.read_text()
+            rows_path = state / f"{sp.stem}.rows.jsonl"
+            new_rows = run_skill_bench(slice_tasks, skill_id=skill_id, skill_text=skill_text,
+                                       model_id=model_id, model_call=model_call,
+                                       window_id=window_id)
+            prior = []
+            if rows_path.exists():
+                prior = [json.loads(x) for x in rows_path.read_text().splitlines() if x.strip()]
+            merged = _dedup_rows(prior + new_rows)
+            rows_path.write_text("".join(json.dumps(r) + "\n" for r in merged))
+            v = grade_skill(merged, skill_id=skill_id, k=k, m_windows=m_windows)
+            append_ledger(state / "ledger.jsonl", v, window_id=window_id)
+            flag = "PROMOTED" if v.promoted else "measuring"
+            lines.append(
+                f"  {sp.stem:<24} {flag:<10} Δ={v.mean_delta:+.3f} "
+                f"CI=[{v.ci_low:+.2f},{v.ci_high:+.2f}] windows={v.windows_seen} "
+                f"({v.baseline_pass_rate:.0%}→{v.skill_pass_rate:.0%})")
+        except Exception as e:  # noqa: BLE001 — one skill's failure never breaks the rest
+            lines.append(f"  {sp.stem:<24} (error: {type(e).__name__})")
+    lines.append("  measure-only: a PROMOTED skill is a human-adopt candidate, never auto-deployed.")
+    return "\n".join(lines) + "\n"
+
+
+def _dedup_rows(rows: list[dict]) -> list[dict]:
+    """Drop exact-duplicate bench rows by identity tuple (a rerun re-reading its own store must
+    not multiply history). Mirrors the CLI dedup so both paths agree."""
+    seen: set = set()
+    out = []
+    for r in rows:
+        key = (r.get("step_id"), r.get("model"), r.get("cell_id"), r.get("split"),
+               r.get("window_id"), r.get("bench_run_id"), r.get("corpus_snapshot"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out

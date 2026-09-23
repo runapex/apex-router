@@ -203,6 +203,84 @@ def test_ledger_accumulates_windows(tmp_path):
     assert lines[1]["window_id"] == "w3"
 
 
+def _write_corpus(tmp_path, n=16):
+    tf = tmp_path / "tasks.jsonl"
+    tf.write_text("\n".join(json.dumps({"id": f"t{i}", "spec": "Write add(a,b) returning a+b",
+                                        "tests": _TESTS}) for i in range(n)))
+    sk = tmp_path / "skills"
+    sk.mkdir()
+    (sk / "edge.md").write_text("Return the exact sum.")
+    return sk, tf
+
+
+def test_nightly_promotes_over_disjoint_windows(tmp_path):
+    # The automation contract: run over 2 DISJOINT windows of fresh tasks → PROMOTED.
+    sk, tf = _write_corpus(tmp_path)
+    state = tmp_path / "state"
+
+    def helps(msgs, arm):
+        return ("def add(a,b):\n    return a+b"
+                if any("SKILL" in m.get("content", "") for m in msgs)
+                else "def add(a,b):\n    return a-b")
+
+    out = ""
+    for win in ["d1", "d2"]:
+        out = sb.run_nightly(skills_dir=sk, task_files=[tf], model_call=helps, model_id="fake",
+                             window_id=win, per_window=4, k=1, m_windows=2, state_dir=state)
+    assert "PROMOTED" in out
+    # ledger accumulated
+    ledger = [json.loads(x) for x in (state / "ledger.jsonl").read_text().splitlines()]
+    assert any(r["promoted"] for r in ledger)
+
+
+def test_nightly_windows_are_disjoint_no_pseudoreplication(tmp_path):
+    sk, tf = _write_corpus(tmp_path)
+    state = tmp_path / "state"
+    for win in ["d1", "d2"]:
+        sb.run_nightly(skills_dir=sk, task_files=[tf], model_call=lambda m, a: "def add(a,b):\n    return a+b",
+                       model_id="fake", window_id=win, per_window=4, k=1, m_windows=2, state_dir=state)
+    rows = [json.loads(x) for x in (state / "edge.rows.jsonl").read_text().splitlines()]
+    tw = {}
+    for r in rows:
+        tw.setdefault(r["step_id"], set()).add(r["window_id"])
+    assert all(len(w) == 1 for w in tw.values()), "a task appeared in >1 window (pseudoreplication)"
+
+
+def test_nightly_reports_corpus_exhausted(tmp_path):
+    sk, tf = _write_corpus(tmp_path, n=8)  # small corpus → exhausts within a few windows
+    state = tmp_path / "state"
+    outs = [sb.run_nightly(skills_dir=sk, task_files=[tf], model_call=lambda m, a: "x",
+                           model_id="fake", window_id=f"d{i}", per_window=4, k=1, m_windows=2,
+                           state_dir=state) for i in range(1, 8)]
+    # once every task is assigned, further windows must report exhaustion (never fabricate tasks)
+    assert any("exhausted" in o.lower() for o in outs)
+
+
+def test_nightly_is_idempotent_per_window(tmp_path):
+    sk, tf = _write_corpus(tmp_path)
+    state = tmp_path / "state"
+
+    def helps(msgs, arm):
+        return ("def add(a,b):\n    return a+b"
+                if any("SKILL" in m.get("content", "") for m in msgs)
+                else "def add(a,b):\n    return a-b")
+    # run window d1 twice — must not double-count rows
+    sb.run_nightly(skills_dir=sk, task_files=[tf], model_call=helps, model_id="fake",
+                   window_id="d1", per_window=4, k=1, m_windows=2, state_dir=state)
+    sb.run_nightly(skills_dir=sk, task_files=[tf], model_call=helps, model_id="fake",
+                   window_id="d1", per_window=4, k=1, m_windows=2, state_dir=state)
+    rows = [json.loads(x) for x in (state / "edge.rows.jsonl").read_text().splitlines()]
+    # 4 tasks x 2 arms = 8 rows, not 16
+    assert len(rows) == 8
+
+
+def test_nightly_no_local_model_degrades_gracefully(tmp_path):
+    sk, tf = _write_corpus(tmp_path)
+    # no model_call/model_id and no local tier in test env → must return a skip line, not raise
+    out = sb.run_nightly(skills_dir=sk, task_files=[tf], window_id="d1", state_dir=tmp_path / "s")
+    assert "### skill-quality bench" in out  # a section is always emitted (fail-open)
+
+
 def test_load_tasks_reuses_codegen_format(tmp_path):
     p = tmp_path / "b.jsonl"
     p.write_text(json.dumps({"id": "x", "spec": "spec", "tests": _TESTS}) + "\n")

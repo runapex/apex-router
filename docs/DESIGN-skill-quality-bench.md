@@ -55,7 +55,37 @@ Reports whether a skill lifts quality; **never deploys it**. Autonomous skill de
 capability manifest + deploy supervisor. A human reads the verdict and adopts the skill at the
 skill/agent layer.
 
-## Usage
+## Automation (end-to-end, no restart)
+
+The feature runs **on a schedule with no new agent**: `skillopt_bench.run_nightly()` is called from
+`nightly.run()`, which the existing daily launchd unit (`com.apex-router.daily`, 09:00) invokes via
+`watch --run-daily`. The chain is:
+
+```
+launchd 09:00  →  watch --run-daily  →  nightly.run()  →  skillopt_bench.run_nightly()
+                                                            → digest in ~/.apex-router/offload_daily.md
+```
+
+Each night it: discovers `benchmarks/skills/*.md`; draws a **persistent DISJOINT** task slice for the
+day (`~/.apex-router/skillbench/window_tasks.json` — each task belongs to exactly one window, so the
+gate never sees pseudoreplication); rolls the resident local Ornith tier on both arms; dedup-appends
+rows to `~/.apex-router/skillbench/<skill>.rows.jsonl`; grades the whole history behind apex's gate;
+and appends the verdict to `~/.apex-router/skillbench/ledger.jsonl`. Fail-open: no local model, no
+skills, or an exhausted corpus each degrade this digest section, never the daily run.
+
+**Install state (this box):** `com.apex-router.daily` was NOT loaded (only `ornith-daily`, which runs
+the offload report, was) — so `nightly.run()` (and route-advise) weren't actually scheduled. Fixed by
+`apex-router watch install --no-drain` (the Ornith stack already drains the queue; `--no-drain` avoids
+two daemons on one GPU inbox). Verified live: `launchctl kickstart com.apex-router.daily` ran the full
+path and the skill-bench section landed in the digest. **No proxy/machine restart is required** — the
+daily unit runs the dev tree via `PYTHONPATH`, so code changes take effect on the next fire.
+
+**Corpus note:** the seed corpus is 11 tasks — enough for ~2 disjoint windows, then `run_nightly`
+honestly reports `corpus exhausted` (it never fabricates fresh evidence). Add more tasks to
+`benchmarks/*.jsonl` to keep accruing replication over more nights. A skill also can't promote if the
+frozen model already aces the tasks (Δ=0, no headroom) — that is honest measurement, not a failure.
+
+## Manual usage
 
 ```bash
 apex-router skill-bench --skill benchmarks/skills/edgecase_discipline.md \
