@@ -42,6 +42,78 @@ def _status() -> dict:
     }
 
 
+def _dedup_bench_rows(rows: list) -> list:
+    """Drop exact-duplicate bench rows by their identity tuple (astra F8), preserving order.
+    A rerun that re-reads its own output must not multiply history."""
+    seen = set()
+    out = []
+    for r in rows:
+        key = (r.get("step_id"), r.get("model"), r.get("cell_id"), r.get("split"),
+               r.get("window_id"), r.get("bench_run_id"), r.get("corpus_snapshot"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _skill_bench(args) -> int:
+    """Run the skill-quality benchmark (the SkillOpt borrow): paired A/B rollout of a skill
+    doc vs the no-skill baseline on a task set, graded by executable tests, verdict behind
+    apex's gate. Measure-only — reports whether the skill lifts quality; never deploys it.
+    The frozen target model is the local Ornith tier (offline, free, deterministic-enough)."""
+    from . import skillopt_bench as sb
+
+    skill_path = Path(args.skill)
+    skill_text = skill_path.read_text()
+    skill_id = args.skill_id or f"skill:{skill_path.stem}"
+    tasks = sb.load_tasks(args.tasks)
+
+    # The FROZEN target model id — bound into the campaign identity (astra F5), so a changed
+    # model can't merge into an old campaign. Resolve the resident local tier's model.
+    from .ornith import local_tier
+    model_id = args.model_id or local_tier.resolve().api_model
+
+    def model_call(messages, arm):
+        # Same model for both arms; only the injected skill differs. Pass model=model_id so the
+        # ACTUAL model matches the one bound into the campaign snapshot (pass2 F3 — hashing the
+        # id but sending the client default would let a changed model keep an old snapshot). A
+        # transport failure must RAISE so run_bench DROPS the row (astra F1) — never scored as a
+        # wrong answer, which would poison the deltas with fake evidence of the skill failing.
+        from .ornith.ornith_client import chat_messages
+        return chat_messages(messages, max_tokens=2048, enable_thinking=False,
+                             raise_on_truncation=False, model=model_id).answer
+
+    rows = sb.run_skill_bench(tasks, skill_id=skill_id, skill_text=skill_text,
+                              model_id=model_id, model_call=model_call, window_id=args.window)
+    # Persistence (astra F8): merge prior rows, DEDUP, and write only the UNIQUE set — so a
+    # rerun with rows_in==rows_out can't triple-count history (which would eventually trip the
+    # base bench's duplicate guard and block promotion). Dedup key = the identity tuple.
+    if args.rows_in:
+        p = Path(args.rows_in)
+        if p.exists():
+            prior = [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+            rows = _dedup_bench_rows(prior + rows)
+    if args.rows_out:
+        existing = []
+        po = Path(args.rows_out)
+        if po.exists():
+            existing = [json.loads(x) for x in po.read_text().splitlines() if x.strip()]
+        merged = _dedup_bench_rows(existing + rows)
+        po.write_text("".join(json.dumps(r) + "\n" for r in merged))
+
+    verdict = sb.grade_skill(rows, skill_id=skill_id, k=args.k, m_windows=args.m_windows)
+    if args.ledger:
+        sb.append_ledger(args.ledger, verdict, window_id=args.window)
+
+    if args.json:
+        from dataclasses import asdict
+        print(json.dumps(asdict(verdict), indent=2))
+    else:
+        print(sb.format_verdict(verdict))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="apex-router", description="Adaptive model routing.")
     sub = ap.add_subparsers(dest="cmd")
@@ -134,6 +206,25 @@ def main(argv=None) -> int:
                    add_help=False)
     sub.add_parser("proxy", help="proxy engine CLI: serve/doctor/compile/readout (needs [proxy])",
                    add_help=False)
+    # Skill-quality benchmark (the SkillOpt borrow): does a skill document raise a frozen
+    # model's answer quality, proven over time behind apex's promotion gate? Measure-only.
+    sk_p = sub.add_parser("skill-bench",
+                          help="benchmark whether a skill doc lifts answer quality (measure-only)")
+    sk_p.add_argument("--skill", required=True, help="path to the skill .md document")
+    sk_p.add_argument("--tasks", required=True, help="benchmark tasks JSONL ({id,spec,tests})")
+    sk_p.add_argument("--skill-id", default=None, help="id for this skill (default: skill:<filename>)")
+    sk_p.add_argument("--model-id", default=None,
+                      help="frozen target model id (default: resident local tier); bound into "
+                           "the campaign identity so a changed model can't merge evidence")
+    sk_p.add_argument("--window", default=None, help="capture-window id (default: today's date)")
+    sk_p.add_argument("--ledger", default=None, help="append the verdict to this over-time JSONL")
+    sk_p.add_argument("--rows-in", default=None,
+                      help="prior runs' bench rows JSONL to include (accumulate windows over time)")
+    sk_p.add_argument("--rows-out", default=None, help="write this run's bench rows JSONL")
+    sk_p.add_argument("--k", type=int, default=5, help="gate sample floor per candidate (default 5)")
+    sk_p.add_argument("--m-windows", type=int, default=2,
+                      help="gate replication: distinct windows required (default 2)")
+    sk_p.add_argument("--json", action="store_true", help="machine-readable verdict")
     # Local-model tier: which Ornith size is resident. Bare `ornith-tier` reports; a positional
     # name switches. Switching is never implicit — it costs a multi-GB model load.
     tier_p = sub.add_parser("ornith-tier",
@@ -309,6 +400,9 @@ def main(argv=None) -> int:
     if args.cmd == "chain-planner":
         from .chain_planner import _cli as _cp
         return _cp(extra)
+
+    if args.cmd == "skill-bench":
+        return _skill_bench(args)
 
     if args.cmd == "ornith-tier":
         from .ornith import tier_switch
