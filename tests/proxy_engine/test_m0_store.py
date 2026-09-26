@@ -151,10 +151,156 @@ def test_migration_reraises_non_duplicate_operational_error(tmp_path, monkeypatc
     assert raised, "a non-duplicate OperationalError must propagate, not be swallowed"
 
 
+def test_busy_timeout_precedes_wal_negotiation(tmp_path, monkeypatch):
+    # A busy handler installed AFTER journal_mode cannot protect journal_mode itself. Pin the
+    # initialization order deterministically instead of relying only on the probabilistic
+    # concurrent-open regression below.
+    import apex_router.proxy_engine.session.store as store_mod
+
+    real_execute = store_mod._LockedConn.execute
+    busy_timeout: dict[int, int] = {}
+
+    def require_busy_handler(self, sql, params=()):
+        if sql.startswith("PRAGMA busy_timeout="):
+            busy_timeout[id(self)] = int(sql.rsplit("=", 1)[1])
+        if sql == "PRAGMA journal_mode=WAL" and busy_timeout.get(id(self)) != 0:
+            raise sqlite3.OperationalError("WAL negotiation must use its non-blocking retry loop")
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(store_mod._LockedConn, "execute", require_busy_handler)
+    with Store(tmp_path / "ordered.db") as s:
+        assert s._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_wal_negotiation_retries_extended_lock_errors(tmp_path, monkeypatch):
+    import apex_router.proxy_engine.session.store as store_mod
+
+    real_execute = store_mod._LockedConn.execute
+    lock_codes = [sqlite3.SQLITE_BUSY_RECOVERY, sqlite3.SQLITE_LOCKED_SHAREDCACHE]
+    calls = {"wal": 0}
+    sleeps = []
+
+    def locked_twice(self, sql, params=()):
+        if sql == "PRAGMA journal_mode=WAL":
+            calls["wal"] += 1
+            if lock_codes:
+                error = sqlite3.OperationalError("extended lock error")
+                error.sqlite_errorcode = lock_codes.pop(0)
+                raise error
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(store_mod._LockedConn, "execute", locked_twice)
+    monkeypatch.setattr(store_mod.time, "sleep", sleeps.append)
+    with Store(tmp_path / "retry.db"):
+        pass
+    assert calls["wal"] == 3
+    assert len(sleeps) == 2
+
+
+def test_wal_negotiation_reraises_non_lock_error_without_retry(tmp_path, monkeypatch):
+    import apex_router.proxy_engine.session.store as store_mod
+
+    real_execute = store_mod._LockedConn.execute
+    calls = {"wal": 0, "sleep": 0}
+
+    def disk_error(self, sql, params=()):
+        if sql == "PRAGMA journal_mode=WAL":
+            calls["wal"] += 1
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(store_mod._LockedConn, "execute", disk_error)
+    monkeypatch.setattr(
+        store_mod.time, "sleep", lambda _: calls.__setitem__("sleep", calls["sleep"] + 1)
+    )
+    try:
+        Store(tmp_path / "broken.db")
+        raised = False
+    except sqlite3.OperationalError as e:
+        raised = "disk I/O error" in str(e)
+    assert raised, "non-lock WAL errors must fail closed"
+    assert calls == {"wal": 1, "sleep": 0}, "non-lock errors must not enter the retry path"
+
+
+def test_wal_negotiation_rejects_unexpected_result_mode(tmp_path, monkeypatch):
+    import apex_router.proxy_engine.session.store as store_mod
+
+    real_execute = store_mod._LockedConn.execute
+
+    def unchanged_mode(self, sql, params=()):
+        if sql == "PRAGMA journal_mode=WAL":
+            return store_mod._Result([("delete",)], rowcount=-1, lastrowid=None)
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(store_mod._LockedConn, "execute", unchanged_mode)
+    try:
+        Store(tmp_path / "not-wal.db")
+        raised = False
+    except sqlite3.OperationalError as e:
+        raised = "SQLite returned delete" in str(e)
+    assert raised, "Store must not start unless SQLite confirms WAL mode"
+
+
+def test_wal_negotiation_stops_after_deadline(tmp_path, monkeypatch):
+    import apex_router.proxy_engine.session.store as store_mod
+
+    real_execute = store_mod._LockedConn.execute
+    clock = iter((0.0, 0.0, 5.1))
+    calls = {"wal": 0, "sleep": 0}
+
+    def always_locked(self, sql, params=()):
+        if sql == "PRAGMA journal_mode=WAL":
+            calls["wal"] += 1
+            error = sqlite3.OperationalError("database is busy")
+            error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise error
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(store_mod._LockedConn, "execute", always_locked)
+    monkeypatch.setattr(store_mod.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        store_mod.time, "sleep", lambda _: calls.__setitem__("sleep", calls["sleep"] + 1)
+    )
+    try:
+        Store(tmp_path / "deadline.db")
+        raised = False
+    except sqlite3.OperationalError:
+        raised = True
+    assert raised
+    assert calls == {"wal": 1, "sleep": 0}, "deadline exhaustion must not start another attempt"
+
+
+def test_first_creation_concurrent_opens_all_succeed(tmp_path):
+    # The highest-risk case is twelve constructors negotiating WAL + creating the schema on a
+    # previously absent DB. Before WAL had a dedicated retry loop this failed regularly.
+    import threading
+    import time
+    db = tmp_path / "new.db"
+    errors = []
+    barrier = threading.Barrier(12)
+
+    def opener():
+        try:
+            barrier.wait()
+            Store(db).close()
+        except Exception as e:  # noqa: BLE001 — collect, assert none
+            errors.append(repr(e))
+
+    threads = [threading.Thread(target=opener) for _ in range(12)]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + 10
+    for t in threads:
+        t.join(timeout=max(0, deadline - time.monotonic()))
+    assert not any(t.is_alive() for t in threads), "concurrent first opens hung"
+    assert errors == [], f"concurrent first opens raised: {errors}"
+
+
 def test_migration_concurrent_opens_all_succeed(tmp_path):
     # xval improvement #1: many threads opening the SAME drifted DB concurrently must ALL succeed
     # (BEGIN IMMEDIATE serializes their migrations; the duplicate-swallow covers any residual race).
     import threading
+    import time
     db = tmp_path / "concurrent.db"
     _legacy_pre_matcher_db(db)
 
@@ -171,8 +317,10 @@ def test_migration_concurrent_opens_all_succeed(tmp_path):
     threads = [threading.Thread(target=opener) for _ in range(12)]
     for t in threads:
         t.start()
+    deadline = time.monotonic() + 10
     for t in threads:
-        t.join()
+        t.join(timeout=max(0, deadline - time.monotonic()))
+    assert not any(t.is_alive() for t in threads), "concurrent migration opens hung"
     assert errors == [], f"concurrent opens raised: {errors}"
     # and the schema is healed
     cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(sessions)")}

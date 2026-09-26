@@ -89,6 +89,10 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
 # Tables carrying a per-session recency column used for GC.
 _GC_BY_SESSION = ("freeze", "prefix_hashes", "chain", "ccr")
 
+_BUSY_TIMEOUT_MS = 5_000
+_WAL_RETRY_INITIAL_S = 0.005
+_WAL_RETRY_MAX_S = 0.100
+
 
 class _Result:
     """A MATERIALIZED statement result. The rows are fetched inside the lock and stored, so
@@ -188,12 +192,12 @@ class Store:
         raw.row_factory = sqlite3.Row
         self._conn = _LockedConn(raw, self._lock)
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            # WAL negotiation is the FIRST lock-taking operation. `_enable_wal` installs a busy
+            # handler before each attempt and adds a bounded lock-only retry because SQLite can
+            # still return BUSY/LOCKED immediately while concurrent first-openers change modes.
+            self._enable_wal()
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
-            # busy_timeout so a concurrent writer/checkpoint yields "wait" not "database is
-            # locked". WAL alone does not prevent lock errors.
-            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(SCHEMA)
             self._reconcile_additive_columns()
         except BaseException:
@@ -208,6 +212,48 @@ class Store:
                 pass
             raw.close()
             raise
+
+    def _enable_wal(self) -> None:
+        """Negotiate WAL under concurrent first-open safely.
+
+        `PRAGMA busy_timeout` does not reliably wait when several connections try to switch a new
+        or legacy database to WAL simultaneously (SQLite may return BUSY/LOCKED immediately). Use a
+        non-blocking pragma plus our own monotonic retry window so repeated SQLite waits cannot
+        compound beyond the retry policy. Disk/corruption/other operational errors fail closed.
+        """
+        deadline = time.monotonic() + (_BUSY_TIMEOUT_MS / 1_000)
+        delay = _WAL_RETRY_INITIAL_S
+        # WAL's lock handling belongs to this loop; restore the normal store timeout on success.
+        self._conn.execute("PRAGMA busy_timeout=0")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise sqlite3.OperationalError("database is locked while enabling WAL")
+            try:
+                result = self._conn.execute("PRAGMA journal_mode=WAL")
+                row = result.fetchone()
+                mode = str(row[0]).lower() if row else ""
+                if mode != "wal":
+                    raise sqlite3.OperationalError(
+                        f"failed to enable WAL journal mode (SQLite returned {mode or 'no mode'})"
+                    )
+                # Subsequent ordinary store operations get the full writer-wait budget.
+                self._conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                return
+            except sqlite3.OperationalError as e:
+                code = getattr(e, "sqlite_errorcode", None)
+                # Extended result codes retain the primary result in their low byte, e.g.
+                # BUSY_SNAPSHOT=517 -> BUSY=5 and LOCKED_SHAREDCACHE=262 -> LOCKED=6.
+                primary_code = (code & 0xFF) if isinstance(code, int) else None
+                lock_error = primary_code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                if code is None:
+                    text = str(e).lower()
+                    lock_error = "locked" in text or "busy" in text
+                remaining = deadline - time.monotonic()
+                if not lock_error or remaining <= 0:
+                    raise
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, _WAL_RETRY_MAX_S)
 
     def _reconcile_additive_columns(self) -> None:
         """Add any declared additive column missing from an existing table (schema-drift heal).
