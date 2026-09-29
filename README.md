@@ -492,9 +492,8 @@ A per-change risk read from a **panel of independent models**. Given a diff + th
 test/CI output + the requirements, each panel member classifies the change on three
 axes — **change class**, **requirement fit**, **blast-radius damage** — using one
 fixed JSON schema, and the tool reports every member's read plus their
-**divergence**. The product is the divergence: where the panel agrees the read is
-safe to act on; where it splits (one says blast `low`, another `high`) is exactly
-where to look. It is a *measurement*, never a gate — it emits no pass/fail and takes
+**divergence**. Agreement is supporting evidence, not proof of safety; where the
+panel splits (one says blast `low`, another `high`) is exactly where to look. It is a *measurement*, never a gate — it emits no pass/fail and takes
 no action. Pairs with a develop→test→cross-validate loop; see the
 `change-classification` skill in [apex-router-skills](https://github.com/runapex/apex-router-skills).
 
@@ -503,17 +502,27 @@ reads the prompt on stdin and prints one JSON object; no model id is hardcoded. 
 different model families for genuine independence.
 
 ```bash
-python scripts/change_classifier.py \
-  --repo . --base HEAD \               # or --diff change.diff ('-' for stdin)
-  --tests test_run.log \              # the regression signal
-  --reqs spec.md,acceptance.md \      # the yardstick
-  --panel scripts/change_classifier_panel.example.json \
-  --out report.json                   # divergence prints to stdout
+python3 scripts/change_classifier.py \
+  --repo . --base HEAD \
+  --tests test_run.log \
+  --reqs spec.md,acceptance.md \
+  --panel panel.json \
+  --out report.json
 ```
 
-Pure-stdlib, offline, nothing transmitted by the tool itself (only your configured
-panel commands call out). With no `--panel`/`CLASSIFIER_PANEL` it prints an example
-and exits.
+Create `panel.json` from `scripts/change_classifier_panel.example.json`, replacing
+the placeholder commands with real model CLIs. Use `--diff change.diff` (or `-` for
+stdin) instead of `--repo` for a curated diff. `--repo` includes tracked changes
+only; `--include-untracked` explicitly adds untracked files. Review inputs for
+secrets before using a hosted panel. Failed commands and malformed classifications
+are reported as `ok:false`, never counted as agreement. If every member fails,
+the CLI exits 1 after emitting the report; risk labels themselves never affect
+exit status. Clipped inputs are flagged as `INCOMPLETE INPUT` with omitted counts
+in `input_clipped_chars`. Treat reports as sensitive, including diagnostic tails.
+
+Pure-stdlib; only your configured panel commands call out, receiving the supplied
+diff, requirements, and test output. With no `--panel`/`CLASSIFIER_PANEL` it prints
+an example and exits.
 
 ---
 
