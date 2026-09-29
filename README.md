@@ -486,6 +486,37 @@ the runbook for the interpretation guide.
 
 ---
 
+## Multi-model change classifier (`scripts/change_classifier.py`)
+
+A per-change risk read from a **panel of independent models**. Given a diff + the
+test/CI output + the requirements, each panel member classifies the change on three
+axes — **change class**, **requirement fit**, **blast-radius damage** — using one
+fixed JSON schema, and the tool reports every member's read plus their
+**divergence**. The product is the divergence: where the panel agrees the read is
+safe to act on; where it splits (one says blast `low`, another `high`) is exactly
+where to look. It is a *measurement*, never a gate — it emits no pass/fail and takes
+no action. Pairs with a develop→test→cross-validate loop; see the
+`change-classification` skill in [apex-router-skills](https://github.com/runapex/apex-router-skills).
+
+The panel is **config-driven** — a member is just `{"name", "cmd"}` where `cmd`
+reads the prompt on stdin and prints one JSON object; no model id is hardcoded. Span
+different model families for genuine independence.
+
+```bash
+python scripts/change_classifier.py \
+  --repo . --base HEAD \               # or --diff change.diff ('-' for stdin)
+  --tests test_run.log \              # the regression signal
+  --reqs spec.md,acceptance.md \      # the yardstick
+  --panel scripts/change_classifier_panel.example.json \
+  --out report.json                   # divergence prints to stdout
+```
+
+Pure-stdlib, offline, nothing transmitted by the tool itself (only your configured
+panel commands call out). With no `--panel`/`CLASSIFIER_PANEL` it prints an example
+and exits.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause & fix |

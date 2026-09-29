@@ -1,0 +1,4 @@
+[
+  {"name": "reviewer-a", "cmd": ["your-model-cli", "--model", "<model-a>", "--stdin"]},
+  {"name": "reviewer-b", "cmd": ["your-model-cli", "--model", "<model-b>", "--stdin"]}
+]
