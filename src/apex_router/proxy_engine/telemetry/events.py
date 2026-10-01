@@ -61,7 +61,19 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # records the matcher failure MECHANISM (`matcher_error` = exception class; `matcher_event="error"`)
 # and the retry cost (`connect_retries` count + `connect_backoff_ms` apex-slept), so both a matcher
 # outage and a flaky-upstream recovery are provable from telemetry, not silent.
-TELEMETRY_SCHEMA_VERSION = 6
+# v7: added `error_detail` — the provider's OWN explanation of a rejection, the missing half of v5's
+# `error_cause`. v5 made an error's mechanism provable (`http_429` vs `PoolTimeout` vs `ReadTimeout`);
+# it did not make it ACTIONABLE. Live finding (2026-09-30): 247 rows logged `http_429` in one day, all
+# of them the Claude Code auto-mode Bash-safety classifier, and telemetry could not say which ceiling
+# was hit — an input-token-per-minute limit, a request-per-minute limit, and a subscription session
+# cap are one indistinguishable label, and they have different fixes. The provider names it exactly,
+# in the response body (`error.type`/`error.message`) and in `anthropic-ratelimit-*`/`retry-after` —
+# both of which apex discarded, because `UsageScanner` tees the body only for `usage` and a 4xx/5xx
+# carries none, so `captured` stayed False and every byte was dropped. v7 captures a BOUNDED prefix of
+# that body plus the rate-limit/retry headers on any status >= 400 (None on clean rows), so a
+# rate-limit cluster is diagnosable from the log instead of by reproducing it with curl. Same lesson
+# as v3's `content_encoding`: an error you can see but not attribute is a measurement gap.
+TELEMETRY_SCHEMA_VERSION = 7
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -155,6 +167,14 @@ class TelemetryEvent:
     # concurrency/pool problem from an upstream rate-limit from a timeout — the prerequisite for any
     # targeted guard.
     error_cause: str | None = None
+    # error_detail (v7) — WHAT the provider said when it rejected the request, for any status >= 400:
+    # {"body": <bounded decoded error envelope>, "headers": {<rate-limit/retry headers>}}. None on
+    # clean rows AND on the upstream-RAISE path (no response ever existed there — `error_cause` alone
+    # carries that case). This is what turns an `http_429` cluster from "rate-limited, somehow" into a
+    # named ceiling with a `retry-after`. Body capture is capped (usage.ERROR_BODY_CAP_BYTES) and
+    # marked when truncated, so a telemetry row can't balloon and a consumer can't mistake a clipped
+    # envelope for a whole one.
+    error_detail: dict | None = None
     # content_encoding — the response Content-Encoding the usage scanner saw (gzip/br/identity/...).
     # None when unset (non-shadow line, or no header). Logged so a `usage=null` row is attributable
     # to its encoding: the pre-registered acceptance test joins this against usage-present to

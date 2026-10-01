@@ -146,7 +146,11 @@ def test_status_answers_posture_in_flat_human_terms_not_forwarded(app_with_mock_
     assert st["policy_loaded"] is False           # explicit False, never null (no policy on disk)
     assert st["posture"] == "measure-only"        # translated, not the raw no_policy string
     assert st["mode"] in ("active", "shadow")     # active (APEX_SHADOW=0) here
-    assert st["schema_version"] == 6              # the wire's current telemetry schema
+    # /status must advertise the schema the wire actually EMITS. Asserted against the constant, not a
+    # literal: the contract is "these two agree", and a literal here just adds a second place to edit
+    # on every bump (the doctor SUPPORTED_SCHEMA drift guard is what pins consumers to the bump).
+    from apex_router.proxy_engine.telemetry.events import TELEMETRY_SCHEMA_VERSION
+    assert st["schema_version"] == TELEMETRY_SCHEMA_VERSION
     # honesty rule: a null/None value is never silently omitted — if present it's an explicit key
 
 

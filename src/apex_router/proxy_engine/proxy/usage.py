@@ -119,6 +119,78 @@ class _Decoder:
             return b""
 
 
+# Headers a provider uses to EXPLAIN a rejection — which limit, how long to wait, which request to
+# quote in a support ticket. Captured verbatim on a >=400 so an operator can tell an input-token
+# ceiling from a request-rate ceiling without reproducing the failure by hand. Exact names plus two
+# families (Anthropic's `anthropic-ratelimit-*`, the OpenAI wire's `x-ratelimit-*`).
+_ERROR_HEADER_NAMES = frozenset({"retry-after", "request-id", "x-request-id", "x-should-retry"})
+_ERROR_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-")
+
+# Cap on the captured error body. A telemetry row must not balloon to the size of a hostile or merely
+# verbose error page, and the data plane must not buffer one — the provider's `error.type` /
+# `error.message` live in the first few hundred bytes of the envelope.
+ERROR_BODY_CAP_BYTES = 512
+
+
+def capture_error_headers(headers) -> dict[str, str]:
+    """The rate-limit/retry headers from a >=400 response, lowercased. Fail-open: any iteration
+    failure yields what was collected so far, never raises onto the data plane."""
+    out: dict[str, str] = {}
+    try:
+        for k, v in headers.items():
+            lk = k.lower()
+            if lk in _ERROR_HEADER_NAMES or lk.startswith(_ERROR_HEADER_PREFIXES):
+                out[lk] = v
+    except Exception:  # noqa: BLE001 — capture must never break the data plane
+        return out
+    return out
+
+
+class ErrorBodyScanner:
+    """Tee a >=400 response body through here to capture the provider's own error envelope (v7).
+
+    `UsageScanner` is deliberately blind to this: it looks only for `usage`, which a 4xx/5xx never
+    carries, so every byte of the explanation was dropped. This scanner reuses the SAME `_Decoder`
+    (the body is content-encoded like any other) and keeps a BOUNDED prefix — `ERROR_BODY_CAP_BYTES`
+    decoded bytes, after which it stops accumulating and flags truncation.
+
+    Identical fail-open contract to UsageScanner: it only ever sees a COPY of a forwarded chunk, and
+    any decode failure yields an empty capture rather than disturbing the bytes going to the client.
+    """
+
+    def __init__(self, content_encoding: str = "", cap_bytes: int = ERROR_BODY_CAP_BYTES) -> None:
+        self._decoder = _Decoder(content_encoding)
+        self._cap = cap_bytes
+        self._buf = bytearray()
+        self._truncated = False
+
+    def feed(self, chunk: bytes) -> None:
+        """Consume a copy of one forwarded chunk. Never raises (fail-open)."""
+        try:
+            if not chunk:
+                return
+            if len(self._buf) >= self._cap:
+                self._truncated = True
+                return
+            text = self._decoder.feed(chunk)
+            if not text:
+                return
+            room = self._cap - len(self._buf)
+            if len(text) > room:
+                self._buf.extend(text[:room])
+                self._truncated = True
+            else:
+                self._buf.extend(text)
+        except Exception:  # noqa: BLE001 — capture must never break the data plane
+            return
+
+    def text(self) -> str:
+        """The captured prefix as text, with an explicit truncation marker so a consumer never reads
+        a clipped body as a complete one."""
+        s = bytes(self._buf).decode("utf-8", "ignore")
+        return s + "…[truncated]" if self._truncated else s
+
+
 class UsageScanner:
     """Tee an SSE response through here: `feed(chunk)` per forwarded chunk, read `usage` at the end.
 

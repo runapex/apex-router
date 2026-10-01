@@ -32,7 +32,7 @@ from apex_router.proxy_engine.pipeline.shadow import run_shadow
 from apex_router.proxy_engine.policy import PolicyVersion
 from apex_router.proxy_engine.proxy.handlers.passthrough import _session_id, detect_client
 from apex_router.proxy_engine.proxy.upstream import Upstream, filter_request_headers, filter_response_headers
-from apex_router.proxy_engine.proxy.usage import UsageScanner
+from apex_router.proxy_engine.proxy.usage import ErrorBodyScanner, UsageScanner, capture_error_headers
 from apex_router.proxy_engine.telemetry.events import TelemetryEvent, TelemetryWriter
 
 
@@ -140,6 +140,11 @@ async def handle(
     content_encoding = response.headers.get("content-encoding", "")
     event.content_encoding = content_encoding or None
     scanner = UsageScanner(content_encoding)
+    # v7: on a >=400 the body is the provider's explanation of the rejection, and UsageScanner is
+    # blind to it (it looks only for `usage`, which an error response never carries). Tee a BOUNDED
+    # copy through a second scanner so an `http_429` row names its ceiling. Only allocated on the
+    # error path — a clean response pays nothing.
+    err_scanner = ErrorBodyScanner(content_encoding) if response.status_code >= 400 else None
 
     async def body_stream():
         first = True
@@ -154,6 +159,8 @@ async def handle(
                     event.t_upstream_ttfb_ms = (now - t_send) * 1000.0 - backoff_ms
                     first = False
                 scanner.feed(chunk)  # copy-scan; never raises (fail-open inside)
+                if err_scanner is not None:
+                    err_scanner.feed(chunk)  # copy-scan, bounded; never raises
                 yield chunk  # forward the ORIGINAL bytes, unchanged
         except Exception:
             event.is_error = True
@@ -168,6 +175,12 @@ async def handle(
             # captures rate-limits/client errors the is_error>=500 rule intentionally ignores.
             if event.error_cause is None and response.status_code >= 400:
                 event.error_cause = f"http_{response.status_code}"
+            # v7: pair the mechanism label with the provider's own words + its rate-limit headers.
+            if err_scanner is not None:
+                event.error_detail = {
+                    "body": err_scanner.text(),
+                    "headers": capture_error_headers(response.headers),
+                }
             if scanner.usage.captured:
                 event.usage = scanner.usage.to_dict()
                 event.tokens_in = scanner.usage.input_tokens  # provider truth, not a token guess
