@@ -445,6 +445,7 @@
       <a href="#proxy">Proxy</a>
       <a href="#offload">Offload</a>
       <a href="#principles">Principles</a>
+      <a href="#new">New in 0.3</a>
       <a href="#install">Install</a>
     </div>
     <div style="display:flex; align-items:center; gap:12px;">
@@ -628,6 +629,32 @@
           <div class="no">Compression savings (doctrine-off)</div>
           <div class="yes">No telemetry egress, ever</div>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── NEW IN 0.3 ─────────────────────────────── -->
+<section class="band" id="new">
+  <div class="wrap">
+    <span class="label">New in 0.3</span>
+    <h2 class="section-title" style="margin-top:14px">Measure first. <em>Then dispatch.</em></h2>
+    <p style="max-width:640px">Three small tools that close the loop between what the proxy measures and how an agent dispatches work. None of them blocks a dispatch or edits a routing decision.</p>
+    <div class="cards" style="margin-top:28px">
+      <div class="card">
+        <div class="card-tag"><b>apex-router pressure --check</b></div>
+        <h3>Pressure gate</h3>
+        <p>GREEN / AMBER / RED from the last 15 minutes of proxy telemetry — 429 rate, transport errors, retried connects, a fresh <code>retry-after</code>. Exit 0/1/2/3 so a hook or skill can shed or hold a fan-out before it starts.</p>
+      </div>
+      <div class="card">
+        <div class="card-tag"><b>apex-router review-preread</b></div>
+        <h3>Local pre-read, phrased as claims</h3>
+        <p>The local tier reads the diff and lists claims to verify. A fresh heavy reviewer confirms or refutes each one and adds what it missed. A separate producer, so no leaked reasoning; recall is recorded, so the slot has to earn its cost.</p>
+      </div>
+      <div class="card">
+        <div class="card-tag"><b>hooks/agent-route-log.sh</b></div>
+        <h3>Route-label hook</h3>
+        <p>One label-pending row per Claude Code subagent dispatch. <code>route-join</code> infers escalations offline and joins proxy telemetry per session and agent — the label stream the outcome router was missing. Fail-safe: never blocks, always exits 0.</p>
       </div>
     </div>
   </div>

@@ -12,6 +12,13 @@ whenever the evidence is thin or uncertain. It is a **strict superset** of stati
 routing: it never routes to a model your machine can't run, and defaults to your static
 choice on any uncertainty.
 
+> **New in 0.3 (2026-10-02):** a pre-dispatch **pressure gate** (`apex-router pressure --check`),
+> a local-model **review pre-read** that hands a heavy reviewer claims to verify, a
+> **route-label hook** that logs every Claude Code subagent dispatch, bounded **transport
+> retries** in the proxy, and telemetry schema 8. See
+> [Pressure gate, review pre-read, and the route-label hook](#pressure-gate-review-pre-read-and-the-route-label-hook)
+> and [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## Table of contents
@@ -26,6 +33,7 @@ choice on any uncertainty.
 - [Proxy client setup](#proxy-client-setup)
 - [Team skills (private marketplace)](#team-skills-private-marketplace)
 - [Telemetry — reading and sharing it](#telemetry--reading-and-sharing-it)
+- [Pressure gate, review pre-read, and the route-label hook](#pressure-gate-review-pre-read-and-the-route-label-hook)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [Security posture](#security-posture)
@@ -406,7 +414,7 @@ Callable from pi (`/books <problem>`) or Claude Code (`/books <problem>`). Full 
 
 ## Team skills (private marketplace)
 
-apex-router ships **no skills** and hardcodes no private URL. Internal skills (team
+apex-router ships **no skills in this repo** and hardcodes no private URL. Internal skills (team
 ops, workflows) belong in a **private** Claude Code plugin marketplace — a separate
 git repo you control — so they never land in this public repo.
 
@@ -427,6 +435,19 @@ It prints the two commands to run inside Claude Code:
 A marketplace repo is just `.claude-plugin/marketplace.json` listing plugins, each a
 folder of `SKILL.md` bundles — Claude Code's native mechanism, so updates propagate on
 `git pull`. Keep internal-only content in that private repo, never here.
+
+**Public workflow skills.** The vendor-neutral discipline skills that pair with these
+tools — `model-routing` (checks `pressure` before a fan-out), `cross-validate` (takes the
+`review-preread` claims list), `verify-claims`, `disciplined-execution`,
+`public-repo-hygiene`, `local-references`, `change-classification`, `evidence-labels`,
+and `unattended-loop` — live in the public
+[apex-router-skills](https://github.com/runapex/apex-router-skills) marketplace and run in
+both Claude Code and Pi:
+
+```
+/plugin marketplace add runapex/apex-router-skills
+/plugin install apex-workflow@apex-router-skills
+```
 
 ## Telemetry — reading and sharing it
 
@@ -450,6 +471,94 @@ To share:
 2. Or hand off the raw JSONL if your team pools measurements; scrub paths first if any
    job embedded one. There is no built-in uploader — sharing is a deliberate copy, so
    telemetry never leaves the machine unless you send it.
+
+---
+
+## Pressure gate, review pre-read, and the route-label hook
+
+Three small tools that close the loop between what the proxy measures and how an agent
+dispatches work. All three are measure-first: none of them blocks a dispatch or edits a
+routing decision.
+
+### `apex-router pressure` — is upstream pushing back right now?
+
+Reads the last 15 minutes of proxy telemetry (backwards from the tail, never the whole
+file) and reports the 429 rate, transport-error rate, retried connects, p50
+time-to-first-token and in-flight agents, per model family and overall, then names a level:
+
+| Level | Condition (overall) | Recommendation |
+|---|---|---|
+| GREEN | 429 rate < 2 % **and** transport < 3 % | dispatch as planned |
+| AMBER | 429 rate 2–10 % **or** transport 3–10 % | shed mechanical/exploration agents one tier down; cap parallel heavy agents at 2 |
+| RED | either rate > 10 %, **or** a `retry-after` seen in the last 2 min | no new heavy fan-out; serialize; wait the `retry-after` before retrying heavy |
+| UNKNOWN | telemetry missing or unreadable | no signal — dispatch conservatively, as for AMBER |
+
+`--check` turns the level into an exit code (0 GREEN / 1 AMBER / 2 RED / 3 UNKNOWN; 4 is a
+usage error) so a hook or a skill can gate a fan-out on it:
+
+```bash
+apex-router pressure                    # table; also written to ~/.apex-router/pressure.json
+apex-router pressure --check || echo "shed or hold"
+```
+
+Under 10 requests in the window a rate is noise, so the level reads
+`GREEN (insufficient sample)` — except that a fresh `retry-after` always forces RED, because
+that is the provider asking us to back off. The `model-routing` skill consults it before
+every fan-out of two or more agents. Runbook:
+[`docs/RUNBOOK-pressure.md`](docs/RUNBOOK-pressure.md).
+
+### `apex-router review-preread` — a local first pass, phrased as claims
+
+```bash
+git diff HEAD~1 | apex-router review-preread --markdown
+apex-router review-preread change.diff --requirements req.md --max-findings 8
+```
+
+The local Ornith tier reads a unified diff and lists **claims to verify** (`P1…Pn`, each
+with file, line hint, severity, and how to check it). An independent heavy reviewer then
+confirms or refutes each one and adds what it missed. Because the pre-read comes from a
+different producer than the code's author, it can sit beside the diff without leaking the
+author's reasoning into the review. It is advisory: local review precision has measured
+at roughly 1 in 5, so the reviewer still reads the whole diff, and the only number that can
+justify the cost is **pre-read recall** (confirmed claims ÷ all confirmed findings), which
+the `cross-validate` skill records in each review note.
+
+The diff is untrusted input: it sits between nonce delimiters, and a deterministic scan
+flags text aimed at the reviewer (`injection_markers`) before the model sees it. Cost is
+booked on its own telemetry lane (`lane="preread"`) and counted as pure cost until a
+recall/lift measurement shows a benefit. Exit codes: 0 answered (zero findings is a valid
+answer), 2 empty diff, 3 model call failed — treat 3 as "no pre-read", never as "no
+findings". Runbook: [`docs/RUNBOOK-review-preread.md`](docs/RUNBOOK-review-preread.md).
+
+### The route-label hook — one row per Claude Code subagent dispatch
+
+The outcome router's blind spot was Claude Code itself: subagent dispatches never reached
+the route log, so there was nothing to label. `hooks/agent-route-log.sh` is a `PostToolUse`
+hook (matcher `Agent`) that appends one label-pending row per dispatch. `apex-router
+route-join` then infers escalations offline (a later same-description dispatch at a
+strictly higher tier) and joins the proxy telemetry on `(session_id, agent_id)`; the
+nightly pass runs the join.
+
+```bash
+./install.sh --agent-route-log-hook     # wires the hook into ~/.claude/settings.json
+apex-router route-join                  # or wait for nightly
+apex-router route-check                 # tier-conformance readout
+```
+
+The hook is fail-safe by contract: it never blocks, prints nothing, always exits 0, and a
+3 s alarm bounds its body. Keep a `timeout` on the hook entry so interpreter startup is
+bounded too. Runbook:
+[`docs/RUNBOOK-route-conformance.md`](docs/RUNBOOK-route-conformance.md).
+
+### Proxy: bounded transport retries
+
+The proxy retries a transient connect-phase failure (`SSLError`, `ReadError`,
+`RemoteProtocolError`, `ConnectError`) only while no byte has reached the client, and after
+the body was sent only when the attempt fast-failed (under `APEX_RETRY_FAST_FAIL_MS`,
+default 3000) on a stateless completion endpoint (`/v1/messages`, `/v1/chat/completions`,
+`/responses`; never `/batches` or `/files`). Hard caps bound retries and cumulative backoff.
+Retried rows carry `connect_retries > 0`, and telemetry schema 8 adds `upstream_rejected`,
+so a flaky upstream shows up in `pressure` even when the request eventually succeeded.
 
 ---
 
