@@ -30,6 +30,7 @@
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --cache-handoff-hook  wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
+#         --agent-route-log-hook  wire the Agent-dispatch outcome-label PostToolUse hook into ~/.claude/settings.json
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
 #         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
@@ -62,6 +63,7 @@ DO_KEEPWARM=0        # --ollama-keepwarm: launchd agent that pins the active loc
 KEEPWARM_MODEL=""    # optional explicit model tag; empty => resolve the active ornith tier
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
+DO_AGENT_ROUTE_LOG=0 # --agent-route-log-hook: wire the Agent-dispatch label PostToolUse hook
 DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
 DO_BOOKS=0           # --books-index: install the local booksearch tool + pi/claude commands
 VERIFY_ONLY=0
@@ -104,6 +106,7 @@ while [ $# -gt 0 ]; do
     --proxy)     DO_PROXY=1 ;;
     --cache-handoff-hook) DO_CACHE_HANDOFF=1 ;;   # wire the cache-cost Stop hook into settings.json
     --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
+    --agent-route-log-hook) DO_AGENT_ROUTE_LOG=1 ;; # wire the Agent-dispatch label PostToolUse hook
     --pi-integration) DO_PI=1 ;;                   # install the pi per-task router + models.json wiring
     --books-index) DO_BOOKS=1 ;;                   # install the local booksearch tool + pi/claude commands
     --install-hooks) HOOK_REPOS="$2"; shift ;;
@@ -515,29 +518,42 @@ install_hooks() {
 }
 
 _wire_stop_hook() {
-  # Shared: idempotently merge a Stop hook into ~/.claude/settings.json (preserve
-  # existing hooks + unrelated keys, append as its own group, .apex-bak backup).
+  # Shared: idempotently merge a Stop hook into ~/.claude/settings.json.
   # $1 = absolute hook path, $2 = basename to dedupe on.
-  local hook="$1" base="$2" settings="$HOME/.claude/settings.json"
+  _wire_hook Stop "" "$1" "$2"
+}
+
+_wire_hook() {
+  # Shared: idempotently merge a hook into ~/.claude/settings.json under hooks.<event>
+  # (preserve existing hooks + unrelated keys, append as its own group, .apex-bak backup).
+  # $1 = event (Stop | PostToolUse | ...), $2 = matcher ("" = none), $3 = absolute hook
+  # path, $4 = basename to dedupe on, $5 = optional timeout seconds.
+  local event="$1" matcher="$2" hook="$3" base="$4" timeout="${5:-}" settings="$HOME/.claude/settings.json"
   [ -f "$hook" ] || { warn "hook missing at $hook"; return 1; }
   chmod +x "$hook" 2>/dev/null
-  "$INSTALL_DIR/.venv/bin/python" - "$settings" "$hook" "$base" <<'PY'
+  "$INSTALL_DIR/.venv/bin/python" - "$settings" "$hook" "$base" "$event" "$matcher" "$timeout" <<'PY'
 import json, os, sys
-settings_path, hook_path, base = sys.argv[1], sys.argv[2], sys.argv[3]
+settings_path, hook_path, base, event, matcher, timeout = sys.argv[1:7]
 os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 try:
     with open(settings_path) as f:
         s = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
     s = {}
-stop = s.setdefault("hooks", {}).setdefault("Stop", [])
+groups = s.setdefault("hooks", {}).setdefault(event, [])
 already = any(h.get("command", "").endswith(base)
-              for g in stop if isinstance(g, dict) for h in g.get("hooks", []))
+              for g in groups if isinstance(g, dict) for h in g.get("hooks", []))
 if not already:
     if os.path.exists(settings_path):
         with open(settings_path + ".apex-bak", "w") as b:
             json.dump(s, b, indent=2)
-    stop.append({"hooks": [{"type": "command", "command": hook_path}]})
+    entry = {"type": "command", "command": hook_path}
+    if timeout:
+        entry["timeout"] = int(timeout)
+    group = {"hooks": [entry]}
+    if matcher:
+        group = {"matcher": matcher, **group}
+    groups.append(group)
     tmp = settings_path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(s, f, indent=2); f.write("\n")
@@ -576,6 +592,23 @@ install_memory_compact_hook() {
     echo "     'python $INSTALL_DIR/scripts/memory_compact.py --dir <memory>' to review — see docs/RUNBOOK-cache-cost.md"
   else
     warn "settings.json merge failed — wire it manually (see docs/RUNBOOK-cache-cost.md)"
+  fi
+}
+
+install_agent_route_log_hook() {
+  # Wire the Agent-dispatch outcome-label hook (PostToolUse, matcher "Agent") into
+  # ~/.claude/settings.json. Opt-in, fail-safe (never blocks, prints nothing, exit 0).
+  # Idempotent — re-running is a no-op. Labels are resolved offline by `apex-router route-join`.
+  [ "$DO_AGENT_ROUTE_LOG" = "1" ] || {
+    echo "  agent-route-log PostToolUse hook NOT wired (pass --agent-route-log-hook to enable)."
+    return 0
+  }
+  say "wiring agent-route-log PostToolUse(Agent) hook into settings.json"
+  if _wire_hook PostToolUse Agent "$INSTALL_DIR/hooks/agent-route-log.sh" "agent-route-log.sh" 5; then
+    ok "agent-route-log hook wired (rows land in ~/.apex-router/route_log.jsonl, surface=claude-code)"
+    echo "     resolve labels + telemetry join: apex-router route-join   (see docs/RUNBOOK-route-conformance.md)"
+  else
+    warn "settings.json merge failed — wire it manually (see docs/RUNBOOK-route-conformance.md)"
   fi
 }
 
@@ -726,7 +759,7 @@ install_skills_marketplaces() {
     _marketplace_add "$APEX_PUBLIC_MARKETPLACE"
     if have claude; then
       claude plugin install "$APEX_DEFAULT_PLUGIN" --scope user >/dev/null 2>&1 \
-        && ok "  installed $APEX_DEFAULT_PLUGIN (verify-claims, cross-validate, disciplined-execution)" \
+        && ok "  installed $APEX_DEFAULT_PLUGIN (model-routing, cross-validate, verify-claims, disciplined-execution, change-classification, local-references, public-repo-hygiene)" \
         || warn "  could not install $APEX_DEFAULT_PLUGIN — in Claude Code: /plugin install $APEX_DEFAULT_PLUGIN"
     else
       echo "    /plugin install $APEX_DEFAULT_PLUGIN"
@@ -790,6 +823,7 @@ main() {
   install_hooks
   install_cache_handoff_hook
   install_memory_compact_hook
+  install_agent_route_log_hook
   install_proxy
   setup_proxy
   install_pi

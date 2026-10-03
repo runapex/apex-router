@@ -87,3 +87,38 @@ def test_codex_watch_reports_wire_correct_downshift_share(tmp_path, monkeypatch)
     assert "ctx p50=300,000" in report
     assert "1/2 (50%)" in report
     assert "max=300,000" in report
+
+
+def test_route_join_section_writes_labeled_table(tmp_path, monkeypatch):
+    """The nightly refreshes labeled_table.jsonl so route-advise sees claude-code rows."""
+    from apex_router import route_join
+    table = [{"task_type": "explore", "surface": "claude-code", "escalated": False}]
+    monkeypatch.setattr(route_join, "join_labels",
+                        lambda **kw: {"table": table, "stats": {"claude_code_rows": 1,
+                                                                 "telemetry_joined": 1,
+                                                                 "escalated_inferred": 0}})
+    out = tmp_path / "labeled_table.jsonl"
+    text = nightly._route_join_section(labeled_path=out)
+    assert out.exists() and json.loads(out.read_text().splitlines()[0])["task_type"] == "explore"
+    assert "claude_code_rows=1" in text
+
+
+def test_route_join_section_keeps_previous_table_on_read_error(tmp_path, monkeypatch):
+    """A route_log/telemetry read failure must not clobber the labeled table (R2)."""
+    from apex_router import route_join
+    out = tmp_path / "labeled_table.jsonl"
+    out.write_text('{"task_type": "explore"}\n')
+    monkeypatch.setattr(route_join, "join_labels",
+                        lambda **kw: {"table": [], "stats": {"route_log_error": True,
+                                                             "route_log_error_name": "OSError",
+                                                             "telemetry_error": False}})
+    text = nightly._route_join_section(labeled_path=out)
+    assert out.read_text() == '{"task_type": "explore"}\n'
+    assert "kept previous table" in text and "written=False" in text
+
+
+def test_route_join_section_never_raises(tmp_path, monkeypatch):
+    from apex_router import route_join
+    monkeypatch.setattr(route_join, "join_labels", lambda **kw: (_ for _ in ()).throw(RuntimeError("x")))
+    text = nightly._route_join_section(labeled_path=tmp_path / "t.jsonl")
+    assert "unavailable" in text

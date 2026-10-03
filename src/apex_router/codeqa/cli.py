@@ -153,6 +153,53 @@ def _make_verifier(local: bool):
     return _local_verifier() if local else frontier_verifier
 
 
+def _local_model_id() -> str:
+    """The resident local model id (label only, for the per-model call tally)."""
+    try:
+        from ..ornith import ornith_client as oc
+        return str(oc.MODEL)
+    except Exception:  # noqa: BLE001 — a label must never break the run
+        return "local"
+
+
+def _judge_setup(*, local: bool, route: bool, env=None):
+    """Resolve the judge contract for one validate run (see tier_router.judge_mode):
+    returns (judge_mode, pinned_model, adjudicating, local_screen).
+      - judge_mode None (no CODEQA_JUDGE_MODEL) or "pinned" → legacy single-verifier path.
+      - "screen"/"both" → the routed tier screens, the pin adjudicates (never under --local: no
+        paid call happens there at all).
+      - local_screen: --route, OR CODEQA_LOCAL_SCREEN=1 while adjudicating (the Ornith screen for
+        VALUE claims). CODEQA_LOCAL_SCREEN is inert without a pin (unset-pin behaviour unchanged)."""
+    from . import tier_router
+    env = _os.environ if env is None else env
+    jm = tier_router.judge_mode(env)
+    pin = tier_router.explicit_model_override(env)
+    adjudicating = jm in ("screen", "both") and not local
+    local_screen = bool(route) or (adjudicating and env.get("CODEQA_LOCAL_SCREEN") == "1")
+    return jm, pin, adjudicating, local_screen
+
+
+def _model_fingerprint(*, local: bool, local_screen: bool, pin, jm, env=None) -> str:
+    """The MODEL half of the validate cache fingerprint: every model id validation could route to.
+    A verdict is only as current as the model that produced it, so a tier bump (e.g. opus 4-8 → 5-5
+    in tier_router / models.json / CODEQA_TIER_MODELS) or a new resident local model must
+    re-validate instead of reusing entries judged by the old model.
+      - frontier runs: the resolved haiku/sonnet/opus ids (screen tiers, or the unpinned routes)
+      - local model id: under --local, or when local screening is on (--route / CODEQA_LOCAL_SCREEN)
+      - the pin + judge mode + local-screen flag when CODEQA_JUDGE_MODEL is set"""
+    from . import tier_router
+    env = _os.environ if env is None else env
+    parts = []
+    if not local:
+        tiers = tier_router._tier_models(env)
+        parts.append("tiers=" + ",".join(f"{t}:{tiers[t]}" for t in sorted(tiers)))
+    if local or local_screen:
+        parts.append(f"localm={_local_model_id()}")
+    if pin:
+        parts.append(f"judge={pin}|jm={jm}|ls={local_screen}")
+    return "|".join(parts)
+
+
 def _validate_one(repo, file, *, local=False, route=False, runtime=False, write=None, use_cache=True):
     """Validate one memory/digest against one repo. Returns (n_struck, struck_claims, cached_bool).
     Auto-wire: skips re-validation when the fingerprint is unchanged. The fingerprint folds in the
@@ -174,8 +221,12 @@ def _validate_one(repo, file, *, local=False, route=False, runtime=False, write=
                   "claims stay UNVERIFIABLE.")
         else:
             runtime_facts = gather_runtime_facts(spec)
+    jm, pin, adjudicating, local_screen = _judge_setup(local=local, route=route)
     mode = f"local={local}|route={route}|runtime={bool(runtime_facts)}|" + \
         hashlib.sha256((runtime_facts or "").encode("utf-8", "replace")).hexdigest()[:12]
+    # Every model id validation could route to (tiers, local, pin) — a model bump re-validates.
+    mode += "|" + _model_fingerprint(local=local, local_screen=local_screen and not local,
+                                     pin=pin, jm=jm)
     fp = memory_fingerprint(file, cfg.root, code_marker=_code_marker(cfg.root) + "|" + mode)
     cache = {}
     if use_cache and _FRESHNESS_CACHE.exists():
@@ -191,14 +242,30 @@ def _validate_one(repo, file, *, local=False, route=False, runtime=False, write=
         if write:                                                 # P2-4: honor --write even on a cache hit
             _apply_struck_to_file(text, struck, write)
         return entry["n_struck"], struck, True, entry.get("n_skipped", 0)
-    # --route: supply the local verifier so VALUE claims use it (frontier reserved for INFERENCE/
-    # RUNTIME) — measured −62% frontier tokens with no accuracy loss vs all-frontier.
-    local_vf = _local_verifier() if (route and not local) else None
-    result = validate_memory(text, cfg.root, verify_fn=_make_verifier(local),
-                             local_verify_fn=local_vf, runtime_facts=runtime_facts)
+    # --route (or CODEQA_LOCAL_SCREEN=1 under a screen/both judge): supply the local verifier so VALUE
+    # claims use it (frontier reserved for INFERENCE/RUNTIME) — measured −62% frontier tokens with no
+    # accuracy loss vs all-frontier.
+    from .freshness import routed_frontier_verifier, pinned_verifier
+    local_vf = _local_verifier() if (local_screen and not local) else None
+    if adjudicating:
+        # SCREEN, THEN ADJUDICATE: the routed tier (pin ignored) screens every claim; the pinned model
+        # re-judges what the screen did not clear ("screen") or every claim ("both"), and wins.
+        result = validate_memory(text, cfg.root, verify_fn=routed_frontier_verifier,
+                                 local_verify_fn=local_vf, runtime_facts=runtime_facts,
+                                 adjudicate_fn=pinned_verifier(pin), judge_mode=jm,
+                                 adjudicator_model=pin,
+                                 local_model=_local_model_id() if local_vf else "local")
+    else:
+        result = validate_memory(text, cfg.root, verify_fn=_make_verifier(local),
+                                 local_verify_fn=local_vf, runtime_facts=runtime_facts,
+                                 local_model=_local_model_id() if local_vf else "local")
     if write:
         _Path(write).write_text(result.text)
-    if use_cache:
+    n_adj_failed = getattr(result, "n_adjudicate_failed", 0)
+    if n_adj_failed:
+        print(f"⚠ {n_adj_failed} adjudication call(s) to {pin} failed (transport / empty / unparsable "
+              "reply) — kept the screen verdict; result NOT cached so the next run retries.")
+    if use_cache and not n_adj_failed:      # a failed adjudication must be retried, never cached
         cache[ckey] = {"fp": fp, "n_struck": result.n_struck, "struck": result.struck_claims,
                        "n_skipped": result.n_skipped}
         try:
@@ -207,16 +274,26 @@ def _validate_one(repo, file, *, local=False, route=False, runtime=False, write=
         except OSError:
             pass
     _emit_metrics(repo, file, result, cached=False, routed=bool(local_vf), local_only=local,
-                  runtime=bool(runtime_facts))
+                  runtime=bool(runtime_facts), judge_mode=jm if not local else None,
+                  judge_model=pin if not local else None)
     return result.n_struck, result.struck_claims, False, result.n_skipped
 
 
 _METRICS_PATH = _Path("~/.codeqa/validate_metrics.jsonl").expanduser()
 
 
-def _emit_metrics(repo, file, result, *, cached, routed, local_only, runtime):
+def _emit_metrics(repo, file, result, *, cached, routed, local_only, runtime,
+                  judge_mode=None, judge_model=None):
     """Append one benchmark line per validation run, so runs are differentiable/comparable over time
-    (which repo, how many struck/local/frontier/skipped, token cost, whether routed/cached)."""
+    (which repo, how many struck/local/frontier/skipped, token cost, whether routed/cached).
+
+    Judge-mode fields (added 2026-10; readers must .get() them — older rows lack them):
+      judge_mode (None|pinned|screen|both), judge_model (the pin), n_screened, n_adjudicated,
+      n_screen_struck, n_adjudicated_struck, n_adjudicate_failed (adjudicator call failed → screen
+      verdict kept, not counted as adjudicated/paid), n_agree/n_compared/agreement ("both" only),
+      n_frontier_calls (PAID calls made — drives est_frontier_tokens), model_calls (every verifier
+      call keyed by ACTUAL model id, local included). tier_calls keeps its old meaning (paid calls by
+      tier name; a pinned model appears under its id)."""
     from datetime import datetime, timezone
     from .freshness import metrics_record
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -225,9 +302,13 @@ def _emit_metrics(repo, file, result, *, cached, routed, local_only, runtime):
     # it as local so est_frontier_tokens is honest.
     n_local, n_frontier = result.n_local, result.n_frontier
     tier_calls = dict(result.tier_calls)
+    model_calls = dict(getattr(result, "model_calls", {}) or {})
+    n_frontier_calls = getattr(result, "n_frontier_calls", n_frontier)
     if local_only:
         n_local, n_frontier = result.n_checked, 0
         tier_calls = {}                                # no paid frontier call happened → no tier split
+        n_frontier_calls = 0
+        model_calls = {_local_model_id(): result.n_checked} if result.n_checked else {}
     metrics_record(_METRICS_PATH, {
         "repo": repo, "file": str(file),               # Codex P2-6: full path, not basename (collision)
         "n_checked": result.n_checked, "n_struck": result.n_struck,
@@ -235,6 +316,18 @@ def _emit_metrics(repo, file, result, *, cached, routed, local_only, runtime):
         "tier_calls": tier_calls,                      # frontier model-picker split (haiku/sonnet/opus)
         "struck": [c[:120] for c in result.struck_claims],
         "cached": cached, "routed": routed, "local_only": local_only, "runtime": runtime,
+        "judge_mode": judge_mode or getattr(result, "judge_mode", None),
+        "judge_model": judge_model,
+        "n_screened": getattr(result, "n_screened", 0),
+        "n_adjudicated": getattr(result, "n_adjudicated", 0),
+        "n_screen_struck": getattr(result, "n_screen_struck", 0),
+        "n_adjudicated_struck": getattr(result, "n_adjudicated_struck", 0),
+        "n_adjudicate_failed": getattr(result, "n_adjudicate_failed", 0),
+        "n_agree": getattr(result, "n_agree", 0),
+        "n_compared": getattr(result, "n_compared", 0),
+        "agreement": getattr(result, "agreement", None),
+        "n_frontier_calls": n_frontier_calls,
+        "model_calls": model_calls,
     }, ts=ts)
 
 
@@ -253,6 +346,42 @@ def _apply_struck_to_file(text, struck, write):
     _Path(write).write_text("\n".join(out))
 
 
+def _plan_one(repo, file, *, local=False, route=False, runtime=False) -> int:
+    """--plan: print the per-claim routing plan (screen model, adjudication policy, whether evidence
+    resolves) WITHOUT calling any model. Runtime facts are gathered only with --runtime (read-only
+    local commands, same as a real run). Returns the number of claims that would spend a call."""
+    from collections import Counter
+    from .freshness import plan_validation, gather_runtime_facts
+    from .retriever import RepoConfig
+    cfg = RepoConfig.load(repo)
+    text = _Path(file).read_text()
+    runtime_facts = None
+    if runtime:
+        spec = _runtime_spec(cfg)
+        runtime_facts = gather_runtime_facts(spec) if spec else None
+    jm, pin, adjudicating, local_screen = _judge_setup(local=local, route=route)
+    rows = plan_validation(text, cfg.root, judge_mode=jm if adjudicating else None,
+                           local=local_screen and not local, local_only=local,
+                           local_model=_local_model_id() if (local or local_screen) else "local",
+                           runtime_facts=runtime_facts)
+    print(f"validate PLAN (dry run — no model called) — {file} vs live {repo}")
+    print(f"  judge_mode={jm or 'unpinned'}  pin={pin or '-'}  local_screen={local_screen and not local}"
+          f"  local_only={local}")
+    for r in rows:
+        ev = "ev" if r["evidence"] else "--"
+        print(f"  L{r['line']:<4} {r['type']:13} {ev}  screen={r['screen']:<28} "
+              f"adjudicate={r['adjudicate']:<32} {r['claim'][:70]}")
+    live = [r for r in rows if r["evidence"] and not r["screen"].startswith("skip")]
+    screens = Counter(r["screen"] for r in live)
+    always = sum(1 for r in live if r["adjudicate"].startswith("always"))
+    maybe = sum(1 for r in live if r["adjudicate"].startswith("if "))
+    print(f"\n  {len(rows)} candidate claim(s); {len(live)} would spend a screen call: "
+          + ", ".join(f"{m}×{c}" for m, c in screens.most_common()))
+    if always or maybe:
+        print(f"  adjudication: {always} certain + up to {maybe} conditional call(s) to {pin}")
+    return len(live)
+
+
 def _cmd_validate(args) -> int:
     """Freshness gate: validate a memory/digest's claims against the repo's live code (and runtime
     oracle), flag the stale ones. Measured value: a stale doc misleads the model (corrupted memory
@@ -260,6 +389,19 @@ def _cmd_validate(args) -> int:
     fingerprint cache (only re-validates on change). --check exits nonzero if any stale claim is
     found (for pre-commit/cron gating); --all sweeps every registered repo's digest."""
     from .retriever import RepoConfig, REPOS_DIR
+    if getattr(args, "plan", False):
+        if getattr(args, "all", False):
+            for cfgpath in sorted(REPOS_DIR.glob("*.json")):
+                try:
+                    cfg = RepoConfig.load(cfgpath.stem)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  {cfgpath.stem}: skipped ({type(e).__name__})"); continue
+                if cfg.digest:
+                    _plan_one(cfgpath.stem, str(cfg.digest), local=args.local, route=args.route,
+                              runtime=args.runtime)
+            return 0
+        _plan_one(args.repo, args.file, local=args.local, route=args.route, runtime=args.runtime)
+        return 0
     # --all: sweep each registered repo against its own digest.
     if getattr(args, "all", False):
         total_stale = 0
@@ -287,6 +429,12 @@ def _cmd_validate(args) -> int:
                                               use_cache=not args.no_cache)
     verifier = "local model" if args.local else ("routed (value→local, else frontier)" if args.route
                                                  else "frontier model")
+    jm, pin, adjudicating, local_screen = _judge_setup(local=args.local, route=args.route)
+    if adjudicating:
+        verifier = (f"{'local+' if local_screen else ''}routed screen → {pin} adjudicates "
+                    f"({'every claim' if jm == 'both' else 'uncleared claims'}; mode={jm})")
+    elif jm == "pinned" and not args.local:
+        verifier = f"pinned {pin} (CODEQA_JUDGE_MODE=pinned — routing bypassed)"
     tag = " (cached — unchanged since last run)" if cached else ""
     print(f"freshness gate — {args.file} vs live {args.repo}{tag} · verifier: {verifier}")
     skip = f", {n_skip} skipped (non-derivable — no code oracle)" if n_skip else ""
@@ -517,10 +665,19 @@ def main(argv: list[str] | None = None) -> int:
                          "oracle (files + /status + read-only commands), declared as 'runtime_oracle'")
     pv.add_argument("--all", action="store_true",
                     help="sweep EVERY registered repo against its own digest (auto-wire)")
+    pv.epilog = ("CODEQA_JUDGE_MODEL: when set, the default CODEQA_JUDGE_MODE is now 'screen' — each "
+                 "claim goes to its routed tier first and the pinned model only adjudicates claims "
+                 "the screen did not clear. A screen SUPPORTED is FINAL (e.g. a haiku-routed VALUE "
+                 "claim is never re-judged by the pin); set CODEQA_JUDGE_MODE=both to calibrate the "
+                 "screen against the pin, or =pinned for the legacy every-claim-to-the-pin behaviour. "
+                 "If the adjudicator call fails, the screen verdict is kept and the run is not cached.")
     pv.add_argument("--check", action="store_true",
                     help="exit nonzero if any stale claim is found (for pre-commit / cron gating)")
     pv.add_argument("--no-cache", action="store_true",
                     help="ignore the fingerprint cache and re-validate even if unchanged")
+    pv.add_argument("--plan", action="store_true",
+                    help="DRY RUN: print the per-claim routing plan (screen model, adjudication "
+                         "policy, evidence) without calling any model; writes no cache/metrics")
     pv.set_defaults(func=_cmd_validate)
 
     pg = sub.add_parser("ground", help="grounding oracle: check the file:line citations in a "

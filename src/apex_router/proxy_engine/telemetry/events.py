@@ -73,7 +73,17 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # that body plus the rate-limit/retry headers on any status >= 400 (None on clean rows), so a
 # rate-limit cluster is diagnosable from the log instead of by reproducing it with curl. Same lesson
 # as v3's `content_encoding`: an error you can see but not attribute is a measurement gap.
-TELEMETRY_SCHEMA_VERSION = 7
+# v8: added `upstream_rejected` — True for ANY upstream response status >= 400 (4xx AND 5xx). It does
+# NOT change `is_error`, which stays >=500-only BY DESIGN (a client-retried 429/4xx is not a proxy
+# failure; the doctor error panel and the heartbeat `errors` counter are built on that meaning). Live
+# finding (2026-10-02): 478 `http_429` rows in 7 days, every one `is_error=false`, countable only by
+# string-matching `error_cause`. `upstream_rejected` makes "the provider said no" a first-class bool.
+# False on success and on the upstream-RAISE path (no response ever existed there).
+# Also v8 (semantics, no new field): `connect_retries` / `connect_backoff_ms` now also count read/TLS
+# retries (SSLError/ReadError/WriteError/RemoteProtocolError before response headers) — fast-fail only
+# (< APEX_RETRY_FAST_FAIL_MS, default 3000 ms) and on POST/GET completion endpoints only. A declined
+# body-sent retry (slow failure or non-completion path) records `error_cause` as before.
+TELEMETRY_SCHEMA_VERSION = 8
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -153,7 +163,8 @@ class TelemetryEvent:
     # already captured the wait). A latency panel reads apex_added_ms for apex cost, this for the
     # upstream-failure tail. See the the reference window finding: 42/127 errors showed ~600_000ms mis-billed.
     upstream_error_wait_ms: float = 0.0
-    # connect-retry accounting (v6): how many times send_stream retried a ConnectError before this
+    # connect-retry accounting (v6): how many times send_stream retried a ConnectError (v8: or a fast
+    # read/TLS error on a completion endpoint) before this
     # row resolved, and the total backoff apex SLEPT (already billed into apex_added_ms, not
     # upstream latency — see F4). 0/0.0 on the common no-retry path. A recovered-after-retry request
     # is otherwise indistinguishable from a clean one; these make flaky-upstream recovery provable.
@@ -167,6 +178,10 @@ class TelemetryEvent:
     # concurrency/pool problem from an upstream rate-limit from a timeout — the prerequisite for any
     # targeted guard.
     error_cause: str | None = None
+    # upstream_rejected (v8) — the upstream RESPONDED with a status >= 400 (4xx or 5xx). Orthogonal to
+    # is_error (>=500 / raise / mid-stream only): a 429 is upstream_rejected=True, is_error=False.
+    # False on success AND on the upstream-raise path (no response existed — see error_cause there).
+    upstream_rejected: bool = False
     # error_detail (v7) — WHAT the provider said when it rejected the request, for any status >= 400:
     # {"body": <bounded decoded error envelope>, "headers": {<rate-limit/retry headers>}}. None on
     # clean rows AND on the upstream-RAISE path (no response ever existed there — `error_cause` alone

@@ -85,7 +85,7 @@ class ProbeError(Exception):
 
 def _judge_config() -> tuple[str | None, str]:
     base = os.environ.get("CODEQA_JUDGE_BASE") or None
-    model = os.environ.get("CODEQA_JUDGE_MODEL") or "claude-opus-4-8"
+    model = os.environ.get("CODEQA_JUDGE_MODEL") or "claude-opus-5-5"
     return base, model
 
 

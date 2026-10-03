@@ -38,7 +38,11 @@ DEFAULTS: dict = {
     "tiers": {
         "haiku": "claude-haiku-4-5",
         "sonnet": "claude-sonnet-5",
-        "opus": "claude-opus-4-8",
+        "opus": "claude-opus-5-5",
+        # Fable is deliberately separate from the standard heavy/Opus tier: it is the
+        # expensive ceiling for the hardest pure-reasoning checks, not the routine
+        # coding or cross-validation default.
+        "fable": "claude-fable-5-1",
     },
     # pi per-task families. A family either pins an explicit {"provider","id"} or names a
     # frontier {"provider","tier"} (resolved via `tiers`, so a tier bump moves every family).
@@ -49,6 +53,13 @@ DEFAULTS: dict = {
         "kimi-code": {"provider": "moonshotai", "id": "kimi-k2.7-code"},
         "frontier": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
         "deep": {"provider": "anthropic", "tier": "opus", "effort": "high"},
+        # Named Anthropic families mirror model-routing's tiers. `opus` is the routine
+        # heavy/coding + independent-review route; `fable` is opt-in max-effort pure
+        # reasoning. Haiku has no effort knob and rejects output_config.effort.
+        "haiku": {"provider": "anthropic", "tier": "haiku"},
+        "sonnet": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
+        "opus": {"provider": "anthropic", "tier": "opus", "effort": "high"},
+        "fable": {"provider": "anthropic", "tier": "fable", "effort": "max"},
         # GPT-5.6 tiers are explicit pi families. They use the Codex provider so they
         # work with the ChatGPT/Codex subscription without an OpenAI API key.
         "gpt-luna": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
@@ -116,7 +127,7 @@ def load(path: Path | None = None) -> dict:
 
 
 def tier_model(tier: str, *, registry: dict | None = None) -> str | None:
-    """The model id for a frontier tier name ('haiku'|'sonnet'|'opus'), else None."""
+    """The model id for a frontier tier name ('haiku'|'sonnet'|'opus'|'fable'), else None."""
     reg = DEFAULTS if registry is None else registry
     tiers = reg.get("tiers", {})
     m = tiers.get(tier)

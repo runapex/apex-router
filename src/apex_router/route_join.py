@@ -1,22 +1,57 @@
 """Phase-0 labeled training table — join route_log outcomes with conformance rows.
 
-Fail-safe read-only module: malformed lines are skipped, unjoinable rows are counted,
-and every public function returns an empty container rather than raising on failure.
+Two joins feed one table:
+  * classic route_log rows (pi / CLI) ⋈ conformance rows (task_type + |Δts| ≤ 300 s);
+  * claude-code dispatch rows (label_pending, written by hooks/agent-route-log.sh) ⋈ proxy
+    telemetry by (session_id, agent_id) — resolved model, request count, output tokens,
+    error count — with escalation INFERRED offline: a row is escalated when it started on an
+    EXPLICIT cheap tier (haiku/sonnet from the Agent `model` arg — never `inherit`, whose tier
+    comes from the parent session) and a later Agent dispatch in the same session, within
+    2 hours, has the same normalized description at a strictly higher tier (explicit, or an
+    inherit whose resolved model is strictly higher). Tier order: haiku < sonnet < opus < fable.
+    Rows whose outcome is error/empty, or async rows with no telemetry join, get
+    `label_status: "unlabeled"` — kept in the table, excluded from rate counts.
+
+Fail-safe: malformed lines are skipped, unjoinable rows are counted, and every public
+function returns an empty container rather than raising on failure. Read failures of the
+route log / telemetry are surfaced in stats (`route_log_error`, `telemetry_error` +
+`*_error_name`). `refresh_labeled_table` — the single write path for route-join and the
+nightly — atomically replaces `labeled_table.jsonl` beside the route log so route-readout /
+route-advise pick up the resolved claude-code labels, but refuses to clobber an existing
+non-empty table with an empty one or one built from a failed read.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
+import os
+import re
+import sys
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import stats
 from .route_conformance import default_conformance_path
-from .route_log import default_log_path
+from .route_log import (CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, TIER_RANK, default_labeled_path,
+                        default_log_path, tier_of)
+from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
 _JOIN_WINDOW_S = 300.0
+# A higher-tier redo further out than this is a new task that happens to share a description,
+# not an escalation of the earlier dispatch.
+_ESCALATION_WINDOW_S = 2 * 3600.0
+LABELED = "labeled"
+UNLABELED = "unlabeled"
+_DISPATCH_STR_FIELDS = ("surface", "agent_id", "tool_use_id", "start_tier", "description",
+                        "resolved_model", "outcome", "parent_agent_id")
+
+
+def default_telemetry_path() -> Path:
+    """Proxy telemetry: APEX_TELEMETRY > $APEX_HOME/telemetry.jsonl > ~/.apex/telemetry.jsonl
+    (the shared resolver — the proxy writes under APEX_HOME)."""
+    return _resolve_telemetry_path()
 
 
 def _is_finite_ts(value: Any) -> bool:
@@ -30,8 +65,13 @@ def _is_finite_ts(value: Any) -> bool:
     return False
 
 
-def _parse_route_log(path: Path) -> Tuple[List[Dict[str, Any]], int]:
+def _parse_route_log(path: Path, errors: Optional[Dict[str, str]] = None
+                     ) -> Tuple[List[Dict[str, Any]], int]:
     """Stream a route_log JSONL into validated rows plus a malformed skip count.
+
+    A missing file or mid-read failure yields what was parsed so far; when `errors` is given
+    the exception name is recorded under errors["route_log"] so callers can tell an empty /
+    truncated read from a genuinely empty log.
 
     A row is kept when it is a dict with str task_type/model and bool escalated.
     Rows with missing/non-finite ts are KEPT (they are unjoinable, not malformed)
@@ -69,10 +109,20 @@ def _parse_route_log(path: Path) -> Tuple[List[Dict[str, Any]], int]:
                 if sid is not None and not isinstance(sid, str):
                     skipped += 1
                     continue
+                if any(rec.get(k) is not None and not isinstance(rec.get(k), str)
+                       for k in _DISPATCH_STR_FIELDS):
+                    skipped += 1
+                    continue
+                lp = rec.get("label_pending")
+                if lp is not None and not isinstance(lp, bool):
+                    skipped += 1
+                    continue
                 rows.append(rec)
-    except Exception:
-        # Fail-safe: unreadable files yield whatever we parsed so far (often nothing).
-        pass
+    except Exception as e:
+        # Fail-safe: unreadable files yield whatever we parsed so far (often nothing) — but
+        # the failure is reported, so the writer can refuse to clobber a good table.
+        if errors is not None:
+            errors["route_log"] = type(e).__name__
     return rows, skipped
 
 
@@ -158,7 +208,169 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
     return out
 
 
-def join_labels(route_log_path=None, conformance_path=None) -> dict:
+def normalize_description(desc: Any) -> str:
+    """Lowercase, punctuation → space, collapsed whitespace. '' for non-str."""
+    if not isinstance(desc, str):
+        return ""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", desc.lower()).split())
+
+
+def _row_is_error(rec: Dict[str, Any]) -> bool:
+    """A telemetry request row failed: is_error, a 429, or any upstream rejection (v8)."""
+    return (rec.get("is_error") is True or rec.get("error_cause") == "http_429"
+            or rec.get("upstream_rejected") is True)
+
+
+def _telemetry_index(path: Path, wanted: set, errors: Optional[Dict[str, str]] = None
+                     ) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Stream telemetry once, aggregating request rows whose (session_id, agent_id) is wanted.
+    Heartbeats (ev == "hb") and malformed lines are skipped. Missing/unreadable file → what
+    was aggregated so far, with the exception name recorded in errors["telemetry"]."""
+    agg: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    if not wanted:
+        return agg
+    try:
+        with path.open("r", errors="replace") as fh:
+            for line in fh:
+                # Cheap pre-filter: skip lines that can't carry an agent id before json.loads.
+                if '"agent_id"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict) or rec.get("ev") == "hb":
+                    continue
+                key = (rec.get("session_id"), rec.get("agent_id"))
+                if key not in wanted:
+                    continue
+                a = agg.setdefault(key, {"requests": 0, "output_tokens": 0, "error_count": 0,
+                                         "models": Counter(), "last_ts": None,
+                                         "last_is_error": None})
+                a["requests"] += 1
+                usage = rec.get("usage") if isinstance(rec.get("usage"), dict) else {}
+                out = usage.get("output_tokens")
+                if isinstance(out, bool) or not isinstance(out, int):
+                    out = rec.get("tokens_out")
+                if isinstance(out, int) and not isinstance(out, bool) and out > 0:
+                    a["output_tokens"] += out
+                is_err = _row_is_error(rec)
+                if is_err:
+                    a["error_count"] += 1
+                m = rec.get("model_resolved")
+                if isinstance(m, str) and m:
+                    a["models"][m] += 1
+                ts = rec.get("ts")
+                if _is_finite_ts(ts) and (a["last_ts"] is None or ts >= a["last_ts"]):
+                    a["last_ts"] = ts
+                    a["last_is_error"] = is_err
+    except Exception as e:
+        if errors is not None:
+            errors["telemetry"] = type(e).__name__
+    return agg
+
+
+def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
+                         errors: Optional[Dict[str, str]] = None
+                         ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Materialize claude-code dispatch rows: telemetry join + offline escalation inference."""
+    wanted = {(r.get("session_id"), r.get("agent_id")) for r in rows
+              if isinstance(r.get("session_id"), str) and isinstance(r.get("agent_id"), str)}
+    tel = _telemetry_index(telemetry_path, wanted, errors)
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        start = r.get("start_tier") if isinstance(r.get("start_tier"), str) else r["model"]
+        t = tel.get((r.get("session_id"), r.get("agent_id")))
+        resolved: Optional[str] = None
+        if t and t["models"]:
+            resolved = t["models"].most_common(1)[0][0]
+        elif isinstance(r.get("resolved_model"), str):
+            resolved = r["resolved_model"]
+        requested = tier_of(start) if start != "inherit" else None
+        effective = requested or tier_of(resolved)
+        resolved_tier = tier_of(resolved)
+        hook_outcome = r.get("outcome") if isinstance(r.get("outcome"), str) else "ok"
+        if hook_outcome in ("error", "empty"):
+            eff_outcome = hook_outcome
+        elif t and t["requests"] > 0:
+            eff_outcome = "error" if t["last_is_error"] else "ok"
+        else:
+            eff_outcome = hook_outcome  # "async" stays unknown without telemetry
+        # Only a known-good outcome is a usable "did it bounce?" label: an errored/empty
+        # dispatch or an async launch we never saw finish must not become a fake "ok".
+        label_status = LABELED if eff_outcome == "ok" else UNLABELED
+        row: Dict[str, Any] = {
+            "ts": r["ts"],
+            "task_type": r["task_type"],
+            "model": r["model"],
+            "escalated": False,
+            "label": "easy",
+            "surface": r.get("surface") or CLAUDE_CODE_SURFACE,
+            "requested_tier": start,
+            "resolved_model": resolved,
+            "matched": (resolved_tier == requested) if (requested and resolved_tier) else None,
+            "effective_tier": effective,
+            "session_id": r.get("session_id"),
+            "agent_id": r.get("agent_id"),
+            "tool_use_id": r.get("tool_use_id"),
+            "description": r.get("description"),
+            "outcome": hook_outcome,
+            "outcome_effective": eff_outcome,
+            "label_status": label_status,
+            "telemetry_joined": bool(t),
+            "requests": t["requests"] if t else 0,
+            "output_tokens": t["output_tokens"] if t else 0,
+            "error_count": t["error_count"] if t else 0,
+            "escalated_by": None,
+        }
+        cs = r.get("context_size")
+        if cs is not None:
+            row["context_size"] = cs
+        out.append(row)
+
+    # Escalation inference: same session + same normalized description + strictly later ts
+    # within _ESCALATION_WINDOW_S + strictly higher tier. The EARLIER row must have started on
+    # an explicit cheap tier (an inherit row's tier is the parent session's model, not a choice
+    # to start cheap); the later row's tier is its explicit tier, else its resolved tier.
+    # Unknown tiers / missing session or description never escalate (conservative: no label
+    # is better than a fabricated one).
+    by_session: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in out:
+        if isinstance(row["session_id"], str):
+            by_session[row["session_id"]].append(row)
+    escalated = 0
+    for group in by_session.values():
+        group.sort(key=lambda x: x["ts"])
+        for i, a in enumerate(group):
+            a_start = a["requested_tier"]
+            if a_start not in CHEAP_START_TIERS:
+                continue
+            ra = TIER_RANK[a_start]
+            da = normalize_description(a["description"])
+            if not da:
+                continue
+            for b in group[i + 1:]:
+                dt = b["ts"] - a["ts"]
+                if dt > _ESCALATION_WINDOW_S:
+                    break  # sorted by ts: everything later is out of the window too
+                rb = TIER_RANK.get(b["effective_tier"])
+                if dt > 0 and rb is not None and rb > ra \
+                        and normalize_description(b["description"]) == da:
+                    a["escalated"] = True
+                    a["label"] = "hard"
+                    a["escalated_by"] = b["tool_use_id"]
+                    escalated += 1
+                    break
+    return out, {
+        "claude_code_rows": len(out),
+        "telemetry_joined": sum(1 for r in out if r["telemetry_joined"]),
+        "escalated_inferred": escalated,
+        "unlabeled": sum(1 for r in out if r["label_status"] == UNLABELED),
+    }
+
+
+def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None) -> dict:
     """Join route_log rows to conformance rows for the Phase-0 training table.
 
     Returns {"table": [...], "stats": {...}} on success, {} on any failure.
@@ -168,13 +380,21 @@ def join_labels(route_log_path=None, conformance_path=None) -> dict:
       - each route_log row matches at most one conformance row (nearest ts)
       - agent-surface conformance rows with matched=None are excluded
       - route_log rows with missing/non-finite ts are unjoinable (counted as null_ts)
+      - label_pending (claude-code dispatch) rows skip the conformance join; they are
+        joined to telemetry by (session_id, agent_id) and get escalation inferred offline
+        (see _build_dispatch_rows), then appended to the same table
     """
     try:
         log_p = Path(route_log_path) if route_log_path is not None else default_log_path()
         conf_p = Path(conformance_path) if conformance_path is not None else default_conformance_path()
 
-        route_rows, route_skipped = _parse_route_log(log_p)
+        tel_p = Path(telemetry_path) if telemetry_path is not None else default_telemetry_path()
+
+        read_errors: Dict[str, str] = {}
+        route_rows, route_skipped = _parse_route_log(log_p, read_errors)
         conf_rows, conf_skipped = _parse_conformance(conf_p)
+        dispatch_rows = [r for r in route_rows if r.get("label_pending") is True]
+        classic_rows = [r for r in route_rows if r.get("label_pending") is not True]
 
         # Honesty invariant: agent intent-only rows are excluded from the join.
         usable_conf: List[Dict[str, Any]] = []
@@ -195,7 +415,7 @@ def join_labels(route_log_path=None, conformance_path=None) -> dict:
         null_ts = 0
         no_partner = 0
 
-        for r in route_rows:
+        for r in classic_rows:
             ts = r.get("ts")
             if not _is_finite_ts(ts):
                 null_ts += 1
@@ -236,6 +456,16 @@ def join_labels(route_log_path=None, conformance_path=None) -> dict:
             used_conf_indices.add(best_idx)
             table.append(_build_joined(r, usable_conf[best_idx]))
 
+        conformance_joined = len(table)
+        timed_dispatch = []
+        for r in dispatch_rows:
+            if _is_finite_ts(r.get("ts")):
+                timed_dispatch.append(r)
+            else:
+                null_ts += 1
+        cc_table, cc_stats = _build_dispatch_rows(timed_dispatch, tel_p, read_errors)
+        table.extend(cc_table)
+
         return {
             "table": table,
             "stats": {
@@ -244,9 +474,18 @@ def join_labels(route_log_path=None, conformance_path=None) -> dict:
                 "conformance_rows": len(conf_rows),
                 "conformance_skipped": conf_skipped,
                 "excluded_agent_intent": excluded_agent_intent,
-                "joined": len(table),
+                "joined": conformance_joined,
+                "table_rows": len(table),
                 "null_ts": null_ts,
                 "no_partner": no_partner,
+                "claude_code_rows": cc_stats["claude_code_rows"],
+                "telemetry_joined": cc_stats["telemetry_joined"],
+                "escalated_inferred": cc_stats["escalated_inferred"],
+                "unlabeled": cc_stats["unlabeled"],
+                "route_log_error": "route_log" in read_errors,
+                "route_log_error_name": read_errors.get("route_log"),
+                "telemetry_error": "telemetry" in read_errors,
+                "telemetry_error_name": read_errors.get("telemetry"),
             },
         }
     except Exception:
@@ -267,6 +506,8 @@ def cell_rates(table) -> dict:
             tt = row.get("task_type")
             escalated = row.get("escalated")
             if not isinstance(tt, str) or not isinstance(escalated, bool):
+                continue
+            if row.get("label_status") == UNLABELED:
                 continue
             cell = rates.setdefault(tt, {
                 "n": 0, "escalated": 0, "rate": 0.0,
@@ -291,6 +532,59 @@ def cell_rates(table) -> dict:
         return {}
 
 
+def write_table(table, path) -> bool:
+    """Atomically replace `path` with the table as JSONL (readers never see a partial file)."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + f".tmp{os.getpid()}")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for row in table:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def _has_rows(path: Path) -> bool:
+    """True when `path` is a file with at least one non-blank line."""
+    try:
+        if not path.is_file():
+            return False
+        with path.open("r", errors="replace") as fh:
+            return any(line.strip() for line in fh)
+    except Exception:
+        return True  # can't tell — treat as precious rather than clobber it
+
+
+def refresh_labeled_table(result, path=None) -> Tuple[bool, str]:
+    """The single write path for labeled_table.jsonl (route-join and the nightly).
+
+    Refuses to replace an existing non-empty table when the new table is empty or was built
+    from a failed read (stats route_log_error / telemetry_error), so a transient read failure
+    can never silently strip labels route-advise depends on. Returns (written, note)."""
+    try:
+        p = Path(path) if path is not None else default_labeled_path()
+        if not isinstance(result, dict) or not result:
+            return False, f"kept previous table {p}: join failed"
+        table = result.get("table") or []
+        st = result.get("stats") or {}
+        reasons = []
+        if st.get("route_log_error"):
+            reasons.append(f"route_log read failed ({st.get('route_log_error_name') or 'error'})")
+        if st.get("telemetry_error"):
+            reasons.append(f"telemetry read failed ({st.get('telemetry_error_name') or 'error'})")
+        if not table:
+            reasons.append("new table is empty")
+        if reasons and _has_rows(p):
+            return False, f"kept previous table {p}: " + "; ".join(reasons)
+        ok = write_table(table, p)
+        return ok, (f"wrote {len(table)} rows to {p}" if ok else f"write failed: {p}")
+    except Exception as e:  # noqa: BLE001
+        return False, f"labeled table not refreshed ({type(e).__name__})"
+
+
 def main(argv=None) -> int:
     """CLI readout for the Phase-0 join: human table, --json, or --out JSONL."""
     import argparse
@@ -301,20 +595,28 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true",
                     help="dump machine-readable join result to stdout")
     ap.add_argument("--out", type=Path,
-                    help="write the labeled table as JSONL to PATH")
+                    help="also write the labeled table as JSONL to PATH")
+    ap.add_argument("--telemetry", type=Path,
+                    help="proxy telemetry JSONL (default $APEX_TELEMETRY, else "
+                         "$APEX_HOME/telemetry.jsonl, else ~/.apex/telemetry.jsonl)")
+    ap.add_argument("--no-write", action="store_true",
+                    help="do not refresh the default labeled table beside the route log")
     args = ap.parse_args(argv)
 
     try:
-        result = join_labels()
+        result = join_labels(telemetry_path=args.telemetry)
         if not isinstance(result, dict):
             result = {}
         table = result.get("table", [])
         st = result.get("stats", {})
 
         if args.out:
-            with args.out.open("w", encoding="utf-8") as fh:
-                for row in table:
-                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            write_table(table, args.out)
+        if not args.no_write:
+            # route-readout / route-advise read resolved claude-code labels from here.
+            written, note = refresh_labeled_table(result, default_labeled_path())
+            if not written:
+                print(f"route-join: {note}", file=sys.stderr)
 
         if args.json:
             print(json.dumps(result, indent=2, sort_keys=True))
@@ -326,6 +628,13 @@ def main(argv=None) -> int:
               f"excluded_agent_intent={st.get('excluded_agent_intent', 0)}")
         print(f"  join result:        joined={st.get('joined', 0)}  null_ts={st.get('null_ts', 0)}  "
               f"no_partner={st.get('no_partner', 0)}")
+        print(f"  claude-code rows:   {st.get('claude_code_rows', 0)}  "
+              f"telemetry_joined={st.get('telemetry_joined', 0)}  "
+              f"escalated_inferred={st.get('escalated_inferred', 0)}  "
+              f"unlabeled={st.get('unlabeled', 0)}")
+        for k in ("route_log", "telemetry"):
+            if st.get(f"{k}_error"):
+                print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")
 
         if not table:
             print("route-join: no joinable rows yet")

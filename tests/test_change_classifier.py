@@ -66,6 +66,18 @@ def test_regression_signal_must_be_an_answer(answer):
 
 def test_prompt_requires_numeric_confidence():
     assert "JSON numbers" in cc.contract_text()
+
+
+def test_prompt_defines_regression_signal_direction():
+    # Smoke 2026-10-02: an undefined "confirmed" was read as "no regression
+    # confirmed" by one member while others said "refuted" for the same green
+    # run -- spurious divergence from label ambiguity, not from the change.
+    text = cc.contract_text()
+    for label, meaning in (("confirmed", "fail"), ("refuted", "pass"),
+                           ("not-covered", "no test")):
+        line = next((ln for ln in text.splitlines()
+                     if ln.lstrip("- ").startswith(label + " ")), "")
+        assert meaning in line.lower(), (label, line)
     for axis in ("requirement_fit", "blast_radius"):
         assert isinstance(cc.OUTPUT_CONTRACT[axis]["confidence"], float)
 
@@ -228,3 +240,11 @@ def test_cli_end_to_end(tmp_path, answer):
     assert report["panel"]["a"]["classification"] == answer
     assert not report["panel"]["failed"]["ok"]
     assert "flags" in proc.stdout
+
+
+def test_example_panel_loads_and_spans_vendors():
+    example = SCRIPT.parent / "change_classifier_panel.example.json"
+    panel = cc.load_panel(str(example))
+    vendors = {m["name"].split("-", 1)[0] for m in panel} - {"local"}
+    assert len(vendors) >= 2, vendors  # same-family agreement is not independence
+    assert all(m.get("auth") for m in panel)  # documents credential names, no values

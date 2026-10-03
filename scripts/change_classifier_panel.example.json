@@ -1,4 +1,56 @@
 [
-  {"name": "reviewer-a", "cmd": ["your-model-cli", "--model", "<model-a>", "--stdin"]},
-  {"name": "reviewer-b", "cmd": ["your-model-cli", "--model", "<model-b>", "--stdin"]}
+  {
+    "name": "anthropic-claude-opus-5-5",
+    "cmd": [
+      "claude",
+      "-p",
+      "--model",
+      "claude-opus-5-5",
+      "--tools",
+      "",
+      "--no-session-persistence",
+      "--setting-sources",
+      "",
+      "--strict-mcp-config",
+      "--disable-slash-commands"
+    ],
+    "auth": "Claude Code subscription login (keychain OAuth), or ANTHROPIC_API_KEY; honors ANTHROPIC_BASE_URL (e.g. the apex-router proxy at :8788). Do not add --bare: it ignores keychain auth."
+  },
+  {
+    "name": "openai-gpt-5.6-sol",
+    "cmd": [
+      "codex",
+      "exec",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_reasoning_effort=\"medium\"",
+      "-s",
+      "read-only",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--color",
+      "never",
+      "-"
+    ],
+    "auth": "Codex CLI ChatGPT/Codex login (`codex login`, ~/.codex/auth.json), or OPENAI_API_KEY; no proxy needed."
+  },
+  {
+    "name": "moonshot-kimi-k3",
+    "cmd": [
+      "python3",
+      "-c",
+      "import json,os,subprocess,sys,urllib.request\nk=os.environ.get('MOONSHOT_API_KEY') or subprocess.run(['pi','auth','print-api-key','--provider','moonshotai'],capture_output=True,text=True,timeout=30).stdout.strip()\nbody={'model':'kimi-k3','messages':[{'role':'user','content':sys.stdin.read()}],'max_tokens':16000}\nr=urllib.request.Request(os.environ.get('MOONSHOT_BASE_URL','https://api.moonshot.ai/v1')+'/chat/completions',json.dumps(body).encode(),{'Authorization':'Bearer '+k,'Content-Type':'application/json'})\nprint(json.load(urllib.request.urlopen(r,timeout=280))['choices'][0]['message']['content'])"
+    ],
+    "auth": "MOONSHOT_API_KEY, else the key pi stores for provider moonshotai (`pi auth print-api-key --provider moonshotai`). Calls MOONSHOT_BASE_URL (default https://api.moonshot.ai/v1) directly: the apex-router proxy forwards /v1 to api.openai.com, so routing Kimi through :8788 returns 401."
+  },
+  {
+    "name": "local-ornith-35b",
+    "cmd": [
+      "python3",
+      "-c",
+      "import json,os,sys,urllib.request\nm='hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M'\nbody={'model':m,'messages':[{'role':'user','content':sys.stdin.read()}],'stream':False,'think':False,'options':{'num_ctx':32768,'temperature':0.2}}\nr=urllib.request.Request(os.environ.get('OLLAMA_HOST_URL','http://127.0.0.1:11434')+'/api/chat',json.dumps(body).encode(),{'Content-Type':'application/json'})\nprint(json.load(urllib.request.urlopen(r,timeout=280))['message']['content'])"
+    ],
+    "auth": "No credential. Local ollama at OLLAMA_HOST_URL (default http://127.0.0.1:11434); native /api/chat so num_ctx can be raised above ollama's default context. Zero-cost fourth opinion; not a separate vendor for independence purposes."
+  }
 ]

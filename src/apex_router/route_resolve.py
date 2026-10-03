@@ -84,7 +84,7 @@ def static_default_map(registry: dict | None = None) -> dict[str, str]:
 
 def safe_default(registry: dict | None = None) -> str:
     reg = model_registry.load() if registry is None else registry
-    return model_registry.tier_model("opus", registry=reg) or "claude-opus-4-8"
+    return model_registry.tier_model("opus", registry=reg) or "claude-opus-5-5"
 
 
 def _embed_fn():

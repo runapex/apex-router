@@ -61,11 +61,15 @@ family, and the prefix is stripped before the model sees it. (`>>` is used
 rather than `@` because pi reserves `@` for file mentions.)
 
 ```
->>local    fix this flaky test          # active local family (ollama, no proxy hop)
->>kimi      summarise this diff          # Kimi K2 (via the apex proxy)
->>frontier  design the migration plan     # Claude Sonnet (via the apex proxy)
->>deep      audit this for race hazards   # Claude Opus (via the apex proxy)
->>gpt-luna  locate the config loader      # GPT-5.6 Luna (Codex)
+>>local    fix this flaky test           # active local family (ollama, no proxy hop)
+>>kimi      summarise this diff           # Kimi K2 (via the apex proxy)
+>>frontier  design the migration plan     # Claude Sonnet alias (medium effort)
+>>deep      audit this for race hazards   # Claude Opus alias (high effort)
+>>haiku     grep and summarise these files # Anthropic light tier (no effort knob)
+>>sonnet    explore this subsystem         # Anthropic mid tier (medium effort)
+>>opus      review this implementation     # Anthropic heavy tier (high effort)
+>>fable     refute this load-bearing proof # Anthropic reasoning ceiling (max effort)
+>>gpt-luna  locate the config loader       # GPT-5.6 Luna (Codex)
 >>gpt-terra implement a feature           # GPT-5.6 Terra (Codex)
 >>gpt-sol   audit a concurrency design    # GPT-5.6 Sol (Codex)
 ```
@@ -86,6 +90,13 @@ same file codeqa's tier_router and `/learn` read, so a tier bump moves every com
 A family pins `{"provider","id"}`, references a tier `{"provider","tier"}` (resolved via
 the registry's `tiers` map, optionally with `"effort"`), or — for `local` — follows the
 ACTIVE ornith tier (`{"source":"ornith.env"}`, so `>>local` never loads a second tier).
+The Anthropic families follow the model-routing policy: `haiku` is the light,
+mechanical tier (and receives no unsupported effort field), `sonnet` is mid/medium,
+`opus` is heavy/high, and `fable` is the max-effort ceiling for exceptional pure
+reasoning. `frontier` and `deep` remain compatibility aliases for `sonnet` and `opus`.
+Routine independent cross-validation deliberately uses `opus`/`deep`, **not Fable**;
+Fable is opt-in when the review is explicitly escalated or genuinely load-bearing.
+
 The built-in GPT-5.6 families use Pi's `openai-codex` provider: `gpt-luna` (low
 reasoning), `gpt-terra` (medium), and `gpt-sol` (high). They use the existing Codex
 provider directly; they are not sent through the Anthropic/Kimi measuring proxy.
@@ -179,7 +190,7 @@ should show the frontier turns that went through the proxy.
                  │
     ┌────────────┼─────────────────────────────┐
     │            │                              │
- >>local     >>kimi / >>frontier / >>deep    (built-in /model)
+ >>local     >>kimi / Anthropic tier cues    (built-in /model)
     │            │                              │
  ollama ──►  apex-router proxy :8788  ◄─────────┘
  (Ornith)        │  measure + route

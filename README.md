@@ -368,8 +368,11 @@ The keys it manages are non-secret client wiring (`CLAUDE_CODE_USE_FOUNDRY`,
 
 The [pi](https://github.com/earendil-works/pi) coding agent can point at the apex-router
 proxy and switch **model and family per task** — inline (`>>local fix this test`,
-`>>frontier design the migration`, `>>auto <task>` letting the adaptive core pick) or with
-a sticky `/apex-route` command. Frontier and Kimi turns flow through the measuring proxy;
+`>>sonnet explore this`, `>>opus cross-validate this`, `>>fable refute this proof`, or
+`>>auto <task>` letting the adaptive core pick) or with a sticky `/apex-route` command.
+The Anthropic cues mirror the routing tiers: Haiku (light), Sonnet (mid), Opus (heavy
+coding and routine cross-validation), and opt-in Fable (maximum pure reasoning).
+Frontier and Kimi turns flow through the measuring proxy;
 local turns go straight to the Ornith tiers on ollama. Families resolve from the shared
 model registry (`~/.apex-router/models.json`) — the same file codeqa and `/learn` read.
 The extensions also: attribute pi traffic per-session through the proxy, apply per-family
@@ -510,8 +513,22 @@ python3 scripts/change_classifier.py \
   --out report.json
 ```
 
-Create `panel.json` from `scripts/change_classifier_panel.example.json`, replacing
-the placeholder commands with real model CLIs. Use `--diff change.diff` (or `-` for
+`scripts/change_classifier_panel.example.json` is a working four-member,
+three-vendor panel; copy it to `~/.apex-router/change_classifier_panel.json`
+(`chmod 600`) or point `--panel`/`CLASSIFIER_PANEL` at it. Extra keys such as
+`auth` are ignored by the loader and only document credentials:
+
+| Member | Command | Credential (names only) |
+|---|---|---|
+| `claude-opus-5-5` (Anthropic) | `claude -p --tools "" --setting-sources "" …` | Claude Code login (keychain OAuth) or `ANTHROPIC_API_KEY`; follows `ANTHROPIC_BASE_URL`, so it can go through the proxy. Do not use `--bare`, which ignores keychain auth. |
+| `gpt-5.6-sol` (OpenAI) | `codex exec -s read-only --ephemeral -` | `codex login` (ChatGPT/Codex subscription) or `OPENAI_API_KEY` |
+| `kimi-k3` (Moonshot) | inline `python3 -c` POST to `$MOONSHOT_BASE_URL/chat/completions` (default `https://api.moonshot.ai/v1`) | `MOONSHOT_API_KEY`, else pi's stored `moonshotai` key (`pi auth print-api-key`). Call Moonshot directly: the proxy's `/v1` forwards to `api.openai.com`, so Kimi through `:8788` gets a 401. |
+| Ornith 35B-A3B (local) | inline `python3 -c` to ollama `/api/chat` at `$OLLAMA_HOST_URL` | none; zero-cost extra opinion, not an extra vendor |
+
+Keep at least two hosted vendors in the panel. Same-family agreement is not
+vendor independence. Each member has a 300 s timeout. A failed or missing
+credential shows up as `ok:false` for that member and does not stop the others.
+Use `--diff change.diff` (or `-` for
 stdin) instead of `--repo` for a curated diff. `--repo` includes tracked changes
 only; `--include-untracked` explicitly adds untracked files. Review inputs for
 secrets before using a hosted panel. Failed commands and malformed classifications

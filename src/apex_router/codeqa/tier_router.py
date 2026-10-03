@@ -14,16 +14,22 @@ The default map is grounded in the same measurements as classify_claim:
     verify / runtime           → opus    + xhigh effort
     (unknown task-kind)        → opus    + high  effort   (safe, capable fallback)
 
-HARD API CONSTRAINT (Claude API): `output_config.effort` and adaptive thinking exist ONLY on
-Sonnet 5 and Opus 4.8. Haiku 4.5 REJECTS `effort` with a 400 and has no adaptive-thinking knob, so
-haiku is the no-reasoning FLOOR tier: request_extras() emits neither field for it, and a route that
+HARD API CONSTRAINT (Claude API): `output_config.effort` and adaptive thinking exist on the
+configured Sonnet and Opus tiers. Fable is deliberately not a codeqa tier; Pi exposes it separately
+for exceptional pure-reasoning tasks. Haiku 4.5 REJECTS `effort` with a 400 and has no adaptive-thinking
+knob, so haiku is the no-reasoning FLOOR tier: request_extras() emits neither field for it, and a route that
 somehow assigns effort to haiku (a bad env override) is corrected here rather than sent to 400.
 
 Nothing is snapshotted at import. Model ids and the task→tier/effort table have shipped defaults but
 are overridable from the environment (CODEQA_TIER_MODELS / CODEQA_TIER_ROUTES), resolved fresh per
 call — the same config-driven ethos as proxy_setup, and the same "hardcode a sensible default,
-allow override" pattern as model_router.ORNITH. An explicit CODEQA_JUDGE_MODEL still wins over the
-whole router (back-compat single-model override): see explicit_model_override().
+allow override" pattern as model_router.ORNITH. An explicit CODEQA_JUDGE_MODEL wins over the
+whole router (back-compat single-model override) for any caller that resolves with the default
+honor_override=True — see explicit_model_override(). `codeqa validate` instead consults judge_mode():
+with a pin set it NOW defaults to "screen" (route each claim first, the pin only ADJUDICATES what the
+screen did not clear) and resolves the screen step with honor_override=False. A screen SUPPORTED is
+final — a haiku-routed VALUE claim the screen clears never reaches the pin; use
+CODEQA_JUDGE_MODE=both to calibrate the screen against the pin.
 
 Pure stdlib — offline-testable, no network, no anthropic dependency.
 """
@@ -37,7 +43,7 @@ from dataclasses import dataclass
 _DEFAULT_TIER_MODELS = {
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-4-8",
+    "opus": "claude-opus-5-5",
 }
 # Only these tiers accept output_config.effort + adaptive thinking on the Claude API. haiku does NOT.
 _EFFORT_CAPABLE = frozenset({"sonnet", "opus"})
@@ -117,15 +123,37 @@ def explicit_model_override(env=None):
     return re.sub(r"\[.*?\]$", "", m).strip() or None
 
 
-def resolve(task=None, *, env=None) -> Route:
+JUDGE_MODES = ("pinned", "screen", "both")
+
+
+def judge_mode(env=None):
+    """How `codeqa validate` uses a pinned CODEQA_JUDGE_MODEL (env CODEQA_JUDGE_MODE):
+      None     — no pin set: plain tier routing (unchanged).
+      "pinned" — legacy: every claim goes to the pinned model (routing bypassed).
+      "screen" — DEFAULT when pinned: every claim goes to its routed tier first; only claims the
+                 screen did not clear (CONTRADICTED / UNVERIFIABLE / unparsable / empty) are re-judged
+                 by the pinned model, whose verdict wins. A screen SUPPORTED is FINAL (a
+                 haiku-routed claim the screen clears is never seen by the pin — use "both" to
+                 calibrate). A FAILED adjudication keeps the screen verdict.
+      "both"   — calibration: every claim to the routed tier AND the pin; agreement recorded, pin wins.
+    An unknown value degrades to "screen" (the cheap-floor default) rather than failing the run."""
+    env = _env(env)
+    if not explicit_model_override(env):
+        return None
+    m = (env.get("CODEQA_JUDGE_MODE") or "").strip().lower()
+    return m if m in JUDGE_MODES else "screen"
+
+
+def resolve(task=None, *, env=None, honor_override: bool = True) -> Route:
     """Route a task-kind to a (tier, model, effort) Route. Deterministic and pure.
 
-    An explicit CODEQA_JUDGE_MODEL override wins (fixed=True, no effort). Unknown task-kinds fall back
+    An explicit CODEQA_JUDGE_MODEL override wins (fixed=True, no effort) unless honor_override=False
+    (the validate SCREEN step, which must use the routed tier even when a judge is pinned). Unknown task-kinds fall back
     to opus/high. An effort assigned to a non-effort-capable tier (haiku) is dropped rather than sent
     to a 400, and an unrecognized effort value is dropped too.
     """
     env = _env(env)
-    override = explicit_model_override(env)
+    override = explicit_model_override(env) if honor_override else None
     if override:
         return Route(tier=override, model=override, effort=None,
                      reason="CODEQA_JUDGE_MODEL override (routing bypassed)", fixed=True)

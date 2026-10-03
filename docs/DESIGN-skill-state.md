@@ -1,9 +1,11 @@
 # DESIGN — SKILL.state (arXiv:2608.26263) adaptation and evaluation record
 
-Status: **shipped default-off** (2026-08-30). The harnesses are the durable product; the
-measured verdict at apex's real horizons is *behavioral parity, token parity, robustness
-parity* — so nothing is promoted to a default. Re-run the benches when the model, the
-corpus, or the horizon changes.
+Status: **measured lanes shipped default-off** (2026-08-30). The harnesses are the durable
+product; the measured verdict at apex's real horizons is *behavioral parity, token parity,
+robustness parity* — so no measured lane is promoted to a default. Two pieces ship live as
+fail-open structure rather than as promoted lanes (the handoff form and the /learn verdict
+contract — any failure falls back to the previous behavior automatically). Re-run the
+benches when the model, the corpus, or the horizon changes.
 
 ## The paper
 
@@ -149,8 +151,9 @@ so marginal growth is the signal; same no-prefix-cache cost caveat as codex). Of
 
 ## Decisions and open items
 
-- **Everything default-off.** Three settings, parity everywhere; adoption is earned, not
-  assumed — the same gate any routing change passes.
+- **Measured lanes default-off.** Three settings measured, parity everywhere; adoption is
+  earned, not assumed — the same gate any routing change passes. Handoff form and /learn
+  contract are live-but-fail-open structure, not promoted lanes.
 - **Cross-validated with GPT (codex-cli)** on the initial diff: 8 findings, all triaged —
   7 real (state-loop fragment loss, parity-by-count measurement, verdict starvation guard,
   mid-loop budget, cap-exhaustion answer, lax handoff validation, bytes-vs-tokens

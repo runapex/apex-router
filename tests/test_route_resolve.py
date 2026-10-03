@@ -71,6 +71,15 @@ class TestResolveText(_EnvIsolatedTestCase):
             self.assertEqual(out["model"], "O")  # safe default = opus tier
             self.assertEqual(out["source"], "static_default_low_confidence")
 
+    def test_fable_is_never_an_automatic_or_safe_default(self):
+        reg = {
+            "tiers": {"haiku": "H", "sonnet": "S", "opus": "O", "fable": "F"},
+            "pi_families": {},
+            "learn": {},
+        }
+        self.assertNotIn("F", route_resolve.static_default_map(reg).values())
+        self.assertEqual(route_resolve.safe_default(reg), "O")
+
     def test_promoted_table_cell_wins_over_static(self):
         cells = [{"cell_id": "task:refactor", "parent_task_type": "S",
                   "promoted": True, "chosen_model": "H",

@@ -44,8 +44,9 @@ class TestModelRegistry(unittest.TestCase):
 
     def test_tier_model_resolves_tiers(self):
         self.assertEqual(model_registry.tier_model("sonnet"), "claude-sonnet-5")
-        self.assertEqual(model_registry.tier_model("opus"), "claude-opus-4-8")
+        self.assertEqual(model_registry.tier_model("opus"), "claude-opus-5-5")
         self.assertEqual(model_registry.tier_model("haiku"), "claude-haiku-4-5")
+        self.assertEqual(model_registry.tier_model("fable"), "claude-fable-5-1")
 
     def test_tier_model_returns_none_for_unknown(self):
         self.assertIsNone(model_registry.tier_model("nonexistent"))
@@ -58,6 +59,20 @@ class TestModelRegistry(unittest.TestCase):
                          {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"})
         self.assertEqual(fams["gpt-sol"],
                          {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"})
+
+    def test_anthropic_families_match_routing_and_cross_validation_policy(self):
+        fams = model_registry.families()
+        self.assertEqual(fams["haiku"],
+                         {"provider": "anthropic", "id": "claude-haiku-4-5"})
+        self.assertEqual(fams["sonnet"],
+                         {"provider": "anthropic", "id": "claude-sonnet-5", "effort": "medium"})
+        self.assertEqual(fams["opus"],
+                         {"provider": "anthropic", "id": "claude-opus-5-5", "effort": "high"})
+        self.assertEqual(fams["fable"],
+                         {"provider": "anthropic", "id": "claude-fable-5-1", "effort": "max"})
+        # Routine independent review remains Opus; Fable is an explicit reasoning ceiling.
+        self.assertEqual(fams["deep"], fams["opus"])
+        self.assertNotEqual(fams["deep"]["id"], fams["fable"]["id"])
 
     def test_families_resolves_tier_family_and_omits_unresolvable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,14 +119,14 @@ class TestModelRegistry(unittest.TestCase):
         result = model_registry.learn()
         self.assertEqual(result["provider"], "anthropic")
         self.assertEqual(result["validate"], "claude-sonnet-5")
-        self.assertEqual(result["explain"], "claude-opus-4-8")
+        self.assertEqual(result["explain"], "claude-opus-5-5")
 
     def test_learn_uses_custom_registry(self):
         registry = {"learn": {"provider": "custom", "validate_tier": "sonnet", "explain_tier": "opus"}}
         result = model_registry.learn(registry=registry)
         self.assertEqual(result["provider"], "custom")
         self.assertEqual(result["validate"], "claude-sonnet-5")
-        self.assertEqual(result["explain"], "claude-opus-4-8")
+        self.assertEqual(result["explain"], "claude-opus-5-5")
 
 
 if __name__ == "__main__":

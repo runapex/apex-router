@@ -403,25 +403,17 @@ _VERIFIER_SYS = (
 )
 
 
-def frontier_verifier(claim: str, code: str) -> str:
-    """Frontier verifier over a user-configured HTTP endpoint (OPT-IN via CODEQA_JUDGE_BASE).
-
-    Like the judge, there is deliberately NO agentic-CLI path: a verifier call embeds
-    scanned source that may be adversarial, and the local `claude`/`codex` CLI cannot be
-    safely isolated from repo-local hooks/plugins/MCP. If CODEQA_JUDGE_BASE is unset, this
-    returns "" (-> CANNOT-DECIDE upstream); use the LOCAL verifier instead. Credentials, if
-    the endpoint needs them, come from the env — never embedded. Returns a raw verdict word."""
+def _frontier_call(claim: str, code: str, route) -> str:
+    """POST one verifier prompt to the user-configured HTTP endpoint (CODEQA_JUDGE_BASE) with the
+    given tier_router.Route. Returns the raw verdict text, or "" (→ CANNOT-DECIDE upstream) when no
+    endpoint is configured or the call fails at the transport/decode layer."""
     # Single source of truth for config + HTTP handling so judge/verifier never diverge.
     from .judge import _judge_config, _http_post_json, _extract_text, JudgeProtocolError
     from . import tier_router
-    base, _ = _judge_config()      # endpoint (base); model + effort come from the tier router
-    prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
-
+    base, _ = _judge_config()      # endpoint (base); model + effort come from `route`
     if base is None:
         return ""      # no frontier endpoint configured -> CANNOT-DECIDE (use --local)
-
-    # Tier by claim-kind: VALUE→haiku (cheap lookup), INFERENCE→sonnet, RUNTIME→opus (see _CTYPE_TASK).
-    route = tier_router.resolve(_CTYPE_TASK.get(classify_claim(claim), "value"))
+    prompt = f"CLAIM:\n{claim}\n\nDEFINITION LINES:\n{code}\n\nOne word:"
     max_tokens = max(8, tier_router.min_max_tokens(route))
     timeout = max(60, tier_router.timeout_for(route))
     body_obj = {
@@ -442,6 +434,43 @@ def frontier_verifier(claim: str, code: str) -> str:
     except (JudgeProtocolError, OSError):
         return ""      # unreachable/malformed -> CANNOT-DECIDE
     return _extract_text(payload)
+
+
+def frontier_verifier(claim: str, code: str) -> str:
+    """Frontier verifier over a user-configured HTTP endpoint (OPT-IN via CODEQA_JUDGE_BASE).
+
+    Like the judge, there is deliberately NO agentic-CLI path: a verifier call embeds
+    scanned source that may be adversarial, and the local `claude`/`codex` CLI cannot be
+    safely isolated from repo-local hooks/plugins/MCP. If CODEQA_JUDGE_BASE is unset, this
+    returns "" (-> CANNOT-DECIDE upstream); use the LOCAL verifier instead. Credentials, if
+    the endpoint needs them, come from the env — never embedded. Returns a raw verdict word.
+
+    Tier by claim-kind: VALUE→haiku (cheap lookup), INFERENCE→sonnet, RUNTIME→opus (_CTYPE_TASK).
+    An explicit CODEQA_JUDGE_MODEL OVERRIDES the tier here (the legacy "pinned" judge mode); the
+    screen step of the "screen"/"both" modes uses routed_frontier_verifier instead."""
+    from . import tier_router
+    return _frontier_call(claim, code,
+                          tier_router.resolve(_CTYPE_TASK.get(classify_claim(claim), "value")))
+
+
+def routed_frontier_verifier(claim: str, code: str) -> str:
+    """The SCREEN verifier: the routed tier for the claim kind, IGNORING a pinned CODEQA_JUDGE_MODEL
+    (so a pin no longer disables the cheap floor — it adjudicates instead, see pinned_verifier)."""
+    from . import tier_router
+    return _frontier_call(claim, code, tier_router.resolve(
+        _CTYPE_TASK.get(classify_claim(claim), "value"), honor_override=False))
+
+
+def pinned_verifier(model: str) -> Callable[[str, str], str]:
+    """The ADJUDICATOR verifier: always `model`, no effort/thinking knob (same request shape the
+    legacy pinned override sent)."""
+    from . import tier_router
+    route = tier_router.Route(tier=model, model=model, effort=None,
+                              reason="pinned adjudicator (CODEQA_JUDGE_MODEL)", fixed=True)
+
+    def verify(claim: str, code: str) -> str:
+        return _frontier_call(claim, code, route)
+    return verify
 
 
 def _normalize(raw: str) -> Verdict:
@@ -490,6 +519,28 @@ def check_claim(claim: str, root: Path, *,
         return Verdict.UNVERIFIABLE, True
 
 
+_JUDGED = re.compile(r"CONTRADICT|SUPPORT|UNVERIF", re.IGNORECASE)
+
+
+def _adjudicate_claim(claim: str, root: Path, *, verify_fn: Callable[[str, str], str],
+                      runtime_facts: str | None = None) -> tuple[Verdict, bool, bool]:
+    """check_claim for the ADJUDICATOR, plus whether it actually JUDGED: (verdict, ran, judged).
+    judged=False when the call raised an expected transport/decode error, or replied empty /
+    unparsable (_frontier_call returns "" when no endpoint is configured or the call failed). An
+    explicit UNVERIFIABLE is a real judgement. The caller keeps the screen verdict when judged=False
+    so a failed adjudicator can never silently un-strike a stale claim. Per-call state only (the
+    closure is built per invocation), so this is thread-safe under validate_memory's pool."""
+    raw: list[str] = []
+
+    def capture(c: str, e: str) -> str:
+        r = verify_fn(c, e)
+        raw.append(r or "")
+        return r
+    verdict, ran = check_claim(claim, root, verify_fn=capture, runtime_facts=runtime_facts)
+    judged = ran and bool(raw) and bool(_JUDGED.search(raw[0]))
+    return verdict, ran, judged
+
+
 # ---------- the gate ----------
 
 @dataclass
@@ -500,13 +551,44 @@ class ValidationResult:
     struck_claims: list[str] = field(default_factory=list)
     n_skipped: int = 0                          # bullet claims routed to NON_DERIVABLE (no oracle)
     skipped_claims: list[str] = field(default_factory=list)  # so a mis-skip is VISIBLE, not silent (Codex #5)
-    n_local: int = 0                            # claims routed to the LOCAL verifier (free) — the cost split
-    n_frontier: int = 0                         # claims routed to the FRONTIER verifier (paid tokens)
-    tier_calls: dict = field(default_factory=dict)  # frontier tier → count (haiku/sonnet/opus) — the model-picker split
+    n_local: int = 0                            # claims decided with NO paid call (local only) — the cost split
+    n_frontier: int = 0                         # claims that spent >=1 PAID frontier call
+    tier_calls: dict = field(default_factory=dict)  # paid call → count by tier (haiku/sonnet/opus; a pin by its id)
+    # --- judge modes (screen, then adjudicate). Zero/None when no adjudicator is in play. ---
+    judge_mode: str | None = None               # None | "screen" | "both" ("pinned" never reaches here)
+    n_screened: int = 0                         # claims the routed SCREEN judged
+    n_adjudicated: int = 0                      # claims re-judged by the pinned adjudicator
+    n_screen_struck: int = 0                    # claims the SCREEN marked CONTRADICTED
+    n_adjudicated_struck: int = 0               # adjudicated claims whose FINAL (pinned) verdict struck
+    n_agree: int = 0                            # "both": screen verdict == pinned verdict
+    n_compared: int = 0                         # "both": claims judged by both
+    n_adjudicate_failed: int = 0                # adjudicator call failed/empty/unparsable → screen verdict KEPT
+    n_frontier_calls: int = 0                   # PAID calls actually made (≥ n_frontier when adjudicating)
+    model_calls: dict = field(default_factory=dict)  # every verifier call → count by ACTUAL model id
+
+    @property
+    def agreement(self) -> float | None:
+        return (self.n_agree / self.n_compared) if self.n_compared else None
 
 
 _STRIKE = "  ~~[STALE: contradicted by live code — removed by freshness gate]~~"
 _BULLET = re.compile(r'^\s*[-*]\s+\S')
+
+
+def _candidate_claims(text: str, *, runtime_facts: str | None, min_len: int):
+    """PASS-1 disposition shared by validate_memory and plan_validation: yields (line_idx, claim,
+    claim_type) for every substantive bullet outside a code fence that names a checkable symbol (or,
+    with runtime facts, asserts runtime state). NON_DERIVABLE claims are yielded too — whether they
+    are skipped depends on routing (only a routed run skips them)."""
+    in_fence = False
+    for i, line in enumerate(text.splitlines()):
+        s = line.strip()
+        if s.startswith("```") or s.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        checkable = extract_symbols(s) or (runtime_facts and is_runtime_claim(s))
+        if not in_fence and _BULLET.match(line) and len(s) >= min_len and checkable:
+            yield i, s, classify_claim(s)
 
 
 def validate_memory(text: str, root: Path, *,
@@ -514,7 +596,11 @@ def validate_memory(text: str, root: Path, *,
                     local_verify_fn: Callable[[str, str], str] | None = None,
                     runtime_facts: str | None = None,
                     min_len: int = 40,
-                    max_workers: int = 8) -> ValidationResult:
+                    max_workers: int = 8,
+                    adjudicate_fn: Callable[[str, str], str] | None = None,
+                    judge_mode: str | None = None,
+                    adjudicator_model: str | None = None,
+                    local_model: str = "local") -> ValidationResult:
     """Check each substantive bullet CLAIM in `text` against the live code under `root` (and, when
     `runtime_facts` is supplied, the running-system oracle for present-tense state claims); replace the
     ones CONTRADICTED with a struck marker (original recorded in struck_claims). Only bullet lines
@@ -527,60 +613,97 @@ def validate_memory(text: str, root: Path, *,
     model hedges on) go to the frontier `verify_fn`. Without a local verifier, everything uses
     `verify_fn` as before.
 
-    THREAD-SAFETY CONTRACT (Codex): claims are verified CONCURRENTLY (max_workers>1), so `verify_fn`
-    and `local_verify_fn` may be invoked from multiple threads at once. They MUST be reentrant /
-    thread-safe — build per-call state, don't rely on a shared mutable cursor/session. The shipped
-    verifiers satisfy this: `frontier_verifier` builds a fresh request per call; the local (Ornith)
-    verifier is serialized by ornith_client's inference file-lock. A stateful custom verifier must
-    either be made thread-safe or run serially (pass max_workers=1)."""
+    SCREEN, THEN ADJUDICATE: when `adjudicate_fn` is supplied (the pinned CODEQA_JUDGE_MODEL), the
+    routing above is the SCREEN and `verify_fn` must be the routed (pin-ignoring) verifier.
+      judge_mode="screen" (default) — a claim the screen did not clear (CONTRADICTED / UNVERIFIABLE /
+        unparsable / empty reply) is re-judged by `adjudicate_fn`, whose verdict wins. A screen
+        SUPPORTED is FINAL — e.g. a haiku-routed VALUE claim the screen clears never reaches the pin
+        (use judge_mode="both" to calibrate that). If the adjudicator call FAILS (transport error,
+        empty / unparsable reply — e.g. no endpoint configured) the SCREEN verdict is kept (a strike
+        stays struck), the claim is not counted as adjudicated or as a paid call, and
+        n_adjudicate_failed is incremented (callers must not cache such a run). A local strike
+        goes straight to the adjudicator (it replaces the local→frontier confirm). A claim whose
+        screen model already IS `adjudicator_model` is not re-sent (same model, same evidence).
+      judge_mode="both" — every screened claim is also adjudicated; agreement is recorded; pin wins
+        (a failed adjudication keeps the screen verdict and is excluded from agreement).
+    `adjudicator_model` / `local_model` only LABEL the per-model call tally (model_calls).
+
+    THREAD-SAFETY CONTRACT (Codex): claims are verified CONCURRENTLY (max_workers>1), so `verify_fn`,
+    `local_verify_fn` and `adjudicate_fn` may be invoked from multiple threads at once. They MUST be
+    reentrant / thread-safe — build per-call state, don't rely on a shared mutable cursor/session. The
+    shipped verifiers satisfy this: the frontier verifiers build a fresh request per call; the local
+    (Ornith) verifier is serialized by ornith_client's inference file-lock. A stateful custom verifier
+    must either be made thread-safe or run serially (pass max_workers=1)."""
     from concurrent.futures import ThreadPoolExecutor
+    from . import tier_router
     root = Path(root)
     lines = text.splitlines()
+    adjudicating = adjudicate_fn is not None
+    mode = (judge_mode if judge_mode in ("screen", "both") else "screen") if adjudicating else None
+    adj_model = adjudicator_model or "pinned"
     n_skipped = 0
     skipped: list[str] = []
 
-    # PASS 1 (fast, serial, deterministic): decide each line's disposition. Fence + skip logic stays
-    # here so it's identical to the serial version; only the model-bound check_claim is deferred.
+    # PASS 1 (fast, serial, deterministic): decide each line's disposition.
     # jobs[i] = (line_idx, claim_str, chosen_verifier, claim_type)
     jobs = []
-    in_fence = False
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s.startswith("```") or s.startswith("~~~"):
-            in_fence = not in_fence
+    for i, s, ctype in _candidate_claims(text, runtime_facts=runtime_facts, min_len=min_len):
+        chosen = route_verifier(ctype, local=local_verify_fn, frontier=verify_fn) \
+            if local_verify_fn is not None else verify_fn
+        if chosen is None:                           # NON_DERIVABLE → skip (Codex #5: recorded)
+            n_skipped += 1
+            skipped.append(s)
             continue
-        checkable = extract_symbols(s) or (runtime_facts and is_runtime_claim(s))
-        if not in_fence and _BULLET.match(line) and len(s) >= min_len and checkable:
-            ctype = classify_claim(s)
-            chosen = route_verifier(ctype, local=local_verify_fn, frontier=verify_fn) \
-                if local_verify_fn is not None else verify_fn
-            if chosen is None:                           # NON_DERIVABLE → skip (Codex #5: recorded)
-                n_skipped += 1
-                skipped.append(s)
-                continue
-            jobs.append((i, s, chosen, ctype))
+        jobs.append((i, s, chosen, ctype))
+
+    def _frontier_route(ctype):
+        # The same deterministic route the frontier verifier used. While adjudicating, the screen is the
+        # ROUTED tier (pin ignored); otherwise resolve() honors a pin exactly as frontier_verifier does.
+        return tier_router.resolve(_CTYPE_TASK.get(ctype, "value"), honor_override=not adjudicating)
 
     # PASS 2 (concurrent): the check_claim calls are independent + I/O-bound (model calls), so run them
     # in a thread pool. Order-independent — each result is keyed back to its line index. A single claim
     # (or max_workers<=1) runs inline so the trivial/test path spawns no threads.
     def _run(job):
-        _, s, chosen, _ = job
+        _, s, chosen, ctype = job
+        calls: list[tuple[str, str | None, bool]] = []      # (model id, tier key, paid?)
+        used_local = (local_verify_fn is not None and chosen is local_verify_fn
+                      and verify_fn is not local_verify_fn)
         verdict, ran = check_claim(s, root, verify_fn=chosen, runtime_facts=runtime_facts)
-        # CONFIRM-BEFORE-STRIKE: a CONTRADICTED from the LOCAL verifier is a DESTRUCTIVE verdict
-        # (it strikes the claim) produced by the tier that measurably HEDGES on partial / one-repo /
-        # cross-repo evidence — the exact failure that struck true cross-repo claims. So a local strike
-        # is not trusted on its own: escalate it to the frontier verifier and keep the strike ONLY if
-        # frontier CONFIRMS. Leniency (SUPPORTED/UNVERIFIABLE) is free and never escalated, so cost is
-        # bounded by the (rare) strike rate, not the claim count. Local-model agnostic: 'local' is
-        # whatever verifier was injected (qwen via ollama here, or any other) — the escalation is about
-        # the LOCAL tier's known hedging, not a specific model. Only fires in routed mode (a distinct
-        # local+frontier pair exists); pure --local or pure-frontier runs are unaffected.
-        escalated = False
-        if (verdict is Verdict.CONTRADICTED and local_verify_fn is not None
-                and chosen is local_verify_fn and verify_fn is not local_verify_fn):
-            verdict, ran = check_claim(s, root, verify_fn=verify_fn, runtime_facts=runtime_facts)
-            escalated = True
-        return verdict, ran, escalated
+        screen_route = None if used_local else _frontier_route(ctype)
+        if ran:
+            calls.append((local_model, None, False) if used_local
+                         else (screen_route.model, screen_route.tier, True))
+        screen_verdict, adjudicated, agree, adj_failed = verdict, False, None, False
+        if not adjudicating:
+            # CONFIRM-BEFORE-STRIKE: a CONTRADICTED from the LOCAL verifier is a DESTRUCTIVE verdict
+            # (it strikes the claim) produced by the tier that measurably HEDGES on partial / one-repo /
+            # cross-repo evidence — the exact failure that struck true cross-repo claims. So a local
+            # strike is escalated to the frontier verifier and kept ONLY if frontier CONFIRMS. Leniency
+            # (SUPPORTED/UNVERIFIABLE) is free and never escalated, so cost is bounded by the (rare)
+            # strike rate. Only fires in routed mode (a distinct local+frontier pair exists).
+            if verdict is Verdict.CONTRADICTED and used_local:
+                verdict, ran = check_claim(s, root, verify_fn=verify_fn, runtime_facts=runtime_facts)
+                if ran:
+                    r = _frontier_route(ctype)
+                    calls.append((r.model, r.tier, True))
+        elif ran:
+            # SCREEN, THEN ADJUDICATE. "Not cleared" = anything but SUPPORTED: a strike, an explicit
+            # UNVERIFIABLE (low confidence), or an unparsable/empty reply (normalized to UNVERIFIABLE).
+            same_model = screen_route is not None and screen_route.model == adj_model
+            need = mode == "both" or (verdict is not Verdict.SUPPORTED and not same_model)
+            if need:
+                v2, ran2, judged = _adjudicate_claim(s, root, verify_fn=adjudicate_fn,
+                                                     runtime_facts=runtime_facts)
+                if judged:
+                    calls.append((adj_model, adj_model, True))
+                    adjudicated, agree, verdict = True, (v2 == screen_verdict), v2
+                elif ran2:
+                    # The adjudicator did NOT judge (transport error / empty / unparsable): KEEP the
+                    # screen verdict (a strike stays struck), don't count it as adjudicated or paid,
+                    # and flag it so the caller skips caching and the next run retries.
+                    adj_failed = True
+        return verdict, ran, calls, screen_verdict, adjudicated, agree, adj_failed
     if len(jobs) > 1 and max_workers > 1:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as ex:
             results = list(ex.map(_run, jobs))
@@ -588,36 +711,83 @@ def validate_memory(text: str, root: Path, *,
         results = [_run(j) for j in jobs]
 
     # PASS 3 (serial, deterministic): fold results back in original order — counts + strike markers.
-    from . import tier_router
-    n_checked = n_struck = n_local = n_frontier = 0
-    tier_calls: dict[str, int] = {}                      # frontier tier → count (the model-picker split)
-    struck: list[str] = []
+    res = ValidationResult(text="", n_skipped=n_skipped, skipped_claims=skipped, judge_mode=mode)
     strike_at: dict[int, str] = {}                       # line_idx → replacement marker line
-    for (i, s, _chosen, ctype), (verdict, ran, escalated) in zip(jobs, results):
+    for (i, s, _chosen, _ctype), (verdict, ran, calls, screen_v, adjudicated, agree, adj_failed) \
+            in zip(jobs, results):
         if ran:
-            n_checked += 1
-            # an escalated claim spent a PAID frontier call (the free local one preceded it) → count it
-            # as frontier so est_frontier_tokens stays honest; only a non-escalated VALUE call is free.
-            if local_verify_fn is not None and ctype is ClaimType.VALUE and not escalated:
-                n_local += 1
+            res.n_checked += 1
+            paid = [c for c in calls if c[2]]
+            # a claim that spent ANY paid call counts as frontier so est_frontier_tokens stays honest;
+            # only a claim decided purely on the local model is free.
+            if paid:
+                res.n_frontier += 1
             else:
-                n_frontier += 1
-                # Same deterministic route the frontier verifier used → tally which tier decided it. An
-                # escalated VALUE claim was confirmed by the frontier route for its own type (value).
-                tier = tier_router.resolve(_CTYPE_TASK.get(ctype, "value")).tier
-                tier_calls[tier] = tier_calls.get(tier, 0) + 1
+                res.n_local += 1
+            for model, tier, is_paid in calls:
+                res.model_calls[model] = res.model_calls.get(model, 0) + 1
+                if is_paid:
+                    res.n_frontier_calls += 1
+                    res.tier_calls[tier] = res.tier_calls.get(tier, 0) + 1
+            if adjudicating:
+                res.n_screened += 1
+                res.n_screen_struck += screen_v is Verdict.CONTRADICTED
+                res.n_adjudicate_failed += adj_failed
+                if adjudicated:
+                    res.n_adjudicated += 1
+                    res.n_adjudicated_struck += verdict is Verdict.CONTRADICTED
+                    if mode == "both":
+                        res.n_compared += 1
+                        res.n_agree += bool(agree)
         if verdict is Verdict.CONTRADICTED:
-            n_struck += 1
-            struck.append(s)
+            res.n_struck += 1
+            res.struck_claims.append(s)
             line = lines[i]
             marker = line[:len(line) - len(line.lstrip())] + line.lstrip()[0]
             strike_at[i] = marker + _STRIKE
 
-    out_lines = [strike_at.get(i, line) for i, line in enumerate(lines)]
-    return ValidationResult(text="\n".join(out_lines), n_checked=n_checked,
-                            n_struck=n_struck, struck_claims=struck,
-                            n_skipped=n_skipped, skipped_claims=skipped,
-                            n_local=n_local, n_frontier=n_frontier, tier_calls=tier_calls)
+    res.text = "\n".join(strike_at.get(i, line) for i, line in enumerate(lines))
+    return res
+
+
+def plan_validation(text: str, root: Path, *, judge_mode: str | None, local: bool = False,
+                    local_only: bool = False, local_model: str = "local",
+                    runtime_facts: str | None = None, min_len: int = 40,
+                    env=None) -> list[dict]:
+    """DRY RUN: the per-claim routing plan validate_memory WOULD follow, calling NO model. Evidence is
+    resolved (local grep only) so a claim that would spend no call is visible. Each row:
+      {line, claim, type, evidence, screen, adjudicate}
+    `screen` is a model id, "local:<model>", or "skip (non-derivable)"; `adjudicate` is "-",
+    "if not SUPPORTED → <pin>", or "always → <pin>". Mirrors validate_memory + the cli wiring:
+    `local` = a local screen for VALUE claims (--route / CODEQA_LOCAL_SCREEN=1), `local_only` = --local."""
+    from . import tier_router
+    root = Path(root)
+    pin = tier_router.explicit_model_override(env)
+    adjudicating = judge_mode in ("screen", "both") and pin is not None
+    rows = []
+    for i, s, ctype in _candidate_claims(text, runtime_facts=runtime_facts, min_len=min_len):
+        code = _context_for(s, root).strip()
+        evidence = bool(code or (runtime_facts or "").strip())
+        adjudicate = "-"
+        if local_only:
+            screen = f"local:{local_model}"
+        elif local and ctype is ClaimType.NON_DERIVABLE:
+            screen = "skip (non-derivable)"
+        elif local and ctype is ClaimType.VALUE:
+            screen = f"local:{local_model}"
+        else:
+            screen = tier_router.resolve(_CTYPE_TASK.get(ctype, "value"), env=env,
+                                         honor_override=not adjudicating).model
+        if adjudicating and not local_only and not screen.startswith("skip"):
+            if judge_mode == "both":
+                adjudicate = f"always → {pin}"
+            elif screen != pin:
+                adjudicate = f"if not SUPPORTED → {pin}"
+        elif not adjudicating and local and screen.startswith("local:"):
+            adjudicate = "if CONTRADICTED → " + tier_router.resolve("value", env=env).model
+        rows.append({"line": i + 1, "claim": s, "type": ctype.value, "evidence": evidence,
+                     "screen": screen, "adjudicate": adjudicate})
+    return rows
 
 
 # ---------- metrics: a differentiable, benchmarkable record per validation run ----------
@@ -646,7 +816,10 @@ def metrics_record(path, run: dict, *, ts: str) -> None:
     import json
     rec = dict(run)
     rec["ts"] = ts
-    rec["est_frontier_tokens"] = int(rec.get("n_frontier", 0)) * _FRONTIER_TOKENS_PER_CALL
+    # Price the PAID CALLS actually made when the run reports them (screen+adjudicate can spend two
+    # calls on one claim); older rows / callers without the field fall back to one call per claim.
+    paid_calls = rec.get("n_frontier_calls", rec.get("n_frontier", 0))
+    rec["est_frontier_tokens"] = int(paid_calls or 0) * _FRONTIER_TOKENS_PER_CALL
     if isinstance(rec.get("struck"), list) and len(rec["struck"]) > _METRICS_MAX_STRUCK:
         rec["struck"] = rec["struck"][:_METRICS_MAX_STRUCK] + [f"…(+{len(rec['struck']) - _METRICS_MAX_STRUCK} more)"]
     payload = (json.dumps(rec) + "\n").encode("utf-8")

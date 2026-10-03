@@ -99,8 +99,8 @@ back to your starting model (e.g. the local Ornith tier):
 | Stage | Model | Does |
 |-------|-------|------|
 | 0 retrieve | local `nomic-embed` | booksearch Top-5 references from `~/books` |
-| 1 validate | `claude-sonnet-4-6` | vets the sources: authoritative? on-topic? which sections to read |
-| 2 explain | `claude-opus-4-8` | comprehensive explanation, **reads your current code** and correlates the concepts to it, cites the validated sources |
+| 1 validate | `claude-sonnet-5` | vets the sources: authoritative? on-topic? which sections to read |
+| 2 explain | `claude-opus-5-5` | comprehensive explanation, **reads your current code** and correlates the concepts to it, cites the validated sources |
 
 Each stage is a normal turn (you see the output). Models are overridable:
 `LEARN_VALIDATE_MODEL`, `LEARN_EXPLAIN_MODEL`, `LEARN_PROVIDER`.
@@ -109,7 +109,7 @@ Install: `pi install ~/.apex-router/integrations/pi/learn.ts` (or `./install.sh 
 Needs the anthropic provider wired through the proxy (see RUNBOOK-pi-integration.md).
 
 **Manual equivalent** (transparent, using the `apex-route` cues) — with
-`~/.apex-router/pi-routes.json` mapping `sonnet`→`claude-sonnet-4-6`, `opus`→`claude-opus-4-8`:
+the shared registry mapping `sonnet`→`claude-sonnet-5`, `opus`→`claude-opus-5-5`:
 
 ```
 /books linked lists

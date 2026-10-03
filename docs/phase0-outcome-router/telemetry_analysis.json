@@ -1,0 +1,188 @@
+{
+  "row_counts": {
+    "total": 12720,
+    "heartbeats": 11516,
+    "request_rows": 1204,
+    "malformed": 0,
+    "null_model_resolved": 43
+  },
+  "per_client_model": {
+    "claude-code|claude-opus-4-8": {
+      "requests": 627,
+      "distinct_sessions": 16,
+      "tokens_in": 7892,
+      "cache_read_tokens": 99556989,
+      "cache_write_tokens": 3233895,
+      "tokens_out": 534142
+    },
+    "codex|kimi-k3": {
+      "requests": 310,
+      "distinct_sessions": 3,
+      "tokens_in": 53042621,
+      "cache_read_tokens": 51774720,
+      "cache_write_tokens": 0,
+      "tokens_out": 174950
+    },
+    "claude-code|claude-sonnet-5": {
+      "requests": 98,
+      "distinct_sessions": 7,
+      "tokens_in": 2,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 5426,
+      "tokens_out": 103
+    },
+    "claude-code|claude-opus-5": {
+      "requests": 39,
+      "distinct_sessions": 6,
+      "tokens_in": 1051,
+      "cache_read_tokens": 1901029,
+      "cache_write_tokens": 106844,
+      "tokens_out": 13419
+    },
+    "claude-code|None": {
+      "requests": 36,
+      "distinct_sessions": 1,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    },
+    "codex|kimi-k2.7-code": {
+      "requests": 34,
+      "distinct_sessions": 6,
+      "tokens_in": 281608,
+      "cache_read_tokens": 220561,
+      "cache_write_tokens": 0,
+      "tokens_out": 16807
+    },
+    "claude-code|claude-opus-4-6": {
+      "requests": 33,
+      "distinct_sessions": 1,
+      "tokens_in": 14598,
+      "cache_read_tokens": 588890,
+      "cache_write_tokens": 38787,
+      "tokens_out": 11326
+    },
+    "claude-code|mlx-community/Ornith-1.0-35B-4bit": {
+      "requests": 7,
+      "distinct_sessions": 3,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    },
+    "codex|None": {
+      "requests": 7,
+      "distinct_sessions": 1,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    },
+    "claude-code|claude-haiku-4-5-20251001": {
+      "requests": 4,
+      "distinct_sessions": 1,
+      "tokens_in": 534,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 32074,
+      "tokens_out": 124
+    },
+    "claude-code|claude-sonnet-4-6": {
+      "requests": 4,
+      "distinct_sessions": 0,
+      "tokens_in": 483,
+      "cache_read_tokens": 1908,
+      "cache_write_tokens": 32733,
+      "tokens_out": 10614
+    },
+    "claude-code|claude-haiku-4-5": {
+      "requests": 2,
+      "distinct_sessions": 1,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    },
+    "claude-code|claude-3-5-haiku-20241022": {
+      "requests": 1,
+      "distinct_sessions": 0,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    },
+    "claude-code|claude-fable-5": {
+      "requests": 1,
+      "distinct_sessions": 0,
+      "tokens_in": 2,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 28304,
+      "tokens_out": 35
+    },
+    "claude-code|unsloth/Qwen3.8-27B-GGUF": {
+      "requests": 1,
+      "distinct_sessions": 1,
+      "tokens_in": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "tokens_out": 0
+    }
+  },
+  "codex_context": {
+    "total_requests": 351,
+    "distinct_sessions": 9,
+    "p50": 320327.0,
+    "p95": 549786.5,
+    "max": 578204,
+    "pct_over_250k": 64.95726495726495
+  },
+  "cost": {
+    "actual_spend_per_client_model": {
+      "claude-code|claude-opus-4-8": 189.514514,
+      "codex|kimi-k3": 177.284529,
+      "codex|kimi-k2.7-code": 0.376662,
+      "claude-code|claude-sonnet-5": 0.021899,
+      "claude-code|None": 0.0,
+      "claude-code|claude-haiku-4-5-20251001": 0.0,
+      "claude-code|claude-opus-5": 0.0,
+      "claude-code|mlx-community/Ornith-1.0-35B-4bit": 0.0,
+      "claude-code|unsloth/Qwen3.8-27B-GGUF": 0.0,
+      "claude-code|claude-3-5-haiku-20241022": 0.0,
+      "claude-code|claude-sonnet-4-6": 0.0,
+      "claude-code|claude-fable-5": 0.0,
+      "codex|None": 0.0,
+      "claude-code|claude-haiku-4-5": 0.0,
+      "claude-code|claude-opus-4-6": 0.0
+    },
+    "counterfactual_codex_as_kimi_k2_7_code": 61.30414894000001
+  },
+  "claude_code": {
+    "cache_hit_rate_pct": 99.97593691863514,
+    "bust_true_count": 0
+  },
+  "time_range": {
+    "min_ts": 1786758143.511057,
+    "max_ts": 1787623247.663699,
+    "min_ts_iso": "2026-08-15T01:42:23.511057+00:00",
+    "max_ts_iso": "2026-08-25T02:00:47.663699+00:00"
+  },
+  "requests_per_client_per_day": {
+    "claude-code": {
+      "2026-08-15": 1,
+      "2026-08-16": 3,
+      "2026-08-19": 106,
+      "2026-08-20": 132,
+      "2026-08-21": 22,
+      "2026-08-22": 134,
+      "2026-08-23": 405,
+      "2026-08-24": 16,
+      "2026-08-25": 34
+    },
+    "codex": {
+      "2026-08-22": 1,
+      "2026-08-23": 14,
+      "2026-08-24": 295,
+      "2026-08-25": 41
+    }
+  }
+}

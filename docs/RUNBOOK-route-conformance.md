@@ -203,7 +203,7 @@ The Pi extension calls the CLI's hidden `--record` path to avoid importing the
 Python package directly:
 
 ```bash
-apex-router route-check --record '{"surface":"pi","task_type":"cue","requested_tier":"deep","resolved_model":"claude-opus-4-8","matched":true}'
+apex-router route-check --record '{"surface":"pi","task_type":"cue","requested_tier":"deep","resolved_model":"claude-opus-5-5","matched":true}'
 ```
 
 Fail-open: malformed JSON or a bad dict is a no-op; `route-check` exits 0.
@@ -220,6 +220,63 @@ Fail-open: malformed JSON or a bad dict is a no-op; `route-check` exits 0.
 Both logs are read-only observability tools. Neither mutates routing. They work
 alongside `route-advise` (the recommendation layer), which can surface a
 different tier suggestion but never forces a change.
+
+---
+
+## Claude Code outcome labels (`agent-route-log` hook → `route-join`)
+
+Until this hook, only the Pi extension wrote `route_log` rows, so Claude Code's subagent
+dispatches produced no labels (the phase-0 NO-GO: zero joined rows). The label flow:
+
+1. **Write (hook, fail-safe).** `hooks/agent-route-log.sh` is a Claude Code `PostToolUse`
+   hook (matcher `Agent`). It pipes the hook JSON to `python -m apex_router.route_log --hook`,
+   which appends ONE row to `route_log.jsonl` (`APEX_ROUTER_LOG` overrides the path). It
+   never blocks, prints nothing, always exits 0 (~40 ms; Python self-terminates after 3 s).
+   Python: `APEX_ROUTE_LOG_PYTHON` > `python3` with the checkout's `src/` > the uv-tool python.
+2. **Infer (offline).** `apex-router route-join` joins each claude-code row to proxy telemetry
+   (`~/.apex/telemetry.jsonl`, `APEX_TELEMETRY` / `--telemetry`) on `(session_id, agent_id)`,
+   and marks it `escalated` when a LATER dispatch in the same session has the same normalized
+   description (lowercase, punctuation stripped) at a strictly higher tier
+   (haiku < sonnet < opus < fable; `inherit` uses the tier of the resolved model).
+3. **Read.** `route-join` atomically rewrites `labeled_table.jsonl` beside the route log
+   (`APEX_LABELED_TABLE` overrides; `--no-write` skips). `route-readout` / `route-advise`
+   skip raw `label_pending` rows and fold in the resolved claude-code rows from that table —
+   **cheap starts only** (`effective_tier` haiku/sonnet), grouped by `task_type`.
+
+Hook row (`label_pending: true`, `escalated` provisional `false`, `passed` null):
+
+```json
+{"ts": 1790990277.47, "task_type": "review", "model": "haiku", "passed": null,
+ "escalated": false, "note": "agent:general-purpose", "session_id": "<claude session>",
+ "label_pending": true, "outcome": "async", "surface": "claude-code",
+ "agent_id": "a89a3bf5d2cf1916e", "tool_use_id": "toolu_…", "start_tier": "haiku",
+ "description": "Audit route_join escalation logic", "resolved_model": "claude-haiku-4-5"}
+```
+
+- `start_tier`: the Agent `model` arg, or `inherit`. `outcome`: `ok | error | empty | async`.
+  Background agents return at LAUNCH (`async`); their real outcome comes from telemetry
+  as `outcome_effective` (last request `is_error` → `error`, else `ok`).
+- `task_type`: Explore subagent → `explore`; else an explicit task word via
+  `classify.classify_request` markers; else keywords (review/audit/verify → review,
+  implement/write/build/fix → generate, debug/root cause/why → debug, refactor/rename →
+  refactor); else `explore`. The prompt head is used to classify but is not stored.
+
+Labeled claude-code row adds: `requested_tier`, `resolved_model`, `matched` (resolved tier ==
+requested tier; null for inherit), `effective_tier`, `outcome_effective`, `telemetry_joined`,
+`requests`, `output_tokens`, `error_count`, `escalated_by` (tool_use_id of the redo), and
+`label` (`hard` iff escalated).
+
+Wire it: `install.sh --agent-route-log-hook` (idempotent settings merge), or add to
+`~/.claude/settings.json`:
+
+```json
+{"hooks": {"PostToolUse": [{"matcher": "Agent", "hooks": [
+  {"type": "command", "command": "/path/to/apex-router/hooks/agent-route-log.sh", "timeout": 5}]}]}}
+```
+
+Caveats: escalation is a heuristic (a reworded redo is missed; an unrelated later task with an
+identical description at a higher tier is a false positive); rows from the last few minutes
+may not have their redo yet — re-run `route-join` before reading rates.
 
 ---
 

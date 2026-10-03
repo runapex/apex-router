@@ -45,6 +45,25 @@ def _run_script(name: str, *args: str, timeout: int = 600) -> tuple[int, str]:
         return 2, f"({name} failed to run: {type(e).__name__})"
 
 
+def _route_join_section(labeled_path=None) -> str:
+    """Refresh the labeled table (route_log x conformance x telemetry) so route-advise sees
+    the claude-code dispatch rows written by hooks/agent-route-log.sh. Never raises."""
+    try:
+        from . import route_join, route_log
+        res = route_join.join_labels()
+        if not res:
+            return "  (route-join: no rows)"
+        path = Path(labeled_path) if labeled_path is not None else route_log.default_labeled_path()
+        ok, note = route_join.refresh_labeled_table(res, path)
+        st = res.get("stats", {})
+        line = (f"  table_rows={len(res.get('table', []))} claude_code_rows={st.get('claude_code_rows', 0)} "
+                f"telemetry_joined={st.get('telemetry_joined', 0)} "
+                f"escalated_inferred={st.get('escalated_inferred', 0)} written={ok}")
+        return line if ok else f"{line}\n  {note}"
+    except Exception as e:  # noqa: BLE001
+        return f"  (route-join unavailable: {type(e).__name__})"
+
+
 def _advise_section() -> str:
     try:
         from . import route_advise
@@ -175,6 +194,10 @@ def run(*, now: float | None = None) -> str:
     """Run all nightly steps; return the Markdown digest section. Never raises."""
     now = time.time() if now is None else now
     parts = ["\n## nightly adaptivity\n"]
+
+    parts.append("### route-join (claude-code dispatch labels)\n```")
+    parts.append(_route_join_section())
+    parts.append("```")
 
     parts.append("### route-advise (cheap-start verdicts)\n```")
     parts.append(_advise_section())

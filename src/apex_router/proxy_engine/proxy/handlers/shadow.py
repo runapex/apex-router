@@ -171,6 +171,7 @@ async def handle(
             event.connect_retries = send_stats.get("connect_retries", 0)  # v6
             event.connect_backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
             event.is_error = event.is_error or response.status_code >= 500
+            event.upstream_rejected = response.status_code >= 400  # v8: any 4xx/5xx, is_error unchanged
             # a >=400 status is a labeled cause even when it does NOT flag is_error (429/4xx < 500):
             # captures rate-limits/client errors the is_error>=500 rule intentionally ignores.
             if event.error_cause is None and response.status_code >= 400:

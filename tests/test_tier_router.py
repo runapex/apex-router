@@ -15,10 +15,10 @@ class TestResolve(unittest.TestCase):
     def test_task_kind_defaults(self):
         # judge/conclude → opus/high ; inference → sonnet/medium ; value/extract → haiku/(none)
         cases = {
-            "judge": ("opus", "claude-opus-4-8", "high"),
-            "conclude": ("opus", "claude-opus-4-8", "high"),
-            "verify": ("opus", "claude-opus-4-8", "xhigh"),
-            "runtime": ("opus", "claude-opus-4-8", "xhigh"),
+            "judge": ("opus", "claude-opus-5-5", "high"),
+            "conclude": ("opus", "claude-opus-5-5", "high"),
+            "verify": ("opus", "claude-opus-5-5", "xhigh"),
+            "runtime": ("opus", "claude-opus-5-5", "xhigh"),
             "synthesis": ("sonnet", "claude-sonnet-5", "medium"),
             "inference": ("sonnet", "claude-sonnet-5", "medium"),
             "extract": ("haiku", "claude-haiku-4-5", None),

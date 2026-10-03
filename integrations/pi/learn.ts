@@ -42,7 +42,7 @@ const BIN = process.env.BOOKSEARCH_BIN || join(homedir(), ".local", "bin", "book
 
 // Registry-driven defaults (fall back to the built-ins on any read failure).
 function learnModels(): { provider: string; validate: string; explain: string } {
-	const fallback = { provider: "anthropic", validate: "claude-sonnet-5", explain: "claude-opus-4-8" };
+	const fallback = { provider: "anthropic", validate: "claude-sonnet-5", explain: "claude-opus-5-5" };
 	try {
 		const reg = JSON.parse(readFileSync(join(homedir(), ".apex-router", "models.json"), "utf8"));
 		const tiers = reg?.tiers || {};

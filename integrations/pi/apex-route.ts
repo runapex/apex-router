@@ -16,6 +16,10 @@
  *   >>kimi     summarise this diff         -> Kimi (via the apex proxy)
  *   >>frontier  design the migration plan   -> sonnet tier (via the apex proxy)
  *   >>deep      audit this for race hazards -> opus tier (via the apex proxy)
+ *   >>haiku     grep/summarise cheaply       -> Anthropic light tier (no effort knob)
+ *   >>sonnet    explore/implement            -> Anthropic mid tier (medium effort)
+ *   >>opus      code/review/cross-validate   -> Anthropic heavy tier (high effort)
+ *   >>fable     hardest pure reasoning only  -> Anthropic ceiling (max effort)
  *   >>gpt-luna  find the config loader      -> GPT-5.6 Luna (Codex)
  *   >>gpt-terra implement the feature       -> GPT-5.6 Terra (Codex)
  *   >>gpt-sol   audit this for race hazards -> GPT-5.6 Sol (Codex)
@@ -60,7 +64,11 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	"kimi-code": { provider: "moonshotai", id: "kimi-k2.7-code" },
 	"kimi-deep": { provider: "moonshotai", id: "kimi-k3" },  // 1M ctx — long sessions (K1)
 	frontier: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
-	deep: { provider: "anthropic", id: "claude-opus-4-8", effort: "high" },
+	deep: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
+	haiku: { provider: "anthropic", id: "claude-haiku-4-5" },
+	sonnet: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
+	opus: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
+	fable: { provider: "anthropic", id: "claude-fable-5-1", effort: "max" },
 	"gpt-luna": { provider: "openai-codex", id: "gpt-5.6-luna", effort: "low" },
 	"gpt-terra": { provider: "openai-codex", id: "gpt-5.6-terra", effort: "medium" },
 	"gpt-sol": { provider: "openai-codex", id: "gpt-5.6-sol", effort: "high" },
@@ -470,7 +478,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Sticky switch + listing.
 	pi.registerCommand("apex-route", {
-		description: "Switch model family (usage: /apex-route [local|kimi|frontier|deep|auto])",
+		description: "Switch model family (run /apex-route to list; /apex-route <family> to select)",
 		handler: async (args, ctx) => {
 			const family = args.trim();
 			if (!family) {

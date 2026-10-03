@@ -1,8 +1,10 @@
 """Upstream connect-only retry (Finding 4).
 
 A ConnectError/ConnectTimeout is raised BEFORE the request reaches the upstream socket, so the
-POST was never received — retrying cannot double-submit. A ReadError is NOT retried (the request
-may already be in flight upstream). These pin both halves of that contract.
+POST was never received — retrying cannot double-submit. As of 2026-10-02 a pre-first-byte ReadError
+(and SSLError/WriteError/RemoteProtocolError) is ALSO retried, but only when it fails fast on a POST/GET
+completion endpoint — see test_upstream_transport_retry.py for that contract and its duplicate-submit
+trade-off; a ReadTimeout is still never retried.
 """
 from __future__ import annotations
 
@@ -64,9 +66,36 @@ def test_connect_error_exhausts_and_raises(tmp_path):
     assert calls["n"] == 3  # 1 + 2 retries, then propagates
 
 
-def test_read_error_is_NOT_retried(tmp_path):
-    # A ReadError may mean the request is already processing upstream — retrying risks a duplicate
-    # non-idempotent completion. It must propagate on the first attempt.
+def test_read_error_before_headers_is_retried(tmp_path):
+    # Policy reversal (2026-10-02): a ReadError raised inside send_stream happens before the handler
+    # has sent any byte to the client, and the live data showed these are ~230 ms dead-pooled-
+    # connection fast-fails (278 rows, 0 retries). It is now retried within the same bounded budget.
+    # The duplicate-completion trade-off is documented at upstream.send_stream. Narrowed per review
+    # U1/U2: body-sent retries need a FAST failure on a COMPLETION endpoint (POST/GET).
+    cfg = Config(home=tmp_path, upstream_connect_retries=2, upstream_connect_backoff_s=0.0)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadError("mid-flight", request=request)
+
+    async def run():
+        up = _upstream(cfg, handler)
+        try:
+            await up.send_stream("POST", "http://x/v1/messages", headers=[(b"host", b"x")], content=b"{}")
+            return "no-raise"
+        except httpx.ReadError:
+            return "raised"
+        finally:
+            await up.aclose()
+
+    assert asyncio.run(run()) == "raised"
+    assert calls["n"] == 3  # 1 + 2 retries, then the original ReadError propagates
+
+
+def test_read_error_on_non_completion_path_is_NOT_retried(tmp_path):
+    # U2: a body-sent error on a non-completion path (could be stateful) propagates on attempt 1,
+    # unlike a ConnectError on the same path (pre-write, always retried — test above).
     cfg = Config(home=tmp_path, upstream_connect_retries=2, upstream_connect_backoff_s=0.0)
     calls = {"n": 0}
 
@@ -78,14 +107,35 @@ def test_read_error_is_NOT_retried(tmp_path):
         up = _upstream(cfg, handler)
         try:
             await up.send_stream("POST", "http://x/y", headers=[(b"host", b"x")], content=b"{}")
-            return "no-raise"
         except httpx.ReadError:
-            return "raised"
+            pass
         finally:
             await up.aclose()
 
-    assert asyncio.run(run()) == "raised"
-    assert calls["n"] == 1  # NOT retried
+    asyncio.run(run())
+    assert calls["n"] == 1
+
+
+def test_read_timeout_is_NOT_retried(tmp_path):
+    # A ReadTimeout (default 600 s) must never be retried — that would multiply the hang.
+    cfg = Config(home=tmp_path, upstream_connect_retries=2, upstream_connect_backoff_s=0.0)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("slow", request=request)
+
+    async def run():
+        up = _upstream(cfg, handler)
+        try:
+            await up.send_stream("POST", "http://x/y", headers=[(b"host", b"x")], content=b"{}")
+        except httpx.ReadTimeout:
+            pass
+        finally:
+            await up.aclose()
+
+    asyncio.run(run())
+    assert calls["n"] == 1
 
 
 def test_retry_budget_is_clamped_against_hostile_config(tmp_path):

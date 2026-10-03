@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 # Default chain (slot -> model). Retrieve is local + free and always included.
 DEFAULT_CHAIN = [
     ("retrieve", "local/nomic-embed"),
-    ("validate", "anthropic/claude-sonnet-4-6"),
-    ("deepen", "anthropic/claude-opus-4-8"),
+    ("validate", "anthropic/claude-sonnet-5"),
+    ("deepen", "anthropic/claude-opus-5-5"),
     ("synthesize", "moonshotai/kimi-k3"),
 ]
 ALWAYS_ON = {"retrieve"}

@@ -113,7 +113,12 @@ def contract_text() -> str:
         "BLAST_LEVELS = " + ", ".join(BLAST_LEVELS) + "\n\n"
         "Return ONLY one JSON object, no prose, matching the structure below.\n"
         "Both confidence fields must be JSON numbers between 0 and 1, not strings.\n"
-        "regression_signal must be exactly confirmed, refuted, or not-covered.\n"
+        "regression_signal must be exactly confirmed, refuted, or not-covered:\n"
+        "- confirmed = a test/CI check in the provided output fails AND the diff plausibly causes it\n"
+        "- refuted = tests that exercise the changed behavior ran and pass (passing tests that do "
+        "not touch the change are not refutation)\n"
+        "- not-covered = no test evidence exercises the changed behavior, or the only failures "
+        "are clearly unrelated to the diff\n"
         + json.dumps(OUTPUT_CONTRACT, indent=2)
     )
 

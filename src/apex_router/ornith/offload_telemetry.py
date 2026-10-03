@@ -78,7 +78,13 @@ class OffloadRecord:
 
     def to_json_obj(self) -> dict:
         d = asdict(self)
-        d.pop("_extra", None)
+        extra = d.pop("_extra", None) or {}
+        # Optional tag fields (e.g. purpose="preread", n_findings) ride in _extra. They never
+        # override a core field, so aggregation over lane/ok/gated/escalated is unaffected.
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if isinstance(k, str) and k not in d:
+                    d[k] = v
         return d
 
 

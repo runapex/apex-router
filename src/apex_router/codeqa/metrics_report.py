@@ -9,6 +9,19 @@ import json
 import os
 import sys
 
+# INPUT $/MTok list-rate by model family. Keys in a row's tier_calls/model_calls are either a tier name
+# ("haiku") or an actual model id ("claude-opus-5-5", a pinned judge) — both priced by family match.
+# Unknown → opus rate (a conservative floor).
+_RATES = {"haiku": 1.0, "sonnet": 3.0, "opus": 5.0}
+
+
+def _rate(key: str) -> float:
+    k = str(key).lower()
+    for fam, r in _RATES.items():
+        if fam in k:
+            return r
+    return _RATES["opus"]
+
 
 def main(path=None):
     path = path or os.path.expanduser("~/.codeqa/validate_metrics.jsonl")
@@ -56,16 +69,28 @@ def main(path=None):
         if isinstance(tc, dict):
             tier_calls.update({k: v for k, v in tc.items() if isinstance(v, int)})
     if tier_calls:
-        _RATE = {"haiku": 1.0, "sonnet": 3.0, "opus": 5.0}   # INPUT $/MTok; unknown/fixed → opus rate
         _TOK = 276                                            # ≈ INPUT tokens per frontier call (see freshness)
         total_cost = 0.0
         print("\n  frontier by tier (model picker) — INPUT-token cost only, excludes thinking output:")
         for tier, c in tier_calls.most_common():
-            cost = c * _TOK * _RATE.get(tier, 5.0) / 1_000_000
+            cost = c * _TOK * _rate(tier) / 1_000_000
             total_cost += cost
             print(f"    {tier:8} {c:>5}  ≥ ${cost:.4f}")
         print(f"    {'total':8} {sum(tier_calls.values()):>5}  ≥ ${total_cost:.4f}  (lower bound;"
               " sonnet/opus thinking bills as output at ~5× input rate, not counted)")
+
+    # SCREEN, THEN ADJUDICATE (CODEQA_JUDGE_MODE) — rows written before the field existed are skipped.
+    jrecs = [r for r in recs if r.get("judge_mode") in ("screen", "both")]
+    if jrecs:
+        def _s(k):
+            return sum(r.get(k, 0) for r in jrecs if isinstance(r.get(k, 0), int))
+        print(f"\n  judge modes ({len(jrecs)} run(s) with a pinned adjudicator):")
+        print(f"    screened {_s('n_screened')} · screen struck {_s('n_screen_struck')} · "
+              f"adjudicated {_s('n_adjudicated')} · adjudicated struck {_s('n_adjudicated_struck')}"
+              f" · adjudication failed {_s('n_adjudicate_failed')}")
+        agr = [r["agreement"] for r in jrecs if isinstance(r.get("agreement"), (int, float))]
+        if agr:
+            print(f"    'both' agreement (screen vs pin): mean {sum(agr) / len(agr):.2f} over {len(agr)} run(s)")
 
     # which digests drift most
     from collections import Counter
@@ -78,12 +103,14 @@ def main(path=None):
             print(f"    {repo:10} {s}")
 
     print("\n  per run:")
-    print(f"    {'when':21} {'repo':9} {'struck':>6} {'local':>5} {'front':>5} {'mode':>8}")
+    print(f"    {'when':21} {'repo':9} {'struck':>6} {'local':>5} {'front':>5} {'mode':>15}")
     for r in recs[-20:]:
         mode = "local" if r.get("local_only") else ("routed" if r.get("routed") else "frontier")
+        if r.get("judge_mode"):
+            mode = f"{mode}/{r['judge_mode']}"
         cached = " (cached)" if r.get("cached") else ""
         print(f"    {r.get('ts',''):21} {r.get('repo','?'):9} {r.get('n_struck',0):>6} "
-              f"{r.get('n_local',0):>5} {r.get('n_frontier',0):>5} {mode:>8}{cached}")
+              f"{r.get('n_local',0):>5} {r.get('n_frontier',0):>5} {mode:>15}{cached}")
     return 0
 
 

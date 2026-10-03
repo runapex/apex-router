@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import random
+import ssl
 import time
 
 import httpx
@@ -19,6 +21,65 @@ from apex_router.proxy_engine.config import Config
 _MAX_CONNECT_RETRIES = 10
 _MAX_CONNECT_BACKOFF_S = 30.0
 _MAX_CONNECT_TOTAL_BACKOFF_S = 60.0  # cumulative backoff ceiling across all retries of one request
+
+# Transport errors retried by `send_stream` (which returns at response HEADERS — before the handler has
+# streamed a single byte to the client, so a retry is invisible to it). Two classes, two policies:
+#
+# PRE-WRITE (`_PRE_WRITE_ERRORS`): ConnectError/ConnectTimeout — the connection never came up, so the
+# request was never written. Retried on ANY method/path, regardless of how long the attempt took.
+#
+# BODY-SENT (`_BODY_SENT_ERRORS`): SSLError/ReadError/WriteError/RemoteProtocolError on an established
+# connection — the request MAY already have been written and processed. Retried ONLY when the attempt
+# was a fast-fail AND idempotent-enough (see `_body_sent_retry_allowed`). Live finding (2026-10-02):
+# 402 SSLError + 278 ReadError rows on the anthropic wire in 7 days, all connect_retries=0, ~230 ms
+# each — the fast-fail signature of a dead pooled keep-alive connection. `ssl.SSLError` is listed RAW
+# because anyio re-raises non-EOF TLS errors unmapped and httpcore's read/write exc_map doesn't wrap
+# them (only its start_tls map does, as ConnectError).
+# Deliberately EXCLUDED: ReadTimeout/WriteTimeout/PoolTimeout — retrying a 600 s read-timeout would
+# multiply the hang, and a pool timeout is local back-pressure, not a transient link fault.
+_PRE_WRITE_ERRORS: tuple[type[BaseException], ...] = (httpx.ConnectError, httpx.ConnectTimeout)
+_BODY_SENT_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    ssl.SSLError,
+)
+_RETRYABLE_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = _PRE_WRITE_ERRORS + _BODY_SENT_ERRORS
+
+# Body-sent retry guard (review U1/U2). An attempt that failed only after this long is NOT a dead
+# pooled connection — the upstream was likely generating, so a replay would multiply tokens and
+# latency (and the client's own retry on the 502 multiplies it again). Env-configurable.
+_DEFAULT_RETRY_FAST_FAIL_MS = 3000.0
+# Completion endpoints: stateless (a duplicate costs tokens, mutates nothing). Anything else — batch
+# creation, file upload, etc. — may create server-side state, so body-sent errors there are not retried.
+_COMPLETION_PATH_SUFFIXES = ("/v1/messages", "/v1/chat/completions", "/responses")
+_NON_COMPLETION_PATH_MARKERS = ("/batches", "/files")
+_BODY_SENT_RETRY_METHODS = frozenset({"POST", "GET"})
+
+# Clock for measuring one attempt's duration (module-level so tests can substitute a fake clock).
+_attempt_clock = time.monotonic
+
+
+def _retry_fast_fail_s() -> float:
+    """APEX_RETRY_FAST_FAIL_MS as seconds; a missing/garbage/negative/non-finite value → default."""
+    raw = os.environ.get("APEX_RETRY_FAST_FAIL_MS")
+    try:
+        ms = float(raw) if raw is not None else _DEFAULT_RETRY_FAST_FAIL_MS
+    except ValueError:
+        ms = _DEFAULT_RETRY_FAST_FAIL_MS
+    if not math.isfinite(ms) or ms < 0:
+        ms = _DEFAULT_RETRY_FAST_FAIL_MS
+    return ms / 1000.0
+
+
+def _is_completion_request(method: str, url: str) -> bool:
+    """True for POST/GET on a stateless completion endpoint (never /batches or /files)."""
+    if method.upper() not in _BODY_SENT_RETRY_METHODS:
+        return False
+    path = httpx.URL(url).path.rstrip("/")
+    if any(m in path for m in _NON_COMPLETION_PATH_MARKERS):
+        return False
+    return path.endswith(_COMPLETION_PATH_SUFFIXES)
 
 # Hop-by-hop headers must not be forwarded (RFC 7230 §6.1); also drop framing that the
 # HTTP client/server layer recomputes (content-length, transfer-encoding, host). Everything
@@ -198,20 +259,29 @@ class Upstream:
         """
         provided = {k.lower() for k, _ in headers}
         keep = provided | {b"host", b"content-length"}
-        # Connect-only retry: httpx.ConnectError/ConnectTimeout is raised BEFORE the request is
-        # written to a socket (the connection never came up), so the upstream never saw the POST —
-        # retrying cannot double-submit. A ReadError/ReadTimeout is NOT retried here (it propagates on
-        # attempt 1): once connected, the request may already be processing upstream, so a retry
-        # could yield a duplicate non-idempotent completion. `send(stream=True)` returns at response
-        # headers — before the handler forwards any byte to the client.
+        # Transient-transport retry (Finding 4, widened 2026-10-02, narrowed per review U1/U2).
+        # `send(stream=True)` returns at response headers, so any raise in this loop happens before the
+        # handler has forwarded ANY byte to the client — the client can't observe a retry. Errors after
+        # the first body byte are raised from the handler's body_stream and are NEVER retried (bytes
+        # can't be un-sent; the client owns that retry). The contract:
         #
-        # Scope of the no-double-submit guarantee (xval — NOT universal): it holds for the SHIPPING
-        # config only — a bytes `content` (both callers buffer `request.body()`, so a fresh request
-        # re-sends identical bytes) over stock httpcore, which establishes TCP/TLS BEFORE writing the
-        # application request, so a ConnectError means the POST was never written. It would NOT hold
-        # for a streamed/consumed body (an already-drained async generator replays empty) or a custom
-        # httpx event-hook that raises ConnectError AFTER the request is accepted. Keep `content` a
-        # bytes object and add no such hook, and the guarantee stands.
+        #   - ConnectError/ConnectTimeout (pre-write: the request was never written) — retried on ANY
+        #     method and path, with no elapsed-time condition. Cannot double-submit.
+        #   - SSLError/ReadError/WriteError/RemoteProtocolError (body MAY have been written) — retried
+        #     ONLY when ALL of: (a) the failed attempt took < APEX_RETRY_FAST_FAIL_MS (default 3000 ms,
+        #     measured from just before `send` to the raise) — the dead-pooled-connection signature
+        #     (~230 ms observed), NOT a reset after minutes of generation, whose replay would multiply
+        #     tokens and latency; (b) the path is a completion endpoint (ends with /v1/messages,
+        #     /v1/chat/completions or /responses, contains neither /batches nor /files) — those are
+        #     stateless, a duplicate costs tokens but mutates nothing; (c) the method is POST or GET.
+        #     Otherwise the original exception propagates on that attempt (handler → 502 + error_cause).
+        #     Residual risk, accepted: a fast-failing body-sent error on a completion endpoint MAY still
+        #     duplicate a completion the upstream had started — bounded by the guard to < 3 s of work.
+        #   - Timeouts are never retried (see _RETRYABLE_TRANSPORT_ERRORS).
+        #
+        # Requires a bytes `content` (both callers buffer `request.body()`) so a fresh request re-sends
+        # identical bytes; a streamed/consumed body would replay empty. All retries share one bounded,
+        # jittered backoff budget and are counted in `connect_retries` / `connect_backoff_s`.
         #
         # `stats` (optional out-param): total seconds slept in backoff are recorded under
         # 'connect_backoff_s' and 'connect_retries' so the CALLER can bill that apex-controlled sleep
@@ -226,6 +296,8 @@ class Upstream:
         if not math.isfinite(backoff) or backoff < 0:
             backoff = 0.0
         attempts = retries + 1
+        fast_fail_s = _retry_fast_fail_s()
+        completion = _is_completion_request(method, url)
         slept_total = 0.0  # total-duration budget: stop retrying once cumulative backoff hits the cap
         for i in range(attempts):
             # Build a FRESH request each attempt: a consumed/aborted request object must not be
@@ -233,9 +305,15 @@ class Upstream:
             req = self._client.build_request(method, url, headers=headers, content=content)
             scrubbed = [(k, v) for k, v in req.headers.raw if k.lower() in keep]
             req.headers = httpx.Headers(scrubbed)
+            attempt_t0 = _attempt_clock()
             try:
                 return await self._client.send(req, stream=True)
-            except (httpx.ConnectError, httpx.ConnectTimeout):
+            except _RETRYABLE_TRANSPORT_ERRORS as exc:
+                if not isinstance(exc, _PRE_WRITE_ERRORS):
+                    # body-sent class: retry only a fast-fail on a completion endpoint (U1/U2)
+                    attempt_s = _attempt_clock() - attempt_t0
+                    if attempt_s >= fast_fail_s or not completion:
+                        raise
                 if i == attempts - 1 or slept_total >= _MAX_CONNECT_TOTAL_BACKOFF_S:
                     raise  # exhausted (attempts OR total-backoff budget) — handler books the error
                 # exp backoff, per-sleep capped; then JITTERED (equal-jitter: half fixed + half

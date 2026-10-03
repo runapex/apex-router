@@ -35,6 +35,10 @@ def test_cold_start_is_labeled_prior():
     decisions = plan("newclass", {}, eps=0.0)
     assert all(d.action == "include" for d in decisions)
     assert any("prior" in d.note for d in decisions)
+    assert [(d.slot, d.model) for d in decisions[1:3]] == [
+        ("validate", "anthropic/claude-sonnet-5"),
+        ("deepen", "anthropic/claude-opus-5-5"),
+    ]
     r = render_rationale("newclass", decisions)
     assert "prior" in r
 

@@ -145,6 +145,15 @@ def main(argv=None) -> int:
     route_log_p.add_argument("--note", default="")
     route_log_p.add_argument("--context-size", type=int, default=None)
     route_log_p.add_argument("--session-id", type=str, default=None)
+    # Dispatch-surface fields (claude-code hook rows; any surface may pass them). With
+    # --label-pending the outcome is ok|error|empty|async and escalation is inferred offline
+    # by route-join; without it the classic ok|escalated contract is unchanged.
+    route_log_p.add_argument("--surface", type=str, default=None)
+    route_log_p.add_argument("--agent-id", type=str, default=None)
+    route_log_p.add_argument("--tool-use-id", type=str, default=None)
+    route_log_p.add_argument("--description", type=str, default=None)
+    route_log_p.add_argument("--label-pending", action="store_true",
+                             help="dispatch row; escalation inferred later by route-join")
     # Readout: aggregate the outcome log into per-task-type escalation rates — the
     # Phase-1 payoff ("when we start explore cheap, how often does it bounce to opus?").
     readout_p = sub.add_parser(
@@ -167,6 +176,12 @@ def main(argv=None) -> int:
         help="Phase-0 labeled training table: route_log x conformance join")
     join_p.add_argument("--json", action="store_true")
     join_p.add_argument("--out", type=Path, help="write joined table JSONL to PATH")
+    join_p.add_argument("--telemetry", type=Path,
+                        help="proxy telemetry JSONL for the claude-code join "
+                             "(default $APEX_TELEMETRY, else $APEX_HOME/telemetry.jsonl, "
+                             "else ~/.apex/telemetry.jsonl)")
+    join_p.add_argument("--no-write", action="store_true",
+                        help="don't refresh labeled_table.jsonl beside the route log")
     # Advise: turn the escalation rates into an evidence-backed routing recommendation per
     # task-type, gated on statistical significance (Wilson CI + a sample floor). Recommends only;
     # it never mutates a config or a skill — the caller reads the advice and decides.
@@ -204,6 +219,8 @@ def main(argv=None) -> int:
                    add_help=False)
     sub.add_parser("chain-planner", help="propose a model chain for a task_class (metrics rationale)",
                    add_help=False)
+    sub.add_parser("review-preread", help="local-model pre-read of a diff -> claims to verify "
+                                          "(args forwarded; see --help)", add_help=False)
     sub.add_parser("proxy", help="proxy engine CLI: serve/doctor/compile/readout (needs [proxy])",
                    add_help=False)
     # Skill-quality benchmark (the SkillOpt borrow): does a skill document raise a frozen
@@ -240,6 +257,10 @@ def main(argv=None) -> int:
                         help="write the tier without waiting for it to load")
     tier_p.add_argument("--no-reload", action="store_true",
                         help="skip restarting the launchd consumers")
+    # Upstream pressure: 429/transport-error rates from proxy telemetry -> GREEN/AMBER/RED +
+    # a recommendation; `--check` exits 0/1/2/3 (UNKNOWN=3, usage=4) to gate a fan-out. Args forwarded to pressure.main.
+    sub.add_parser("pressure", help="upstream rate-limit pressure (GREEN/AMBER/RED) before a "
+                                    "fan-out; --check exits 0/1/2/3 (4=usage)", add_help=False)
     args, extra = ap.parse_known_args(argv)
 
     if args.cmd == "watch":
@@ -266,7 +287,13 @@ def main(argv=None) -> int:
         ok = route_log.log_outcome(args.task_type, args.start_tier, args.outcome,
                                    note=args.note,
                                    context_size=args.context_size,
-                                   session_id=args.session_id)
+                                   session_id=args.session_id,
+                                   label_pending=args.label_pending,
+                                   surface=args.surface,
+                                   agent_id=args.agent_id,
+                                   tool_use_id=args.tool_use_id,
+                                   start_tier=args.start_tier if args.label_pending else None,
+                                   description=args.description)
         if not ok:
             try:
                 print(f"route-log: not recorded (outcome={args.outcome!r} invalid or "
@@ -345,6 +372,10 @@ def main(argv=None) -> int:
             argv.append("--json")
         if args.out:
             argv += ["--out", str(args.out)]
+        if args.telemetry:
+            argv += ["--telemetry", str(args.telemetry)]
+        if args.no_write:
+            argv.append("--no-write")
         return route_join.main(argv)
 
     if args.cmd == "route-advise":
@@ -400,10 +431,16 @@ def main(argv=None) -> int:
     if args.cmd == "chain-planner":
         from .chain_planner import _cli as _cp
         return _cp(extra)
+    if args.cmd == "review-preread":
+        from .ornith.review_preread import main as _rpr
+        return _rpr(extra)
 
     if args.cmd == "skill-bench":
         return _skill_bench(args)
 
+    if args.cmd == "pressure":
+        from .pressure import main as _pressure
+        return _pressure(extra)
     if args.cmd == "ornith-tier":
         from .ornith import tier_switch
         if args.unload:
