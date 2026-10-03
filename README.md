@@ -440,7 +440,7 @@ folder of `SKILL.md` bundles — Claude Code's native mechanism, so updates prop
 tools — `model-routing` (checks `pressure` before a fan-out), `cross-validate` (takes the
 `review-preread` claims list), `verify-claims`, `disciplined-execution`,
 `public-repo-hygiene`, `local-references`, `change-classification`, `evidence-labels`,
-and `unattended-loop` — live in the public
+`unattended-loop`, and `dependency-vetting` — live in the public
 [apex-router-skills](https://github.com/runapex/apex-router-skills) marketplace and run in
 both Claude Code and Pi:
 

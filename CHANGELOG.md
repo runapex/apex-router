@@ -65,9 +65,10 @@ blind to.
 - Public landing page (`docs/index.html`, GitHub Pages).
 
 ### Companion
-- [apex-router-skills](https://github.com/runapex/apex-router-skills) 0.6.0: `model-routing`
+- [apex-router-skills](https://github.com/runapex/apex-router-skills) 0.7.0: `model-routing`
   checks `pressure` before a fan-out; `cross-validate` takes the `review-preread` claims
-  list and records pre-read recall; new `evidence-labels` and `unattended-loop` skills.
+  list and records pre-read recall; new `evidence-labels`, `unattended-loop`, and
+  `dependency-vetting` skills (0.7.0).
 
 ## 0.2.0 — 2026-08-23
 
