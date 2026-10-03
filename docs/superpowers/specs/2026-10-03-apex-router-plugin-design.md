@@ -1,17 +1,17 @@
-# apex-router as a Claude Code plugin — design
+# datapce as a Claude Code plugin (apex-router alias) — design
 
 Date: 2026-10-03. Status: design for review. Supersedes the positioning in README.md §1 and the
 `apex-router-skills` marketplace (to be archived).
 
 ## 1. Purpose and positioning
 
-apex-router observes what actually happens on this machine — which subagents run, on which model,
+datapce observes what actually happens on this machine — which subagents run, on which model,
 what they cost, whether they succeeded, how the upstream is behaving — and turns that into evidence
 the tools people already use can act on. It does not plan; it makes existing planners and
 dispatchers (superpowers' writing-plans and subagent-driven-development, the `Workflow` tool, the
 `Agent` tool) choose better on *this* machine, and it shows every decision and why.
 
-One product, one install: `claude plugin install apex-router@apex-router`. The pip package becomes
+One product, one install: `claude plugin install datapce@datapce` (alias `apex-router`). The pip package becomes
 the optional backend (local model lanes, cross-client proxy telemetry, nightly learning).
 
 Listing (marketplace category `productivity`):
@@ -33,9 +33,9 @@ engine accepts); Pi parity.
 
 ```
 apex-router/
-├─ .claude-plugin/marketplace.json   marketplace "apex-router", one plugin "apex-router" → ./plugin
+├─ .claude-plugin/marketplace.json   marketplace "datapce", one plugin "datapce" → ./plugin
 ├─ plugin/
-│  ├─ .claude-plugin/plugin.json     name "apex-router", author "datapce", version (== pyproject), userConfig (§11)
+│  ├─ .claude-plugin/plugin.json     name "datapce", author "datapce", version (== pyproject), userConfig (§11)
 │  ├─ hooks/hooks.json               { "modules": ["./register.ts"] }
 │  ├─ hooks/register.ts              wiring only: imports the modules below
 │  ├─ hooks/observe.ts               §4 event capture → rows + running stats
@@ -46,7 +46,7 @@ apex-router/
 │  ├─ hooks/band.tsx  pane.tsx       §6 drawing
 │  ├─ hooks/backend.ts               §9 detection + process calls
 │  ├─ types/index.d.ts               $.state / $.store contract
-│  ├─ skills/apex-router/SKILL.md    §8 the one skill
+│  ├─ skills/datapce/SKILL.md        §8 the one skill
 │  └─ tests/*.test.ts                §12
 └─ src/apex_router/ …                backend (unchanged modules; retired hooks per §13)
 ```
@@ -76,9 +76,9 @@ Storage:
 - Rows: `~/.apex-router/observe/<YYYY-MM-DD>.jsonl`, one JSON per event, rotated daily, 30-day
   retention. The existing `route_log.jsonl` schema is kept and written by `router.ts` (complete
   rows: resolved model known), so `route-join`/`route-advise`/`labeled_table` keep working.
-- Running stats: Welford `(n, mean, M2)` per metric per cell in `$.store` (`apex-router.stats`),
+- Running stats: Welford `(n, mean, M2)` per metric per cell in `$.store` (`datapce.stats`),
   persisted across sessions; never raw rows. Per `math.md A9`: persist parameters, not data.
-- Machine profile (derived, `$.store` `apex-router.profile`): repos seen (path hash), task_type
+- Machine profile (derived, `$.store` `datapce.profile`): repos seen (path hash), task_type
   mix, skills in use, hours-of-day pressure histogram, backend present/absent. Read by §5 and §8.
 
 Task-type classification: `route_log.classify_dispatch` rules (description + subagentType →
@@ -118,7 +118,7 @@ one-line evidence string (`"opus→sonnet: 34/36 pass, p50 41s, $0.12; AMBER now
 **Injection (`inject.ts`) — strengthen, don't compete:**
 - `skill.prompt` on `superpowers:writing-plans`, `superpowers:subagent-driven-development`,
   `superpowers:dispatching-parallel-agents`, `superpowers:executing-plans`, and the plugin's own
-  skill: append a fenced section `## apex-router evidence (this machine)` — per task_type advice
+  skill: append a fenced section `## datapce evidence (this machine)` — per task_type advice
   with confidence, pressure level and recommendation, budget remaining, and the one rule the
   skill should follow (`name the tier per task in the plan; apex applies it at dispatch`). ≤ 25
   lines. Other skills untouched.
@@ -178,7 +178,7 @@ same structured-state instruction); first cell promoted to READY; a READY cell d
 | Drain ETA | `backlog/(cap − arrive)` for the queue worker | `s12_backlog_drain.py` |
 | Explicit non-rules | kurtosis and medians are descriptive, never alerts | `s17`, `s19` |
 
-## 8. The one skill (`skills/apex-router/SKILL.md`, ≤ 350 lines)
+## 8. The one skill (`skills/datapce/SKILL.md`, ≤ 350 lines)
 
 Sections: **Route** (delegate rather than switch your own model; read the evidence section the
 plugin injects; pressure gate before fan-out; local lanes when the backend exists), **Verify**
