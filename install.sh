@@ -36,7 +36,7 @@
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The
 #                                   datapce marketplace (this install) is added by default; add runapex/apex-router-skills here for the former skills (Pi).
-#         --no-skills   skip the default public skill marketplace (also APEX_NO_SKILLS=1)
+#         --no-skills   skip the default marketplace and the datapce plugin install (also APEX_NO_SKILLS=1)
 #         --dir PATH    install location (default: ~/.apex-router)
 #         --repo URL    git repo to clone (default: the public apex-router repo)
 #         --verify-only re-run the self-check against an existing install
@@ -79,11 +79,11 @@ ORNITH_TIER="small"   # --ornith-tier small|large|both
 # Repos to install the review post-commit hook into (space-separated; user-supplied, none hardcoded).
 HOOK_REPOS="${APEX_HOOK_REPOS:-}"
 # Skill marketplaces (Claude Code plugin repos), wired via the `claude plugin` CLI.
-# apex-router ships ONE public marketplace by DEFAULT (workflow-discipline skills), and supports
+# apex-router ships ONE marketplace by DEFAULT (the datapce plugin, from this install), and supports
 # ADDING MORE: --skills-marketplace can be passed repeatedly, and APEX_SKILLS_MARKETPLACE may hold a
-# space-separated list. The default plugin (apex-workflow) is installed from the public marketplace;
+# space-separated list. The default plugin (datapce@datapce) is installed from this marketplace;
 # extra marketplaces are added and their plugins are left for the user to `claude plugin install`.
-# --no-skills / APEX_NO_SKILLS=1 opts out of the default public marketplace entirely.
+# --no-skills / APEX_NO_SKILLS=1 opts out of the default marketplace and the datapce plugin install entirely.
 APEX_PUBLIC_MARKETPLACE=""   # empty = the datapce marketplace in this install ($INSTALL_DIR/.claude-plugin)
 APEX_DEFAULT_PLUGIN="datapce@datapce" # plugin@marketplace to install by default
 # Extra marketplaces, stored NEWLINE-separated internally so a source path with spaces stays intact.

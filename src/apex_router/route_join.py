@@ -307,32 +307,72 @@ def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
 
 
 def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> Dict[str, Any]:
-    """0.4.1 retirement gate. Claude-code dispatch rows per UTC day by writer, before dedupe: the datapce
-    plugin (rows carry inject_arm) vs the agent-route-log hook. Workflow rows are plugin-only (the hook
-    cannot see them) and are counted apart. The trailing streak walks back over days with rows while
-    plugin > 0 and plugin >= hook; days without rows, and Workflow-only days (plugin 0 and hook 0), are
-    quiet and neither break nor count. parity_days counts the days in the streak where both writers matched. parity_until is the last matched day;
-    gate_open = span >= 14 and parity_days >= 10 and parity_until within 2 days of `today` (default: UTC today)."""
-    days: Dict[str, Dict[str, int]] = {}
+    """0.4.1 retirement gate. Claude-code dispatch rows by writer, before dedupe: the datapce plugin
+    (rows carry inject_arm) vs the agent-route-log hook. Writers are compared by (session_id, tool_use_id)
+    key, not by raw counts, and a key is filed under the UTC day of its plugin row (else of its earliest
+    row): the plugin stamps the spawn and the hook the PostToolUse end, so one dispatch can straddle
+    00:00 UTC. Per day, plugin = keys with a plugin row, hook = keys with a hook row, workflow = Workflow
+    rows (plugin-only; the hook cannot see them). A day disagrees when some hook key has no plugin row
+    (rows missing an id cannot pair, so a hook row without ids always disagrees). The trailing streak
+    walks back over days with rows while plugin > 0 and the hook never disagrees; days without rows, and
+    Workflow-only days (plugin 0 and hook 0), are quiet and neither break nor count. parity_days counts the
+    streak days with plugin rows (plugin-only days included: no hook disagreement). parity_until is the
+    last such day; gate_open = span >= 14 and parity_days >= 10 and parity_until within 2 days of
+    `today` (default: UTC today)."""
+    keyed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    loose: List[Tuple[float, bool]] = []  # (ts, is_plugin) for rows that cannot pair
+    workflow: List[float] = []
     for r in rows:
         ts = r.get("ts")
         if not _is_finite_ts(ts):
             continue
-        day = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d")
-        d = days.setdefault(day, {"plugin": 0, "hook": 0, "workflow": 0})
-        if "inject_arm" not in r:
-            d["hook"] += 1
-        elif r.get("source") == "workflow":
-            d["workflow"] += 1
-        else:
+        ts = float(ts)
+        is_plugin = "inject_arm" in r
+        if is_plugin and r.get("source") == "workflow":
+            workflow.append(ts)
+            continue
+        sid, tuid = r.get("session_id"), r.get("tool_use_id")
+        if not (isinstance(sid, str) and isinstance(tuid, str)):
+            loose.append((ts, is_plugin))
+            continue
+        k = keyed.setdefault((sid, tuid), {"plugin": None, "hook": None})
+        w = "plugin" if is_plugin else "hook"
+        k[w] = ts if k[w] is None else min(k[w], ts)
+
+    def _utc(ts: float) -> str:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+    days: Dict[str, Dict[str, int]] = {}
+    disagree: set = set()
+
+    def _d(day: str) -> Dict[str, int]:
+        return days.setdefault(day, {"plugin": 0, "hook": 0, "workflow": 0})
+
+    for k in keyed.values():
+        day = _utc(k["plugin"] if k["plugin"] is not None else k["hook"])
+        d = _d(day)
+        if k["plugin"] is not None:
             d["plugin"] += 1
+        if k["hook"] is not None:
+            d["hook"] += 1
+            if k["plugin"] is None:
+                disagree.add(day)
+    for ts, is_plugin in loose:
+        d = _d(_utc(ts))
+        if is_plugin:
+            d["plugin"] += 1
+        else:
+            d["hook"] += 1
+            disagree.add(_utc(ts))
+    for ts in workflow:
+        _d(_utc(ts))["workflow"] += 1
     ordered = sorted(days)
     streak: List[str] = []
     for day in reversed(ordered):
         d = days[day]
         if d["plugin"] == 0 and d["hook"] == 0:
             continue
-        if d["plugin"] == 0 or d["plugin"] < d["hook"]:
+        if d["plugin"] == 0 or day in disagree:
             break
         streak.append(day)
     span = (date.fromisoformat(streak[0]) - date.fromisoformat(streak[-1])).days + 1 if streak else 0
@@ -715,7 +755,7 @@ def main(argv=None) -> int:
         wp = st.get("writer_parity") or {}
         print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
               f"until {wp.get('parity_until')} ({wp.get('parity_span_days', 0)} d span, "
-              f"{wp.get('parity_days', 0)} matched; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.1 hook "
+              f"{wp.get('parity_days', 0)} clean days; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.1 hook "
               f"retirement needs span >= 14, matched >= 10 and the last matched day within 2 days)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):

@@ -25,9 +25,11 @@ as its optional backend. Advise-only: it never changes the model you chose.
   limit, Page CUSUM, the penalty and cell state machines, OLS cost and budget burn, with a
   TypeScript mirror held to generated parity fixtures (`python -m apex_router.core.fixtures`).
 - `route-join` keeps one row per `(session_id, tool_use_id)` (finished over async, plugin over
-  hook; `dispatch_deduped`) and reports `writer_parity`: plugin vs hook rows per UTC day
-  (`parity_span_days`, and `parity_days`, the days both writers matched; `parity_until`; `gate_open`; a Workflow-only day is quiet,
-  neither a break nor a match).
+  hook; `dispatch_deduped`) and reports `writer_parity`: plugin vs hook dispatches per UTC day,
+  compared by `(session_id, tool_use_id)` key and filed under the plugin row's day, so a dispatch
+  spanning 00:00 UTC still pairs (`parity_span_days`; `parity_days`, the days with plugin rows
+  where the hook never disagreed, i.e. every hook dispatch also has a plugin row; `parity_until`;
+  `gate_open`; a Workflow-only day is quiet, neither a break nor a count).
 - A repository hygiene test.
 - `python -m apex_router.ornith.ornith_client --probe-thinking` — proves `reasoning_effort:
   none` is honoured. Exit 0 = thinking off; 1 = evidence of thinking (reasoning present, an
@@ -44,7 +46,7 @@ as its optional backend. Advise-only: it never changes the model you chose.
   plugin (route-join counts each dispatch once). `--agent-route-log-hook` and
   `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.1, once
   `apex-router route-join --json` shows `stats.writer_parity.parity_span_days` ≥ 14
-  and `parity_days` ≥ 10 and `parity_until` (the last matched day) is within the last 2 days
+  and `parity_days` ≥ 10 and `parity_until` (the last streak day) is within the last 2 days
   (`stats.writer_parity.gate_open`).
 
 ### Fixed

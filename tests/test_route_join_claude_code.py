@@ -603,6 +603,37 @@ class TestWriterParity(unittest.TestCase):
         self.assertFalse(short["gate_open"])
         self.assertFalse(route_join.writer_parity([], today=date(2026, 10, 10))["gate_open"])
 
+    def test_dispatch_spanning_midnight_utc_matches_by_key_not_by_day_counts(self):
+        rows = []
+        for d in range(1, 15):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        # plugin ts = spawn (23:59 on day 7), hook ts = PostToolUse end (00:05 on day 8)
+        rows = [r for r in rows if r["tool_use_id"] != "t7"]
+        rows += [_plugin(_day(7, 86340), "haiku", "D7", "a7", "t7"),
+                 _dispatch(_day(8, 300), "haiku", "D7", "a7", "t7", outcome="async")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual((p["parity_since"], p["parity_span_days"], p["parity_days"]), ("2026-10-01", 14, 14))
+        self.assertEqual(p["days"]["2026-10-07"]["hook"], 1)  # the hook row lands on the plugin row's day
+        self.assertEqual(p["days"]["2026-10-08"]["hook"], 1)
+
+    def test_a_hook_dispatch_with_no_plugin_row_breaks_even_if_counts_match(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a1", "t1", outcome="async"),
+                _plugin(_day(1, 60), "haiku", "Y", "a2", "t2")]
+        p = route_join.writer_parity(rows)
+        self.assertIsNone(p["parity_since"])
+
+    def test_long_span_with_too_few_matched_days_keeps_the_gate_closed(self):
+        from datetime import date
+        rows = [_wf(_day(d), f"w{d}") for d in range(2, 15)]  # Workflow-only days span but do not count
+        rows += [_dispatch(_day(1), "haiku", "D1", "a1", "t1", outcome="async"),
+                 _plugin(_day(1, 60), "haiku", "D1", "a1", "t1"),
+                 _dispatch(_day(15), "haiku", "D15", "a15", "t15", outcome="async"),
+                 _plugin(_day(15, 60), "haiku", "D15", "a15", "t15")]
+        p = route_join.writer_parity(rows, today=date(2026, 10, 16))
+        self.assertEqual((p["parity_span_days"], p["parity_days"]), (15, 2))
+        self.assertFalse(p["gate_open"])
+
     def test_an_older_shortfall_only_moves_the_start(self):
         rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only
         for d in (2, 3, 4):

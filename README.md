@@ -4,8 +4,9 @@ datapce shows what is actually happening on this machine while you work with sub
 upstream **pressure** (rate limits and transport faults, GREEN/AMBER/RED), what the session and
 each subagent **cost** (tokens including cache reads and writes, duration), and **every
 dispatch** — tier requested and tier that ran, outcome, time. It does not plan; it puts those
-numbers where existing planners and dispatchers (superpowers' writing-plans and
-subagent-driven-development, the `Workflow` tool, the `Agent` tool) and you can see them.
+numbers where you can see them, beside the `Workflow` and `Agent` tool dispatches. Feeding them
+to planners such as superpowers' writing-plans and subagent-driven-development waits for v1.1
+(it needs an answer-quality label; v1 has none).
 
 One product, one install (alias `apex-router`):
 
@@ -547,7 +548,7 @@ hook (matcher `Agent`) that appends one label-pending row per dispatch. `apex-ro
 route-join` then infers escalations offline (a later same-description dispatch at a
 strictly higher tier) and joins the proxy telemetry on `(session_id, agent_id)`; the
 nightly pass runs the join. The hook is retired in 0.4.1 once `route-join --json` reports
-`stats.writer_parity.gate_open` (span ≥ 14 days, ≥ 10 matched days, last matched day within 2 days).
+`stats.writer_parity.gate_open` (span ≥ 14 days, ≥ 10 clean days with plugin rows and no hook-only dispatch, last streak day within 2 days).
 
 ```bash
 ./install.sh --agent-route-log-hook     # wires the hook into ~/.claude/settings.json
