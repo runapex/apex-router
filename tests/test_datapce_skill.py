@@ -3,6 +3,8 @@ backend commands once (in Route), ledger numbers fed to model selection, advise-
 import re
 from pathlib import Path
 
+from test_public_hygiene import banned_hits
+
 SKILL = Path(__file__).resolve().parents[1] / "plugin" / "skills" / "datapce" / "SKILL.md"
 RETIRED = ["model-routing", "disciplined-execution", "verify-claims", "evidence-labels", "cross-validate",
            "change-classification", "local-references", "public-repo-hygiene", "dependency-vetting", "unattended-loop"]
@@ -84,6 +86,7 @@ def test_no_enforce_planner_or_anomaly_wording():
 def test_no_personal_paths_or_private_names():
     text = _text()
     assert "/Users/" not in text and "~/src" not in text
+    assert not banned_hits(text)
 
 
 def test_wording_matches_what_the_commands_do():
