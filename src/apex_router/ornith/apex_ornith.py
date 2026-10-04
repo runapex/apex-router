@@ -67,8 +67,10 @@ def _real_select(**kw):
 
 def _real_review(diff: str, *, budget: int) -> str:
     from .ornith_batch import batch_over_preamble
+    # thinking OFF — MEASURED (ornith_code.py): thinking-ON runs the whole budget inside <think>
+    # and returns no answer; on the review path that was a 900 s hang per call.
     r = batch_over_preamble(REVIEW_PREAMBLE, [f"Review this diff:\n\n{diff}"],
-                            max_tokens=budget, enable_thinking=True, temperature=0.0)
+                            max_tokens=budget, enable_thinking=False, temperature=0.0)
     return r[0].answer
 
 
@@ -77,10 +79,13 @@ def _real_generate(spec: str) -> str:
     return generate_code(spec, enable_thinking=False)
 
 
-def _git_diff(staged: bool, base: str | None) -> str:
+def _git_diff(staged: bool, base: str | None, *, timeout_s: float = 30.0) -> str:
     cmd = ["git", "diff", "--staged"] if staged and not base else \
           (["git", "diff", f"{base}...HEAD"] if base else ["git", "diff", "--staged"])
-    return subprocess.run(cmd, capture_output=True, text=True).stdout
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s).stdout
+    except subprocess.TimeoutExpired:
+        return ""   # reads as "nothing staged" -> EXIT_OK; never hang the caller
 
 
 # Module-level constructs that execute arbitrary effects at IMPORT time (before any test verdict).
@@ -187,7 +192,7 @@ def run(argv, *, generate_fn=None, review_fn=None, diff_fn=None,
     pr = sub.add_parser("review", help="advisory diff auditor (never blocks)")
     pr.add_argument("--staged", action="store_true", default=True)
     pr.add_argument("--base", default=None)
-    pr.add_argument("--budget", type=int, default=6000)
+    pr.add_argument("--budget", type=int, default=1024)
     pg = sub.add_parser("gen", help="spec->function offload (emits only verified code)")
     pg.add_argument("spec")
     pg.add_argument("--test", default=None)
@@ -198,7 +203,7 @@ def run(argv, *, generate_fn=None, review_fn=None, diff_fn=None,
     args = p.parse_args(argv)
 
     if not liveness_fn():
-        emit("Ornith unavailable on :8080 — use Opus.")
+        emit("Ornith unavailable (local tier) — use Opus.")
         return EXIT_UNAVAILABLE
 
     if args.cmd == "review":
