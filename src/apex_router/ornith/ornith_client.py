@@ -179,7 +179,8 @@ def _parse(payload: dict[str, Any]) -> ChatResult:
 
 def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
                   temperature=0.3, top_p=0.95, raise_on_truncation=True,
-                  model: str | None = None) -> ChatResult:
+                  model: str | None = None,
+                  lock_timeout_s: float | None = None) -> ChatResult:
     """raise_on_truncation (default True): a finish_reason=length answer raises OrnithProtocolError —
     correct for codegen/extraction where a cut-off answer is useless. Callers whose PARTIAL output is
     still valuable (e.g. the review pre-filter, where partial findings still escalate usefully) pass
@@ -187,14 +188,16 @@ def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
 
     model: send THIS tier's model id instead of the module-level one — pass `route.model` to honour
     a model_router verdict without restarting the process. Selecting an unwarmed tier makes this
-    request pay the cold load."""
+    request pay the cold load.
+
+    lock_timeout_s: bound the inference-lock wait (default LOCK_TIMEOUT)."""
     if MAINTENANCE.exists():
         raise OrnithMaintenance("Scheduled maintenance")
     body = _apply_backend(
         {"messages": messages, "max_tokens": max_tokens,
          "temperature": temperature, "top_p": top_p},
         enable_thinking=enable_thinking, model=model)
-    with inference_lock():
+    with (inference_lock() if lock_timeout_s is None else inference_lock(lock_timeout_s)):
         if MAINTENANCE.exists():
             raise OrnithMaintenance("Scheduled maintenance")
         result = _parse(_post("/v1/chat/completions", body, timeout=INFER_TIMEOUT))
@@ -243,19 +246,33 @@ def readiness() -> bool:
         return False
 
 
-def thinking_off_probe() -> tuple[bool, str]:
-    """Prove the backend honours thinking-OFF. Returns (ok, why); never raises.
+PROBE_LOCK_WAIT_S = 10.0
+
+
+def thinking_off_probe() -> tuple[bool | None, str]:
+    """Prove the backend honours thinking-OFF. Returns (state, why); never raises.
+
+    state is three-valued: True = thinking off (verified); False = evidence thinking is ON
+    (reasoning present, an unterminated inline <think>, or an empty answer — reasoning ate the
+    64-token budget); None = INCONCLUSIVE (server busy/down/maintenance or any other error —
+    says nothing about thinking).
 
     Every lane that is 'thinking-OFF' (codegen, review, preread) assumes `reasoning_effort: none`
     is respected. When an ollama build or a chat template ignores it, the model thinks anyway —
     the measured hang/truncation signature — while the lane believes it is in safe mode. Run this
-    on any box before trusting the local tier (apex-router doctor / RUNBOOK-pressure)."""
+    on any box before trusting the local tier (RUNBOOK-pressure). The lock wait is short so the
+    probe never queues behind a long inference."""
     try:
         r = chat_messages([{"role": "user", "content": "Reply exactly: ok"}],
                           max_tokens=64, enable_thinking=False, temperature=0.0,
-                          raise_on_truncation=False)
+                          raise_on_truncation=False, lock_timeout_s=PROBE_LOCK_WAIT_S)
+    except OrnithProtocolError as e:
+        if "empty content" in str(e):
+            return False, ("thinking likely ON: reasoning consumed budget, empty content "
+                           f"({type(e).__name__}: {e})")
+        return None, f"{type(e).__name__}: {e}"
     except Exception as e:  # noqa: BLE001 — a probe reports, it never raises
-        return False, f"{type(e).__name__}: {e}"
+        return None, f"{type(e).__name__}: {e}"
     # _parse already normalises every thinking surface (`reasoning`, `reasoning_content`, a legacy
     # inline <think> block) into ChatResult.reasoning — one check covers them all.
     if r.reasoning:
@@ -266,9 +283,14 @@ def thinking_off_probe() -> tuple[bool, str]:
     return True, "thinking off"
 
 
+def _probe_exit_code() -> int:
+    """0 = thinking off; 1 = evidence of thinking; 2 = inconclusive (busy/down/other error)."""
+    state, why = thinking_off_probe()
+    print(why)
+    return 0 if state is True else (2 if state is None else 1)
+
+
 if __name__ == "__main__":
     if "--probe-thinking" in sys.argv:
-        ok, why = thinking_off_probe()
-        print(why)
-        raise SystemExit(0 if ok else 1)
+        raise SystemExit(_probe_exit_code())
     print(chat("Reply exactly: Ornith ready", max_tokens=32).answer)

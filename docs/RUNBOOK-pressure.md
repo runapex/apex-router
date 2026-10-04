@@ -108,7 +108,12 @@ Every local lane sends `reasoning_effort: "none"`. If the serving stack ignores 
 thinking-ON (measured: 0/3 complete, budget burned in `<think>`) and scripts hang up to 900 s.
 Check once per box, and after any ollama upgrade:
 
-    .venv/bin/python -m apex_router.ornith.ornith_client --probe-thinking   # exit 0 = off
+    .venv/bin/python -m apex_router.ornith.ornith_client --probe-thinking
+
+Exit codes: 0 = thinking off (verified); 1 = evidence thinking is ON (reasoning present, an
+unterminated inline `<think>`, or an empty answer because reasoning ate the budget); 2 =
+inconclusive (server busy, down, in maintenance, or another error — re-run, don't conclude).
+The probe waits at most 10 s for the inference lock.
 
 Related knobs: `ORNITH_LOCK_TIMEOUT_SECS` (default 120) bounds the wait on the inference lock;
 `ORNITH_SOCKET_TIMEOUT_SECS` (default 900) bounds one inference.
