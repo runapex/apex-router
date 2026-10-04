@@ -50,6 +50,7 @@ export type Runtime = {
   options: Options
   sessionId: string
   home: string
+  /** Absolute, `~` expanded; '' until identify resolves it (a hot reload skips identify: every writer waits). */
   backendDir: string
   /** Why backend detection is off (a configured backendDir that is not absolute), or null. */
   backendRefused: string | null
@@ -94,7 +95,7 @@ export function newRuntime(options: Options): Runtime {
     options,
     sessionId: '',
     home: '',
-    backendDir: options.backendDir,
+    backendDir: '',
     backendRefused: null,
     surface: null,
     arm: 'evidence',

@@ -1,8 +1,10 @@
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { Measure } from '../types/index.d.ts'
 import { start as backendStart } from './backend.ts'
 import { install as band, measureOf } from './band.tsx'
 import type { Host } from './host.ts'
+import { start as liveStart } from './live.ts'
 import {
   flushAll,
   install as observe,
@@ -68,6 +70,7 @@ function hostOf($: EngineInterface): Host {
 
 export const register: Register = (on, raw) => {
   const rt = newRuntime(optionsOf(raw))
+  let lastMeasure: Measure | null = null
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
@@ -76,6 +79,7 @@ export const register: Register = (on, raw) => {
     await observeStart(host, e, rt)
     await routerStart(host, rt)
     await backendStart(host, rt)
+    await liveStart(host, rt, () => lastMeasure)
     return r
   })
 
@@ -87,7 +91,8 @@ export const register: Register = (on, raw) => {
 
   on('session.measure', async ($, e, next) => {
     const host = hostOf($)
-    await host.publish.measure(measureOf(e))
+    lastMeasure = measureOf(e)
+    await host.publish.measure(lastMeasure)
     observeMeasure(rt, e, await host.now())
     return next(e)
   })

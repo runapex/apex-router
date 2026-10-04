@@ -130,6 +130,30 @@ describe('backend: freshness, no-backend, path rules', () => {
     expect((world.published.get('backend') as View).families).toEqual({ opus: 'AMBER' })
   })
 
+  test('a future-dated pressure.json (clock skew beyond 60 s) is unknown', async ($, on) => {
+    const future = JSON.stringify({ generated_at: T0 / 1000 + 3600, families: { opus: { level: 'RED' } } })
+    const world = worldOf(on, { [`${BACKEND}/pressure.json`]: future })
+    await $.session.start(SESSION)
+    await world.clock.advance(5000)
+    expect((world.published.get('backend') as View).families).toEqual({})
+  })
+
+  test('a future mtime is unknown too', async ($, on) => {
+    const world = worldOf(on, { [`${BACKEND}/pressure.json`]: PRESSURE })
+    world.mtimes.set(`${BACKEND}/pressure.json`, T0 + 3_600_000)
+    await $.session.start(SESSION)
+    await world.clock.advance(5000)
+    expect((world.published.get('backend') as View).families).toEqual({})
+  })
+
+  test('a pressure.json a few seconds ahead of the clock is tolerated', async ($, on) => {
+    const near = JSON.stringify({ generated_at: T0 / 1000 + 20, families: { opus: { level: 'AMBER' } } })
+    const world = worldOf(on, { [`${BACKEND}/pressure.json`]: near })
+    await $.session.start(SESSION)
+    await world.clock.advance(5000)
+    expect((world.published.get('backend') as View).families).toEqual({ opus: 'AMBER' })
+  })
+
   test('a pressure.json without generated_at is judged by its mtime', async ($, on) => {
     const world = worldOf(on, { [`${BACKEND}/pressure.json`]: PRESSURE })
     world.mtimes.set(`${BACKEND}/pressure.json`, T0 - 3_600_000)

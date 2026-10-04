@@ -181,11 +181,14 @@ function keep(into: string[], rows: string[]): void {
 }
 
 export async function flushAll(host: Host, rt: Runtime): Promise<void> {
-  const now = await host.now()
-  const rows = rt.rows.splice(0)
-  if (rows.length > 0 && !(await appendLines(host, observePath(rt.backendDir, now), rows))) keep(rt.rows, rows)
-  const route = rt.routeRows.splice(0)
-  if (route.length > 0 && !(await appendLines(host, routeLogPath(rt.backendDir), route))) keep(rt.routeRows, route)
+  // Until identify resolved the directory (a hot reload skips it) rows stay buffered; a raw "~/…" would be a relative path.
+  if (rt.backendDir !== '') {
+    const now = await host.now()
+    const rows = rt.rows.splice(0)
+    if (rows.length > 0 && !(await appendLines(host, observePath(rt.backendDir, now), rows))) keep(rt.rows, rows)
+    const route = rt.routeRows.splice(0)
+    if (route.length > 0 && !(await appendLines(host, routeLogPath(rt.backendDir), route))) keep(rt.routeRows, route)
+  }
   // Before session.start loaded them (a hot reload), writing would replace the persisted values.
   if (!rt.storeLoaded) return
   try {
@@ -210,6 +213,7 @@ export async function flushAll(host: Host, rt: Runtime): Promise<void> {
 /** session.start (from register.ts, after identify): directory, retention, persisted state, flush timer. */
 export async function start(host: Host, e: SessionStartInput, rt: Runtime): Promise<void> {
   try {
+    if (rt.backendDir === '') throw new Error('backendDir unresolved')
     const dir = observeDir(rt.backendDir)
     await ensureDir(host, dir)
     const old = expiredFiles((await host.list(dir)).map(entry => entry.name), await host.now())

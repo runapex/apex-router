@@ -12,6 +12,7 @@ const LEVELS: readonly Level[] = ['GREEN', 'AMBER', 'RED']
 const HOUR_MS = 3_600_000
 const SAMPLES_MAX = 120
 const PRESSURE_FRESH_MS = 600_000
+const SKEW_MS = 60_000
 
 export const detectPaths = (backendDir: string, home: string): string[] => [
   `${backendDir}/ornith.env`,
@@ -154,12 +155,14 @@ async function freshPressureFile(host: Host, path: string, now: number): Promise
       ms = null
     }
   }
-  return ms !== null && now - ms <= PRESSURE_FRESH_MS ? v : null
+  // Young, and not from the future (clock skew is bounded at 60 s).
+  return ms !== null && now - ms <= PRESSURE_FRESH_MS && ms - now <= SKEW_MS ? v : null
 }
 
 type PollState = { inbox: Sample[]; up: Record<string, boolean[]>; lastAdvise: number; verdicts: Record<string, string> }
 
 async function poll(host: Host, rt: Runtime, st: PollState): Promise<void> {
+  if (rt.backendDir === '') return
   const now = await host.now()
   const present = rt.backendRefused === null && (await firstExisting(host, detectPaths(rt.backendDir, rt.home))) !== null
   if (!present) {
