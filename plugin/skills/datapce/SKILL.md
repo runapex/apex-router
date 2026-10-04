@@ -1,11 +1,11 @@
 ---
 name: datapce
-description: Use when choosing which model tier a delegated task should run on, before a parallel fan-out, when verifying or reporting a result, when reviewing a change, and before shipping to a shared repository. One condensed workflow (Route, Verify, Review, Ship) that feeds the planning skills' model selection with what datapce measured on this machine. Replaces the apex-router-skills set; former names, kept for discovery — model-routing, disciplined-execution, verify-claims, evidence-labels, cross-validate, change-classification, local-references, public-repo-hygiene, dependency-vetting, unattended-loop.
+description: Use when choosing which model tier a delegated task should run on or before a parallel fan-out, when you want a claim labelled PASS/FAIL/BLOCKED instead of a bare "done", and before a public push or adding a dependency. Former skill names, kept for discovery — model-routing, disciplined-execution, verify-claims, evidence-labels, cross-validate, change-classification, local-references, public-repo-hygiene, dependency-vetting, unattended-loop.
 ---
 
 # datapce
 
-datapce watches every subagent dispatch on this machine (task type, tier, outcome, tokens,
+datapce watches every Agent and Workflow dispatch on this machine (task type, tier, outcome, tokens,
 duration, upstream pressure) and keeps a ledger. It is advise-only: it never changes the model you
 or the user chose. This skill does not plan and does not dispatch; it supplies numbers to the
 planning and dispatch skills you already use (writing-plans, subagent-driven-development,
@@ -17,7 +17,7 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
 
 - **Read the ledger.** `/apex` opens the pane; its Evidence section has one row per task type and
   tier: `n`, `ok%` with the failure kinds (unavailable / other), `tok μ` (mean tokens), `dur μ`
-  (mean duration). `/apex json` prints the same sections as text for a headless run. Quote those
+  (mean duration). `/apex json` prints the same sections as JSON for a headless run. Quote those
   numbers in the plan next to each task's tier; never invent a rate.
 - **Read ok% correctly.** There is no quality label yet. `ok%` means the dispatch finished and the
   model was available, not that the answer was good. Many failures are `unavailable` (a rate limit
@@ -35,7 +35,7 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
   uneven subtasks to subagents with a tier each.
 - **Pressure before fan-out.** The band (`apex ●LEVEL …`) and the pane's Signals section show
   upstream pressure. GREEN: fan out. AMBER: keep the fan-out small and send explore and mechanical
-  work one tier down. RED: serialize heavy (opus) work; the pane shows the advisory heavy-spawn rate.
+  work one tier down unless a model is named. RED: serialize heavy (opus) work; the pane shows the advisory heavy-spawn rate.
   No band (headless `claude -p`) and the backend is installed? Run `apex-router pressure --check`
   first: exit 0 GREEN, 1 AMBER, 2 RED, 3 UNKNOWN, 4 usage error.
 - **Lane breakers.** When the pane's Signals section shows a lane breaker `open`, send that work to
@@ -45,7 +45,8 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
   acceptable, so it is not a quality claim). `apex-router review-preread` takes a diff path (or `-`
   for stdin) and optional `--requirements FILE`, and prints claims for a reviewer to verify.
 
-Defaults when the ledger has nothing for a task type:
+Defaults, only as the no-data fallback when the ledger has nothing for a task type. When the
+planning skill has its own Model Selection, that wins; do not compete with it:
 
 | task type | tier | why |
 |---|---|---|
@@ -100,8 +101,8 @@ A gap in verification must never read as a pass.
   claims to check; it never replaces the reviewer.
 - **Ground in your own sources.** When a book, paper or code sample you have locally covers the
   question, cite it rather than paraphrasing from memory.
-- **Long sessions.** `/apex handoff` writes a structured handoff block to fill in before starting
-  fresh; do not paste it while any field is still unfilled.
+- **Long sessions.** `/apex handoff` adds the structured handoff template to the context (it writes no file); fill
+  every field before starting fresh, and do not paste it while any field is still unfilled.
 
 ## Ship
 

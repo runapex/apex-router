@@ -28,6 +28,17 @@ def test_frontmatter_and_length():
         assert name in description, name
 
 
+def test_description_is_narrow_and_symptom_triggered():
+    text = _text()
+    description = next(l for l in text.splitlines() if l.startswith("description:"))
+    assert len(description) <= 600
+    for phrase in ["when verifying or reporting a result", "when reviewing a change", "One condensed workflow",
+                   "feeds the planning skills"]:
+        assert phrase not in description, phrase
+    for trigger in ["choosing which model tier", "parallel fan-out", "PASS/FAIL/BLOCKED", "public push", "adding a dependency"]:
+        assert trigger in description, trigger
+
+
 def test_sections_in_order():
     assert list(_sections(_text()))[:4] == ["Route", "Verify", "Review", "Ship"]
 
@@ -53,6 +64,8 @@ def test_verify_carries_the_five_gates_and_nine_labels():
 def test_route_feeds_ledger_numbers_and_is_advise_only():
     route = _sections(_text())["Route"]
     assert "explicit `model:`" in route
+    paragraph = " ".join(next(b for b in route.split("\n- ") if "explicit `model:`" in b).split())
+    assert "never rewrites" in paragraph
     assert "/apex" in route
     for field in ["`n`", "`ok%`", "`tok μ`", "`dur μ`", "unavailable"]:
         assert field in route, field
@@ -70,3 +83,30 @@ def test_no_enforce_planner_or_anomaly_wording():
 def test_no_personal_paths_or_private_names():
     text = _text()
     assert "/Users/" not in text and "~/src" not in text
+
+
+def test_wording_matches_what_the_commands_do():
+    text = " ".join(_text().split())
+    assert "prints the same sections as JSON" in text
+    assert "adds the structured handoff template to the context (it writes no file)" in text
+    assert "unless a model is named" in text
+    assert "Model Selection" in text and "no-data fallback" in text
+    assert "Agent and Workflow dispatch" in text and "every subagent dispatch" not in text
+
+
+def test_documented_pressure_exit_codes_match_the_cli():
+    from apex_router import pressure
+    text = " ".join(_text().split())
+    m = re.search(r"exit ((?:\d \w+(?: error)?(?:, )?)+)", text)
+    assert m, "pressure exit codes are documented"
+    documented = {name: int(code) for code, name in re.findall(r"(\d) (\w+)", m.group(1))}
+    expected = dict(pressure.EXIT_CODES)
+    expected["usage"] = pressure.EXIT_USAGE
+    assert documented == expected
+
+
+def test_cited_subcommands_exist_in_cli():
+    cli = (Path(__file__).resolve().parents[1] / "src" / "apex_router" / "cli.py").read_text()
+    for cmd in COMMANDS:
+        name = cmd.split()[1]
+        assert re.search(r'add_parser\(\s*"%s"' % re.escape(name), cli), name
