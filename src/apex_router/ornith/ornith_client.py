@@ -37,6 +37,10 @@ INFER_TIMEOUT = _env_num("ORNITH_SOCKET_TIMEOUT_SECS", "900", float)
 READY_TIMEOUT = _env_num("ORNITH_READY_TIMEOUT_SECS", "30", float)
 LIVE_TIMEOUT = _env_num("ORNITH_LIVE_TIMEOUT_SECS", "5", float)
 STARTUP_RETRIES = _env_num("ORNITH_STARTUP_RETRIES", "12", int)
+# Max wait for the machine-wide inference lock. Every local call serializes on it; a caller behind a
+# long job (worst case INFER_TIMEOUT=900 s) used to block with no bound — from Claude Code that reads
+# as a hung script. <=0 means one non-blocking attempt.
+LOCK_TIMEOUT = _env_num("ORNITH_LOCK_TIMEOUT_SECS", "120", float)
 
 # Backend profile. The backend is now ollama, which REQUIRES an explicit `model` (the MLX server
 # let clients omit it and used its own start-time default) and gates thinking with
@@ -79,6 +83,7 @@ class OrnithUnavailable(OrnithError): pass            # base: can't serve right 
 class OrnithMaintenance(OrnithUnavailable): pass      # maintenance marker present
 class OrnithNotListening(OrnithUnavailable): pass     # conn refused before connect
 class OrnithAmbiguousFailure(OrnithUnavailable): pass # timeout/reset AFTER send
+class OrnithBusy(OrnithUnavailable): pass             # inference lock not acquired in time
 
 
 @dataclass(frozen=True)
@@ -91,10 +96,23 @@ class ChatResult:
 
 
 @contextmanager
-def inference_lock():
+def inference_lock(timeout_s: float | None = None):
+    """Exclusive machine-wide inference lock, bounded. Polls LOCK_NB until `timeout_s` (default
+    LOCK_TIMEOUT) elapses, then raises OrnithBusy — an OrnithUnavailable, so every lane's
+    `except Exception` path escalates instead of hanging. A holder that dies releases the flock
+    (kernel semantics), so a waiter never waits on a corpse."""
+    wait = max(0.0, LOCK_TIMEOUT if timeout_s is None else timeout_s)
+    deadline = time.monotonic() + wait
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with LOCK.open("a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise OrnithBusy(f"inference lock busy for >{wait:g}s: {LOCK}")
+                time.sleep(0.05)
         try:
             yield
         finally:
