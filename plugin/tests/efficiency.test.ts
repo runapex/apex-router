@@ -23,8 +23,6 @@ const manyReady = (n: number): Record<string, Cell> =>
 const injectRows = (world: World): Record<string, unknown>[] =>
   (world.appended.get(`${BACKEND}/observe/2026-10-03.jsonl`) ?? []).map(l => JSON.parse(l)).filter(r => r.ev === 'inject')
 
-const SPAWNS = 100
-
 describe('§17 efficiency contract', () => {
   test('COLD: zero bytes injected anywhere, at GREEN pressure', async ($, on) => {
     worldOf(on)
@@ -55,6 +53,7 @@ describe('§17 efficiency contract', () => {
     expect(rows).toHaveLength(10)
     expect(rows.every(r => r.arm === 'evidence')).toBe(true)
     expect(rows.filter(r => r.capped === true).length).toBe(10 - sections)
+    expect(rows.filter(r => r.capped === true).length).toBeGreaterThan(0)
   })
 
   test('tool.describe appends at most two lines, and only when pressure is not GREEN', async ($, on) => {
@@ -117,8 +116,6 @@ describe('§17 efficiency contract', () => {
     expect(world.spawned.map(s => s.model)).toEqual([undefined, 'opus', 'sonnet', 'haiku'])
   })
 
-  // 100 dispatches in one session: the dispatch view the hook publishes grows to 200 rows, and its
-  // cost grows with it (see task-19 report) — a session far past 100 spawns is outside this budget.
   test('the agent.spawn hook adds under 5 ms at p99 with a full cell table', async ($, on) => {
     const world = worldOf(on)
     const cells: Record<string, Cell> = {}
@@ -130,14 +127,14 @@ describe('§17 efficiency contract', () => {
     world.store.set('datapce.cells', cells)
     await $.session.start(SESSION)
     const times: number[] = []
-    for (let i = 0; i < SPAWNS; i++) {
+    for (let i = 0; i < 300; i++) {
       const input = spawnInput({ tool_use_id: `toolu_p${i}`, description: `Review change ${i}`, prompt: 'p'.repeat(4000) })
       const t0 = performance.now()
       await $.agent.spawn(input)
       times.push(performance.now() - t0)
     }
     times.sort((a, b) => a - b)
-    expect(times[Math.floor(times.length * 0.99) - 1]!).toBeLessThan(5)
+    expect(times[Math.ceil(times.length * 0.99) - 1]!).toBeLessThan(5)
   })
 
   test('the pure spawn decision stays under 5 ms at p99 with a full cell table', () => {

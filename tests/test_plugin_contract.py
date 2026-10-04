@@ -19,6 +19,30 @@ def _code(src: str) -> str:
     return re.sub(r"(?m)^\s*//.*$|(?<=[\s;,)])//[^\n'\"`]*$", "", src)
 
 
+def _calls(code: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
+    """(name, argument text) of every call `name(` with balanced parentheses, across newlines."""
+    found = []
+    for m in re.finditer(r"(?<!function )\b(" + "|".join(names) + r")\(", code):
+        depth, i = 1, m.end()
+        while i < len(code) and depth:
+            depth += {"(": 1, ")": -1}.get(code[i], 0)
+            i += 1
+        found.append((m.group(1), code[m.end() : i - 1]))
+    return found
+
+
+def _blocks(code: str, opener: str) -> list[str]:
+    """Source of each `on('<event>' ...)` registration, by balanced parentheses (indent-independent)."""
+    out = []
+    for m in re.finditer(r"\bon\(\s*'" + re.escape(opener) + r"'", code):
+        start, depth, i = m.start(), 1, m.end()
+        while i < len(code) and depth:
+            depth += {"(": 1, ")": -1}.get(code[i], 0)
+            i += 1
+        out.append(code[start:i])
+    return out
+
+
 def test_no_network_calls():
     src = _code(_sources())
     assert "$.http" not in src
@@ -36,24 +60,33 @@ def test_prompt_compose_is_hooked_once_and_only_in_register():
 
 
 def test_tool_call_hooks_never_deny_or_rewrite():
-    for name, src in _files().items():
-        for m in re.finditer(r"on\(\s*'tool\.call'.*?\n  \}\)", _code(src), re.S):
-            body = m.group(0)
-            assert "deny" not in body, name
-            assert re.search(r"return next\(e\)|return r\b", body), name
-    observe = (HOOKS / "observe.ts").read_text()
-    assert "deny:" not in observe and "{ deny" not in observe
+    hooks = [(n, b) for n, src in _files().items() for b in _blocks(_code(src), "tool.call")]
+    assert len(hooks) == 2, [n for n, _ in hooks]  # observe.ts Bash, router.ts Workflow
+    for name, body in hooks:
+        assert "deny" not in body, name
+        # the result is the engine's own: `r` is assigned only from `await next(e)` and returned as is,
+        # or the hook returns `next(e)` directly
+        assigns = re.findall(r"\b(?:const|let|var)\s+r\s*=\s*([^\n]+)|\br\s*=\s*([^\n=][^\n]*)", body)
+        for a1, a2 in assigns:
+            assert (a1 or a2).strip() == "await next(e)", (name, a1 or a2)
+        returns = re.findall(r"\breturn\s+([^\n]+)", body)
+        assert returns and all(x.strip() in ("r", "next(e)") for x in returns), (name, returns)
+        if "return r" in body:
+            assert assigns, name
 
 
 def test_no_code_path_rewrites_the_spawn_model():
     files = _files()
-    spawn = re.search(r"on\('agent\.spawn'.*?\n  \}\)", _code(files["register.ts"]), re.S)
-    assert spawn is not None
-    body = spawn.group(0)
+    spawns = _blocks(_code(files["register.ts"]), "agent.spawn")
+    assert len(spawns) == 1
+    body = spawns[0]
     assert body.count("next(") == 1 and "next(e)" in body, "agent.spawn passes the event through untouched"
     for name, src in files.items():
         code = _code(src)
-        assert not re.search(r"next\(\s*\{[^}]*\bmodel\b", code), name
+        for _, args in _calls(code, ("next",)):
+            assert not re.search(r"\bmodel\b", args), (name, args)  # any object argument, nested or not
+        assert not re.search(r"\be\.model\s*=(?!=)|\be\[\s*['\"]model['\"]\s*\]\s*=(?!=)", code), name
+        assert "Object.assign(e" not in code and "structuredClone(e" not in code, name
         assert not re.search(r"\.\.\.e,\s*model\b", code), name
         assert not re.search(r"\benforce(d|ment)?\b", code, re.I), name
     # a handler for agent.spawn returns the engine's result object, never a built {model}
@@ -86,8 +119,14 @@ def test_privacy_writes_only_under_backend_dir_and_store():
 def test_privacy_no_prompt_command_or_file_text_is_persisted():
     # rows and $.store values are built from labels and numbers; the raw prompt, Bash command, file
     # text or tool output never reaches a record(...) / storeSet(...) argument.
-    banned = re.compile(r"\be\.prompt\b|\be\.command\b|\be\.text\b|\be\.input\b|\be\.script\b|\be\.answer\b|\.stdout\b")
+    banned = re.compile(
+        r"\be\.(prompt|command|text|input|script|answer|content|output|stdout|stderr)\b"
+        r"|\b(prompt|command|answer|content|output|stdout|stderr|text)\b(?!\s*:)"
+    )
+    matched = 0
     for name, src in _files().items():
-        code = _code(src)
-        for m in re.finditer(r"\b(record|storeSet)\(([^\n]*)\)", code):
-            assert not banned.search(m.group(2)), (name, m.group(0))
+        for fn, args in _calls(_code(src), ("record", "storeSet")):
+            matched += 1
+            bare = re.sub(r"'[^']*'|\"[^\"]*\"", "''", args)  # string literals are labels, not data
+            assert not banned.search(bare), (name, fn, args)
+    assert matched >= 12, matched

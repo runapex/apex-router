@@ -300,3 +300,30 @@ describe('router: hooks', () => {
     expect(await $.agent.spawn(spawnInput())).toEqual({ model: 'claude-opus-5-5', agentId: 'agent-1' })
   })
 })
+
+describe('router: dispatch view publishing', () => {
+  const published = (world: World): { toolUseId: string }[] => (world.published.get('dispatches') as { toolUseId: string }[] | undefined) ?? []
+
+  test('a burst publishes once at once; the rest wait for the timer; session.end flushes the latest', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    for (let i = 0; i < 3; i++) await $.agent.spawn(spawnInput({ tool_use_id: `toolu_${i}` }))
+    expect(published(world).map(d => d.toolUseId)).toEqual(['toolu_0'])
+    await world.clock.advance(1000)
+    expect(published(world).map(d => d.toolUseId)).toEqual(['toolu_0', 'toolu_1', 'toolu_2'])
+    await $.agent.spawn(spawnInput({ tool_use_id: 'toolu_3' }))
+    expect(published(world)).toHaveLength(3)
+    await $.session.end(END)
+    expect(published(world).map(d => d.toolUseId)).toEqual(['toolu_0', 'toolu_1', 'toolu_2', 'toolu_3'])
+  })
+
+  test('the published view stays at the newest 200 (running dispatches are never trimmed)', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    for (let i = 0; i < 520; i++) await $.agent.spawn(spawnInput({ tool_use_id: `toolu_${i}` }))
+    await $.session.end(END)
+    const view = published(world)
+    expect(view).toHaveLength(200)
+    expect(view[199]!.toolUseId).toBe('toolu_519')
+  })
+})

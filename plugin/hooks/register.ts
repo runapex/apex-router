@@ -18,6 +18,7 @@ import {
   afterSpawn,
   beforeSpawn,
   end as routerEnd,
+  flushDispatches,
   install as router,
   onComplete,
   start as routerStart,
@@ -87,6 +88,7 @@ export const register: Register = (on, raw) => {
   })
 
   on('session.end', async ($, e, next) => {
+    await flushDispatches(hostOf($), rt)
     routerEnd(rt)
     await flushAll(hostOf($), rt)
     return next(e)

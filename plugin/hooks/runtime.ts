@@ -67,6 +67,9 @@ export type Runtime = {
   rows: string[]
   routeRows: string[]
   dispatches: Map<string, Dispatch>
+  /** Last dispatch-view publish (ms) and whether a newer view is waiting for the coalescing timer. */
+  dispatchesPublishedAt: number
+  dispatchesDirty: boolean
   byAgent: Map<string, string>
   routes: Map<string, RouteEntry>
   workflows: Map<string, number>
@@ -110,6 +113,8 @@ export function newRuntime(options: Options): Runtime {
     rows: [],
     routeRows: [],
     dispatches: new Map(),
+    dispatchesPublishedAt: -Infinity,
+    dispatchesDirty: false,
     byAgent: new Map(),
     routes: new Map(),
     workflows: new Map(),

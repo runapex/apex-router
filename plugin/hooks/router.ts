@@ -178,6 +178,48 @@ async function label(host: Host, rt: Runtime, key: string, passed: boolean): Pro
 
 const dispatchList = (rt: Runtime): Dispatch[] => [...rt.dispatches.values()].slice(-DISPATCH_VIEW_MAX)
 
+export const DISPATCH_PUBLISH_MS = 1000
+export const DISPATCH_KEEP_MAX = 500
+
+/** Bound rt.dispatches: every running dispatch stays, the newest finished ones fill the rest. */
+function trimDispatches(rt: Runtime): void {
+  let excess = rt.dispatches.size - DISPATCH_KEEP_MAX
+  if (excess <= 0) return
+  for (const [id, d] of rt.dispatches) {
+    if (excess <= 0) break
+    if (d.outcome === 'running') continue
+    rt.dispatches.delete(id)
+    excess -= 1
+  }
+}
+
+/**
+ * The dispatch view is up to 200 rows and publishing it clones them, so it is coalesced: the first
+ * change publishes at once, later ones within 1 s wait for the timer (and session.end). Nothing
+ * on the agent.spawn path serialises more than a single publish per window.
+ */
+async function publishDispatches(host: Host, rt: Runtime, now: number): Promise<void> {
+  if (now - rt.dispatchesPublishedAt < DISPATCH_PUBLISH_MS) {
+    rt.dispatchesDirty = true
+    return
+  }
+  rt.dispatchesPublishedAt = now
+  rt.dispatchesDirty = false
+  await host.publish.dispatches(dispatchList(rt))
+}
+
+/** Publish the latest view if one is waiting (timer tick, session.end). */
+export async function flushDispatches(host: Host, rt: Runtime): Promise<void> {
+  try {
+    if (!rt.dispatchesDirty) return
+    rt.dispatchesPublishedAt = await host.now()
+    rt.dispatchesDirty = false
+    await host.publish.dispatches(dispatchList(rt))
+  } catch {
+    // the next change or tick republishes
+  }
+}
+
 function queue(rt: Runtime, entry: RouteEntry): void {
   entry.done = true
   rt.routeRows.push(JSON.stringify(entry.row))
@@ -247,7 +289,8 @@ export async function afterSpawn(host: Host, rt: Runtime, e: AgentSpawnInput, d:
     }
     rt.profile = { ...rt.profile, taskMix: { ...rt.profile.taskMix, [d.taskType]: (rt.profile.taskMix[d.taskType] ?? 0) + 1 } }
     rt.profileDirty = true
-    await host.publish.dispatches(dispatchList(rt))
+    trimDispatches(rt)
+    await publishDispatches(host, rt, now)
   } catch {
     // fail open: the spawn already happened
   }
@@ -320,7 +363,7 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
       await label(host, rt, cell, f.outcome === 'ok')
     }
     record(rt, completeRow(e.agentId, f.outcome === 'ok', e.durationMs, tokens, now))
-    await host.publish.dispatches(dispatchList(rt))
+    await publishDispatches(host, rt, now)
   } catch {
     // fail open: a label lost is a label lost, never a broken turn
   }
@@ -344,6 +387,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
     rt.cells = asCells(await host.storeGet('datapce.cells'))
     rt.storeLoaded = true
     await host.publish.cells(cellViews(rt.cells, rt.stats))
+    host.every(DISPATCH_PUBLISH_MS, () => void flushDispatches(host, rt))
   } catch {
     // a store that cannot be read starts with no cells
   }
