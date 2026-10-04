@@ -2,7 +2,7 @@
 from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl, json, os, socket, time
+import fcntl, json, os, socket, sys, time
 from pathlib import Path
 from typing import Any
 from urllib import request, error
@@ -37,6 +37,10 @@ INFER_TIMEOUT = _env_num("ORNITH_SOCKET_TIMEOUT_SECS", "900", float)
 READY_TIMEOUT = _env_num("ORNITH_READY_TIMEOUT_SECS", "30", float)
 LIVE_TIMEOUT = _env_num("ORNITH_LIVE_TIMEOUT_SECS", "5", float)
 STARTUP_RETRIES = _env_num("ORNITH_STARTUP_RETRIES", "12", int)
+# Max wait for the machine-wide inference lock. Every local call serializes on it; a caller behind a
+# long job (worst case INFER_TIMEOUT=900 s) used to block with no bound — from Claude Code that reads
+# as a hung script. <=0 means one non-blocking attempt.
+LOCK_TIMEOUT = _env_num("ORNITH_LOCK_TIMEOUT_SECS", "120", float)
 
 # Backend profile. The backend is now ollama, which REQUIRES an explicit `model` (the MLX server
 # let clients omit it and used its own start-time default) and gates thinking with
@@ -79,6 +83,7 @@ class OrnithUnavailable(OrnithError): pass            # base: can't serve right 
 class OrnithMaintenance(OrnithUnavailable): pass      # maintenance marker present
 class OrnithNotListening(OrnithUnavailable): pass     # conn refused before connect
 class OrnithAmbiguousFailure(OrnithUnavailable): pass # timeout/reset AFTER send
+class OrnithBusy(OrnithUnavailable): pass             # inference lock not acquired in time
 
 
 @dataclass(frozen=True)
@@ -91,10 +96,23 @@ class ChatResult:
 
 
 @contextmanager
-def inference_lock():
+def inference_lock(timeout_s: float | None = None):
+    """Exclusive machine-wide inference lock, bounded. Polls LOCK_NB until `timeout_s` (default
+    LOCK_TIMEOUT) elapses, then raises OrnithBusy — an OrnithUnavailable, so every lane's
+    `except Exception` path escalates instead of hanging. A holder that dies releases the flock
+    (kernel semantics), so a waiter never waits on a corpse."""
+    wait = max(0.0, LOCK_TIMEOUT if timeout_s is None else timeout_s)
+    deadline = time.monotonic() + wait
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with LOCK.open("a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise OrnithBusy(f"inference lock busy for >{wait:g}s: {LOCK}")
+                time.sleep(0.05)
         try:
             yield
         finally:
@@ -161,7 +179,8 @@ def _parse(payload: dict[str, Any]) -> ChatResult:
 
 def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
                   temperature=0.3, top_p=0.95, raise_on_truncation=True,
-                  model: str | None = None) -> ChatResult:
+                  model: str | None = None,
+                  lock_timeout_s: float | None = None) -> ChatResult:
     """raise_on_truncation (default True): a finish_reason=length answer raises OrnithProtocolError —
     correct for codegen/extraction where a cut-off answer is useless. Callers whose PARTIAL output is
     still valuable (e.g. the review pre-filter, where partial findings still escalate usefully) pass
@@ -169,14 +188,16 @@ def chat_messages(messages, *, max_tokens=4096, enable_thinking=True,
 
     model: send THIS tier's model id instead of the module-level one — pass `route.model` to honour
     a model_router verdict without restarting the process. Selecting an unwarmed tier makes this
-    request pay the cold load."""
+    request pay the cold load.
+
+    lock_timeout_s: bound the inference-lock wait (default LOCK_TIMEOUT)."""
     if MAINTENANCE.exists():
         raise OrnithMaintenance("Scheduled maintenance")
     body = _apply_backend(
         {"messages": messages, "max_tokens": max_tokens,
          "temperature": temperature, "top_p": top_p},
         enable_thinking=enable_thinking, model=model)
-    with inference_lock():
+    with (inference_lock() if lock_timeout_s is None else inference_lock(lock_timeout_s)):
         if MAINTENANCE.exists():
             raise OrnithMaintenance("Scheduled maintenance")
         result = _parse(_post("/v1/chat/completions", body, timeout=INFER_TIMEOUT))
@@ -225,5 +246,51 @@ def readiness() -> bool:
         return False
 
 
+PROBE_LOCK_WAIT_S = 10.0
+
+
+def thinking_off_probe() -> tuple[bool | None, str]:
+    """Prove the backend honours thinking-OFF. Returns (state, why); never raises.
+
+    state is three-valued: True = thinking off (verified); False = evidence thinking is ON
+    (reasoning present, an unterminated inline <think>, or an empty answer — reasoning ate the
+    64-token budget); None = INCONCLUSIVE (server busy/down/maintenance or any other error —
+    says nothing about thinking).
+
+    Every lane that is 'thinking-OFF' (codegen, review, preread) assumes `reasoning_effort: none`
+    is respected. When an ollama build or a chat template ignores it, the model thinks anyway —
+    the measured hang/truncation signature — while the lane believes it is in safe mode. Run this
+    on any box before trusting the local tier (RUNBOOK-pressure). The lock wait is short so the
+    probe never queues behind a long inference."""
+    try:
+        r = chat_messages([{"role": "user", "content": "Reply exactly: ok"}],
+                          max_tokens=64, enable_thinking=False, temperature=0.0,
+                          raise_on_truncation=False, lock_timeout_s=PROBE_LOCK_WAIT_S)
+    except OrnithProtocolError as e:
+        if "empty content" in str(e):
+            return False, ("thinking likely ON: reasoning consumed budget, empty content "
+                           f"({type(e).__name__}: {e})")
+        return None, f"{type(e).__name__}: {e}"
+    except Exception as e:  # noqa: BLE001 — a probe reports, it never raises
+        return None, f"{type(e).__name__}: {e}"
+    # _parse already normalises every thinking surface (`reasoning`, `reasoning_content`, a legacy
+    # inline <think> block) into ChatResult.reasoning — one check covers them all.
+    if r.reasoning:
+        return False, f"backend returned reasoning ({len(r.reasoning)} chars) despite reasoning_effort=none: thinking is ON"
+    # A truncated inline block ("<think>…" with no closing tag) is not folded by _parse.
+    if r.answer.lstrip().startswith("<think>"):
+        return False, "backend emitted an unterminated inline <think> block despite reasoning_effort=none: thinking is ON"
+    return True, "thinking off"
+
+
+def _probe_exit_code() -> int:
+    """0 = thinking off; 1 = evidence of thinking; 2 = inconclusive (busy/down/other error)."""
+    state, why = thinking_off_probe()
+    print(why)
+    return 0 if state is True else (2 if state is None else 1)
+
+
 if __name__ == "__main__":
+    if "--probe-thinking" in sys.argv:
+        raise SystemExit(_probe_exit_code())
     print(chat("Reply exactly: Ornith ready", max_tokens=32).answer)

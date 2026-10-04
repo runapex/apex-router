@@ -420,17 +420,6 @@ def test_pool_timeout_is_local_not_transport(tmp_path, capsys):
 
 # ---------------------------------------------------------------- P3: retried-but-succeeded
 
-def test_retried_success_counts_as_transport_fault(tmp_path, capsys):
-    rows = _ok(90) + [_row(NOW - 30, cause=None, connect_retries=1) for _ in range(5)]
-    p = _write(tmp_path / "t.jsonl", rows)
-    r = pressure.compute(p, now=NOW)
-    assert r["overall"]["retried"] == 5
-    assert r["overall"]["transport_errors"] == 5
-    assert r["level"] == "AMBER"
-    pressure.main(["--telemetry", str(p), "--no-write"], now=NOW)
-    assert "retried" in capsys.readouterr().out
-
-
 def test_retried_and_failed_row_counted_once(tmp_path):
     rows = _ok(97) + [_row(NOW - 30, cause="SSLError", connect_retries=2) for _ in range(3)]
     r = pressure.compute(_write(tmp_path / "t.jsonl", rows), now=NOW)
@@ -457,3 +446,21 @@ def test_default_path_honours_apex_home(tmp_path, monkeypatch):
     monkeypatch.setenv("APEX_HOME", str(home))
     r = pressure.compute(None, now=NOW)
     assert r["telemetry"] == str(home / "telemetry.jsonl") and r["overall"]["requests"] == 11
+
+
+# ---------------------------------------------------------------- retried ≠ transport fault
+
+def test_retried_then_succeeded_is_not_transport(tmp_path):
+    rows = _ok(100, connect_retries=1)
+    r = pressure.compute(_write(tmp_path / "t.jsonl", rows), now=NOW)
+    assert r["level"] == "GREEN"
+    assert r["overall"]["transport_errors"] == 0
+    assert r["overall"]["retried"] == 100
+
+
+def test_real_transport_fault_still_counts(tmp_path):
+    rows = _ok(90) + _ok(10, start=NOW - 30, cause="SSLError", connect_retries=2)
+    r = pressure.compute(_write(tmp_path / "t.jsonl", rows), now=NOW)
+    assert r["overall"]["transport_errors"] == 10
+    assert r["overall"]["retried"] == 10
+    assert r["level"] == "AMBER"   # 10% transport → >= 3% amber, not > 10% red

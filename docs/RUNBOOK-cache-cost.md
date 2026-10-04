@@ -99,8 +99,7 @@ Tunables (env, override in the hook's settings entry or your shell):
 
 > **Adaptive threshold (implemented).** `scripts/handoff_threshold.py` (run nightly by
 > `apex-router nightly` / the daily watcher) computes the threshold from the measured
-> per-session read distribution — **p80 of per-session cumulative reads**, floored at
-> 25M, capped at 500M, requiring ≥5 sessions (else `insufficient-data` → floor) — and
+> per-session read distribution — **clamped median of per-session cumulative reads (25M–100M)**, requiring ≥5 sessions (else `insufficient-data` → floor) — and
 > writes `~/.apex-router/handoff_threshold.json`. The nudge hook reads that file;
 > `CACHE_HANDOFF_READ_THRESHOLD` still overrides it, and any read failure falls back to
 > the static 100M. `--check` prints the stored threshold and exits 2 when it's missing

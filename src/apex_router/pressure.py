@@ -7,7 +7,7 @@ appends one JSON row per request to ``~/.apex/telemetry.jsonl``. This module tai
 recommendation the model-routing skill quotes verbatim:
 
   GREEN  429 < 2% and transport < 3%            -> dispatch as planned
-  AMBER  429 2–10% or transport 3–10%           -> shed one tier down; cap heavy parallelism at 2
+  AMBER  429 2–10% or transport 3–10% (client-visible faults; apex-recovered retries are reported separately) -> shed one tier down; cap heavy parallelism at 2
   RED    either > 10%, or retry-after seen <2m  -> no new heavy fan-out; serialize; wait
   UNKNOWN telemetry missing/unreadable, or the readout itself crashed
 
@@ -316,9 +316,11 @@ def compute(telemetry=None, now: float | None = None,
             retried = _retries(row) > 0
             if retried:
                 b["retried"] += 1
-            # A row is one transport fault if its cause is transport OR the proxy had to retry
-            # the connect (a retried-then-succeeded row has error_cause None). Counted once.
-            if kind == "transport" or retried:
+            # A transport FAULT is a row the client actually saw fail. A connect-retried row that
+            # then succeeded is reported under `retried` only: counting it here pushed boxes with a
+            # flaky keep-alive path into permanent AMBER/RED and shed work to weaker tiers for no
+            # upstream reason (the retry is apex's own recovery, invisible to the client).
+            if kind == "transport":
                 b["transport_errors"] += 1
             if row.get("upstream_rejected") is True:
                 b["upstream_rejected"] += 1
@@ -434,7 +436,7 @@ def render(r: dict) -> str:
     lines.append(f"thresholds: AMBER 429>={_pct(th['amber_429'])} or transport>="
                  f"{_pct(th['amber_transport'])}; RED either>{_pct(th['red'])} or "
                  f"retry-after within {RECENT_S:.0f}s; n<{MIN_SAMPLE} -> GREEN (insufficient "
-                 f"sample); xport includes connect-retried rows, excludes local PoolTimeout")
+                 f"sample); xport = client-visible faults only; retried shown separately, excludes local PoolTimeout")
     return "\n".join(lines)
 
 

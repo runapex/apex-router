@@ -46,6 +46,7 @@ def batch_over_preamble(
     enable_thinking: bool = False,
     temperature: float = 0.3,
     top_p: float = 0.95,
+    raise_on_truncation: bool = True,
 ) -> list[oc.ChatResult]:
     """Run each item against a frozen `preamble`, reusing the prompt cache across items.
 
@@ -84,6 +85,7 @@ def batch_over_preamble(
                 enable_thinking=enable_thinking,
                 temperature=temperature,
                 top_p=top_p,
+                raise_on_truncation=raise_on_truncation,
             )
         )
     return results
