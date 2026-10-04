@@ -226,7 +226,7 @@ const POLL_STATES = new WeakMap<Runtime, PollState>()
 
 /** session.start: one poll now (with route-advise, in the background), then every 60 s. */
 export async function start(host: Host, rt: Runtime): Promise<void> {
-  if (rt.backendRefused !== null) toastOnce(host, rt, 'backend-dir', `datapce: ${rt.backendRefused}`, await host.now())
+  if (rt.backendRefused !== null) toastOnce(host, rt, 'backend-dir', rt.backendRefused, await host.now())
   let st = POLL_STATES.get(rt)
   if (st === undefined) {
     st = { inbox: [], up: {}, lastAdvise: Number.NEGATIVE_INFINITY, verdicts: {} }

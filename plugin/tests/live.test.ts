@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Measure } from '../types/index.d.ts'
 import { tick } from '../hooks/live.ts'
+import { handoffToast } from '../hooks/handoff.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
 import { EMPTY_SIGNALS } from '../hooks/state.ts'
 import { close } from './fixtures/close.ts'
@@ -27,7 +28,7 @@ describe('live: tick', () => {
     expect(v.toasts).toEqual([])
     v = tick(rt, T0 + 120_000, M(95), v.view)
     expect(v.view.level).toBe('RED')
-    expect(v.toasts).toEqual([['red', 'datapce: pressure RED — serialize heavy fan-out']])
+    expect(v.toasts).toEqual([['red', 'pressure RED — serialize heavy fan-out']])
     expect(rt.profileDirty).toBe(true)
   })
 
@@ -53,7 +54,7 @@ describe('live: tick', () => {
     for (let i = 0; i < 3; i++) rt.bashEvents.push({ cmd: 'ornith', signal: 'OrnithBusy', isError: true, t: T0 + i })
     const v = tick(rt, T0 + 60_000, M(10), EMPTY_SIGNALS)
     expect(v.view.breakers).toEqual({ ornith: 'open' })
-    expect(v.toasts).toContainEqual(['breaker:ornith', 'datapce: ornith lane breaker open — escalate for 10 min'])
+    expect(v.toasts).toContainEqual(['breaker:ornith', 'ornith lane breaker open — escalate for 10 min'])
   })
 
   test('a failure while the breaker is open does not extend the cooldown', () => {
@@ -76,6 +77,20 @@ describe('live: tick', () => {
     expect(v.view.breakers).toEqual({ ornith: 'open' })
   })
 
+  test('no toast text carries its own datapce: prefix (the host adds it)', () => {
+    const rt = rtAt({ budgetUsd: 10 })
+    for (let i = 0; i < 3; i++) rt.bashEvents.push({ cmd: 'ornith', signal: 'OrnithBusy', isError: true, t: T0 + i })
+    let v = { view: EMPTY_SIGNALS, toasts: [] as [string, string][] }
+    const texts: string[] = [handoffToast(1_000_000)]
+    for (let i = 1; i <= 5; i++) {
+      rt.minute.spend = 0.5
+      v = tick(rt, T0 + i * 60_000, M(100, 0.5 * i), v.view)
+      texts.push(...v.toasts.map(([, t]) => t))
+    }
+    expect(texts.length).toBeGreaterThan(2)
+    for (const t of texts) expect(t.startsWith('datapce:')).toBe(false)
+  })
+
   test('budget burn over both windows toasts', () => {
     const rt = rtAt({ budgetUsd: 10 })
     let v = { view: EMPTY_SIGNALS, toasts: [] as [string, string][] }
@@ -85,7 +100,7 @@ describe('live: tick', () => {
     }
     expect(v.view.budgetBurnShort!).toBeGreaterThan(10)
     expect(v.view.budgetBurnLong!).toBeGreaterThan(6)
-    expect(v.toasts).toContainEqual(['budget', 'datapce: budget burning 72× (5 min) / 72× (60 min)'])
+    expect(v.toasts).toContainEqual(['budget', 'budget burning 72× (5 min) / 72× (60 min)'])
     expect(v.view.minutesToExhaust).not.toBeNull()
     expect(v.view.minutesToExhaust!).toBeGreaterThanOrEqual(0)
   })
@@ -183,9 +198,9 @@ describe('live: hooks', () => {
     await world.clock.advance(60_000)
     expect(world.toasts).toEqual([])
     await world.clock.advance(60_000)
-    expect(world.toasts).toEqual(['datapce: pressure RED — serialize heavy fan-out'])
+    expect(world.toasts).toEqual(['pressure RED — serialize heavy fan-out'])
     await world.clock.advance(180_000)
-    expect(world.toasts).toEqual(['datapce: pressure RED — serialize heavy fan-out'])
+    expect(world.toasts).toEqual(['pressure RED — serialize heavy fan-out'])
   })
 
   test('nothing is persisted as an anomaly model', async ($, on) => {
