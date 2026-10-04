@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import pytest
 
 from apex_router.proxy_engine.config import Config
 from apex_router.proxy_engine.proxy.upstream import Upstream
@@ -185,9 +186,28 @@ def test_negative_backoff_does_not_break_retry(tmp_path):
     assert asyncio.run(run()) == b"ok"
 
 
-def test_stats_records_backoff_for_latency_attribution(tmp_path):
+def test_stats_records_backoff_for_latency_attribution(tmp_path, monkeypatch):
     # F4: the caller needs the backoff duration so it can bill apex, not upstream. send_stream must
     # populate the stats out-param with the total slept seconds and the retry count.
+    # Deterministic: a virtual clock + fake sleep (advances the clock by exactly the requested delay)
+    # and pinned jitter replace wall-clock time, so recorded backoff == scheduled backoff exactly.
+    import types
+
+    from apex_router.proxy_engine.proxy import upstream as upstream_mod
+
+    now = {"t": 0.0}
+    slept: list[float] = []
+
+    async def fake_sleep(d):
+        slept.append(d)
+        now["t"] += d
+
+    monkeypatch.setattr(upstream_mod, "asyncio", types.SimpleNamespace(sleep=fake_sleep))
+    monkeypatch.setattr(upstream_mod, "time", types.SimpleNamespace(
+        perf_counter=lambda: now["t"], monotonic=lambda: now["t"]))
+    # equal-jitter: delay = half + uniform(0, half). Pin uniform to its upper bound -> delay == capped.
+    monkeypatch.setattr(upstream_mod.random, "uniform", lambda lo, hi: hi)
+
     cfg = Config(home=tmp_path, upstream_connect_retries=3, upstream_connect_backoff_s=0.01)
     calls = {"n": 0}
 
@@ -208,10 +228,10 @@ def test_stats_records_backoff_for_latency_attribution(tmp_path):
 
     stats = asyncio.run(run())
     assert stats.get("connect_retries") == 2  # two retries happened
-    # equal-jitter: each sleep ∈ [capped/2, capped]. Sleep0 cap=0.01→[0.005,0.01],
-    # sleep1 cap=0.02→[0.01,0.02]. Total ∈ [0.015, 0.03].
-    total = stats.get("connect_backoff_s", 0.0)
-    assert 0.015 - 1e-9 <= total <= 0.03 + 1e-9, total
+    # Schedule: sleep0 cap=0.01, sleep1 cap=0.02 (exponential, jitter pinned to the cap).
+    assert slept == [0.01, 0.02]
+    # Recorded backoff is the measured elapsed sleep == the scheduled total, exactly (virtual clock).
+    assert stats.get("connect_backoff_s") == pytest.approx(sum(slept), abs=1e-12)
 
 
 def test_backoff_is_jittered_not_deterministic(tmp_path):
