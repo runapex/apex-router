@@ -72,6 +72,8 @@ export type Runtime = {
   workflows: Map<string, number>
   injectedBytes: number
   injectedSections: number
+  /** The last prompt.compose decision (text and whether it was admitted); null while GREEN. */
+  composeDecision: { text: string; admitted: boolean } | null
   toastAt: Map<string, number>
   minute: MinuteBucket
   minutes: MinuteBucket[]
@@ -113,6 +115,7 @@ export function newRuntime(options: Options): Runtime {
     workflows: new Map(),
     injectedBytes: 0,
     injectedSections: 0,
+    composeDecision: null,
     toastAt: new Map(),
     minute: { steps: 0, failed: 0, spend: 0 },
     minutes: [],

@@ -5,6 +5,7 @@ import { start as backendStart } from './backend.ts'
 import { install as band, measureOf, refreshStatus } from './band.tsx'
 import { checkHandoff } from './handoff.ts'
 import type { Host } from './host.ts'
+import { composeSections, describe as injectDescribe, skillSection, start as injectStart } from './inject.ts'
 import { start as liveStart } from './live.ts'
 import {
   flushAll,
@@ -81,6 +82,7 @@ export const register: Register = (on, raw) => {
     await backendStart(host, rt)
     await liveStart(host, rt, () => lastMeasure)
     await paneStart(host, rt)
+    await injectStart(host, rt)
     return r
   })
 
@@ -103,8 +105,22 @@ export const register: Register = (on, raw) => {
 
   on('skill.prompt', async ($, e, next) => {
     const r = await next(e)
-    observeSkill(rt, e.skill, await hostOf($).now())
-    return r
+    const host = hostOf($)
+    const now = await host.now()
+    observeSkill(rt, e.skill, now)
+    return { ...r, text: await skillSection(host, rt, e.skill, r.text, now) }
+  })
+
+  on('tool.describe', { tool: ['Agent', 'Workflow'] }, async ($, e, next) => {
+    const r = await next(e)
+    const host = hostOf($)
+    return { ...r, description: await injectDescribe(host, rt, e.tool, r.description, await host.now()) }
+  })
+
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    const host = hostOf($)
+    return { ...r, sections: await composeSections(host, rt, e, r.sections, await host.now()) }
   })
 
   // Advise-only (pivot P1): the spawn always reaches the engine exactly as requested.

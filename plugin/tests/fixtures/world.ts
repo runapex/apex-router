@@ -185,6 +185,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('tool.describe', ($, e) => ({ description: e.description }))
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'INTRO', scope: 'shared' as const }] }))
   on('tool.call', () => ({ result: { stdout: world.bashOutput, stderr: '' } }) as never)
   on('turn.step', async function* ($, e: TurnStepInput) {
     const result: TurnStepResult = {
