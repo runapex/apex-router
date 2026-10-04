@@ -19,6 +19,8 @@ export type World = {
   runs: string[][]
   asked: string[]
   store: Map<string, unknown>
+  /** What the plugin published with `$.state.set`, by key (latest value). */
+  published: Map<string, unknown>
   toasts: string[]
   statuses: (string | undefined)[]
   opened: string[]
@@ -58,6 +60,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
     runs: [],
     asked: [],
     store: new Map(),
+    published: new Map(),
     toasts: [],
     statuses: [],
     opened: [],
@@ -116,19 +119,19 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
     const custom = world.answer(argv)
     if (custom !== null) return run(custom.stdout, custom.exitCode)
     const stdin = e.init?.stdin ?? ''
-    if (argv[0] === '/usr/bin/tee' && argv[1] === '-a' && argv[2] !== undefined) {
+    if (argv[0] === '/usr/bin/tee' && argv[1] === '-a' && argv[2] === '--' && argv[3] !== undefined) {
       const lines = stdin.split('\n').filter(l => l !== '')
-      world.appended.set(argv[2], [...(world.appended.get(argv[2]) ?? []), ...lines])
+      world.appended.set(argv[3], [...(world.appended.get(argv[3]) ?? []), ...lines])
       return run(stdin)
     }
-    if (argv[0] === '/usr/bin/tail' && argv[1] === '-n') {
-      const text = world.files.get(argv[3] ?? '')
+    if (argv[0] === '/usr/bin/tail' && argv[1] === '-n' && argv[3] === '--') {
+      const text = world.files.get(argv[4] ?? '')
       if (text === undefined) return run('', 1)
       const lines = text.split('\n').filter(l => l !== '')
       return run(`${lines.slice(-Number(argv[2])).join('\n')}\n`)
     }
-    if (argv[0] === '/bin/rm' && argv[1] === '-f') {
-      for (const p of argv.slice(2)) world.files.delete(p)
+    if (argv[0] === '/bin/rm' && argv[1] === '-f' && argv[2] === '--') {
+      for (const p of argv.slice(3)) world.files.delete(p)
       return run('')
     }
     return run('', 127)
@@ -137,6 +140,10 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
   on('store.set', ($, e) => {
     world.store.set(e.key, e.value)
     return { value: undefined }
+  })
+  on('state.set', (_$, e, next) => {
+    world.published.set(e.key, e.value)
+    return next(e)
   })
   on('env.get', ($, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
   on('session.id', () => ({ value: sessionId }))

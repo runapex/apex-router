@@ -5,7 +5,7 @@ import type { Host } from './host.ts'
 export async function appendLines(host: Host, path: string, lines: readonly string[]): Promise<boolean> {
   if (lines.length === 0) return true
   try {
-    const r = await host.run(['/usr/bin/tee', '-a', path], { stdin: `${lines.join('\n')}\n`, timeoutMs: 5000 })
+    const r = await host.run(['/usr/bin/tee', '-a', '--', path], { stdin: `${lines.join('\n')}\n`, timeoutMs: 5000 })
     return r.exitCode === 0
   } catch {
     return false
@@ -40,7 +40,7 @@ export async function readJson(host: Host, path: string): Promise<unknown> {
 
 export async function tailLines(host: Host, path: string, n: number): Promise<string[]> {
   try {
-    const r = await host.run(['/usr/bin/tail', '-n', String(n), path], { timeoutMs: 5000 })
+    const r = await host.run(['/usr/bin/tail', '-n', String(n), '--', path], { timeoutMs: 5000 })
     return r.exitCode === 0 ? r.stdout.split('\n').filter(l => l !== '') : []
   } catch {
     return []

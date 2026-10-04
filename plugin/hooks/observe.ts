@@ -211,7 +211,7 @@ export async function start(host: Host, e: SessionStartInput, rt: Runtime): Prom
     const dir = observeDir(rt.backendDir)
     await ensureDir(host, dir)
     const old = expiredFiles((await host.list(dir)).map(entry => entry.name), await host.now())
-    if (old.length > 0) await host.run(['/bin/rm', '-f', ...old.map(n => `${dir}/${n}`)], { timeoutMs: 5000 })
+    if (old.length > 0) await host.run(['/bin/rm', '-f', '--', ...old.map(n => `${dir}/${n}`)], { timeoutMs: 5000 })
   } catch {
     // retention is best effort
   }

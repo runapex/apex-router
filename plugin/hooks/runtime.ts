@@ -51,6 +51,8 @@ export type Runtime = {
   sessionId: string
   home: string
   backendDir: string
+  /** Why backend detection is off (a configured backendDir that is not absolute), or null. */
+  backendRefused: string | null
   surface: string | null
   arm: Arm
   level: LevelState
@@ -91,6 +93,7 @@ export function newRuntime(options: Options): Runtime {
     sessionId: '',
     home: '',
     backendDir: options.backendDir,
+    backendRefused: null,
     surface: null,
     arm: 'evidence',
     level: { level: 'GREEN', up: 0, down: 0 },
@@ -129,6 +132,13 @@ export function newRuntime(options: Options): Runtime {
 export const expandHome = (path: string, home: string): string =>
   path === '~' ? home : path.startsWith('~/') ? `${home}${path.slice(1)}` : path
 
+/** The backend directory as configured: `~` expanded, then required absolute; otherwise the default, with a reason. */
+export function resolveBackendDir(configured: string, home: string): { dir: string; refused: string | null } {
+  const dir = expandHome(configured, home)
+  if (dir.startsWith('/')) return { dir, refused: null }
+  return { dir: expandHome(DEFAULTS.backendDir, home), refused: `backendDir "${configured}" is not absolute; backend detection is off` }
+}
+
 export const TOAST_EVERY_MS = 600_000
 
 /** §6: each toast kind at most once per 10 minutes. */
@@ -143,7 +153,9 @@ export function toastOnce(host: Host, rt: Runtime, kind: string, text: string, n
 /** session.start, first: who and where this session is. register.ts calls it before any module. */
 export async function identify(host: Host, e: SessionStartInput, rt: Runtime): Promise<void> {
   rt.home = await host.home()
-  rt.backendDir = expandHome(rt.options.backendDir, rt.home)
+  const resolved = resolveBackendDir(rt.options.backendDir, rt.home)
+  rt.backendDir = resolved.dir
+  rt.backendRefused = resolved.refused
   rt.sessionId = await host.sessionId()
   rt.surface = e.surface
   rt.startedAt = await host.now()

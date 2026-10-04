@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
+import { start as backendStart } from './backend.ts'
 import { install as band, measureOf } from './band.tsx'
 import type { Host } from './host.ts'
 import {
@@ -74,6 +75,7 @@ export const register: Register = (on, raw) => {
     await identify(host, e, rt)
     await observeStart(host, e, rt)
     await routerStart(host, rt)
+    await backendStart(host, rt)
     return r
   })
 
