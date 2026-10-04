@@ -54,6 +54,57 @@ def test_cusum_demotes_a_small_sustained_regression():
     assert states[-1] == "DRIFTING" and c["below"] == 0
 
 
+def window(good):
+    return [1] * good + [0] * (10 - good)
+
+
+def drifting_cell():
+    c, states = run(window(8) * 2, cell=ready_cell())
+    assert states[-1] == "DRIFTING"
+    return c
+
+
+def test_exit_needs_exactly_three_good_windows():
+    c = drifting_cell()
+    for _ in range(2):
+        c, states = run(window(10), cell=c)
+        assert states[-1] == "DRIFTING"
+    c, states = run(window(10), cell=c)
+    assert states[-1] == "READY"
+
+
+def test_enter_needs_exactly_two_bad_windows_without_cusum():
+    # target 0.95: 9/10 windows are "below" yet the CUSUM (p0 capped 0.98) stays under h after 2 windows,
+    # so only the below-streak can demote.
+    c, _ = run([1] * 80, target=0.95)
+    assert c["state"] == "READY"
+    c, states = run(window(9), cell=c, target=0.95)
+    assert states[-1] == "READY" and c["below"] == 1
+    c, states = run(window(10), cell=c, target=0.95)          # a good window resets the streak
+    assert states[-1] == "READY" and c["below"] == 0
+    c, _ = run(window(9), cell=c, target=0.95)
+    c, states = run(window(9), cell=c, target=0.95)
+    assert c["cusum"] < 4.0
+    assert states[-1] == "DRIFTING"
+
+
+def test_drifting_windows_reset_the_opposite_streak():
+    c = drifting_cell()
+    c, _ = run(window(10) * 2, cell=c)
+    assert c["above"] == 2
+    c, states = run(window(8), cell=c)                         # bad window resets above
+    assert states[-1] == "DRIFTING" and c["above"] == 0 and c["below"] == 1
+    c, states = run(window(10) * 2, cell=c)
+    assert states[-1] == "DRIFTING" and c["below"] == 0        # good window resets below
+    c, states = run(window(10), cell=c)
+    assert states[-1] == "READY"
+    c = drifting_cell()
+    c, _ = run(window(8) * 2 + window(10) + window(8) * 2, cell=c)
+    assert c["state"] == "DRIFTING" and c["below"] == 2        # not rebaselined: streak was broken
+    c, _ = run(window(8), cell=c)
+    assert c["state"] == "COLD"
+
+
 def test_stable_new_regime_rebaselines():
     c, _ = run([1] * 5 + [0] * 5, cell=ready_cell())
     assert c["state"] == "DRIFTING"
