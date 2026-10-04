@@ -652,3 +652,24 @@ class TestWriterParity(unittest.TestCase):
         self.assertEqual(st["writer_parity"]["days"], {"2026-10-01": {"plugin": 1, "hook": 1, "workflow": 0}})
         self.assertEqual(st["dispatch_deduped"], 1)
         self.assertEqual(st["writer_parity"]["parity_days"], 1)
+
+
+class TestModuleEntryPoint(unittest.TestCase):
+    """`python -m apex_router.route_join` must run main(), not import silently (U1 finding)."""
+
+    def test_python_dash_m_prints_json_and_writes_nothing(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            log = d / "route_log.jsonl"
+            _w(log, [_dispatch(1_700_000_000, "haiku", "Find X", "a1", "toolu_1")])
+            labeled = d / "labeled_table.jsonl"
+            env = {**os.environ, "PYTHONPATH": str(SRC), "APEX_ROUTER_LOG": str(log),
+                   "APEX_LABELED_TABLE": str(labeled), "APEX_TELEMETRY": str(d / "telemetry.jsonl"),
+                   "APEX_HOME": str(d), "HOME": str(d)}
+            p = subprocess.run([sys.executable, "-m", "apex_router.route_join", "--no-write", "--json"],
+                               capture_output=True, text=True, env=env, timeout=60, cwd=d)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            out = json.loads(p.stdout)
+            self.assertEqual(out["stats"]["claude_code_rows"], 1)
+            self.assertFalse(labeled.exists())

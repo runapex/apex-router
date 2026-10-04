@@ -5,6 +5,7 @@
 import type { Level, Measure, SignalsView } from '../types/index.d.ts'
 import { budgetBurn } from './core/cost.ts'
 import type { Host } from './host.ts'
+import { refreshStatus } from './band.tsx'
 import { everyOnce, toastOnce, type Runtime } from './runtime.ts'
 import {
   admissionRate, breakerNew, breakerRecord, breakerState, burnAlert, fanoutRisk, levelStep, limitLevel, LONG_LIMIT, SHORT_LIMIT,
@@ -15,6 +16,7 @@ import { EMPTY_SIGNALS } from './state.ts'
 export const TICK_MS = 60_000
 const WINDOW_MIN = 60
 const MIN_LONG_MINUTES = 5
+const EXIT_STREAK = 3 // levelStep's default exit streak
 const SLOPE_MS = 10 * 60_000
 
 export function tick(rt: Runtime, now: number, m: Measure | null, _prev: SignalsView): { view: SignalsView; toasts: [string, string][] } {
@@ -86,6 +88,8 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   return {
     view: {
       level: rt.level.level,
+      observed,
+      exitIn: rt.level.down > 0 ? EXIT_STREAK - rt.level.down : null,
       burnShort: burn.short,
       burnLong: burn.long,
       budgetBurn: whole?.burn ?? null,
@@ -111,6 +115,7 @@ export async function start(host: Host, rt: Runtime, measureNow: () => Measure |
       prev = view
       for (const [kind, text] of toasts) toastOnce(host, rt, kind, text, now)
       await host.publish.signals(view)
+      refreshStatus(host, rt, measureNow())
     })().catch(() => undefined)
   })
 }

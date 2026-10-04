@@ -10,6 +10,8 @@ export const PANE_ID = 'datapce'
 
 export const EMPTY_SIGNALS: SignalsView = {
   level: 'GREEN',
+  observed: 'GREEN',
+  exitIn: null,
   burnShort: null,
   burnLong: null,
   budgetBurn: null,

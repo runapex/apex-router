@@ -62,7 +62,8 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
 }
 
 function signalRows(s: SignalsView, b: BackendView): string[] {
-  const rows = [`pressure ${s.level} · burn 5m ${fixed(s.burnShort)} / 60m ${fixed(s.burnLong)}`]
+  const settling = s.exitIn !== null && s.observed !== s.level ? ` (settling: now ${s.observed}, exits after ${s.exitIn} more calm window${s.exitIn === 1 ? '' : 's'})` : ''
+  const rows = [`pressure ${s.level}${settling} · burn 5m ${fixed(s.burnShort)} / 60m ${fixed(s.burnLong)}`]
   const families = Object.entries(b.families)
   if (families.length > 0) rows.push(`families: ${families.map(([f, l]) => `${f} ${l}`).join(', ')}`)
   const lanes = Object.entries(s.breakers)
@@ -170,13 +171,13 @@ export function install(on: On, rt: Runtime): void {
     const args = e.args.trim().toLowerCase()
     record(rt, { ev: 'command', ts: await $.clock.now(), command: 'apex', args: loggedArg(args) })
     if (args === 'handoff') {
-      return { text: 'datapce: handoff block added — fill every field, then start a fresh session.', context: [HANDOFF_TEMPLATE] }
+      return { text: 'handoff block added — fill every field, then start a fresh session.', context: [HANDOFF_TEMPLATE] }
     }
     if (args === 'close') {
       await $.ui.close({ id: PANE_ID })
-      return { text: 'datapce: pane closed' }
+      return { text: 'pane closed' }
     }
-    if (args !== '' && args !== 'open' && args !== 'json') return { text: `datapce: unknown argument "${args}" — ${USAGE}` }
+    if (args !== '' && args !== 'open' && args !== 'json') return { text: `unknown argument "${args}" — ${USAGE}` }
     const sections = paneSections({
       ds: await read($, dispatches),
       s: await read($, signals),
@@ -188,7 +189,7 @@ export function install(on: On, rt: Runtime): void {
     if (args === 'json') return { text: JSON.stringify({ sections }) }
     if (rt.options.pane === 'off') return { text: summaryText(sections) }
     await $.ui.open({ id: PANE_ID, title: 'datapce', focus: true, closeOnEscape: true })
-    return { text: 'datapce: pane open (/apex close closes it)' }
+    return { text: 'pane open (/apex close closes it)' }
   })
 
   on('ui.render', { component: 'Pane', requestId: 'datapce' }, async ($, e) => {

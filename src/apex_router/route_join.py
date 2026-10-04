@@ -776,3 +776,7 @@ def main(argv=None) -> int:
         # Fail-safe: never let a readout failure become a caller failure.
         pass
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

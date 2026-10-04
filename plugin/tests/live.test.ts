@@ -149,7 +149,33 @@ describe('live: tick', () => {
   })
 })
 
+describe('live: settling', () => {
+  test('a level held by the exit streak reports the observed level and the windows left', () => {
+    const rt = rtAt()
+    let v = tick(rt, T0 + 60_000, M(75), EMPTY_SIGNALS).view
+    v = tick(rt, T0 + 120_000, M(75), v).view
+    expect([v.level, v.observed, v.exitIn]).toEqual(['AMBER', 'AMBER', null])
+    v = tick(rt, T0 + 180_000, M(10), v).view
+    expect([v.level, v.observed, v.exitIn]).toEqual(['AMBER', 'GREEN', 2])
+    v = tick(rt, T0 + 240_000, M(10), v).view
+    expect([v.level, v.observed, v.exitIn]).toEqual(['AMBER', 'GREEN', 1])
+    v = tick(rt, T0 + 300_000, M(10), v).view
+    expect([v.level, v.observed, v.exitIn]).toEqual(['GREEN', 'GREEN', null])
+  })
+})
+
 describe('live: hooks', () => {
+  test('the status entry follows the level on the same tick that publishes it', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 75, resetsAt: '2026-10-03T20:00:00Z' }] })
+    expect(world.statuses.at(-1)).toMatch(/^apex ●GREEN/)
+    await world.clock.advance(60_000)
+    expect(world.statuses.at(-1)).toMatch(/^apex ●GREEN/)
+    await world.clock.advance(60_000)
+    expect(world.statuses.at(-1)).toMatch(/^apex ●AMBER/)
+  })
+
   test('a RED rate limit toasts once from the timer', async ($, on) => {
     const world = worldOf(on)
     await $.session.start(SESSION)

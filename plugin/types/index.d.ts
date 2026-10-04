@@ -87,6 +87,10 @@ export type CellView = {
 
 export type SignalsView = {
   level: Level
+  /** What the last window observed; differs from `level` while the enter/exit streak holds it. */
+  observed: Level
+  /** Calm windows still needed before `level` drops to `observed` (null when not settling). */
+  exitIn: number | null
   burnShort: number | null
   burnLong: number | null
   budgetBurn: number | null

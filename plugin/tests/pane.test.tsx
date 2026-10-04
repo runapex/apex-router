@@ -21,6 +21,13 @@ const d = (over: Partial<Dispatch>): Dispatch => ({
 })
 
 describe('pane: sections', () => {
+  test('pressure row explains a level that is still settling', () => {
+    const rows = (over: object) => paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'AMBER', ...over } })).find(x => x.id === 'signals')!.rows[0]!
+    expect(rows({ observed: 'GREEN', exitIn: 2 })).toBe('pressure AMBER (settling: now GREEN, exits after 2 more calm windows) · burn 5m — / 60m —')
+    expect(rows({ observed: 'AMBER', exitIn: null })).not.toMatch(/settling/)
+    expect(rows({ observed: 'RED', exitIn: null })).not.toMatch(/settling/)
+  })
+
   test('empty: honest placeholders; no Lanes without a backend; never an anomaly or enforce section', () => {
     const s = paneSections(empty())
     expect(s.map(x => x.title)).toEqual(['Dispatches', 'Signals', 'Evidence', 'Profile'])
@@ -111,7 +118,7 @@ describe('pane: hooks', () => {
     await $.agent.spawn(spawnInput())
     const r = await $.command.run(command('apex'))
     expect(world.opened).toEqual(['datapce'])
-    expect(r.text).toBe('datapce: pane open (/apex close closes it)')
+    expect(r.text).toBe('pane open (/apex close closes it)')
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'datapce', surface, ...PANE })
       expect(await ui.find({ type: 'Text', text: 'Dispatches' })).toBeDefined()
@@ -126,7 +133,17 @@ describe('pane: hooks', () => {
     await $.session.start(SESSION)
     const r = await $.command.run(command('apex', 'close'))
     expect(world.closed).toEqual(['datapce'])
-    expect(r.text).toBe('datapce: pane closed')
+    expect(r.text).toBe('pane closed')
+  })
+
+  test('command output carries no datapce prefix (the host adds the plugin name)', async ($, on) => {
+    worldOf(on)
+    await $.session.start(SESSION)
+    for (const args of ['', 'open', 'close', 'handoff', 'bogus']) {
+      const r = await $.command.run(command('apex', args))
+      expect(r.text ?? '').not.toMatch(/datapce:/i)
+      expect(r.text ?? '').not.toBe('')
+    }
   })
 
   test('/apex json answers the sections', async ($, on) => {
@@ -142,7 +159,7 @@ describe('pane: hooks', () => {
     world.store.set('datapce.cells', { [cellKey('explore', 'GREEN', 'sonnet')]: { n: 35, pass: 35, state: 'READY', winN: 5, winPass: 5, below: 0, above: 0, cusum: 0, p0: 1 } })
     await $.session.start(SESSION)
     const r = await $.command.run(command('apex', 'enforce on'))
-    expect(r.text).toBe('datapce: unknown argument "enforce on" — usage: /apex [open|close|handoff|json]')
+    expect(r.text).toBe('unknown argument "enforce on" — usage: /apex [open|close|handoff|json]')
     expect(world.store.has('datapce.enforce')).toBe(false)
     await $.agent.spawn(spawnInput())
     expect(world.spawned[0]?.model).toBeUndefined()
