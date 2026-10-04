@@ -4,7 +4,7 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
-## 0.4.0 — unreleased
+## 0.4.0 — 2026-10-04
 
 One product, one install: datapce, a Claude Code plugin (alias apex-router), with the pip package
 as its optional backend. Advise-only: it never changes the model you chose.
