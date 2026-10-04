@@ -353,7 +353,7 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
       queue(rt, route)
     }
     const tier = tierOf(d.resolved)
-    // Until start() has loaded the persisted cells, a label would be flushed over them (hot reload).
+    // Until start() has loaded the persisted cells, a label would be flushed over them.
     if (tier !== null && rt.storeLoaded) {
       const cell = cellKey(d.taskType, d.level, tier)
       pushStat(rt.stats, cell, 'tokens', tokens)
@@ -373,7 +373,9 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
 export function end(rt: Runtime): void {
   try {
     for (const route of rt.routes.values()) if (!route.done) queue(rt, route)
-    // The next session (after /clear) shares neither runs nor escalation candidates with this one.
+    // After /clear or resume the process goes on under a new session id (no session.start): the next
+    // session shares neither runs nor escalation candidates with this one. byAgent stays, so an agent
+    // that spans the /clear still finds its dispatch (its row was already written as async).
     rt.routes.clear()
     rt.workflows.clear()
   } catch {

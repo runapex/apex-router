@@ -4,6 +4,7 @@ import type { Measure } from '../types/index.d.ts'
 import { tick } from '../hooks/live.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
 import { EMPTY_SIGNALS } from '../hooks/state.ts'
+import { close } from './fixtures/close.ts'
 import { MEASURE, SESSION } from './fixtures/inputs.ts'
 import { BACKEND, T0, worldOf } from './fixtures/world.ts'
 
@@ -87,6 +88,16 @@ describe('live: tick', () => {
     expect(v.toasts).toContainEqual(['budget', 'datapce: budget burning 72× (5 min) / 72× (60 min)'])
     expect(v.view.minutesToExhaust).not.toBeNull()
     expect(v.view.minutesToExhaust!).toBeGreaterThanOrEqual(0)
+  })
+
+  test('after a reload the whole-session burn covers spend since identify, not the whole process', () => {
+    // identify ran at T0 on a fresh runtime: the engine's cost already holds $9 spent before the reload
+    const rt = rtAt({ budgetUsd: 10 })
+    let v = tick(rt, T0 + 60_000, M(10, 9), EMPTY_SIGNALS).view
+    expect(v.budgetBurn).toBe(0)
+    v = tick(rt, T0 + 10 * 60_000, M(10, 9.1), v).view
+    // $0.10 over 10 min against $10/day ≈ 1.44×; the whole $9.10 over 10 min would be ≈ 131×
+    close(v.budgetBurn, (0.1 / 10) / (10 / 1440))
   })
 
   test('after a hot reload (startedAt 0) the whole-session burn is unknown, not ~0', () => {

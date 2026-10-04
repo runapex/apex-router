@@ -57,12 +57,16 @@ export type Runtime = {
   arm: Arm
   level: LevelState
   cells: Record<string, Cell>
-  /** True once session.start loaded the persisted cells/stats/profile; before that nothing is persisted. */
+  /** True once session.start loaded the persisted cells (router.start); before that no cell or label is persisted. */
   storeLoaded: boolean
   cellsDirty: boolean
   stats: Record<string, Record<string, Welford>>
+  /** True once observe.start read the persisted stats; an unreadable value is never overwritten. */
+  statsLoaded: boolean
   statsDirty: boolean
   profile: ProfileStore
+  /** True once observe.start read the persisted profile; an unreadable value is never overwritten. */
+  profileLoaded: boolean
   profileDirty: boolean
   rows: string[]
   routeRows: string[]
@@ -115,8 +119,10 @@ export function newRuntime(options: Options): Runtime {
     storeLoaded: false,
     cellsDirty: false,
     stats: {},
+    statsLoaded: false,
     statsDirty: false,
     profile: EMPTY_PROFILE_STORE,
+    profileLoaded: false,
     profileDirty: false,
     rows: [],
     routeRows: [],

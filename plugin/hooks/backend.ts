@@ -221,7 +221,7 @@ async function publish(host: Host, rt: Runtime, view: BackendView): Promise<void
   await host.publish.backend(view)
 }
 
-/** Poll state per runtime: a second session.start (resume, /clear) keeps polling with the same state. */
+/** Poll state per runtime: should session.start ever run twice in one module lifetime, polling keeps the same state (/clear and resume do not re-fire it; a reload builds a new runtime). */
 const POLL_STATES = new WeakMap<Runtime, PollState>()
 
 /** session.start: one poll now (with route-advise, in the background), then every 60 s. */

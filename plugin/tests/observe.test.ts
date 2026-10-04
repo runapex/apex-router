@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import type { Host } from '../hooks/host.ts'
 import {
-  bashEventOf, expiredFiles, measureRow, observePath, record, spawnRow, ROW_MAX_BYTES,
+  bashEventOf, expiredFiles, flushAll, measureRow, observePath, record, spawnRow, start as observeStart, ROW_MAX_BYTES,
 } from '../hooks/observe.ts'
+import { start as routerStart } from '../hooks/router.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
 import { MEASURE, SESSION, spawnInput, stepInput } from './fixtures/inputs.ts'
 import { BACKEND, T0, drain, worldOf, type World } from './fixtures/world.ts'
@@ -129,4 +131,50 @@ describe('observe: hooks', () => {
     expect(p.skills).toEqual({})
     expect(Object.keys(world.store.get('datapce.stats') as object)).toEqual(['step|opus'])
   })
+})
+
+describe('observe: a store part that cannot be read is never overwritten', () => {
+  /** A host whose store throws for `failing`; every other call is a no-op except storeSet (recorded). */
+  const hostFailing = (failing: string, set: [string, unknown][]): Host => {
+    const noop = async (): Promise<undefined> => undefined
+    const publish = new Proxy({}, { get: () => noop })
+    const over: Record<string, unknown> = {
+      now: async () => T0,
+      list: async () => [],
+      every: () => undefined,
+      storeGet: async (key: string) => {
+        if (key === failing) throw new Error('store read failed')
+        return undefined
+      },
+      storeSet: async (key: string, value: unknown) => void set.push([key, value]),
+    }
+    return new Proxy({}, { get: (_t, key: string) => (key in over ? over[key] : key === 'publish' ? publish : noop) }) as never
+  }
+  const ready = () => {
+    const rt = newRuntime(optionsOf({}))
+    rt.backendDir = BACKEND
+    rt.sessionId = 'sess-0001'
+    return rt
+  }
+
+  for (const [failing, kept, written] of [
+    ['datapce.stats', 'datapce.stats', 'datapce.profile'],
+    ['datapce.profile', 'datapce.profile', 'datapce.stats'],
+  ] as const) {
+    test(`${failing} unreadable: a flush writes ${written} and the cells, never ${kept}`, async () => {
+      const set: [string, unknown][] = []
+      const host = hostFailing(failing, set)
+      const rt = ready()
+      await observeStart(host, SESSION, rt)
+      await routerStart(host, rt)
+      rt.statsDirty = true
+      rt.profileDirty = true
+      rt.cellsDirty = true
+      await flushAll(host, rt)
+      const keys = set.map(([k]) => k)
+      expect(keys).not.toContain(kept)
+      expect(keys).toContain(written)
+      expect(keys).toContain('datapce.cells')
+    })
+  }
 })

@@ -181,7 +181,7 @@ function keep(into: string[], rows: string[]): void {
 }
 
 export async function flushAll(host: Host, rt: Runtime): Promise<void> {
-  // Until identify resolved the directory (a hot reload skips it) rows stay buffered; a raw "~/…" would be a relative path.
+  // Until identify resolved the directory rows stay buffered; a raw "~/…" would be a relative path.
   if (rt.backendDir !== '') {
     const now = await host.now()
     const rows = rt.rows.splice(0)
@@ -189,10 +189,11 @@ export async function flushAll(host: Host, rt: Runtime): Promise<void> {
     const route = rt.routeRows.splice(0)
     if (route.length > 0 && !(await appendLines(host, routeLogPath(rt.backendDir), route))) keep(rt.routeRows, route)
   }
-  // Before session.start loaded them (a hot reload), writing would replace the persisted values.
+  // Each persisted value is written only once session.start read it: writing one that was never read
+  // (before session.start, or a read that failed) would replace what is stored.
   if (!rt.storeLoaded) return
   try {
-    if (rt.statsDirty) {
+    if (rt.statsDirty && rt.statsLoaded) {
       rt.statsDirty = false
       await host.storeSet('datapce.stats', rt.stats)
     }
@@ -200,7 +201,7 @@ export async function flushAll(host: Host, rt: Runtime): Promise<void> {
       rt.cellsDirty = false
       await host.storeSet('datapce.cells', rt.cells)
     }
-    if (rt.profileDirty) {
+    if (rt.profileDirty && rt.profileLoaded) {
       rt.profileDirty = false
       await host.storeSet('datapce.profile', rt.profile)
       await host.publish.profile(profileView(rt.profile))
@@ -221,14 +222,22 @@ export async function start(host: Host, e: SessionStartInput, rt: Runtime): Prom
   } catch {
     // retention is best effort
   }
+  // Stats and profile load apart: one that cannot be read starts empty and is never persisted this
+  // module lifetime, so the other still loads and a flush cannot overwrite the unread one.
   try {
     rt.stats = asStats(await host.storeGet('datapce.stats'))
+    rt.statsLoaded = true
+  } catch {
+    // unreadable: counted in memory only
+  }
+  try {
     const p = asProfile(await host.storeGet('datapce.profile'))
     const hash = await repoHash(e.cwd)
     rt.profile = p.repos.includes(hash) ? p : { ...p, repos: [...p.repos, hash].slice(-200) }
+    rt.profileLoaded = true
     rt.profileDirty = true
   } catch {
-    // a store that cannot be read starts empty
+    // unreadable: counted in memory only
   }
   try {
     everyOnce(host, rt, 'observe.flush', FLUSH_MS, () => {
