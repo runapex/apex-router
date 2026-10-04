@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -403,5 +404,272 @@ class TestReviewFixes(unittest.TestCase):
         self.assertIn("kept previous table", err.getvalue())
 
 
+
+def _plugin(ts, tier, desc, agent_id, tool_use_id, *, sid=S1, outcome="ok"):
+    """A datapce plugin route row: same schema plus inject_arm/injected (and end_reason when finished)."""
+    row = _dispatch(ts, tier, desc, agent_id, tool_use_id, sid=sid, outcome=outcome)
+    row.update({"inject_arm": "evidence", "injected": "no", "applied": "no"})
+    if outcome in ("ok", "error"):
+        row["end_reason"] = "answer" if outcome == "ok" else "error"
+    return row
+
+
+class TestDispatchDedupe(unittest.TestCase):
+    """The still-wired agent-route-log.sh hook and the plugin both log one Agent dispatch:
+    route_join keeps one row per (session_id, tool_use_id), the finished one first."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.log = self.d / "route_log.jsonl"
+        self.conf = self.d / "conformance.jsonl"
+        self.tel = self.d / "telemetry.jsonl"
+        _w(self.conf, [])
+        _w(self.tel, [])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cc(self, rows):
+        _w(self.log, rows)
+        res = route_join.join_labels(route_log_path=self.log, conformance_path=self.conf,
+                                     telemetry_path=self.tel)
+        return res, [r for r in res["table"] if r.get("surface") == "claude-code"]
+
+    def test_hook_async_and_plugin_ok_for_one_dispatch_is_one_row(self):
+        res, cc = self._cc([
+            _dispatch(100.0, "haiku", "Map the code", "a1", "t1", outcome="async"),  # hook, background
+            _plugin(160.0, "haiku", "Map the code", "a1", "t1", outcome="ok"),        # plugin, finished
+        ])
+        self.assertEqual(len(cc), 1)
+        self.assertEqual(cc[0]["outcome"], "ok")
+        self.assertEqual(cc[0]["label_status"], "labeled")
+        self.assertEqual(res["stats"]["claude_code_rows"], 1)
+        self.assertEqual(res["stats"]["dispatch_deduped"], 1)
+
+    def test_finished_row_wins_whichever_order(self):
+        _, cc = self._cc([
+            _plugin(100.0, "sonnet", "Fix it", "a1", "t1", outcome="error"),
+            _dispatch(101.0, "sonnet", "Fix it", "a1", "t1", outcome="async"),
+        ])
+        self.assertEqual([r["outcome"] for r in cc], ["error"])
+
+    def test_both_finished_prefers_the_plugin_row(self):
+        _, cc = self._cc([
+            _dispatch(100.0, "sonnet", "Fix it", "a1", "t1", outcome="ok"),
+            _plugin(140.0, "sonnet", "Fix it", "a1", "t1", outcome="error"),
+        ])
+        self.assertEqual([(r["outcome"], r["ts"]) for r in cc], [("error", 140.0)])
+
+    def test_a_duplicate_never_self_escalates(self):
+        # hook rows log the requested tier, the plugin row the same dispatch: one row, no escalation
+        res, cc = self._cc([
+            _dispatch(100.0, "haiku", "Fix the flaky test", "a1", "t1", outcome="async"),
+            _plugin(130.0, "haiku", "Fix the flaky test", "a1", "t1", outcome="ok"),
+            _dispatch(200.0, "opus", "Fix the flaky test", "a2", "t2"),
+        ])
+        self.assertEqual([r["tool_use_id"] for r in cc], ["t1", "t2"])
+        self.assertEqual(res["stats"]["escalated_inferred"], 1)
+        self.assertEqual(cc[0]["escalated_by"], "t2")
+
+    def test_rows_without_a_key_are_never_merged(self):
+        _, cc = self._cc([
+            _dispatch(100.0, "haiku", "A", None, None, outcome="async"),
+            _dispatch(110.0, "haiku", "A", None, None, outcome="async"),
+            _dispatch(120.0, "haiku", "B", "a3", "t3", sid=S1),
+            _dispatch(130.0, "haiku", "B", "a3", "t3", sid=S2),  # same tool_use_id, other session
+        ])
+        self.assertEqual(len(cc), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResumedSessionSecondStretch(unittest.TestCase):
+    """After /resume the engine reuses the resumed session's ORIGINAL id (live probe 2026-10-03):
+    a second stretch of rows lands under an id that already has rows. Distinct dispatches stay
+    distinct; escalation still needs the 2 h window."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.log, self.conf, self.tel = (self.d / n for n in ("route_log.jsonl", "conformance.jsonl", "telemetry.jsonl"))
+        _w(self.conf, [])
+        _w(self.tel, [])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cc(self, rows):
+        _w(self.log, rows)
+        res = route_join.join_labels(route_log_path=self.log, conformance_path=self.conf, telemetry_path=self.tel)
+        return res, [r for r in res["table"] if r.get("surface") == "claude-code"]
+
+    def test_second_stretch_keeps_every_dispatch_and_never_escalates_across_the_gap(self):
+        res, cc = self._cc([
+            _plugin(100.0, "haiku", "Fix the parser", "a1", "t1", sid=S1),
+            _plugin(500.0, "sonnet", "Other work", "a2", "t2", sid=S2),            # after /clear
+            _plugin(100.0 + 3 * 3600, "opus", "Fix the parser", "a3", "t3", sid=S1),  # after /resume S1
+        ])
+        self.assertEqual(sorted(r["tool_use_id"] for r in cc), ["t1", "t2", "t3"])
+        self.assertEqual(res["stats"]["dispatch_deduped"], 0)
+        self.assertEqual(res["stats"]["escalated_inferred"], 0)
+
+    def test_second_stretch_inside_the_window_is_the_same_session_continuing(self):
+        res, cc = self._cc([
+            _plugin(100.0, "haiku", "Fix the parser", "a1", "t1", sid=S1),
+            _plugin(400.0, "sonnet", "Other work", "a2", "t2", sid=S2),
+            _plugin(1300.0, "opus", "Fix the parser", "a3", "t3", sid=S1),
+        ])
+        self.assertEqual(res["stats"]["escalated_inferred"], 1)
+        self.assertEqual([r["escalated_by"] for r in cc if r["tool_use_id"] == "t1"], ["t3"])
+
+
+def _day(d: int, sec: float = 3600.0) -> float:
+    return datetime(2026, 10, d, tzinfo=timezone.utc).timestamp() + sec
+
+
+def _wf(ts, agent_id):
+    row = _plugin(ts, "haiku", "", agent_id, None)
+    row["source"] = "workflow"
+    return row
+
+
+class TestWriterParity(unittest.TestCase):
+    """0.4.1 retirement gate: plugin vs hook dispatch rows per UTC day, counted before dedupe."""
+
+    def test_counts_both_writers_per_day_and_keeps_workflow_apart(self):
+        p = route_join.writer_parity([
+            _dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"),
+            _plugin(_day(1, 4000), "haiku", "A", "a1", "t1"),
+            _wf(_day(1, 5000), "w1"),
+            _dispatch(_day(2), "sonnet", "B", "a2", "t2", outcome="async"),
+            _plugin(_day(2, 4000), "sonnet", "B", "a2", "t2"),
+            _dispatch(_day(3), "opus", "C", "a3", "t3", outcome="async"),  # plugin missed it
+        ])
+        self.assertEqual(p["days"], {
+            "2026-10-01": {"plugin": 1, "hook": 1, "workflow": 1},
+            "2026-10-02": {"plugin": 1, "hook": 1, "workflow": 0},
+            "2026-10-03": {"plugin": 0, "hook": 1, "workflow": 0},
+        })
+        self.assertIsNone(p["parity_since"])
+        self.assertEqual(p["parity_span_days"], 0)
+
+    def test_fourteen_days_of_parity_open_the_gate_and_quiet_days_do_not_break_it(self):
+        rows = []
+        for d in range(1, 16):
+            if d == 8:
+                continue  # a day with no dispatches at all
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["parity_since"], "2026-10-01")
+        self.assertEqual(p["parity_span_days"], 15)
+        self.assertEqual(p["parity_days"], 14)
+
+    def test_a_workflow_only_day_is_quiet_not_a_streak_break(self):
+        rows = []
+        for d in range(1, 15):
+            if d == 5:
+                rows.append(_wf(_day(d), "w5"))  # plugin=0 and hook=0: Workflow-only
+                continue
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["days"]["2026-10-05"], {"plugin": 0, "hook": 0, "workflow": 1})
+        self.assertEqual((p["parity_since"], p["parity_span_days"]), ("2026-10-01", 14))
+        self.assertEqual(p["parity_days"], 13)  # the quiet day spans but does not count
+
+    def test_parity_days_counts_matched_days_in_the_streak(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only: breaks
+        for d in (2, 3, 4):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        self.assertEqual(route_join.writer_parity(rows)["parity_days"], 3)
+        self.assertEqual(route_join.writer_parity([])["parity_days"], 0)
+
+    def test_gate_needs_recency_not_just_a_long_old_streak(self):
+        rows = []
+        for d in range(1, 15):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        from datetime import date
+        fresh = route_join.writer_parity(rows, today=date(2026, 10, 16))
+        self.assertEqual((fresh["parity_until"], fresh["gate_open"]), ("2026-10-14", True))
+        stale = route_join.writer_parity(rows, today=date(2026, 10, 17))
+        self.assertEqual((stale["parity_span_days"], stale["parity_days"], stale["gate_open"]), (14, 14, False))
+        short = route_join.writer_parity(rows[:20], today=date(2026, 10, 10))
+        self.assertFalse(short["gate_open"])
+        self.assertFalse(route_join.writer_parity([], today=date(2026, 10, 10))["gate_open"])
+
+    def test_dispatch_spanning_midnight_utc_matches_by_key_not_by_day_counts(self):
+        rows = []
+        for d in range(1, 15):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        # plugin ts = spawn (23:59 on day 7), hook ts = PostToolUse end (00:05 on day 8)
+        rows = [r for r in rows if r["tool_use_id"] != "t7"]
+        rows += [_plugin(_day(7, 86340), "haiku", "D7", "a7", "t7"),
+                 _dispatch(_day(8, 300), "haiku", "D7", "a7", "t7", outcome="async")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual((p["parity_since"], p["parity_span_days"], p["parity_days"]), ("2026-10-01", 14, 14))
+        self.assertEqual(p["days"]["2026-10-07"]["hook"], 1)  # the hook row lands on the plugin row's day
+        self.assertEqual(p["days"]["2026-10-08"]["hook"], 1)
+
+    def test_a_hook_dispatch_with_no_plugin_row_breaks_even_if_counts_match(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a1", "t1", outcome="async"),
+                _plugin(_day(1, 60), "haiku", "Y", "a2", "t2")]
+        p = route_join.writer_parity(rows)
+        self.assertIsNone(p["parity_since"])
+
+    def test_long_span_with_too_few_matched_days_keeps_the_gate_closed(self):
+        from datetime import date
+        rows = [_wf(_day(d), f"w{d}") for d in range(2, 15)]  # Workflow-only days span but do not count
+        rows += [_dispatch(_day(1), "haiku", "D1", "a1", "t1", outcome="async"),
+                 _plugin(_day(1, 60), "haiku", "D1", "a1", "t1"),
+                 _dispatch(_day(15), "haiku", "D15", "a15", "t15", outcome="async"),
+                 _plugin(_day(15, 60), "haiku", "D15", "a15", "t15")]
+        p = route_join.writer_parity(rows, today=date(2026, 10, 16))
+        self.assertEqual((p["parity_span_days"], p["parity_days"]), (15, 2))
+        self.assertFalse(p["gate_open"])
+
+    def test_an_older_shortfall_only_moves_the_start(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only
+        for d in (2, 3, 4):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual((p["parity_since"], p["parity_span_days"]), ("2026-10-02", 3))
+
+    def test_join_labels_reports_writer_parity(self):
+        d = Path(tempfile.mkdtemp())
+        log, conf, tel = d / "route_log.jsonl", d / "conformance.jsonl", d / "telemetry.jsonl"
+        _w(conf, [])
+        _w(tel, [])
+        _w(log, [_dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"), _plugin(_day(1, 9), "haiku", "A", "a1", "t1")])
+        st = route_join.join_labels(route_log_path=log, conformance_path=conf, telemetry_path=tel)["stats"]
+        self.assertEqual(st["writer_parity"]["days"], {"2026-10-01": {"plugin": 1, "hook": 1, "workflow": 0}})
+        self.assertEqual(st["dispatch_deduped"], 1)
+        self.assertEqual(st["writer_parity"]["parity_days"], 1)
+
+
+class TestModuleEntryPoint(unittest.TestCase):
+    """`python -m apex_router.route_join` must run main(), not import silently (U1 finding)."""
+
+    def test_python_dash_m_prints_json_and_writes_nothing(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            log = d / "route_log.jsonl"
+            _w(log, [_dispatch(1_700_000_000, "haiku", "Find X", "a1", "toolu_1")])
+            labeled = d / "labeled_table.jsonl"
+            env = {**os.environ, "PYTHONPATH": str(SRC), "APEX_ROUTER_LOG": str(log),
+                   "APEX_LABELED_TABLE": str(labeled), "APEX_TELEMETRY": str(d / "telemetry.jsonl"),
+                   "APEX_HOME": str(d), "HOME": str(d)}
+            p = subprocess.run([sys.executable, "-m", "apex_router.route_join", "--no-write", "--json"],
+                               capture_output=True, text=True, env=env, timeout=60, cwd=d)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            out = json.loads(p.stdout)
+            self.assertEqual(out["stats"]["claude_code_rows"], 1)
+            self.assertFalse(labeled.exists())

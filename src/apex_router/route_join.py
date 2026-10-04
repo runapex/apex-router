@@ -29,6 +29,7 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -270,10 +271,125 @@ def _telemetry_index(path: Path, wanted: set, errors: Optional[Dict[str, str]] =
     return agg
 
 
+_FINISHED_OUTCOMES = ("ok", "error")
+
+
+def _dispatch_rank(r: Dict[str, Any]) -> Tuple[int, int]:
+    """Which of two rows for one dispatch to keep: a finished outcome (ok/error) over
+    empty over async/absent, then the datapce plugin's row (it carries inject_arm) over the
+    agent-route-log hook's."""
+    outcome = r.get("outcome")
+    finished = 2 if outcome in _FINISHED_OUTCOMES else 1 if outcome == "empty" else 0
+    return finished, 1 if "inject_arm" in r else 0
+
+
+def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """One row per (session_id, tool_use_id): the agent-route-log hook and the datapce
+    plugin can both log the same Agent dispatch while both are installed. Rows missing
+    either id are kept as they are; the kept row takes the first one's place in order."""
+    kept: List[Dict[str, Any]] = []
+    at: Dict[Tuple[str, str], int] = {}
+    dropped = 0
+    for r in rows:
+        sid, tuid = r.get("session_id"), r.get("tool_use_id")
+        if not (isinstance(sid, str) and isinstance(tuid, str)):
+            kept.append(r)
+            continue
+        i = at.get((sid, tuid))
+        if i is None:
+            at[(sid, tuid)] = len(kept)
+            kept.append(r)
+            continue
+        dropped += 1
+        if _dispatch_rank(r) > _dispatch_rank(kept[i]):
+            kept[i] = r
+    return kept, dropped
+
+
+def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> Dict[str, Any]:
+    """0.4.1 retirement gate. Claude-code dispatch rows by writer, before dedupe: the datapce plugin
+    (rows carry inject_arm) vs the agent-route-log hook. Writers are compared by (session_id, tool_use_id)
+    key, not by raw counts, and a key is filed under the UTC day of its plugin row (else of its earliest
+    row): the plugin stamps the spawn and the hook the PostToolUse end, so one dispatch can straddle
+    00:00 UTC. Per day, plugin = keys with a plugin row, hook = keys with a hook row, workflow = Workflow
+    rows (plugin-only; the hook cannot see them). A day disagrees when some hook key has no plugin row
+    (rows missing an id cannot pair, so a hook row without ids always disagrees). The trailing streak
+    walks back over days with rows while plugin > 0 and the hook never disagrees; days without rows, and
+    Workflow-only days (plugin 0 and hook 0), are quiet and neither break nor count. parity_days counts the
+    streak days with plugin rows (plugin-only days included: no hook disagreement). parity_until is the
+    last such day; gate_open = span >= 14 and parity_days >= 10 and parity_until within 2 days of
+    `today` (default: UTC today)."""
+    keyed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    loose: List[Tuple[float, bool]] = []  # (ts, is_plugin) for rows that cannot pair
+    workflow: List[float] = []
+    for r in rows:
+        ts = r.get("ts")
+        if not _is_finite_ts(ts):
+            continue
+        ts = float(ts)
+        is_plugin = "inject_arm" in r
+        if is_plugin and r.get("source") == "workflow":
+            workflow.append(ts)
+            continue
+        sid, tuid = r.get("session_id"), r.get("tool_use_id")
+        if not (isinstance(sid, str) and isinstance(tuid, str)):
+            loose.append((ts, is_plugin))
+            continue
+        k = keyed.setdefault((sid, tuid), {"plugin": None, "hook": None})
+        w = "plugin" if is_plugin else "hook"
+        k[w] = ts if k[w] is None else min(k[w], ts)
+
+    def _utc(ts: float) -> str:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+    days: Dict[str, Dict[str, int]] = {}
+    disagree: set = set()
+
+    def _d(day: str) -> Dict[str, int]:
+        return days.setdefault(day, {"plugin": 0, "hook": 0, "workflow": 0})
+
+    for k in keyed.values():
+        day = _utc(k["plugin"] if k["plugin"] is not None else k["hook"])
+        d = _d(day)
+        if k["plugin"] is not None:
+            d["plugin"] += 1
+        if k["hook"] is not None:
+            d["hook"] += 1
+            if k["plugin"] is None:
+                disagree.add(day)
+    for ts, is_plugin in loose:
+        d = _d(_utc(ts))
+        if is_plugin:
+            d["plugin"] += 1
+        else:
+            d["hook"] += 1
+            disagree.add(_utc(ts))
+    for ts in workflow:
+        _d(_utc(ts))["workflow"] += 1
+    ordered = sorted(days)
+    streak: List[str] = []
+    for day in reversed(ordered):
+        d = days[day]
+        if d["plugin"] == 0 and d["hook"] == 0:
+            continue
+        if d["plugin"] == 0 or day in disagree:
+            break
+        streak.append(day)
+    span = (date.fromisoformat(streak[0]) - date.fromisoformat(streak[-1])).days + 1 if streak else 0
+    until = streak[0] if streak else None
+    today = today or datetime.now(timezone.utc).date()
+    gate_open = bool(streak) and span >= 14 and len(streak) >= 10 \
+        and (today - date.fromisoformat(until)).days <= 2
+    return {"days": {k: days[k] for k in ordered}, "parity_since": streak[-1] if streak else None,
+            "parity_until": until, "parity_span_days": span, "parity_days": len(streak), "gate_open": gate_open}
+
+
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                          errors: Optional[Dict[str, str]] = None
                          ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Materialize claude-code dispatch rows: telemetry join + offline escalation inference."""
+    """Materialize claude-code dispatch rows: dedupe, telemetry join + offline escalation inference."""
+    parity = writer_parity(rows)
+    rows, deduped = _dedupe_dispatch(rows)
     wanted = {(r.get("session_id"), r.get("agent_id")) for r in rows
               if isinstance(r.get("session_id"), str) and isinstance(r.get("agent_id"), str)}
     tel = _telemetry_index(telemetry_path, wanted, errors)
@@ -364,6 +480,8 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                     break
     return out, {
         "claude_code_rows": len(out),
+        "dispatch_deduped": deduped,
+        "writer_parity": parity,
         "telemetry_joined": sum(1 for r in out if r["telemetry_joined"]),
         "escalated_inferred": escalated,
         "unlabeled": sum(1 for r in out if r["label_status"] == UNLABELED),
@@ -479,6 +597,8 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 "null_ts": null_ts,
                 "no_partner": no_partner,
                 "claude_code_rows": cc_stats["claude_code_rows"],
+                "dispatch_deduped": cc_stats["dispatch_deduped"],
+                "writer_parity": cc_stats["writer_parity"],
                 "telemetry_joined": cc_stats["telemetry_joined"],
                 "escalated_inferred": cc_stats["escalated_inferred"],
                 "unlabeled": cc_stats["unlabeled"],
@@ -632,6 +752,11 @@ def main(argv=None) -> int:
               f"telemetry_joined={st.get('telemetry_joined', 0)}  "
               f"escalated_inferred={st.get('escalated_inferred', 0)}  "
               f"unlabeled={st.get('unlabeled', 0)}")
+        wp = st.get("writer_parity") or {}
+        print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
+              f"until {wp.get('parity_until')} ({wp.get('parity_span_days', 0)} d span, "
+              f"{wp.get('parity_days', 0)} clean days; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.1 hook "
+              f"retirement needs span >= 14, matched >= 10 and the last matched day within 2 days)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):
                 print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")
@@ -651,3 +776,7 @@ def main(argv=None) -> int:
         # Fail-safe: never let a readout failure become a caller failure.
         pass
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

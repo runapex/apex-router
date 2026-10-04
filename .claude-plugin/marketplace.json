@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "datapce",
+  "description": "datapce (apex-router): an advise-only view of your subagents — pressure, cost and every dispatch.",
+  "owner": {
+    "name": "datapce"
+  },
+  "plugins": [
+    {
+      "name": "datapce",
+      "description": "An advise-only view of your subagents: upstream pressure, session and subagent cost, and every dispatch (tier requested and run, outcome, duration, tokens) in a status band and the /apex pane, plus a session-handoff prompt and a short pressure note in Agent/Workflow planning when the upstream is under pressure. Its ledger per task type and tier records completion and cost, not answer quality; tier advice arrives with a quality label in v1.1. It never changes the model you chose. It writes only under ~/.apex-router/ and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone.",
+      "author": {
+        "name": "datapce"
+      },
+      "category": "productivity",
+      "keywords": [
+        "apex-router",
+        "model-routing",
+        "subagents",
+        "evidence"
+      ],
+      "source": "./plugin"
+    }
+  ]
+}

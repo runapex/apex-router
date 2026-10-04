@@ -652,9 +652,9 @@
         <p>The local tier reads the diff and lists claims to verify. A fresh heavy reviewer confirms or refutes each one and adds what it missed. A separate producer, so no leaked reasoning; recall is recorded, so the slot has to earn its cost.</p>
       </div>
       <div class="card">
-        <div class="card-tag"><b>hooks/agent-route-log.sh</b></div>
-        <h3>Route-label hook</h3>
-        <p>One label-pending row per Claude Code subagent dispatch. <code>route-join</code> infers escalations offline and joins proxy telemetry per session and agent — the label stream the outcome router was missing. Fail-safe: never blocks, always exits 0.</p>
+        <div class="card-tag"><b>datapce plugin</b> · <b>hooks/agent-route-log.sh</b> (deprecated)</div>
+        <h3>Route-label writer</h3>
+        <p>The datapce plugin writes one row per Claude Code subagent dispatch; the older hook does too, until 0.4.1. <code>route-join</code> infers escalations offline and joins proxy telemetry per session and agent — the label stream the outcome router was missing. Fail-safe: never blocks, always exits 0.</p>
       </div>
     </div>
   </div>

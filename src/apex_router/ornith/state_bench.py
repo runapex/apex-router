@@ -34,7 +34,6 @@ CLI:
 from __future__ import annotations
 
 import json
-import math
 import sys
 import time
 from dataclasses import dataclass
@@ -99,14 +98,12 @@ ARMS = {"oneshot": oneshot_arm, "state": state_codegen_lane}
 # --------------------------------------------------------------------------------------------------
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """Wilson 95% interval for a binomial proportion. n=0 -> (0.0, 1.0) (no information)."""
+    """Wilson 95% interval for a binomial proportion. n=0 -> (0.0, 1.0) (no information).
+    Otherwise pce-core's interval (apex_router.core.stats.wilson_ci)."""
     if n <= 0:
         return (0.0, 1.0)
-    p = k / n
-    denom = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    half = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
+    from apex_router.core.stats import wilson_ci as _core_wilson
+    return _core_wilson(k, n, z)
 
 
 def _mean(xs: list[float]) -> float | None:

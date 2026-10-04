@@ -5,12 +5,10 @@ part the Codex cross-validation found broken in design draft 1):
 
 - wilson_ci        : pass-rate CI that never leaves [0,1] (unlike normal approx)
 - benjamini_hochberg: FDR step-up, incl. the middle-rejection property
-- bradley_terry    : transitive strengths from pairwise judge wins (no cycles)
 - paired_bootstrap_ci: paired delta CI (variance from data, tests via properties)
 
 Written test-first; the module is implemented to satisfy them.
 """
-import math
 import random
 
 import pytest
@@ -86,42 +84,12 @@ def test_bh_none_survive_when_all_large():
     assert stats.benjamini_hochberg([0.6, 0.7, 0.8], alpha=0.05) == [False, False, False]
 
 
-# --------------------------------------------------------------------------- #
-# bradley_terry(pairwise) -> dict[str, float]   pairwise[(winner, loser)] = count
-# --------------------------------------------------------------------------- #
-def test_bt_symmetric_gives_equal_strengths():
-    pairwise = {("a", "b"): 5, ("b", "a"): 5}
-    s = stats.bradley_terry(pairwise)
-    assert s["a"] == pytest.approx(s["b"], abs=1e-6)
 
 
-def test_bt_transitive_dominance_orders_models():
-    # a beats b beats c, consistently -> strength a > b > c (no cycle).
-    pairwise = {
-        ("a", "b"): 9, ("b", "a"): 1,
-        ("b", "c"): 9, ("c", "b"): 1,
-        ("a", "c"): 9, ("c", "a"): 1,
-    }
-    s = stats.bradley_terry(pairwise)
-    assert s["a"] > s["b"] > s["c"]
 
 
-def test_bt_strengths_are_normalized():
-    pairwise = {("a", "b"): 7, ("b", "a"): 3}
-    s = stats.bradley_terry(pairwise)
-    assert sum(s.values()) == pytest.approx(1.0, abs=1e-6)
-    assert all(v > 0 for v in s.values())
 
 
-def test_bt_dominant_winner_ranks_first_among_three():
-    # 'x' wins every matchup -> highest strength of the three.
-    pairwise = {
-        ("x", "y"): 10, ("y", "x"): 0,
-        ("x", "z"): 10, ("z", "x"): 0,
-        ("y", "z"): 5, ("z", "y"): 5,
-    }
-    s = stats.bradley_terry(pairwise)
-    assert s["x"] == max(s.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -159,34 +127,8 @@ def test_paired_bootstrap_empty_raises():
 # --------------------------------------------------------------------------- #
 # Regression tests — confirmed by Codex empirical cross-validation (the reference window)
 # --------------------------------------------------------------------------- #
-def test_bt_default_budget_equals_fully_converged():
-    # BUG (Codex): at the default tolerance the MM loop stopped EARLY (its stop test
-    # used max-change on drifting UNNORMALIZED iterates), so the ranking depended on
-    # the iteration budget. After normalizing each iterate, the DEFAULT call must
-    # return the same strengths as a heavily-converged run. Realistic counts (<=1000).
-    d = {("a", "b"): 1, ("b", "a"): 1000, ("a", "c"): 1, ("c", "a"): 100,
-         ("a", "d"): 1, ("d", "a"): 1000, ("b", "c"): 100, ("c", "b"): 1000,
-         ("b", "d"): 10, ("d", "b"): 10, ("c", "d"): 1000, ("d", "c"): 100}
-    # Default tol=1e-9 leaves a residual of a few * tol; assert agreement well
-    # inside that (1e-7) — tight enough to catch a real divergence, loose enough
-    # not to demand more precision than the default tolerance delivers.
-    default = stats.bradley_terry(d)
-    converged = stats.bradley_terry(d, max_iter=2_000_000, tol=0.0)
-    for m in default:
-        assert default[m] == pytest.approx(converged[m], abs=1e-7)
 
 
-def test_bt_ranking_invariant_to_tolerance_and_budget():
-    # The ranking must be a function of the DATA, not the iteration budget/tol.
-    d = {("a", "b"): 1, ("b", "a"): 1000, ("a", "c"): 1, ("c", "a"): 100,
-         ("a", "d"): 1, ("d", "a"): 1000, ("b", "c"): 100, ("c", "b"): 1000,
-         ("b", "d"): 10, ("d", "b"): 10, ("c", "d"): 1000, ("d", "c"): 100}
-    def rank(**kw):
-        s = stats.bradley_terry(d, **kw)
-        return tuple(sorted(s, key=s.get, reverse=True))
-    orders = {rank(), rank(max_iter=1000, tol=1e-9), rank(max_iter=5000, tol=1e-14),
-              rank(max_iter=200_000, tol=1e-15)}
-    assert len(orders) == 1  # all budgets agree
 
 
 def test_paired_bootstrap_ci_never_inverted():

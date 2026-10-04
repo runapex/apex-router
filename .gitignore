@@ -59,3 +59,8 @@ AGENTS.md
 
 # benchmark suites are deliberate fixtures, not telemetry
 !benchmarks/*.jsonl
+
+plugin/.claude-plugin/types/
+
+# operator runbook (local only)
+docs/superpowers/plans/2026-10-04-datapce-task22-migration.md

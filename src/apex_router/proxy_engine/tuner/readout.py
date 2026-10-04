@@ -32,6 +32,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from apex_router.core.linalg import residual_trend as _polyfit_slope  # noqa: E402
+from apex_router.core.linalg import solve_normal_equations as _solve_normal_equations  # noqa: E402
+
 # PURE-PYTHON by design: the rest of apex_router.proxy_engine.tuner (compiler, cachesim) is numpy-free and the whole
 # suite runs without the `tuner` extra installed, so this harness must too — an instrument that
 # silently skips when numpy is absent is worse than none. OLS here is a tiny normal-equations solve
@@ -150,59 +153,8 @@ def load_request_lines(path: str) -> list[dict]:
 # --- pure-python least squares (normal equations + Gaussian elimination) -------------------------
 
 
-def _solve_normal_equations(X: list[list[float]], y: list[float]) -> list[float]:
-    """Solve min‖Xβ − y‖ via the normal equations (XᵀX)β = Xᵀy with Gaussian elimination + partial
-    pivoting. X is n×p (p small — the class count + intercept), so the p×p solve is trivial. A
-    singular/degenerate system (collinear classes) falls back to a small ridge (+1e-6·I) so the fit
-    never throws — the caller reports R² so a poor fit is visible, not hidden."""
-    n = len(X)
-    p = len(X[0]) if n else 0
-    # A = XᵀX (p×p), b = Xᵀy (p)
-    A = [[0.0] * p for _ in range(p)]
-    b = [0.0] * p
-    for i in range(n):
-        xi = X[i]
-        yi = y[i]
-        for a in range(p):
-            b[a] += xi[a] * yi
-            xia = xi[a]
-            row = A[a]
-            for c in range(p):
-                row[c] += xia * xi[c]
-    # ridge cushion against singularity
-    for a in range(p):
-        A[a][a] += 1e-6
-    # Gaussian elimination with partial pivoting on the augmented [A | b]
-    for col in range(p):
-        piv = max(range(col, p), key=lambda r: abs(A[r][col]))
-        if abs(A[piv][col]) < 1e-12:
-            continue
-        if piv != col:
-            A[col], A[piv] = A[piv], A[col]
-            b[col], b[piv] = b[piv], b[col]
-        pivval = A[col][col]
-        for r in range(p):
-            if r == col:
-                continue
-            factor = A[r][col] / pivval
-            if factor == 0.0:
-                continue
-            for c in range(col, p):
-                A[r][c] -= factor * A[col][c]
-            b[r] -= factor * b[col]
-    return [b[i] / A[i][i] if abs(A[i][i]) > 1e-12 else 0.0 for i in range(p)]
 
 
-def _polyfit_slope(idx: list[float], resid: list[float]) -> float:
-    """Slope of the least-squares line resid ~ a·idx + b (the residual trend). Closed form."""
-    n = len(idx)
-    if n < 2:
-        return 0.0
-    mx = sum(idx) / n
-    my = sum(resid) / n
-    num = sum((idx[i] - mx) * (resid[i] - my) for i in range(n))
-    den = sum((idx[i] - mx) ** 2 for i in range(n))
-    return num / den if den > 0 else 0.0
 
 
 def _std(xs: list[float]) -> float:

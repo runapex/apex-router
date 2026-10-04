@@ -28,15 +28,15 @@
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
-#         --cache-handoff-hook  wire the cache-cost session-handoff Stop hook into ~/.claude/settings.json
+#         --cache-handoff-hook  DEPRECATED (retired in 0.4.1): the datapce plugin's handoff toast and /apex handoff replace it
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
-#         --agent-route-log-hook  wire the Agent-dispatch outcome-label PostToolUse hook into ~/.claude/settings.json
+#         --agent-route-log-hook  DEPRECATED (retired in 0.4.1): the datapce plugin logs every Agent and Workflow dispatch
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
 #         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
-#         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The public
-#                                   apex-router-skills marketplace is added by default.
-#         --no-skills   skip the default public skill marketplace (also APEX_NO_SKILLS=1)
+#         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The
+#                                   datapce marketplace (this install) is added by default; add runapex/apex-router-skills here for the former skills (Pi).
+#         --no-skills   skip the default marketplace and the datapce plugin install (also APEX_NO_SKILLS=1)
 #         --dir PATH    install location (default: ~/.apex-router)
 #         --repo URL    git repo to clone (default: the public apex-router repo)
 #         --verify-only re-run the self-check against an existing install
@@ -79,13 +79,13 @@ ORNITH_TIER="small"   # --ornith-tier small|large|both
 # Repos to install the review post-commit hook into (space-separated; user-supplied, none hardcoded).
 HOOK_REPOS="${APEX_HOOK_REPOS:-}"
 # Skill marketplaces (Claude Code plugin repos), wired via the `claude plugin` CLI.
-# apex-router ships ONE public marketplace by DEFAULT (workflow-discipline skills), and supports
+# apex-router ships ONE marketplace by DEFAULT (the datapce plugin, from this install), and supports
 # ADDING MORE: --skills-marketplace can be passed repeatedly, and APEX_SKILLS_MARKETPLACE may hold a
-# space-separated list. The default plugin (apex-workflow) is installed from the public marketplace;
+# space-separated list. The default plugin (datapce@datapce) is installed from this marketplace;
 # extra marketplaces are added and their plugins are left for the user to `claude plugin install`.
-# --no-skills / APEX_NO_SKILLS=1 opts out of the default public marketplace entirely.
-APEX_PUBLIC_MARKETPLACE="runapex/apex-router-skills"   # public default (github owner/repo)
-APEX_DEFAULT_PLUGIN="apex-workflow@apex-router-skills" # plugin@marketplace to install by default
+# --no-skills / APEX_NO_SKILLS=1 opts out of the default marketplace and the datapce plugin install entirely.
+APEX_PUBLIC_MARKETPLACE=""   # empty = the datapce marketplace in this install ($INSTALL_DIR/.claude-plugin)
+APEX_DEFAULT_PLUGIN="datapce@datapce" # plugin@marketplace to install by default
 # Extra marketplaces, stored NEWLINE-separated internally so a source path with spaces stays intact.
 # The env var (back-compat) is space-separated; normalize it to newlines up front. The repeatable
 # --skills-marketplace flag appends newline-separated (so a quoted spacey path is preserved verbatim).
@@ -569,6 +569,7 @@ install_cache_handoff_hook() {
     return 0
   }
   say "wiring cache-handoff Stop hook into settings.json"
+  warn "--cache-handoff-hook is deprecated: the datapce plugin's handoff toast and /apex handoff replace it; the hook is retired in 0.4.1"
   if _wire_stop_hook "$INSTALL_DIR/hooks/cache-handoff-nudge.sh" "cache-handoff-nudge.sh"; then
     ok "cache-handoff hook wired"
     echo "     starts with an AGGRESSIVE (low) cap; relax per repo/task as signals show — see docs/RUNBOOK-cache-cost.md"
@@ -604,6 +605,7 @@ install_agent_route_log_hook() {
     return 0
   }
   say "wiring agent-route-log PostToolUse(Agent) hook into settings.json"
+  warn "--agent-route-log-hook is deprecated: the datapce plugin logs every Agent and Workflow dispatch; the hook is retired in 0.4.1"
   if _wire_hook PostToolUse Agent "$INSTALL_DIR/hooks/agent-route-log.sh" "agent-route-log.sh" 5; then
     ok "agent-route-log hook wired (rows land in ~/.apex-router/route_log.jsonl, surface=claude-code)"
     echo "     resolve labels + telemetry join: apex-router route-join   (see docs/RUNBOOK-route-conformance.md)"
@@ -756,10 +758,10 @@ install_skills_marketplaces() {
 
   # 1) Public default marketplace + its plugin (unless opted out).
   if [ "$DO_SKILLS" = "1" ]; then
-    _marketplace_add "$APEX_PUBLIC_MARKETPLACE"
+    _marketplace_add "${APEX_PUBLIC_MARKETPLACE:-$INSTALL_DIR}"
     if have claude; then
       claude plugin install "$APEX_DEFAULT_PLUGIN" --scope user >/dev/null 2>&1 \
-        && ok "  installed $APEX_DEFAULT_PLUGIN (model-routing, cross-validate, verify-claims, disciplined-execution, change-classification, local-references, public-repo-hygiene)" \
+        && ok "  installed $APEX_DEFAULT_PLUGIN (status band, /apex pane, pressure note, dispatch ledger, the datapce skill)" \
         || warn "  could not install $APEX_DEFAULT_PLUGIN — in Claude Code: /plugin install $APEX_DEFAULT_PLUGIN"
     else
       echo "    /plugin install $APEX_DEFAULT_PLUGIN"

@@ -1,0 +1,35 @@
+{
+  "name": "datapce",
+  "version": "0.4.0",
+  "description": "An advise-only model-routing ledger you can see (alias apex-router); never changes the model you chose. Writes only under ~/.apex-router and the plugin store; never stores prompt text, file contents or command text; no network calls; no telemetry to anyone.",
+  "author": { "name": "datapce" },
+  "keywords": ["apex-router"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pane": {
+      "type": "string",
+      "title": "Pane",
+      "description": "auto opens the /apex pane when a session starts (the engine seats it once the terminal is wide enough); command opens it only on /apex; off never opens it.",
+      "default": "command",
+      "options": ["auto", "command", "off"]
+    },
+    "budgetUsd": {
+      "type": "number",
+      "title": "Daily budget (USD)",
+      "description": "Spend per day the budget burn is measured against. 0 turns budget tracking off.",
+      "default": 0
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Status band",
+      "description": "Show the one-line band above the prompt.",
+      "default": true
+    },
+    "backendDir": {
+      "type": "string",
+      "title": "Backend directory",
+      "description": "Where the optional apex-router backend keeps its files; the plugin writes its rows here too.",
+      "default": "~/.apex-router"
+    }
+  }
+}

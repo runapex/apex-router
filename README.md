@@ -1,23 +1,35 @@
-# apex-router
+# datapce (apex-router)
 
-Adaptive model routing — measured, per-task-class model selection — plus a measuring
-**proxy**, a local **offload** subsystem (review / codegen / code-Q&A on a local model),
-and the freshness toolkit the routing evidence is built from. Adopt any layer alone; the
-routing core stays **pure-stdlib** and every heavy piece is an optional extra.
+datapce shows what is actually happening on this machine while you work with subagents:
+upstream **pressure** (rate limits and transport faults, GREEN/AMBER/RED), what the session and
+each subagent **cost** (tokens including cache reads and writes, duration), and **every
+dispatch** — tier requested and tier that ran, outcome, time. It does not plan; it puts those
+numbers where you can see them, beside the `Workflow` and `Agent` tool dispatches. Feeding them
+to planners such as superpowers' writing-plans and subagent-driven-development waits for v1.1
+(it needs an answer-quality label; v1 has none).
 
-Instead of a hand-authored "use model X for task Y" table, `apex-router` learns which
-model is actually best for each kind of task from evidence, behind a statistically
-sound promotion gate, and routes to it — falling back to your hand-authored defaults
-whenever the evidence is thin or uncertain. It is a **strict superset** of static
-routing: it never routes to a model your machine can't run, and defaults to your static
-choice on any uncertainty.
+One product, one install (alias `apex-router`):
 
-> **New in 0.3 (2026-10-02):** a pre-dispatch **pressure gate** (`apex-router pressure --check`),
-> a local-model **review pre-read** that hands a heavy reviewer claims to verify, a
-> **route-label hook** that logs every Claude Code subagent dispatch, bounded **transport
-> retries** in the proxy, and telemetry schema 8. See
-> [Pressure gate, review pre-read, and the route-label hook](#pressure-gate-review-pre-read-and-the-route-label-hook)
-> and [CHANGELOG.md](CHANGELOG.md).
+```
+claude plugin marketplace add runapex/apex-router
+claude plugin install datapce@datapce
+```
+
+![datapce band and pane](docs/datapce-band.png) ![](docs/datapce-pane.png)
+
+> An advise-only view of your subagents: a status band and an `/apex` pane with pressure, cost
+> and the dispatch list, a session-handoff prompt, and a short pressure note in Agent/Workflow
+> planning when the upstream is under pressure. It never changes the model you chose. Its
+> ledger per task type and tier records completion and cost — not answer quality; tier advice
+> arrives with a quality label in v1.1. Optional local-model lanes.
+
+**Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone.
+
+The pip package `apex-router` documented below is the optional backend: local model lanes,
+cross-client proxy telemetry, nightly learning. The plugin works without it.
+
+> **New in 0.4:** the datapce plugin. The `agent-route-log` and `cache-handoff` hooks are
+> deprecated and keep running beside it until 0.4.1; see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -161,13 +173,14 @@ Arch-aware and idempotent:
 | Ornith 1.5 tiers (via ollama) | any platform ollama supports | local bench / codegen / review. Pulls the small tier by default; `--ornith-tier large\|both` for the big one, `--ornith-serve` for the queue-worker launchd agents |
 | starter route table | always | empty → resolves to your static defaults until a bench fills it |
 | background watchers | **only with `--watch`** | drain worker + daily report (see below) |
+| datapce plugin | default (needs the `claude` CLI) | adds the datapce marketplace from the install directory and installs `datapce@datapce`; no longer adds `apex-router-skills` |
 | measuring proxy | **only with `--proxy`** | the `[proxy]`/`[tuner]` extras; installed, not auto-started |
 
 Flags: `--no-ornith` (skip the local model pulls), `--ornith-tier small|large|both` (which tier to
 pull and activate; default `small`), `--ornith-serve` (macOS: install the Ornith queue worker +
 nightly cycle as launchd agents), `--no-embed`, `--watch` (install watchers at first run), `--proxy` (install
 the measuring proxy + its extra), `--proxy-config <file>` (wire Claude Code through a proxy),
-`--skills-marketplace <git-url>` (print the wiring for a private team skill marketplace — see
+`--skills-marketplace <git-url>` (add another skill marketplace, e.g. `runapex/apex-router-skills`, or print the wiring for a private team one — see
 below), `--dir PATH`, `--verify-only`.
 
 ### Local model families (default: Ornith 1.5)
@@ -290,7 +303,7 @@ measurements said so:
 | codegen A/B bench | `python -m apex_router.ornith.state_bench [--suite s.jsonl]` | pass-rate CIs, tokens/pass, taxonomy (paper §5.7 labels) |
 | (P,Σ,O) frontier driver + bench | `python -m apex_router.proxy_engine.tuner.driver_bench [--live]` | behavior parity; token parity at 4-round horizon |
 | GPT bench via codex exec | `python -m apex_router.proxy_engine.tuner.codex_driver_bench [--drift]` | identical refs/answers both arms; **drift: both recovered** — no anchoring on a frontier model |
-| structured session handoff | automatic (cache-handoff-nudge hook) | 6-field state block replaces prose handoff; `python -m apex_router.handoff_state validate <file>` |
+| structured session handoff | automatic (datapce handoff toast; the cache-handoff-nudge hook is deprecated in 0.4.0, retired in 0.4.1) | 6-field state block replaces prose handoff; `python -m apex_router.handoff_state validate <file>` |
 | `/learn` chain contract | automatic (pi extension) | VALIDATE emits a JSON verdict Σ; EXPLAIN consumes (P, Σ); fail-open to legacy |
 
 The design record — including the negative results and when to re-run — lives in
@@ -436,17 +449,15 @@ A marketplace repo is just `.claude-plugin/marketplace.json` listing plugins, ea
 folder of `SKILL.md` bundles — Claude Code's native mechanism, so updates propagate on
 `git pull`. Keep internal-only content in that private repo, never here.
 
-**Public workflow skills.** The vendor-neutral discipline skills that pair with these
-tools — `model-routing` (checks `pressure` before a fan-out), `cross-validate` (takes the
-`review-preread` claims list), `verify-claims`, `disciplined-execution`,
-`public-repo-hygiene`, `local-references`, `change-classification`, `evidence-labels`,
-`unattended-loop`, and `dependency-vetting` — live in the public
-[apex-router-skills](https://github.com/runapex/apex-router-skills) marketplace and run in
-both Claude Code and Pi:
+**Workflow skills.** The ten former `apex-router-skills` skills — `model-routing`,
+`cross-validate`, `verify-claims`, `disciplined-execution`, `public-repo-hygiene`,
+`local-references`, `change-classification`, `evidence-labels`, `unattended-loop`,
+`dependency-vetting` — are condensed into the one `datapce` skill that ships with the plugin
+(Route · Verify · Review · Ship); their names stay in its description so they still trigger.
+The `apex-router-skills` marketplace stays available (and is how Pi gets them):
 
 ```
-/plugin marketplace add runapex/apex-router-skills
-/plugin install apex-workflow@apex-router-skills
+./install.sh --skills-marketplace runapex/apex-router-skills
 ```
 
 ## Telemetry — reading and sharing it
@@ -533,11 +544,13 @@ findings". Runbook: [`docs/RUNBOOK-review-preread.md`](docs/RUNBOOK-review-prere
 ### The route-label hook — one row per Claude Code subagent dispatch
 
 The outcome router's blind spot was Claude Code itself: subagent dispatches never reached
-the route log, so there was nothing to label. `hooks/agent-route-log.sh` is a `PostToolUse`
+the route log, so there was nothing to label. `hooks/agent-route-log.sh` (deprecated in 0.4.0; the datapce
+plugin replaces it; retired in 0.4.1) is a `PostToolUse`
 hook (matcher `Agent`) that appends one label-pending row per dispatch. `apex-router
 route-join` then infers escalations offline (a later same-description dispatch at a
 strictly higher tier) and joins the proxy telemetry on `(session_id, agent_id)`; the
-nightly pass runs the join.
+nightly pass runs the join. The hook is retired in 0.4.1 once `route-join --json` reports
+`stats.writer_parity.gate_open` (span ≥ 14 days, ≥ 10 clean days with plugin rows and no hook-only dispatch, last streak day within 2 days).
 
 ```bash
 ./install.sh --agent-route-log-hook     # wires the hook into ~/.claude/settings.json
@@ -573,7 +586,7 @@ guide: [`docs/RUNBOOK-cache-cost.md`](docs/RUNBOOK-cache-cost.md).
 |---|---|
 | `scripts/cache_report.py` | Where does cache-read cost go this week? Per-session ranking + offload ROI gate. |
 | `scripts/prefix_budget.py` | How big is the re-read-every-turn prefix (CLAUDE.md + tool schemas)? |
-| `scripts/cache-handoff-nudge.sh` | Stop hook: nudge to start a fresh session before its prefix gets expensive. |
+| `scripts/cache-handoff-nudge.sh` | Stop hook (deprecated in 0.4.0; the datapce plugin replaces it; retired in 0.4.1): nudge to start a fresh session before its prefix gets expensive. |
 | `scripts/codex_session_report.py` | Same per-session cache-cost view, for Codex sessions (reads `~/.codex/sessions`). |
 | `scripts/memory_compact.py` | Hierarchically compact a project-memory dir (cluster + tier + freshness); advisory, `--apply` auto-creates a reversible git checkpoint (or `--no-init-git` to require an existing repo). |
 | `scripts/memory-compact-nudge.sh` | Stop hook: nudge to compact a large project `MEMORY.md` (advisory; never mutates). |
@@ -674,6 +687,8 @@ Logs to check: `~/.apex-router/logs/com.apex-router.{drain,daily}.{log,err}` (ma
 ```bash
 apex-router watch uninstall            # remove the launchd/systemd units first
 rm -rf "$HOME/.apex-router"            # package, venv, logs, route tables, telemetry
+claude plugin uninstall datapce@datapce   # the datapce plugin
+claude plugin marketplace remove datapce  # and its marketplace
 ```
 
 That removes everything apex-router created under its own dir. ollama and the Ornith
@@ -682,7 +697,7 @@ model (if installed) are left in place — remove them with their own tooling if
 
 Some opt-in features write **outside** the apex-router dir, into `~/.claude/settings.json`
 (each leaves a `.apex-bak` backup): proxy client wiring (`--proxy-config` / `setup-proxy`),
-the cache-handoff Stop hook (`--cache-handoff-hook`), and the memory-compact Stop hook
+the cache-handoff Stop hook (`--cache-handoff-hook`; deprecated), and the memory-compact Stop hook
 (`--memory-compact-hook`). If you enabled any, remove its entry from
 `~/.claude/settings.json` by hand (or restore the `.apex-bak`). Both hooks write advisory
 docs under `~/.claude/handoffs/` — delete that dir to clear them. `memory_compact.py --apply`
