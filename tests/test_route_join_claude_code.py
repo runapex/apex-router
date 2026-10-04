@@ -483,3 +483,43 @@ class TestDispatchDedupe(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResumedSessionSecondStretch(unittest.TestCase):
+    """After /resume the engine reuses the resumed session's ORIGINAL id (live probe 2026-10-03):
+    a second stretch of rows lands under an id that already has rows. Distinct dispatches stay
+    distinct; escalation still needs the 2 h window."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.log, self.conf, self.tel = (self.d / n for n in ("route_log.jsonl", "conformance.jsonl", "telemetry.jsonl"))
+        _w(self.conf, [])
+        _w(self.tel, [])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cc(self, rows):
+        _w(self.log, rows)
+        res = route_join.join_labels(route_log_path=self.log, conformance_path=self.conf, telemetry_path=self.tel)
+        return res, [r for r in res["table"] if r.get("surface") == "claude-code"]
+
+    def test_second_stretch_keeps_every_dispatch_and_never_escalates_across_the_gap(self):
+        res, cc = self._cc([
+            _plugin(100.0, "haiku", "Fix the parser", "a1", "t1", sid=S1),
+            _plugin(500.0, "sonnet", "Other work", "a2", "t2", sid=S2),            # after /clear
+            _plugin(100.0 + 3 * 3600, "opus", "Fix the parser", "a3", "t3", sid=S1),  # after /resume S1
+        ])
+        self.assertEqual(sorted(r["tool_use_id"] for r in cc), ["t1", "t2", "t3"])
+        self.assertEqual(res["stats"]["dispatch_deduped"], 0)
+        self.assertEqual(res["stats"]["escalated_inferred"], 0)
+
+    def test_second_stretch_inside_the_window_is_the_same_session_continuing(self):
+        res, cc = self._cc([
+            _plugin(100.0, "haiku", "Fix the parser", "a1", "t1", sid=S1),
+            _plugin(400.0, "sonnet", "Other work", "a2", "t2", sid=S2),
+            _plugin(1300.0, "opus", "Fix the parser", "a3", "t3", sid=S1),
+        ])
+        self.assertEqual(res["stats"]["escalated_inferred"], 1)
+        self.assertEqual([r["escalated_by"] for r in cc if r["tool_use_id"] == "t1"], ["t3"])
