@@ -39,7 +39,7 @@ esac
 # deliberately low initial cap, NOT a data-fit; the per-repo adaptive threshold
 # (proposed nightly from cache_report.py once >=7d of data exist) raises it per
 # key as the measured distribution justifies. Override per repo/task via env.
-# Adaptive threshold (B2): env override wins; else the nightly-computed p80 of per-session
+# Adaptive threshold (B2): env override wins; else the nightly-computed clamped median of per-session
 # cumulative reads (scripts/handoff_threshold.py → ~/.apex-router/handoff_threshold.json);
 # else the static 100M fallback. Extract with python3 (jq is not guaranteed); any failure
 # falls through to the static default — the nudge is advisory and must never break a Stop.
