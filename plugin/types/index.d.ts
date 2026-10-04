@@ -132,7 +132,6 @@ declare module 'claude-code' {
       backend: BackendView
       profile: ProfileView
       inject: InjectView
-      enforce: boolean
       bandHidden: boolean
     }
   }

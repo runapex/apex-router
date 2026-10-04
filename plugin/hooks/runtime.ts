@@ -17,20 +17,19 @@ import { EMPTY_BACKEND, EMPTY_PROFILE_STORE } from './state.ts'
 
 export type Options = {
   pane: 'auto' | 'command' | 'off'
-  enforce: boolean
   budgetUsd: number
   band: boolean
   backendDir: string
 }
 
-export const DEFAULTS: Options = { pane: 'command', enforce: false, budgetUsd: 0, band: true, backendDir: '~/.apex-router' }
+export const DEFAULTS: Options = { pane: 'command', budgetUsd: 0, band: true, backendDir: '~/.apex-router' }
 
 /** userConfig (§11) as typed options; anything malformed falls back to its default. */
 export function optionsOf(raw: PluginOptions): Options {
   const pane = raw.pane === 'auto' || raw.pane === 'off' ? raw.pane : 'command'
   const budget = typeof raw.budgetUsd === 'number' && Number.isFinite(raw.budgetUsd) && raw.budgetUsd > 0 ? raw.budgetUsd : 0
   const dir = typeof raw.backendDir === 'string' && raw.backendDir.trim() !== '' ? raw.backendDir.trim() : DEFAULTS.backendDir
-  return { pane, enforce: raw.enforce === true, budgetUsd: budget, band: raw.band !== false, backendDir: dir }
+  return { pane, budgetUsd: budget, band: raw.band !== false, backendDir: dir }
 }
 
 /** One minute of the live signals' raw counts. */
@@ -57,7 +56,6 @@ export type Runtime = {
   surface: string | null
   arm: Arm
   level: LevelState
-  enforce: boolean
   cells: Record<string, Cell>
   /** True once session.start loaded the persisted cells/stats/profile; before that nothing is persisted. */
   storeLoaded: boolean
@@ -100,7 +98,6 @@ export function newRuntime(options: Options): Runtime {
     surface: null,
     arm: 'evidence',
     level: { level: 'GREEN', up: 0, down: 0 },
-    enforce: options.enforce,
     cells: {},
     storeLoaded: false,
     cellsDirty: false,

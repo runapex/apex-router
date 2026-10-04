@@ -32,6 +32,5 @@ export type Host = {
     backend(v: BackendView): Promise<void>
     profile(v: ProfileView): Promise<void>
     inject(v: InjectView): Promise<void>
-    enforce(v: boolean): Promise<void>
   }
 }

@@ -2,7 +2,8 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Measure } from '../types/index.d.ts'
 import { start as backendStart } from './backend.ts'
-import { install as band, measureOf } from './band.tsx'
+import { install as band, measureOf, refreshStatus } from './band.tsx'
+import { checkHandoff } from './handoff.ts'
 import type { Host } from './host.ts'
 import { start as liveStart } from './live.ts'
 import {
@@ -33,7 +34,6 @@ const SIGNALS = { plugin: 'datapce', key: 'signals' } as const
 const BACKEND = { plugin: 'datapce', key: 'backend' } as const
 const PROFILE = { plugin: 'datapce', key: 'profile' } as const
 const INJECT = { plugin: 'datapce', key: 'inject' } as const
-const ENFORCE = { plugin: 'datapce', key: 'enforce' } as const
 
 function hostOf($: EngineInterface): Host {
   return {
@@ -63,7 +63,6 @@ function hostOf($: EngineInterface): Host {
       backend: async v => void (await $.state.set(BACKEND, v)),
       profile: async v => void (await $.state.set(PROFILE, v)),
       inject: async v => void (await $.state.set(INJECT, v)),
-      enforce: async v => void (await $.state.set(ENFORCE, v)),
     },
   }
 }
@@ -93,7 +92,10 @@ export const register: Register = (on, raw) => {
     const host = hostOf($)
     lastMeasure = measureOf(e)
     await host.publish.measure(lastMeasure)
-    observeMeasure(rt, e, await host.now())
+    const now = await host.now()
+    observeMeasure(rt, e, now)
+    refreshStatus(host, rt, lastMeasure)
+    checkHandoff(host, rt, now)
     return next(e)
   })
 

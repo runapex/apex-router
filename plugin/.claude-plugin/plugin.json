@@ -13,12 +13,6 @@
       "default": "command",
       "options": ["auto", "command", "off"]
     },
-    "enforce": {
-      "type": "boolean",
-      "title": "Enforce proven routes",
-      "description": "Apply advice at dispatch, only for cells with 30+ labels whose Wilson lower bound clears the target. Off = advise only.",
-      "default": false
-    },
     "budgetUsd": {
       "type": "number",
       "title": "Daily budget (USD)",
