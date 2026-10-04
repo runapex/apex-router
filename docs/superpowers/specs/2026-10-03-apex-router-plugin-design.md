@@ -19,6 +19,7 @@ Listing (marketplace category `productivity`):
 > Adaptive model routing you can see. A status bar and pane showing every subagent's tier, cost
 > and why; routing advice that only enforces what it has measured on your machine; evidence
 > injected into the planning tools you already use. Optional local-model lanes.
+> v1 wording and behaviour: see §18 (no tier advice until a quality label exists).
 
 Non-goals (do not compete): a planner or plan format (superpowers owns it); a status line
 (claude-hud); a proxy router (claude-code-router); exporting traces to vendors (dash0/langfuse).
@@ -280,7 +281,7 @@ and attention taken from the task, so the contract is:
    section ≤ 25 lines and only on the four planning/dispatch skills; `tool.describe` ≤ 2 lines;
    `prompt.compose` ≤ 4 lines. Nothing in CLAUDE.md, nothing per turn. A COLD cell injects
    nothing (no evidence → no text).
-3. **Structured over prose.** Evidence rows are `task_type | tier effort | n pass% | $ p50 | state`
+3. **Structured over prose.** Evidence rows are `task_type | tier effort | n ok% | tok(all) μ | dur μ | state` (v1 shows the ledger, not advice; see §18)
    — a table the model scans, not advice it must interpret. Basis strings are one clause.
 4. **Fail open, never block.** A hook that cannot decide calls `next(e)`; the model never waits
    on the plugin (all file reads are off the hot path on `$.clock.every`, cached in `$.state`).
@@ -296,3 +297,35 @@ and attention taken from the task, so the contract is:
 
 Acceptance for v1: injected text per session ≤ 2 KB at p95; advise-vs-requested agreement and
 pass-rate reported in the pane; no hook adds > 5 ms to `agent.spawn` at p99.
+
+## 18. v1 quality gate and v1.1 quality labels (added 2026-10-04)
+
+Supersedes, for v1, §1's listing wording and the READY/enforce parts of §5 and §17.
+
+**Why.** The only completion label v1 sees is `turn.complete` reason `answer` and not aborted. On
+real traffic that is ≈ 100% (the observed failures come from the auto-mode permission classifier
+and never reach `agent.spawn`), so a cell reaches READY on completion alone in days
+(review|sonnet ≈ 85 dispatches a week). READY on completion would reward the cheapest tier for
+finishing.
+
+**v1 behaviour.** `QUALITY_LABELS = false` (`plugin/hooks/evidence.ts`): no READY or inherited tier
+advice, no evidence table in the planning skills; cells keep counting so the state exists when a
+label arrives. Pressure shedding stays (policy, not evidence). The ledger shows completion and
+cost: n, ok %, error kind, `tok(all) μ` (input + output + cache reads + cache writes), `dur μ`.
+Tier cost comparisons are confounded by allocation (harder work goes to bigger tiers) and are a
+record, not a recommendation.
+
+**v1.1 quality-label candidates.** Each must yield both outcomes on this machine's traffic before
+it can turn `QUALITY_LABELS` on:
+1. **Parent's immediate same-task re-dispatch.** The parent dispatches the same normalized
+   description again at a higher tier soon after (route-join's escalation inference, ≤ 2 h, same
+   session). The earlier dispatch is labelled "insufficient".
+2. **Test exit codes after codegen.** A `Bash` test command (pytest, npm test, cargo test, go test)
+   whose exit code follows a generate/codegen dispatch in the same session, attributed to that
+   dispatch: exit 0 → good, non-zero → bad. Observed through the existing `tool.call` Bash hook
+   (exit code only; never command text).
+3. **Operator verdict from the pane.** An explicit good/bad mark on a dispatch row in `/apex`,
+   stored as a label on the route row.
+
+A cell's READY state then needs `n ≥ 30` *quality* labels and Wilson lower bound ≥ 0.9, as §5
+specifies.
