@@ -70,7 +70,8 @@ def _real_review(diff: str, *, budget: int) -> str:
     # thinking OFF — MEASURED (ornith_code.py): thinking-ON runs the whole budget inside <think>
     # and returns no answer; on the review path that was a 900 s hang per call.
     r = batch_over_preamble(REVIEW_PREAMBLE, [f"Review this diff:\n\n{diff}"],
-                            max_tokens=budget, enable_thinking=False, temperature=0.0)
+                            max_tokens=budget, enable_thinking=False, temperature=0.0,
+                            raise_on_truncation=False)   # partial findings still escalate usefully
     return r[0].answer
 
 
@@ -85,6 +86,7 @@ def _git_diff(staged: bool, base: str | None, *, timeout_s: float = 30.0) -> str
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s).stdout
     except subprocess.TimeoutExpired:
+        print(f"git diff timed out after {timeout_s:g}s", file=sys.stderr)
         return ""   # reads as "nothing staged" -> EXIT_OK; never hang the caller
 
 
@@ -174,6 +176,18 @@ def _verify(code: str, test_file: str, module_name: str, emit: Callable[[str], N
         shutil.rmtree(d, ignore_errors=True)                  # #5: no lingering drafts
 
 
+def _ornith_failure(e: Exception, emit, *, other: int = EXIT_OK) -> int:
+    """Map a local-tier failure to the documented exit codes: can't serve right now (incl. a busy
+    inference lock) -> EXIT_UNAVAILABLE; any other error -> `other` (review: advisory EXIT_OK; gen: no
+    verified code was produced, so EXIT_VERIFY_FAIL, never a false success)."""
+    from . import ornith_client as oc
+    if isinstance(e, oc.OrnithUnavailable):
+        emit("Ornith busy/unavailable — use Opus.")
+        return EXIT_UNAVAILABLE
+    emit(f"Ornith produced no usable result ({type(e).__name__}: {e}) — use Opus.")
+    return other
+
+
 # ── the CLI core (pure w.r.t. its seams) ───────────────────────────────────────
 def run(argv, *, generate_fn=None, review_fn=None, diff_fn=None,
         liveness_fn=None, select_fn=None, verify_fn=None,
@@ -216,7 +230,10 @@ def run(argv, *, generate_fn=None, review_fn=None, diff_fn=None,
             emit(f"declined: {route.reason}")
             return EXIT_DECLINED
         emit(_ADVISORY)
-        emit(review_fn(diff, budget=args.budget))
+        try:
+            emit(review_fn(diff, budget=args.budget))
+        except Exception as e:  # noqa: BLE001 — advisory lane: never a traceback / EXIT_VERIFY_FAIL
+            return _ornith_failure(e, emit)
         return EXIT_OK
 
     # gen
@@ -227,7 +244,10 @@ def run(argv, *, generate_fn=None, review_fn=None, diff_fn=None,
     if not route.fits:
         emit(f"declined: {route.reason}")
         return EXIT_DECLINED
-    code = generate_fn(args.spec)
+    try:
+        code = generate_fn(args.spec)
+    except Exception as e:  # noqa: BLE001
+        return _ornith_failure(e, emit, other=EXIT_VERIFY_FAIL)
     ok = verify_fn(code, args.test, args.module_name, emit, require_lint=not args.no_lint) \
         if verify_fn is _verify else verify_fn(code, args.test, args.module_name, emit)
     if not ok:
