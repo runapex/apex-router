@@ -26,7 +26,7 @@ export const fmtTok = (t: number): string => (t >= 1e6 ? `${(t / 1e6).toFixed(1)
 export const handoffDue = (cacheRead: number, threshold: number | null): boolean => threshold !== null && cacheRead >= threshold
 
 export const handoffToast = (threshold: number): string =>
-  `datapce: this session's cache reads passed ${fmtTok(threshold)} tokens (your p80) — run /apex handoff, fill the block, start fresh`
+  `datapce: this session's cache reads passed ${fmtTok(threshold)} tokens (your handoff threshold) — run /apex handoff, fill the block, start fresh`
 
 export function checkHandoff(host: Host, rt: Runtime, now: number): void {
   const threshold = rt.backend.handoffTokens

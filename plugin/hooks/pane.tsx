@@ -37,6 +37,7 @@ export type Section = { id: string; title: string; rows: string[] }
 
 const secs = (ms: number | null): string => (ms === null ? '' : ` ${Math.round(ms / 1000)}s`)
 const fixed = (x: number | null, digits = 1): string => (x === null ? '—' : x.toFixed(digits))
+const durMu = (ms: number | null): string => (ms === null ? '—' : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`)
 
 function dispatchRows(ds: readonly Dispatch[]): string[] {
   if (ds.length === 0) return ['no dispatches yet']
@@ -73,20 +74,24 @@ function laneRows(b: BackendView): string[] {
 
 /**
  * The ledger: one row per task type × tier (pressure levels pooled): n, ok% with the kinds of the
- * failures, token mean. p50 duration is not kept (a running mean is), so it shows "—".
+ * failures, token mean, duration mean.
  */
 export function ledgerRows(cs: readonly CellView[]): string[] {
-  type Acc = { taskType: string; tier: Tier; n: number; pass: number; unavailable: number; tokN: number; tokSum: number }
+  type Acc = { taskType: string; tier: Tier; n: number; pass: number; unavailable: number; tokN: number; tokSum: number; durN: number; durSum: number }
   const acc = new Map<string, Acc>()
   for (const c of cs) {
     const key = `${c.taskType}|${c.tier}`
-    const a = acc.get(key) ?? { taskType: c.taskType, tier: c.tier, n: 0, pass: 0, unavailable: 0, tokN: 0, tokSum: 0 }
+    const a = acc.get(key) ?? { taskType: c.taskType, tier: c.tier, n: 0, pass: 0, unavailable: 0, tokN: 0, tokSum: 0, durN: 0, durSum: 0 }
     a.n += c.n
     a.pass += c.pass
     a.unavailable += c.unavailable
     if (c.tokMean !== null) {
       a.tokN += c.tokN
       a.tokSum += c.tokMean * c.tokN
+    }
+    if (c.durationMean !== null) {
+      a.durN += c.durationN
+      a.durSum += c.durationMean * c.durationN
     }
     acc.set(key, a)
   }
@@ -100,7 +105,7 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
         failed - a.unavailable > 0 ? `${failed - a.unavailable} other` : '',
       ].filter(k => k !== '')
       const ok = `ok ${Math.round((100 * a.pass) / a.n)}%${kinds.length > 0 ? ` (${kinds.join(', ')})` : ''}`
-      return `${a.taskType} · ${a.tier} · n ${a.n} · ${ok} · tok μ ${kTok(a.tokN > 0 ? a.tokSum / a.tokN : null)} · p50 —`
+      return `${a.taskType} · ${a.tier} · n ${a.n} · ${ok} · tok μ ${kTok(a.tokN > 0 ? a.tokSum / a.tokN : null)} · dur μ ${durMu(a.durN > 0 ? a.durSum / a.durN : null)}`
     })
 }
 

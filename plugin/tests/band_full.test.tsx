@@ -38,6 +38,7 @@ describe('band line', () => {
     expect(fmtTok(43_860_328)).toBe('43.9M')
     expect(fmtTok(1000)).toBe('1k')
     expect(handoffDue(10, null)).toBe(false)
+    expect(handoffDue(999, 1000)).toBe(false)
     expect(handoffDue(1000, 1000)).toBe(true)
   })
 
@@ -99,6 +100,6 @@ describe('band, status, handoff: hooks', () => {
     await $.session.start(SESSION)
     await drain($.turn.step(stepInput()))
     await $.session.measure(MEASURE)
-    expect(world.toasts).toEqual(["datapce: this session's cache reads passed 1k tokens (your p80) — run /apex handoff, fill the block, start fresh"])
+    expect(world.toasts).toEqual(["datapce: this session's cache reads passed 1k tokens (your handoff threshold) — run /apex handoff, fill the block, start fresh"])
   })
 })

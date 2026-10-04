@@ -27,6 +27,11 @@ export function tokMean(stats: Stats, key: string): number | null {
   return w !== undefined && w.n > 0 ? w.mean : null
 }
 
+export function durationMean(stats: Stats, key: string): number | null {
+  const w = stats[key]?.duration_ms
+  return w !== undefined && w.n > 0 ? w.mean : null
+}
+
 /** Runs of a cell that ended "unavailable" (the stat is a 0/1 Welford: n × mean). */
 export function unavailableOf(stats: Stats, key: string): number {
   const w = stats[key]?.unavailable
@@ -94,7 +99,7 @@ export function cellViews(cells: Record<string, Cell>, stats: Stats): CellView[]
     if (p === null) continue
     views.push({
       key, taskType: p.taskType, level: p.level, tier: p.tier, state: c.state, n: c.n, pass: c.pass, wilsonLo: wilsonLo(c.pass, c.n),
-      tokMean: tokMean(stats, key), tokN: stats[key]?.tokens?.n ?? 0, unavailable: unavailableOf(stats, key),
+      tokMean: tokMean(stats, key), tokN: stats[key]?.tokens?.n ?? 0, durationMean: durationMean(stats, key), durationN: stats[key]?.duration_ms?.n ?? 0, unavailable: unavailableOf(stats, key),
     })
   }
   return views.sort(

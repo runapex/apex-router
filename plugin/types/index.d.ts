@@ -77,6 +77,9 @@ export type CellView = {
   tokMean: number | null
   /** Runs that fed tokMean (≤ n). */
   tokN: number
+  durationMean: number | null
+  /** Runs that fed durationMean (≤ n). */
+  durationN: number
   /** Failed runs whose kind was "unavailable" (the rest of n − pass is "other"). */
   unavailable: number
 }
