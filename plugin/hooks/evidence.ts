@@ -27,6 +27,12 @@ export function tokMean(stats: Stats, key: string): number | null {
   return w !== undefined && w.n > 0 ? w.mean : null
 }
 
+/** Runs of a cell that ended "unavailable" (the stat is a 0/1 Welford: n × mean). */
+export function unavailableOf(stats: Stats, key: string): number {
+  const w = stats[key]?.unavailable
+  return w !== undefined ? Math.round(w.n * w.mean) : 0
+}
+
 export const kTok = (t: number | null): string => (t === null ? '—' : `${Math.round(t / 1000)}k`)
 
 export function basisOf(requested: Tier, tier: Tier, c: Cell, level: Level, tok: number | null): string {
@@ -86,7 +92,10 @@ export function cellViews(cells: Record<string, Cell>, stats: Stats): CellView[]
   for (const [key, c] of Object.entries(cells)) {
     const p = parseKey(key)
     if (p === null) continue
-    views.push({ key, taskType: p.taskType, level: p.level, tier: p.tier, state: c.state, n: c.n, pass: c.pass, wilsonLo: wilsonLo(c.pass, c.n), tokMean: tokMean(stats, key) })
+    views.push({
+      key, taskType: p.taskType, level: p.level, tier: p.tier, state: c.state, n: c.n, pass: c.pass, wilsonLo: wilsonLo(c.pass, c.n),
+      tokMean: tokMean(stats, key), tokN: stats[key]?.tokens?.n ?? 0, unavailable: unavailableOf(stats, key),
+    })
   }
   return views.sort(
     (a, b) => a.taskType.localeCompare(b.taskType) || LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level) || rankOf(a.tier) - rankOf(b.tier),

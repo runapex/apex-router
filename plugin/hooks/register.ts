@@ -22,6 +22,7 @@ import {
   start as routerStart,
   type Decision,
 } from './router.ts'
+import { install as pane, start as paneStart } from './pane.tsx'
 import { identify, newRuntime, optionsOf } from './runtime.ts'
 
 // Wiring only. Shared events are registered once here (engine rule) and every engine call the
@@ -79,6 +80,7 @@ export const register: Register = (on, raw) => {
     await routerStart(host, rt)
     await backendStart(host, rt)
     await liveStart(host, rt, () => lastMeasure)
+    await paneStart(host, rt)
     return r
   })
 
@@ -129,4 +131,5 @@ export const register: Register = (on, raw) => {
   band(on, rt)
   observe(on, rt)
   router(on, rt)
+  pane(on, rt)
 }

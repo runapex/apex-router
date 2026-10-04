@@ -75,6 +75,10 @@ export type CellView = {
   pass: number
   wilsonLo: number
   tokMean: number | null
+  /** Runs that fed tokMean (≤ n). */
+  tokN: number
+  /** Failed runs whose kind was "unavailable" (the rest of n − pass is "other"). */
+  unavailable: number
 }
 
 export type SignalsView = {
