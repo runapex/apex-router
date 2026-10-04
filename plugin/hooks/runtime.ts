@@ -78,6 +78,8 @@ export type Runtime = {
   /** Memoised describe/compose decisions, `site|name|text` → admitted: each distinct text is decided (logged, debited) once. */
   injectDecisions: Map<string, boolean>
   toastAt: Map<string, number>
+  /** Timers this module lifetime already registered (session.start runs again on resume and /clear): each registers once. */
+  timers: Set<string>
   minute: MinuteBucket
   minutes: MinuteBucket[]
   lastCostUsd: number | null
@@ -122,6 +124,7 @@ export function newRuntime(options: Options): Runtime {
     injectedSections: 0,
     injectDecisions: new Map(),
     toastAt: new Map(),
+    timers: new Set(),
     minute: { steps: 0, failed: 0, spend: 0 },
     minutes: [],
     lastCostUsd: null,
@@ -157,6 +160,13 @@ export function toastOnce(host: Host, rt: Runtime, kind: string, text: string, n
   rt.toastAt.set(kind, now)
   host.toast(text)
   return true
+}
+
+/** Register a recurring timer once per module lifetime (a second session.start must not stack another). */
+export function everyOnce(host: Host, rt: Runtime, key: string, ms: number, fn: () => void): void {
+  if (rt.timers.has(key)) return
+  rt.timers.add(key)
+  host.every(ms, fn)
 }
 
 /** session.start, first: who and where this session is. register.ts calls it before any module. */

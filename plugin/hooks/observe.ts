@@ -7,7 +7,7 @@ import { welfordNew, welfordPush } from './core/stats.ts'
 import { asStats, type Stats } from './evidence.ts'
 import type { Host } from './host.ts'
 import { appendLines, ensureDir } from './io.ts'
-import type { BashEvent, Runtime } from './runtime.ts'
+import { everyOnce, type BashEvent, type Runtime } from './runtime.ts'
 import { EMPTY_PROFILE_STORE, profileView } from './state.ts'
 import { tierOf } from './tiers.ts'
 
@@ -230,9 +230,13 @@ export async function start(host: Host, e: SessionStartInput, rt: Runtime): Prom
   } catch {
     // a store that cannot be read starts empty
   }
-  host.every(FLUSH_MS, () => {
-    void flushAll(host, rt)
-  })
+  try {
+    everyOnce(host, rt, 'observe.flush', FLUSH_MS, () => {
+      void flushAll(host, rt)
+    })
+  } catch {
+    // no flush timer: rows stay buffered and the session.end flush still writes them
+  }
 }
 
 /** session.measure (from register.ts): the row, the spend delta, the rate-limit sample. */

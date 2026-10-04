@@ -98,6 +98,7 @@ describe('band, status, handoff: hooks', () => {
   test('crossing the backend handoff threshold toasts the handoff', async ($, on) => {
     const world = worldOf(on, { [`${BACKEND}/pressure.json`]: '{"families": {}}', [`${BACKEND}/handoff_threshold.json`]: '{"threshold_tokens": 1000}' })
     await $.session.start(SESSION)
+    await new Promise(r => setTimeout(r, 0)) // the first backend poll finishes in the background
     await drain($.turn.step(stepInput()))
     await $.session.measure(MEASURE)
     expect(world.toasts).toEqual(["datapce: this session's cache reads passed 1k tokens (your handoff threshold) — run /apex handoff, fill the block, start fresh"])

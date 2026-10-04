@@ -131,5 +131,8 @@ describe('evidence', () => {
     expect(asCells('nonsense')).toEqual({})
     expect(asStats({ k: { tokens: { n: 2, mean: 10, m2: 1 }, broken: { n: 'x' } } })).toEqual({ k: { tokens: { n: 2, mean: 10, m2: 1 } } })
     expect(asStats(null)).toEqual({})
+    const hostile = asStats(JSON.parse('{"__proto__": {"leak": {"n": 1, "mean": 1, "m2": 0}}, "k": {"__proto__": {"n": 1, "mean": 1, "m2": 0}}}'))
+    expect((hostile as Record<string, unknown>).leak).toBeUndefined()
+    expect(Object.keys(hostile)).toEqual([])
   })
 })

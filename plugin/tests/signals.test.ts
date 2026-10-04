@@ -2,12 +2,26 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Level, LevelState } from '../types/index.d.ts'
 import {
-  admissionRate, availability, breakerNew, breakerRecord, breakerState, bucketNew, bucketTake, burnAlert, drainEta,
-  fanoutRisk, levelStep, limitLevel, routingBurn, series, spendBurn, worst,
+  admissionRate, availability, BREAKER_COOL_MS, BREAKER_THRESHOLD, breakerNew, breakerRecord, breakerState, bucketNew, bucketTake, burnAlert, drainEta,
+  fanoutRisk, levelStep, limitLevel, LONG_LIMIT, LONG_MIN, routingBurn, series, SHORT_LIMIT, SHORT_MIN, SLO_429, SLO_TRANSPORT, spendBurn, worst,
 } from '../hooks/signals.ts'
 import { close } from './fixtures/close.ts'
 
 describe('§7 signals against their reference numbers', () => {
+  test('the exported constants are the spec numbers', () => {
+    expect([SLO_429, SLO_TRANSPORT, SHORT_MIN, LONG_MIN, SHORT_LIMIT, LONG_LIMIT, BREAKER_THRESHOLD, BREAKER_COOL_MS]).toEqual([
+      0.98, 0.97, 5, 60, 10, 6, 3, 600_000,
+    ])
+  })
+
+  test('default arguments alert strictly above both limits (burn exactly 10 and 6 does not)', () => {
+    // slo 0.97: burn = bad/total/0.03. 30% bad = 10.0 over both windows → not > 10.
+    const at = Array.from({ length: 60 }, () => [100, 30] as const)
+    expect(burnAlert(at, SLO_TRANSPORT).alert).toBe(false)
+    const above = Array.from({ length: 60 }, () => [100, 31] as const)
+    expect(burnAlert(above, SLO_TRANSPORT).alert).toBe(true)
+  })
+
   test('multi-window burn rate (True, 11.5, 7.0)', () => {
     const b = burnAlert([[1000, 1], [1000, 1], [1000, 10], [1000, 12], [1000, 11]], 0.999, 2, 5)
     expect(b.alert).toBe(true)

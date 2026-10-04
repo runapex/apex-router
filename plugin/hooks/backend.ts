@@ -3,7 +3,7 @@
 import type { BackendView, LaneStats, Level } from '../types/index.d.ts'
 import type { Host } from './host.ts'
 import { jsonLines, readJson, tailLines } from './io.ts'
-import { toastOnce, type Runtime } from './runtime.ts'
+import { everyOnce, toastOnce, type Runtime } from './runtime.ts'
 import { availability, breakerState, drainEta, series } from './signals.ts'
 
 export const POLL_MS = 60_000
@@ -221,16 +221,21 @@ async function publish(host: Host, rt: Runtime, view: BackendView): Promise<void
   await host.publish.backend(view)
 }
 
-/** session.start: one poll now (with route-advise), then every 60 s. */
+/** Poll state per runtime: a second session.start (resume, /clear) keeps polling with the same state. */
+const POLL_STATES = new WeakMap<Runtime, PollState>()
+
+/** session.start: one poll now (with route-advise, in the background), then every 60 s. */
 export async function start(host: Host, rt: Runtime): Promise<void> {
   if (rt.backendRefused !== null) toastOnce(host, rt, 'backend-dir', `datapce: ${rt.backendRefused}`, await host.now())
-  const st: PollState = { inbox: [], up: {}, lastAdvise: Number.NEGATIVE_INFINITY, verdicts: {} }
-  try {
-    await poll(host, rt, st)
-  } catch {
-    // fail open: an absent or broken backend is an absent backend
+  let st = POLL_STATES.get(rt)
+  if (st === undefined) {
+    st = { inbox: [], up: {}, lastAdvise: Number.NEGATIVE_INFINITY, verdicts: {} }
+    POLL_STATES.set(rt, st)
   }
-  host.every(POLL_MS, () => {
-    void poll(host, rt, st).catch(() => undefined)
+  const state = st
+  // The first poll can take ~35 s of subprocess timeouts: never hold session.start for it.
+  void poll(host, rt, state).catch(() => undefined)
+  everyOnce(host, rt, 'backend.poll', POLL_MS, () => {
+    void poll(host, rt, state).catch(() => undefined)
   })
 }

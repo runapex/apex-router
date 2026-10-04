@@ -284,6 +284,18 @@ describe('inject: hooks', () => {
     expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: rows[0]!.bytes, sections: 1 })
   })
 
+  test('concurrent renders of the same describe text are decided once (one row, one debit)', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await goRed($, world)
+    const out = await Promise.all([1, 2, 3, 4].map(() => $.tool.describe({ tool: 'Agent', description: 'D', provider: PROVIDER })))
+    expect(new Set(out.map(r => r.description)).size).toBe(1)
+    await world.clock.advance(5000)
+    const rows = injectRows(world)
+    expect(rows).toHaveLength(1)
+    expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: rows[0]!.bytes, sections: 1 })
+  })
+
   test('compose: a level that flaps AMBER → GREEN → AMBER re-uses its decision (one row, one debit)', async ($, on) => {
     const world = worldOf(on)
     await $.session.start(SESSION)

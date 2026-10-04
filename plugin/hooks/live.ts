@@ -5,7 +5,7 @@
 import type { Level, Measure, SignalsView } from '../types/index.d.ts'
 import { budgetBurn } from './core/cost.ts'
 import type { Host } from './host.ts'
-import { toastOnce, type Runtime } from './runtime.ts'
+import { everyOnce, toastOnce, type Runtime } from './runtime.ts'
 import {
   admissionRate, breakerNew, breakerRecord, breakerState, burnAlert, fanoutRisk, levelStep, limitLevel, LONG_LIMIT, SHORT_LIMIT,
   SLO_TRANSPORT, spendBurn, worst,
@@ -14,6 +14,7 @@ import { EMPTY_SIGNALS } from './state.ts'
 
 export const TICK_MS = 60_000
 const WINDOW_MIN = 60
+const MIN_LONG_MINUTES = 5
 const SLOPE_MS = 10 * 60_000
 
 export function tick(rt: Runtime, now: number, m: Measure | null, _prev: SignalsView): { view: SignalsView; toasts: [string, string][] } {
@@ -52,8 +53,10 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   const budget = rt.options.budgetUsd
   const spend = rt.minutes.map(b => b.spend)
   const short = spendBurn(spend, budget, 5)
-  const long = spendBurn(spend, budget, WINDOW_MIN)
-  const whole = budget > 0 && m?.costUsd != null ? budgetBurn(m.costUsd, Math.max(1, (now - rt.startedAt) / 60_000), budget) : null
+  // Under 5 closed minutes the 60 min window is the same data as the 5 min one: not a second opinion yet.
+  const long = spend.length >= MIN_LONG_MINUTES ? spendBurn(spend, budget, WINDOW_MIN) : null
+  // startedAt is 0 after a hot reload (identify did not run): whole-session burn is unknown then.
+  const whole = budget > 0 && m?.costUsd != null && rt.startedAt > 0 ? budgetBurn(m.costUsd, Math.max(1, (now - rt.startedAt) / 60_000), budget) : null
   if (short !== null && long !== null && short > SHORT_LIMIT && long > LONG_LIMIT) {
     toasts.push(['budget', `datapce: budget burning ${short.toFixed(0)}× (5 min) / ${long.toFixed(0)}× (60 min)`])
   }
@@ -62,7 +65,8 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   const first = hist[0]
   const last = hist[hist.length - 1]
   const slope = first !== undefined && last !== undefined && last.t > first.t ? (last.pct - first.pct) / ((last.t - first.t) / 60_000) : 0
-  const minutesToReset = m?.resetsAt != null ? (Date.parse(m.resetsAt) - now) / 60_000 : 0
+  const resetMs = m?.resetsAt != null ? Date.parse(m.resetsAt) : Number.NaN
+  const minutesToReset = Number.isFinite(resetMs) ? (resetMs - now) / 60_000 : 0
   const spawnsPerMin = rt.heavySpawns.filter(t => now - t <= SLOPE_MS).length / 10
   const rate = admissionRate(spawnsPerMin, slope, 100 - (m?.limitPercent ?? 0), minutesToReset)
   rt.bucket = { ...rt.bucket, rate }
@@ -96,7 +100,7 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
 /** session.start (after backend): tick every minute. */
 export async function start(host: Host, rt: Runtime, measureNow: () => Measure | null): Promise<void> {
   let prev: SignalsView = EMPTY_SIGNALS
-  host.every(TICK_MS, () => {
+  everyOnce(host, rt, 'live.tick', TICK_MS, () => {
     void (async () => {
       const now = await host.now()
       const { view, toasts } = tick(rt, now, measureNow(), prev)

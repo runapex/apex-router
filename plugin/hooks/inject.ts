@@ -10,7 +10,7 @@ import type { Arm, Level } from '../types/index.d.ts'
 import { evidenceRows, kTok, type EvidenceRow } from './evidence.ts'
 import type { Host } from './host.ts'
 import { record } from './observe.ts'
-import type { Runtime } from './runtime.ts'
+import { everyOnce, type Runtime } from './runtime.ts'
 
 export const INJECT_SKILLS: ReadonlySet<string> = new Set([
   'writing-plans',
@@ -122,14 +122,31 @@ async function admit(host: Host, rt: Runtime, site: string, name: string, append
  * once per session and the admitted text is re-sent unchanged — a re-render never re-debits the cap,
  * never drops a line it showed before, and a level that flaps back re-uses its earlier decision.
  */
+const IN_FLIGHT = new WeakMap<Runtime, Map<string, Promise<boolean>>>()
+
 async function admitOnce(host: Host, rt: Runtime, site: string, name: string, appended: string, now: number): Promise<boolean> {
   const key = `${site}|${name}|${appended}`
   const known = rt.injectDecisions.get(key)
   if (known !== undefined) return known
   if (rt.sessionId === '') return false
-  const admitted = await admit(host, rt, site, name, appended, now)
-  rt.injectDecisions.set(key, admitted)
-  return admitted
+  // Concurrent renders of the same text share one in-flight decision: the memo is claimed before awaiting.
+  let flights = IN_FLIGHT.get(rt)
+  if (flights === undefined) IN_FLIGHT.set(rt, (flights = new Map()))
+  const pending = flights.get(key)
+  if (pending !== undefined) return pending
+  const decision = admit(host, rt, site, name, appended, now).then(
+    admitted => {
+      rt.injectDecisions.set(key, admitted)
+      flights.delete(key)
+      return admitted
+    },
+    () => {
+      flights.delete(key)
+      return false
+    },
+  )
+  flights.set(key, decision)
+  return decision
 }
 
 export async function skillSection(host: Host, rt: Runtime, skill: string, text: string, now: number): Promise<string> {
@@ -203,7 +220,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
     // once per 10 minutes (each re-render re-prices the prompt cache).
     let last = describeText(rt.level.level)
     let lastInvalidate = await host.now()
-    host.every(60_000, () => {
+    everyOnce(host, rt, 'inject.refresh', 60_000, () => {
       void (async () => {
         try {
           const now = await host.now()

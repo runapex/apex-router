@@ -11,7 +11,7 @@ import { adviceFor, asCells, cellKey, cellViews, recordOutcome, type Advice, typ
 import type { Host } from './host.ts'
 import { armStamp } from './inject.ts'
 import { completeRow, DESC_MAX, pushStat, record, spawnRow, type Row } from './observe.ts'
-import type { RouteEntry, Runtime } from './runtime.ts'
+import { everyOnce, type RouteEntry, type Runtime } from './runtime.ts'
 import { bucketTake } from './signals.ts'
 import { rankOf, tierOf } from './tiers.ts'
 
@@ -387,7 +387,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
     rt.cells = asCells(await host.storeGet('datapce.cells'))
     rt.storeLoaded = true
     await host.publish.cells(cellViews(rt.cells, rt.stats))
-    host.every(DISPATCH_PUBLISH_MS, () => void flushDispatches(host, rt))
+    everyOnce(host, rt, 'router.publish', DISPATCH_PUBLISH_MS, () => void flushDispatches(host, rt))
   } catch {
     // a store that cannot be read starts with no cells
   }

@@ -89,6 +89,37 @@ describe('live: tick', () => {
     expect(v.view.minutesToExhaust!).toBeGreaterThanOrEqual(0)
   })
 
+  test('after a hot reload (startedAt 0) the whole-session burn is unknown, not ~0', () => {
+    const rt = rtAt({ budgetUsd: 10 })
+    rt.startedAt = 0
+    rt.minute.spend = 0.5
+    const v = tick(rt, T0 + 60_000, M(10, 5), EMPTY_SIGNALS).view
+    expect(v.budgetBurn).toBeNull()
+    expect(v.minutesToExhaust).toBeNull()
+  })
+
+  test('the 60 min burn needs 5 closed minutes: early spend neither shows nor toasts', () => {
+    const rt = rtAt({ budgetUsd: 10 })
+    let v = { view: EMPTY_SIGNALS, toasts: [] as [string, string][] }
+    for (let i = 1; i <= 4; i++) {
+      rt.minute.spend = 0.5
+      v = tick(rt, T0 + i * 60_000, M(10, 0.5 * i), v.view)
+      expect(v.view.budgetBurnLong).toBeNull()
+      expect(v.toasts.filter(([k]) => k === 'budget')).toEqual([])
+    }
+    expect(v.view.budgetBurnShort!).toBeGreaterThan(10)
+  })
+
+  test('an unparseable resetsAt is unknown, never a NaN admission rate', () => {
+    const rt = rtAt()
+    rt.limitHistory = [{ t: T0, pct: 40 }, { t: T0 + 600_000, pct: 50 }]
+    rt.heavySpawns = [1, 2, 3, 4, 5].map(i => T0 + i * 60_000)
+    const bad: Measure = { ...M(50), resetsAt: 'not a date' }
+    const v = tick(rt, T0 + 600_000, bad, EMPTY_SIGNALS).view
+    expect(Number.isFinite(v.admissionRate)).toBe(true)
+    expect(v.admissionRate).toBe(10)
+  })
+
   test('admission rate follows the rate-limit slope', () => {
     const rt = rtAt()
     rt.limitHistory = [{ t: T0, pct: 40 }, { t: T0 + 600_000, pct: 50 }]

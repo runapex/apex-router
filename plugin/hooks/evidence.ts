@@ -150,12 +150,13 @@ export function asCells(v: unknown): Record<string, Cell> {
 }
 
 export function asStats(v: unknown): Stats {
-  const out: Stats = {}
+  const out: Stats = Object.create(null) as Stats
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return out
   for (const [key, metrics] of Object.entries(v as Record<string, unknown>)) {
-    if (metrics === null || typeof metrics !== 'object') continue
-    const kept: Record<string, Welford> = {}
+    if (key === '__proto__' || metrics === null || typeof metrics !== 'object') continue
+    const kept: Record<string, Welford> = Object.create(null) as Record<string, Welford>
     for (const [metric, w] of Object.entries(metrics as Record<string, unknown>)) {
+      if (metric === '__proto__') continue
       const r = w as Record<string, unknown> | null
       if (r !== null && typeof r === 'object' && isCount(r.n) && isNum(r.mean) && isNum(r.m2)) kept[metric] = { n: r.n, mean: r.mean, m2: r.m2 }
     }

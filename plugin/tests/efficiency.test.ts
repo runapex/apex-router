@@ -101,6 +101,7 @@ describe('§17 efficiency contract', () => {
     const world = worldOf(on)
     world.store.set('datapce.cells', manyReady(18))
     await $.session.start(SESSION)
+    await new Promise(r => setTimeout(r, 0)) // the first backend poll finishes in the background
     const asked = world.asked.length
     const runs = world.runs.length
     for (let i = 0; i < 50; i++) await $.agent.spawn(spawnInput({ tool_use_id: `toolu_${i}` }))
