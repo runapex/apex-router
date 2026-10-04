@@ -130,3 +130,20 @@ def test_privacy_no_prompt_command_or_file_text_is_persisted():
             bare = re.sub(r"'[^']*'|\"[^\"]*\"", "''", args)  # string literals are labels, not data
             assert not banned.search(bare), (name, fn, args)
     assert matched >= 12, matched
+
+
+LISTINGS = (
+    Path(__file__).resolve().parents[1] / "plugin" / ".claude-plugin" / "plugin.json",
+    Path(__file__).resolve().parents[1] / ".claude-plugin" / "marketplace.json",
+)
+
+
+def test_listings_describe_advise_only_behaviour():
+    """§10: the listing states behaviour accurately — v1 is advise-only and never enforces."""
+    import json
+
+    for p in LISTINGS:
+        text = p.read_text()
+        json.loads(text)
+        assert not re.search(r"enforc", text, re.I), f"{p.name} promises enforcement"
+        assert "advise-only" in text, f"{p.name} does not say advise-only"

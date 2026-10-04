@@ -1,7 +1,7 @@
 {
   "name": "datapce",
   "version": "0.3.0",
-  "description": "Adaptive model routing you can see (alias apex-router). Writes only under ~/.apex-router and the plugin store; never stores prompt text, file contents or command text; no network calls; no telemetry to anyone.",
+  "description": "An advise-only model-routing ledger you can see (alias apex-router); never changes the model you chose. Writes only under ~/.apex-router and the plugin store; never stores prompt text, file contents or command text; no network calls; no telemetry to anyone.",
   "author": { "name": "datapce" },
   "keywords": ["apex-router"],
   "types": "./types/index.d.ts",

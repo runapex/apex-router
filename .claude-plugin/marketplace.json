@@ -1,12 +1,12 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "datapce",
-  "description": "datapce (apex-router): adaptive model routing you can see.",
+  "description": "datapce (apex-router): an advise-only model-routing ledger you can see.",
   "owner": { "name": "datapce" },
   "plugins": [
     {
       "name": "datapce",
-      "description": "Adaptive model routing you can see. A status bar and pane showing every subagent's tier, cost and why; routing advice that only enforces what it has measured on your machine; evidence injected into the planning tools you already use. Optional local-model lanes.",
+      "description": "An advise-only cost/availability ledger for your subagents: a status bar and pane showing every subagent's tier, cost and why, and per task type and tier how often it finished and what it cost on your machine. It never changes the model you chose; it adds a short pressure note to Agent/Workflow planning only when rate limits or the backend are under pressure. Optional local-model lanes.",
       "author": { "name": "datapce" },
       "category": "productivity",
       "keywords": ["apex-router", "model-routing", "subagents", "evidence"],
