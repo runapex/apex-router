@@ -15,6 +15,8 @@ claude plugin marketplace add runapex/apex-router
 claude plugin install datapce@datapce
 ```
 
+![datapce band and pane](docs/datapce-band.png) ![](docs/datapce-pane.png)
+
 > An advise-only view of your subagents: a status band and an `/apex` pane with pressure, cost
 > and the dispatch list, a session-handoff prompt, and a short pressure note in Agent/Workflow
 > planning when the upstream is under pressure. It never changes the model you chose. Its
