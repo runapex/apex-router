@@ -79,10 +79,10 @@ export const register: Register = (on, raw) => {
     await identify(host, e, rt)
     await observeStart(host, e, rt)
     await routerStart(host, rt)
+    await injectStart(host, rt)
     await backendStart(host, rt)
     await liveStart(host, rt, () => lastMeasure)
     await paneStart(host, rt)
-    await injectStart(host, rt)
     return r
   })
 
