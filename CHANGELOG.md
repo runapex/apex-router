@@ -46,6 +46,8 @@ blind to.
   intent-only and never counts toward drift).
 - Installer: version-controlled cold-load-stall fix (keepwarm agent + guard debounce);
   `--ornith-serve` persistent local stack.
+- `python -m apex_router.ornith.ornith_client --probe-thinking` — proves `reasoning_effort:
+  none` is honoured.
 
 ### Fixed
 - store: hardened concurrent WAL initialization.
@@ -56,6 +58,13 @@ blind to.
 - ornith: debounced version guard stops drain restart thrash.
 - metrics: Codex cached tokens are a subset of input (corrected downshift eligibility and
   cost ratio); Kimi pricing.
+- ornith: inference lock is bounded (`ORNITH_LOCK_TIMEOUT_SECS`, 120 s) → `OrnithBusy`
+  escalates instead of hanging a turn.
+- apex-ornith review: thinking OFF, 1024-token budget, bounded `git diff`.
+- pressure: connect-retried-then-succeeded rows no longer count as transport faults (they
+  pushed flaky-link boxes to AMBER/RED and shed work for no upstream reason).
+- handoff nudge: threshold is the clamped median (25M–100M) of per-session cache reads,
+  not a p80 that rose with every long session.
 
 ### Docs
 - Runbooks: pressure, review-preread, route-conformance, pressure-aware pi integration.
