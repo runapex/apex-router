@@ -10,7 +10,10 @@ import {
   evidenceSection,
   fnv1a,
   INJECT_SKILLS,
+  composeSections,
+  describe as describeHook,
   skillSection,
+  start as injectStart,
   MAX_COMPOSE_LINES,
   MAX_DESCRIBE_LINES,
   MAX_SECTION_LINES,
@@ -18,6 +21,7 @@ import {
   utf8Bytes,
 } from '../hooks/inject.ts'
 import type { Host } from '../hooks/host.ts'
+import { routeRow, decideSpawn, workflowRow } from '../hooks/router.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
 import { complete, MEASURE, SESSION, spawnInput } from './fixtures/inputs.ts'
 import { BACKEND, T0, worldOf, type World } from './fixtures/world.ts'
@@ -79,7 +83,7 @@ describe('inject: pure', () => {
         '| task_type | tier | n pass% | tok μ | state |',
         '|---|---|---|---|---|',
         '| explore | sonnet | 35 100% | 41k | READY |',
-        'rule: name the tier per task in the plan; datapce applies it at dispatch.',
+        'rule: advice only — name the tier per task in the plan; your choice of model is never changed.',
       ].join('\n'),
     )
   })
@@ -111,6 +115,63 @@ describe('inject: pure', () => {
     expect(await skillSection({} as Host, rt, 'superpowers:writing-plans', 'PLAN', T0)).toBe('PLAN')
     expect(rt.rows).toEqual([])
     expect(rt.injectedBytes).toBe(0)
+  })
+
+  test('the arm comes from the session id, not rt.arm: a holdout whose start step never ran still never injects', async () => {
+    const rt = newRuntime(optionsOf({}))
+    rt.sessionId = HOLDOUT_ID // identify ran; injectStart did not (an earlier step threw) — rt.arm is still the default
+    expect(rt.arm).toBe('evidence')
+    rt.level = { level: 'RED', up: 0, down: 0 }
+    rt.cells = { [cellKey('explore', 'RED', 'sonnet')]: READY }
+    const host = {} as Host
+    expect(await skillSection(host, rt, 'superpowers:writing-plans', 'PLAN', T0)).toBe('PLAN')
+    expect(await describeHook(host, rt, 'Agent', 'D', T0)).toBe('D')
+    expect((await composeSections(host, rt, { tools: ['Agent'], traits: [] }, [], T0)).length).toBe(0)
+    expect(rt.rows.map(l => JSON.parse(l)).map(r => [r.site, r.arm, r.withheld])).toEqual([
+      ['skill', 'holdout', true],
+      ['describe', 'holdout', true],
+      ['compose', 'holdout', true],
+    ])
+    expect(rt.injectedBytes).toBe(0)
+  })
+
+  test("route rows stamp the arm from the session id; 'unknown' after a reload (no session id)", () => {
+    const rt = newRuntime(optionsOf({}))
+    const e = spawnInput()
+    const d = decideSpawn(e, { level: 'GREEN', cells: {}, stats: {}, admitted: true })
+    expect(routeRow(e, d, 'claude-opus-5-5', 'agent-1', rt, T0).inject_arm).toBe('unknown')
+    expect(workflowRow('agent-9', null, null, rt, T0).inject_arm).toBe('unknown')
+    rt.sessionId = HOLDOUT_ID
+    expect(routeRow(e, d, 'claude-opus-5-5', 'agent-1', rt, T0).inject_arm).toBe('holdout')
+    expect(workflowRow('agent-9', null, null, rt, T0).inject_arm).toBe('holdout')
+  })
+
+  test('a capped session skips the describe re-render (no cache re-price for a line that cannot show)', async () => {
+    const rt = newRuntime(optionsOf({}))
+    rt.sessionId = 'sess-0001'
+    rt.injectedBytes = SESSION_CAP_BYTES - 10
+    let clock = T0
+    let tickFn: (() => void) | null = null
+    const invalidated: string[] = []
+    const host = {
+      now: async () => clock,
+      every: (_ms: number, fn: () => void) => {
+        tickFn = fn
+        return {} as never
+      },
+      invalidate: (ev: string) => void invalidated.push(ev),
+      publish: { inject: async () => undefined },
+    } as unknown as Host
+    await injectStart(host, rt)
+    rt.level = { level: 'RED', up: 0, down: 0 }
+    clock = T0 + 11 * 60_000
+    tickFn!()
+    await new Promise(r => setTimeout(r, 0))
+    expect(invalidated).toEqual([])
+    rt.injectedBytes = 0
+    tickFn!()
+    await new Promise(r => setTimeout(r, 0))
+    expect(invalidated).toEqual(['tool.describe'])
   })
 })
 
@@ -191,15 +252,54 @@ describe('inject: hooks', () => {
     await $.session.start(SESSION)
     for (let i = 0; i < 20; i++) await $.skill.prompt({ skill: 'superpowers:writing-plans', text: 'PLAN' })
     await goRed($, world)
-    const described: string[] = []
-    for (let i = 0; i < 20; i++) described.push((await $.tool.describe({ tool: 'Agent', description: 'Launch work', provider: PROVIDER })).description)
-    expect(described[described.length - 1]).toBe('Launch work')
-    await $.prompt.compose(COMPOSE)
+    const line = 'Launch work\ndatapce: pressure RED — serialize heavy fan-out'
+    for (let i = 0; i < 10; i++) {
+      for (const tool of ['Agent', 'Workflow']) {
+        // memoised: the line admitted on the first render is re-sent on every later one
+        expect((await $.tool.describe({ tool, description: 'Launch work', provider: PROVIDER })).description).toBe(line)
+      }
+    }
+    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
+    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
     await world.clock.advance(5000)
     const rows = injectRows(world)
-    expect(rows.some(r => r.site === 'describe' && (r.bytes as number) > 0)).toBe(true)
-    expect(rows.some(r => r.site === 'describe' && r.capped === true)).toBe(true)
+    expect(rows.filter(r => r.site === 'describe').map(r => [r.skill, (r.bytes as number) > 0])).toEqual([
+      ['Agent', true],
+      ['Workflow', true],
+    ])
+    expect(rows.filter(r => r.site === 'compose')).toEqual([expect.objectContaining({ bytes: 0, capped: true })])
     expect(rows.reduce((s, r) => s + (r.bytes as number), 0)).toBeLessThanOrEqual(SESSION_CAP_BYTES)
+  })
+
+  test('tool.describe re-renders are decided once: one row, one debit, the same text every time', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await goRed($, world)
+    const seen = new Set<string>()
+    for (let i = 0; i < 10; i++) seen.add((await $.tool.describe({ tool: 'Agent', description: 'D', provider: PROVIDER })).description)
+    expect([...seen]).toEqual(['D\ndatapce: pressure RED — serialize heavy fan-out'])
+    await world.clock.advance(5000)
+    const rows = injectRows(world)
+    expect(rows).toHaveLength(1)
+    expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: rows[0]!.bytes, sections: 1 })
+  })
+
+  test('compose: a level that flaps AMBER → GREEN → AMBER re-uses its decision (one row, one debit)', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    const at = async (pct: number, minutes: number) => {
+      await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt: '2026-10-03T20:00:00Z' }] } as never)
+      await world.clock.advance(minutes * 60_000)
+    }
+    await at(75, 2)
+    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro', 'datapce:pressure'])
+    await at(10, 3)
+    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
+    await at(75, 2)
+    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro', 'datapce:pressure'])
+    await world.clock.advance(5000)
+    expect(injectRows(world).filter(r => r.site === 'compose')).toHaveLength(1)
+    expect((world.published.get('inject') as { sections: number }).sections).toBe(1)
   })
 
   test('holdout arm: the same skill many times never injects; each withheld section is logged', async ($, on) => {

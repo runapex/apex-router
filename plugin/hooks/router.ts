@@ -9,6 +9,7 @@ import type { Cell, Dispatch, Level, TaskType, Tier } from '../types/index.d.ts'
 import { classifyDispatch, promptHeadOf } from './classify.ts'
 import { adviceFor, asCells, cellKey, cellViews, recordOutcome, type Advice, type Stats } from './evidence.ts'
 import type { Host } from './host.ts'
+import { armStamp } from './inject.ts'
 import { completeRow, DESC_MAX, pushStat, record, spawnRow, type Row } from './observe.ts'
 import type { RouteEntry, Runtime } from './runtime.ts'
 import { bucketTake } from './signals.ts'
@@ -110,7 +111,7 @@ export function routeRow(e: AgentSpawnInput, d: Decision, resolved: string, agen
     description: e.description.slice(0, DESC_MAX),
     resolved_model: resolved,
     applied: 'no',
-    inject_arm: rt.arm,
+    inject_arm: armStamp(rt),
     injected: rt.injectedSections > 0 ? 'yes' : 'no',
   }
   if (rt.sessionId !== '') row.session_id = rt.sessionId
@@ -139,7 +140,7 @@ export function workflowRow(agentId: string, model: string | null, toolUseId: st
     start_tier: 'unknown',
     agent_id: agentId,
     applied: 'no',
-    inject_arm: rt.arm,
+    inject_arm: armStamp(rt),
     injected: rt.injectedSections > 0 ? 'yes' : 'no',
   }
   if (model !== null) row.resolved_model = model

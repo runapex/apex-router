@@ -28,7 +28,7 @@ export const SESSION_CAP_BYTES = 2048
 export const HOLDOUT_PCT = 20
 export const INVALIDATE_EVERY_MS = 600_000
 export const COMPOSE_ID = 'datapce:pressure'
-export const RULE = 'rule: name the tier per task in the plan; datapce applies it at dispatch.'
+export const RULE = 'rule: advice only — name the tier per task in the plan; your choice of model is never changed.'
 
 export const bareSkill = (skill: string): string => skill.slice(skill.lastIndexOf(':') + 1)
 
@@ -42,6 +42,9 @@ export function fnv1a(s: string): number {
 }
 
 export const armOf = (sessionId: string): Arm => (fnv1a(sessionId) % 100 < HOLDOUT_PCT ? 'holdout' : 'evidence')
+
+/** The arm a route row is stamped with: from the session id, never from a default; 'unknown' before identify (hot reload). */
+export const armStamp = (rt: Pick<Runtime, 'sessionId'>): Arm | 'unknown' => (rt.sessionId !== '' ? armOf(rt.sessionId) : 'unknown')
 
 export const utf8Bytes = (s: string): number => new TextEncoder().encode(s).length
 
@@ -94,9 +97,12 @@ const rowsNow = (rt: Runtime): EvidenceRow[] => evidenceRows(rt.cells, rt.stats,
  */
 async function admit(host: Host, rt: Runtime, site: string, name: string, appended: string, now: number): Promise<boolean> {
   if (rt.sessionId === '') return false
+  // The arm comes from the session id at every use, never from rt.arm: if a session.start step
+  // before injectStart threw, rt.arm would still hold its default and a holdout would fail open.
+  const arm = armOf(rt.sessionId)
   const bytes = utf8Bytes(appended)
-  const base = { ev: 'inject', ts: now, site, skill: name, arm: rt.arm }
-  if (rt.arm === 'holdout') {
+  const base = { ev: 'inject', ts: now, site, skill: name, arm }
+  if (arm === 'holdout') {
     record(rt, { ...base, bytes: 0, withheld: true })
     return false
   }
@@ -107,8 +113,23 @@ async function admit(host: Host, rt: Runtime, site: string, name: string, append
   rt.injectedBytes += bytes
   rt.injectedSections += 1
   record(rt, { ...base, bytes })
-  await host.publish.inject({ arm: rt.arm, bytes: rt.injectedBytes, sections: rt.injectedSections })
+  await host.publish.inject({ arm, bytes: rt.injectedBytes, sections: rt.injectedSections })
   return true
+}
+
+/**
+ * describe/compose: the engine re-renders these, so each distinct text is decided (logged, debited)
+ * once per session and the admitted text is re-sent unchanged — a re-render never re-debits the cap,
+ * never drops a line it showed before, and a level that flaps back re-uses its earlier decision.
+ */
+async function admitOnce(host: Host, rt: Runtime, site: string, name: string, appended: string, now: number): Promise<boolean> {
+  const key = `${site}|${name}|${appended}`
+  const known = rt.injectDecisions.get(key)
+  if (known !== undefined) return known
+  if (rt.sessionId === '') return false
+  const admitted = await admit(host, rt, site, name, appended, now)
+  rt.injectDecisions.set(key, admitted)
+  return admitted
 }
 
 export async function skillSection(host: Host, rt: Runtime, skill: string, text: string, now: number): Promise<string> {
@@ -128,15 +149,16 @@ export async function describe(host: Host, rt: Runtime, tool: string, descriptio
     const line = describeText(rt.level.level)
     if (line === null) return description
     const appended = `\n${line}`
-    return (await admit(host, rt, 'describe', tool, appended, now)) ? `${description}${appended}` : description
+    return (await admitOnce(host, rt, 'describe', tool, appended, now)) ? `${description}${appended}` : description
   } catch {
     return description
   }
 }
 
 /**
- * prompt.compose fires for every request: the decision (log, count) is taken once per distinct
- * text, then the admitted text is re-sent unchanged (cache-stable) until pressure changes.
+ * prompt.compose fires for every request: decided once per distinct text (admitOnce), then re-sent
+ * unchanged (cache-stable). The text follows the live level, which already has hysteresis (enter
+ * after 2 windows, exit after 3); a flap back to a level re-uses its decision without a new debit.
  * A render that only measures the prompt (`analysis`) never takes a decision.
  */
 export async function composeSections(
@@ -148,20 +170,23 @@ export async function composeSections(
 ): Promise<readonly PromptComposeSection[]> {
   try {
     const text = composeText(rt.level.level)
-    const offered = (e.tools ?? []).some(t => (DESCRIBE_TOOLS as readonly string[]).includes(t))
-    if (text === null) {
-      rt.composeDecision = null
-      return sections
-    }
-    if (!offered) return sections
-    if (rt.composeDecision?.text !== text) {
-      if ((e.traits ?? []).includes('analysis')) return sections
-      rt.composeDecision = { text, admitted: await admit(host, rt, 'compose', 'prompt', text, now) }
-    }
-    return rt.composeDecision.admitted ? [...sections, { id: COMPOSE_ID, text, scope: 'session' }] : sections
+    if (text === null) return sections
+    if (!(e.tools ?? []).some(t => (DESCRIBE_TOOLS as readonly string[]).includes(t))) return sections
+    const known = rt.injectDecisions.get(`compose|prompt|${text}`)
+    if (known === undefined && (e.traits ?? []).includes('analysis')) return sections
+    return (await admitOnce(host, rt, 'compose', 'prompt', text, now)) ? [...sections, { id: COMPOSE_ID, text, scope: 'session' }] : sections
   } catch {
     return sections
   }
+}
+
+/** A capped session would only re-render the description to show the same thing: skip the re-price. */
+function wouldCap(rt: Runtime, text: string | null): boolean {
+  if (text === null) return false
+  const appended = `\n${text}`
+  const known = DESCRIBE_TOOLS.map(t => rt.injectDecisions.get(`describe|${t}|${appended}`))
+  if (known.every(k => k !== undefined)) return !known.some(k => k === true)
+  return rt.injectedBytes + utf8Bytes(appended) > SESSION_CAP_BYTES
 }
 
 /**
@@ -183,7 +208,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
         try {
           const now = await host.now()
           const text = describeText(rt.level.level)
-          if (text !== last && now - lastInvalidate >= INVALIDATE_EVERY_MS) {
+          if (text !== last && now - lastInvalidate >= INVALIDATE_EVERY_MS && !wouldCap(rt, text)) {
             last = text
             lastInvalidate = now
             host.invalidate('tool.describe')
