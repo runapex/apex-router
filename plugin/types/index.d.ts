@@ -75,12 +75,12 @@ export type CellView = {
   pass: number
   wilsonLo: number
   tokMean: number | null
-  /** Runs that fed tokMean (≤ n). */
+  /** Runs that fed tokMean, clamped to n (the stats are lifetime; the cell can restart on a rebase). */
   tokN: number
   durationMean: number | null
-  /** Runs that fed durationMean (≤ n). */
+  /** Runs that fed durationMean, clamped to n. */
   durationN: number
-  /** Failed runs whose kind was "unavailable" (the rest of n − pass is "other"). */
+  /** Failed runs whose kind was "unavailable", clamped to n − pass (the rest is "other"). */
   unavailable: number
 }
 

@@ -97,9 +97,11 @@ export function cellViews(cells: Record<string, Cell>, stats: Stats): CellView[]
   for (const [key, c] of Object.entries(cells)) {
     const p = parseKey(key)
     if (p === null) continue
+    // Stats are lifetime; n/pass restart on a rebase (or the stats were dropped): clamp to the cell.
     views.push({
       key, taskType: p.taskType, level: p.level, tier: p.tier, state: c.state, n: c.n, pass: c.pass, wilsonLo: wilsonLo(c.pass, c.n),
-      tokMean: tokMean(stats, key), tokN: stats[key]?.tokens?.n ?? 0, durationMean: durationMean(stats, key), durationN: stats[key]?.duration_ms?.n ?? 0, unavailable: unavailableOf(stats, key),
+      tokMean: tokMean(stats, key), tokN: Math.min(c.n, stats[key]?.tokens?.n ?? 0), durationMean: durationMean(stats, key),
+      durationN: Math.min(c.n, stats[key]?.duration_ms?.n ?? 0), unavailable: Math.min(c.n - c.pass, unavailableOf(stats, key)),
     })
   }
   return views.sort(

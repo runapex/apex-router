@@ -24,6 +24,13 @@ const DISPATCH_ROWS = 20
 const USAGE = 'usage: /apex [open|close|handoff|json]'
 export const NO_LABEL = 'no quality label yet — ok% is completion and availability, not answer quality'
 
+const KNOWN_ARGS: readonly string[] = ['open', 'close', 'handoff', 'json']
+/** §10: only a known subcommand is logged; anything else the user typed is not. */
+const loggedArg = (args: string): string => {
+  const w = args.split(/\s+/)[0] ?? ''
+  return KNOWN_ARGS.includes(w) ? w : w === '' ? '' : 'unknown'
+}
+
 export type PaneInput = {
   ds: readonly Dispatch[]
   s: SignalsView
@@ -49,7 +56,7 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
     const ran = tierOf(d.resolved) ?? d.resolved ?? '—'
     const tok = d.tokens === null ? '' : ` ${kTok(d.tokens)}`
     const delta = d.advised !== null && d.advised !== tierOf(d.resolved) ? ` ▲ ${d.advised}: ${d.basis}` : ''
-    rows.push(`${d.description} · ${d.taskType} · ${d.requested}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}${delta}`)
+    rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType} · ${d.requested}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}${delta}`)
   }
   return rows
 }
@@ -84,7 +91,7 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
     const a = acc.get(key) ?? { taskType: c.taskType, tier: c.tier, n: 0, pass: 0, unavailable: 0, tokN: 0, tokSum: 0, durN: 0, durSum: 0 }
     a.n += c.n
     a.pass += c.pass
-    a.unavailable += c.unavailable
+    a.unavailable += Math.min(c.unavailable, c.n - c.pass)
     if (c.tokMean !== null) {
       a.tokN += c.tokN
       a.tokSum += c.tokMean * c.tokN
@@ -161,7 +168,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
 export function install(on: On, rt: Runtime): void {
   on('command.run', { command: 'apex' }, async ($, e) => {
     const args = e.args.trim().toLowerCase()
-    record(rt, { ev: 'command', ts: await $.clock.now(), command: 'apex', args: args.split(/\s+/)[0] ?? '' })
+    record(rt, { ev: 'command', ts: await $.clock.now(), command: 'apex', args: loggedArg(args) })
     if (args === 'handoff') {
       return { text: 'datapce: handoff block added — fill every field, then start a fresh session.', context: [HANDOFF_TEMPLATE] }
     }

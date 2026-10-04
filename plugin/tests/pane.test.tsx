@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { CellView, Dispatch } from '../types/index.d.ts'
-import { cellKey } from '../hooks/evidence.ts'
+import { cellKey, cellViews } from '../hooks/evidence.ts'
 import { HANDOFF_TEMPLATE } from '../hooks/handoff.ts'
-import { ledgerRows, paneSections, type PaneInput } from '../hooks/pane.tsx'
+import { ledgerRows, NO_LABEL, paneSections, type PaneInput } from '../hooks/pane.tsx'
 import { EMPTY_BACKEND, EMPTY_INJECT, EMPTY_PROFILE_STORE, EMPTY_SIGNALS, profileView } from '../hooks/state.ts'
 import { command, PANE, SESSION, spawnInput } from './fixtures/inputs.ts'
 import { worldOf } from './fixtures/world.ts'
@@ -19,8 +19,6 @@ const d = (over: Partial<Dispatch>): Dispatch => ({
   resolved: 'claude-opus-5-5', advised: null, advisedState: null, applied: false, basis: '', outcome: 'ok', startedAt: 0,
   durationMs: 41000, tokens: 12000, level: 'GREEN', ...over,
 })
-
-const NO_LABEL = 'no quality label yet — ok% is completion and availability, not answer quality'
 
 describe('pane: sections', () => {
   test('empty: honest placeholders; no Lanes without a backend; never an anomaly or enforce section', () => {
@@ -55,6 +53,24 @@ describe('pane: sections', () => {
       'explore · sonnet · n 20 · ok 80% (2 unavailable, 2 other) · tok μ 30k · dur μ 35.5s',
       'review · opus · n 4 · ok 100% · tok μ — · dur μ —',
     ])
+  })
+
+  test('a cell restarted below its lifetime stats renders consistent counts', () => {
+    const rows = ledgerRows([view({ n: 5, pass: 3, unavailable: 4, tokN: 5, durationN: 5, durationMean: 2000 })])
+    expect(rows[0]).toContain('n 5 · ok 60% (2 unavailable)')
+  })
+
+  test('cellViews clamps lifetime stats to the cell', () => {
+    const key = cellKey('explore', 'GREEN', 'sonnet')
+    const cell = { n: 5, pass: 3, state: 'WARMING' as const, winN: 0, winPass: 0, below: 0, above: 0, cusum: 0, p0: null }
+    const stats = { [key]: { tokens: { n: 50, mean: 1000, m2: 0 }, unavailable: { n: 50, mean: 0.5, m2: 0 } } }
+    const v = cellViews({ [key]: cell }, stats)[0]!
+    expect([v.unavailable, v.tokN]).toEqual([2, 5])
+  })
+
+  test('a workflow dispatch is labelled, not blank', () => {
+    const rows = paneSections(empty({ ds: [d({ description: '', requested: 'unknown', taskType: 'other', subagentType: 'workflow' })] }))[0]!.rows
+    expect(rows[1]).toMatch(/^workflow · other · unknown→opus/)
   })
 
   test('the ledger never states a label count that would suffice', () => {
@@ -143,6 +159,18 @@ describe('pane: hooks', () => {
     const r = await $.command.run(command('apex', 'json'))
     const ev = (JSON.parse(r.text ?? '{}') as { sections: { id: string; rows: string[] }[] }).sections.find(x => x.id === 'evidence')!
     expect(ev.rows[0]).toBe('explore · opus · n 1 · ok 100% · tok μ 41k · dur μ 41.0s')
+  })
+
+  test('only a known /apex subcommand is logged', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.command.run(command('apex', 'json'))
+    await $.command.run(command('apex', 'my secret text'))
+    await $.session.end({ sessionId: 's', reason: 'other' } as never)
+    const logged = [...world.appended.values()].flat().join('\n')
+    expect(logged).toContain('"args":"json"')
+    expect(logged).toContain('"args":"unknown"')
+    expect(logged).not.toContain('secret')
   })
 
   test('/apex handoff hands the model the structured block', async ($, on) => {
