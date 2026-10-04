@@ -5,7 +5,7 @@ import { start as backendStart } from './backend.ts'
 import { install as band, measureOf, refreshStatus } from './band.tsx'
 import { checkHandoff } from './handoff.ts'
 import type { Host } from './host.ts'
-import { composeSections, describe as injectDescribe, skillSection, start as injectStart } from './inject.ts'
+import { composeSections, describe as injectDescribe, endInjection, publishArm, skillSection, start as injectStart } from './inject.ts'
 import { start as liveStart } from './live.ts'
 import {
   flushAll,
@@ -25,7 +25,7 @@ import {
   type Decision,
 } from './router.ts'
 import { install as pane, start as paneStart } from './pane.tsx'
-import { identify, newRuntime, optionsOf } from './runtime.ts'
+import { CONTINUES, endSession, identify, newRuntime, optionsOf, reidentify } from './runtime.ts'
 
 // Wiring only. Shared events are registered once here (engine rule) and every engine call the
 // modules make is bound into a Host here (the engine follows `$` only within this file).
@@ -73,6 +73,21 @@ function hostOf($: EngineInterface): Host {
 export const register: Register = (on, raw) => {
   const rt = newRuntime(optionsOf(raw))
   let lastMeasure: Measure | null = null
+  // One re-identification at a time (turn.start and prompt.compose can race on the first turn).
+  let identifying: Promise<void> | null = null
+  const ensureSession = (host: Host): Promise<void> => {
+    if (rt.sessionId !== '') return Promise.resolve()
+    identifying ??= (async () => {
+      try {
+        if (await reidentify(host, rt)) await publishArm(host, rt)
+      } catch {
+        // still unidentified: injection stays off, rows say 'unknown'; the next turn tries again
+      } finally {
+        identifying = null
+      }
+    })()
+    return identifying
+  }
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
@@ -87,10 +102,22 @@ export const register: Register = (on, raw) => {
     return r
   })
 
+  // /clear and resume end the session but not the process: it goes on under a new id with no
+  // session.start (engine 2.1.288). After the final flush, per-session state resets; the new session
+  // is identified on its first turn.start / prompt.compose.
   on('session.end', async ($, e, next) => {
     await flushDispatches(hostOf($), rt)
     routerEnd(rt)
     await flushAll(hostOf($), rt)
+    if (CONTINUES.has(e.reason)) {
+      endSession(rt)
+      endInjection(rt)
+    }
+    return next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    await ensureSession(hostOf($))
     return next(e)
   })
 
@@ -122,6 +149,7 @@ export const register: Register = (on, raw) => {
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     const host = hostOf($)
+    await ensureSession(host)
     return { ...r, sections: await composeSections(host, rt, e, r.sections, await host.now()) }
   })
 

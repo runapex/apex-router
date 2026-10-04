@@ -43,7 +43,7 @@ export function fnv1a(s: string): number {
 
 export const armOf = (sessionId: string): Arm => (fnv1a(sessionId) % 100 < HOLDOUT_PCT ? 'holdout' : 'evidence')
 
-/** The arm a route row is stamped with: from the session id, never from a default; 'unknown' before identify (hot reload). */
+/** The arm a route row is stamped with: from the session id, never from a default; 'unknown' while no session is identified (between a /clear or resume and its first turn). */
 export const armStamp = (rt: Pick<Runtime, 'sessionId'>): Arm | 'unknown' => (rt.sessionId !== '' ? armOf(rt.sessionId) : 'unknown')
 
 export const utf8Bytes = (s: string): number => new TextEncoder().encode(s).length
@@ -92,8 +92,8 @@ const rowsNow = (rt: Runtime): EvidenceRow[] => evidenceRows(rt.cells, rt.stats,
 
 /**
  * One injection decision: arm, cap, log, publish. `appended` is exactly what would be added.
- * Returns true when it may be appended. No identified session (a hot reload skipped session.start)
- * means no arm is known, so nothing is injected and nothing logged.
+ * Returns true when it may be appended. No identified session (after a /clear or resume, before its
+ * first turn) means no arm is known, so nothing is injected and nothing logged.
  */
 async function admit(host: Host, rt: Runtime, site: string, name: string, appended: string, now: number): Promise<boolean> {
   if (rt.sessionId === '') return false
@@ -126,7 +126,9 @@ const IN_FLIGHT = new WeakMap<Runtime, Map<string, Promise<boolean>>>()
 
 async function admitOnce(host: Host, rt: Runtime, site: string, name: string, appended: string, now: number): Promise<boolean> {
   const key = `${site}|${name}|${appended}`
-  const known = rt.injectDecisions.get(key)
+  // The memo of the session that asked: a decision landing after a /clear never enters the next one's.
+  const memo = rt.injectDecisions
+  const known = memo.get(key)
   if (known !== undefined) return known
   if (rt.sessionId === '') return false
   // Concurrent renders of the same text share one in-flight decision: the memo is claimed before awaiting.
@@ -136,7 +138,7 @@ async function admitOnce(host: Host, rt: Runtime, site: string, name: string, ap
   if (pending !== undefined) return pending
   const decision = admit(host, rt, site, name, appended, now).then(
     admitted => {
-      rt.injectDecisions.set(key, admitted)
+      memo.set(key, admitted)
       flights.delete(key)
       return admitted
     },
@@ -206,16 +208,27 @@ function wouldCap(rt: Runtime, text: string | null): boolean {
   return rt.injectedBytes + utf8Bytes(appended) > SESSION_CAP_BYTES
 }
 
+/** session.end{clear|resume}: decisions still in flight belong to the session that ended. */
+export function endInjection(rt: Runtime): void {
+  IN_FLIGHT.delete(rt)
+}
+
+/** The arm of the identified session, published with its injection counters. */
+export async function publishArm(host: Host, rt: Runtime): Promise<void> {
+  rt.arm = armOf(rt.sessionId)
+  await host.publish.inject({ arm: rt.arm, bytes: rt.injectedBytes, sections: rt.injectedSections })
+}
+
 /**
  * session.start (after identify and the router loaded cells): the arm and the describe refresh.
  * The arm is logged where it is measured — on every route row (inject_arm) and every inject row —
- * not as a row of its own (a session with nothing to say writes nothing).
+ * not as a row of its own (a session with nothing to say writes nothing). The refresh is registered
+ * whatever this session's arm: after a /clear the next session may be in the other arm, so each
+ * tick checks the arm of the session identified then.
  */
 export async function start(host: Host, rt: Runtime): Promise<void> {
   try {
-    rt.arm = armOf(rt.sessionId)
-    await host.publish.inject({ arm: rt.arm, bytes: rt.injectedBytes, sections: rt.injectedSections })
-    if (rt.arm === 'holdout') return
+    await publishArm(host, rt)
     // tool.describe is cached by the engine: re-render it only when its text changed, and at most
     // once per 10 minutes (each re-render re-prices the prompt cache).
     let last = describeText(rt.level.level)
@@ -223,6 +236,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
     everyOnce(host, rt, 'inject.refresh', 60_000, () => {
       void (async () => {
         try {
+          if (rt.sessionId === '' || armOf(rt.sessionId) === 'holdout') return
           const now = await host.now()
           const text = describeText(rt.level.level)
           if (text !== last && now - lastInvalidate >= INVALIDATE_EVERY_MS && !wouldCap(rt, text)) {

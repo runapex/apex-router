@@ -247,6 +247,7 @@ export function measure(rt: Runtime, e: SessionMeasureInput, now: number): void 
     if (m.costUsd !== null) {
       if (rt.lastCostUsd !== null) rt.minute.spend += Math.max(0, m.costUsd - rt.lastCostUsd)
       rt.lastCostUsd = m.costUsd
+      rt.costAtStart ??= m.costUsd
     }
     if (m.limitPercent !== null) {
       rt.limitHistory.push({ t: now, pct: m.limitPercent })

@@ -49,7 +49,7 @@ export type Runtime = {
   options: Options
   sessionId: string
   home: string
-  /** Absolute, `~` expanded; '' until identify resolves it (a hot reload skips identify: every writer waits). */
+  /** Absolute, `~` expanded; '' until identify resolves it (every writer waits for it). */
   backendDir: string
   /** Why backend detection is off (a configured backendDir that is not absolute), or null. */
   backendRefused: string | null
@@ -78,11 +78,16 @@ export type Runtime = {
   /** Memoised describe/compose decisions, `site|name|text` → admitted: each distinct text is decided (logged, debited) once. */
   injectDecisions: Map<string, boolean>
   toastAt: Map<string, number>
-  /** Timers this module lifetime already registered (session.start runs again on resume and /clear): each registers once. */
+  /**
+   * Timers this module lifetime already registered: each registers once. The engine fires session.start
+   * once per load (never on /clear or resume) and a reload builds a fresh runtime, so this is defence only.
+   */
   timers: Set<string>
   minute: MinuteBucket
   minutes: MinuteBucket[]
   lastCostUsd: number | null
+  /** The session's cost when it began (first cost seen after identify): budget burn covers this session only. */
+  costAtStart: number | null
   cacheRead: number
   stepFeatures: number[][]
   bashEvents: BashEvent[]
@@ -92,6 +97,7 @@ export type Runtime = {
   limitHistory: { t: number; pct: number }[]
   anomaly: AnomalyModel | null
   backend: BackendView
+  /** When this session was identified (ms); 0 between a /clear or resume and its first turn. */
   startedAt: number
 }
 
@@ -128,6 +134,7 @@ export function newRuntime(options: Options): Runtime {
     minute: { steps: 0, failed: 0, spend: 0 },
     minutes: [],
     lastCostUsd: null,
+    costAtStart: null,
     cacheRead: 0,
     stepFeatures: [],
     bashEvents: [],
@@ -169,7 +176,10 @@ export function everyOnce(host: Host, rt: Runtime, key: string, ms: number, fn: 
   host.every(ms, fn)
 }
 
-/** session.start, first: who and where this session is. register.ts calls it before any module. */
+/**
+ * session.start, first: who and where this session is. register.ts calls it before any module.
+ * The engine fires session.start once per load (a hot reload included, never /clear or resume).
+ */
 export async function identify(host: Host, e: SessionStartInput, rt: Runtime): Promise<void> {
   rt.home = await host.home()
   const resolved = resolveBackendDir(rt.options.backendDir, rt.home)
@@ -178,4 +188,41 @@ export async function identify(host: Host, e: SessionStartInput, rt: Runtime): P
   rt.sessionId = await host.sessionId()
   rt.surface = e.surface
   rt.startedAt = await host.now()
+  rt.costAtStart = rt.lastCostUsd
+}
+
+/** session.end reasons after which the process goes on under a new session id, with no session.start. */
+export const CONTINUES: ReadonlySet<string> = new Set(['clear', 'resume'])
+
+/**
+ * session.end{clear|resume}, after the final flush: forget who this session was and everything counted
+ * per session. sessionId '' fails closed (no injection, arm stamp 'unknown') until reidentify runs.
+ * Home, backendDir, persisted cells/stats/profile and the live windows are per process and stay.
+ */
+export function endSession(rt: Runtime): void {
+  rt.sessionId = ''
+  rt.startedAt = 0
+  rt.injectedBytes = 0
+  rt.injectedSections = 0
+  rt.injectDecisions = new Map()
+  rt.cacheRead = 0
+  rt.stepFeatures = []
+  rt.lastCostUsd = null
+  rt.costAtStart = null
+  rt.toastAt.delete('handoff')
+}
+
+/**
+ * The first turn.start / prompt.compose after a /clear or resume: the new session's id (2 engine
+ * calls, once per session; never on agent.spawn). True when it identified a new session.
+ */
+export async function reidentify(host: Host, rt: Runtime): Promise<boolean> {
+  if (rt.sessionId !== '' || rt.backendDir === '') return false
+  const id = await host.sessionId()
+  const now = await host.now()
+  if (rt.sessionId !== '' || id === '') return false
+  rt.sessionId = id
+  rt.startedAt = now
+  rt.costAtStart = rt.lastCostUsd
+  return true
 }

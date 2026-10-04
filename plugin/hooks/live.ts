@@ -55,8 +55,12 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   const short = spendBurn(spend, budget, 5)
   // Under 5 closed minutes the 60 min window is the same data as the 5 min one: not a second opinion yet.
   const long = spend.length >= MIN_LONG_MINUTES ? spendBurn(spend, budget, WINDOW_MIN) : null
-  // startedAt is 0 after a hot reload (identify did not run): whole-session burn is unknown then.
-  const whole = budget > 0 && m?.costUsd != null && rt.startedAt > 0 ? budgetBurn(m.costUsd, Math.max(1, (now - rt.startedAt) / 60_000), budget) : null
+  // Whole-session burn covers this session only: the cost since it was identified (a hot reload or a
+  // /clear starts a new baseline), over the minutes since. startedAt is 0 between a /clear or resume
+  // and the new session's first turn: unknown then, never ~0.
+  if (m?.costUsd != null) rt.costAtStart ??= m.costUsd
+  const spent = m?.costUsd != null && rt.costAtStart !== null ? Math.max(0, m.costUsd - rt.costAtStart) : null
+  const whole = budget > 0 && spent !== null && rt.startedAt > 0 ? budgetBurn(spent, Math.max(1, (now - rt.startedAt) / 60_000), budget) : null
   if (short !== null && long !== null && short > SHORT_LIMIT && long > LONG_LIMIT) {
     toasts.push(['budget', `datapce: budget burning ${short.toFixed(0)}× (5 min) / ${long.toFixed(0)}× (60 min)`])
   }

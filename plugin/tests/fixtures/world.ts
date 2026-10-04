@@ -32,6 +32,8 @@ export type World = {
   bashOutput: string
   step: Partial<TurnStepResult>
   answer: (argv: readonly string[]) => Answer | null
+  /** What `$.session.id()` answers; a test changes it to model a /clear or resume (a new id, no session.start). */
+  sessionId: string
 }
 
 export const RESOLVED: Record<string, string> = {
@@ -72,6 +74,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
     bashOutput: '',
     step: {},
     answer: () => null,
+    sessionId,
   }
   const isDir = (p: string) => [...world.files.keys()].some(f => f.startsWith(`${p}/`))
 
@@ -146,7 +149,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
     return next(e)
   })
   on('env.get', ($, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
-  on('session.id', () => ({ value: sessionId }))
+  on('session.id', () => ({ value: world.sessionId }))
   on('ui.toast', ($, e) => {
     world.toasts.push(e.text)
     return { value: undefined }
@@ -182,6 +185,7 @@ export function worldOf(on: On, files: Readonly<Record<string, string>> = {}, se
     if (world.denySpawn) return { deny: 'denied by policy' }
     return { model: resolveModel(e.model ?? e.parentModel), agentId: `agent-${world.spawned.length}` }
   })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('tool.describe', ($, e) => ({ description: e.description }))
