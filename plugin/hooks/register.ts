@@ -2,6 +2,13 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { install as band, measureOf } from './band.tsx'
 import type { Host } from './host.ts'
+import {
+  flushAll,
+  install as observe,
+  measure as observeMeasure,
+  skill as observeSkill,
+  start as observeStart,
+} from './observe.ts'
 import { identify, newRuntime, optionsOf } from './runtime.ts'
 
 // Wiring only. Shared events are registered once here (engine rule) and every engine call the
@@ -54,14 +61,30 @@ export const register: Register = (on, raw) => {
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    await identify(hostOf($), e, rt)
+    const host = hostOf($)
+    await identify(host, e, rt)
+    await observeStart(host, e, rt)
     return r
   })
 
-  on('session.measure', async ($, e, next) => {
-    await hostOf($).publish.measure(measureOf(e))
+  on('session.end', async ($, e, next) => {
+    await flushAll(hostOf($), rt)
     return next(e)
   })
 
+  on('session.measure', async ($, e, next) => {
+    const host = hostOf($)
+    await host.publish.measure(measureOf(e))
+    observeMeasure(rt, e, await host.now())
+    return next(e)
+  })
+
+  on('skill.prompt', async ($, e, next) => {
+    const r = await next(e)
+    observeSkill(rt, e.skill, await hostOf($).now())
+    return r
+  })
+
   band(on, rt)
+  observe(on, rt)
 }
