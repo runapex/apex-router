@@ -270,10 +270,46 @@ def _telemetry_index(path: Path, wanted: set, errors: Optional[Dict[str, str]] =
     return agg
 
 
+_FINISHED_OUTCOMES = ("ok", "error")
+
+
+def _dispatch_rank(r: Dict[str, Any]) -> Tuple[int, int]:
+    """Which of two rows for one dispatch to keep: a finished outcome (ok/error) over
+    empty over async/absent, then the datapce plugin's row (it carries inject_arm) over the
+    agent-route-log hook's."""
+    outcome = r.get("outcome")
+    finished = 2 if outcome in _FINISHED_OUTCOMES else 1 if outcome == "empty" else 0
+    return finished, 1 if "inject_arm" in r else 0
+
+
+def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """One row per (session_id, tool_use_id): the agent-route-log hook and the datapce
+    plugin can both log the same Agent dispatch while both are installed. Rows missing
+    either id are kept as they are; the kept row takes the first one's place in order."""
+    kept: List[Dict[str, Any]] = []
+    at: Dict[Tuple[str, str], int] = {}
+    dropped = 0
+    for r in rows:
+        sid, tuid = r.get("session_id"), r.get("tool_use_id")
+        if not (isinstance(sid, str) and isinstance(tuid, str)):
+            kept.append(r)
+            continue
+        i = at.get((sid, tuid))
+        if i is None:
+            at[(sid, tuid)] = len(kept)
+            kept.append(r)
+            continue
+        dropped += 1
+        if _dispatch_rank(r) > _dispatch_rank(kept[i]):
+            kept[i] = r
+    return kept, dropped
+
+
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                          errors: Optional[Dict[str, str]] = None
                          ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Materialize claude-code dispatch rows: telemetry join + offline escalation inference."""
+    """Materialize claude-code dispatch rows: dedupe, telemetry join + offline escalation inference."""
+    rows, deduped = _dedupe_dispatch(rows)
     wanted = {(r.get("session_id"), r.get("agent_id")) for r in rows
               if isinstance(r.get("session_id"), str) and isinstance(r.get("agent_id"), str)}
     tel = _telemetry_index(telemetry_path, wanted, errors)
@@ -364,6 +400,7 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                     break
     return out, {
         "claude_code_rows": len(out),
+        "dispatch_deduped": deduped,
         "telemetry_joined": sum(1 for r in out if r["telemetry_joined"]),
         "escalated_inferred": escalated,
         "unlabeled": sum(1 for r in out if r["label_status"] == UNLABELED),
@@ -479,6 +516,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 "null_ts": null_ts,
                 "no_partner": no_partner,
                 "claude_code_rows": cc_stats["claude_code_rows"],
+                "dispatch_deduped": cc_stats["dispatch_deduped"],
                 "telemetry_joined": cc_stats["telemetry_joined"],
                 "escalated_inferred": cc_stats["escalated_inferred"],
                 "unlabeled": cc_stats["unlabeled"],

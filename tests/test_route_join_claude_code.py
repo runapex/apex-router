@@ -403,5 +403,83 @@ class TestReviewFixes(unittest.TestCase):
         self.assertIn("kept previous table", err.getvalue())
 
 
+
+def _plugin(ts, tier, desc, agent_id, tool_use_id, *, sid=S1, outcome="ok"):
+    """A datapce plugin route row: same schema plus inject_arm/injected (and end_reason when finished)."""
+    row = _dispatch(ts, tier, desc, agent_id, tool_use_id, sid=sid, outcome=outcome)
+    row.update({"inject_arm": "evidence", "injected": "no", "applied": "no"})
+    if outcome in ("ok", "error"):
+        row["end_reason"] = "answer" if outcome == "ok" else "error"
+    return row
+
+
+class TestDispatchDedupe(unittest.TestCase):
+    """The still-wired agent-route-log.sh hook and the plugin both log one Agent dispatch:
+    route_join keeps one row per (session_id, tool_use_id), the finished one first."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.log = self.d / "route_log.jsonl"
+        self.conf = self.d / "conformance.jsonl"
+        self.tel = self.d / "telemetry.jsonl"
+        _w(self.conf, [])
+        _w(self.tel, [])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _cc(self, rows):
+        _w(self.log, rows)
+        res = route_join.join_labels(route_log_path=self.log, conformance_path=self.conf,
+                                     telemetry_path=self.tel)
+        return res, [r for r in res["table"] if r.get("surface") == "claude-code"]
+
+    def test_hook_async_and_plugin_ok_for_one_dispatch_is_one_row(self):
+        res, cc = self._cc([
+            _dispatch(100.0, "haiku", "Map the code", "a1", "t1", outcome="async"),  # hook, background
+            _plugin(160.0, "haiku", "Map the code", "a1", "t1", outcome="ok"),        # plugin, finished
+        ])
+        self.assertEqual(len(cc), 1)
+        self.assertEqual(cc[0]["outcome"], "ok")
+        self.assertEqual(cc[0]["label_status"], "labeled")
+        self.assertEqual(res["stats"]["claude_code_rows"], 1)
+        self.assertEqual(res["stats"]["dispatch_deduped"], 1)
+
+    def test_finished_row_wins_whichever_order(self):
+        _, cc = self._cc([
+            _plugin(100.0, "sonnet", "Fix it", "a1", "t1", outcome="error"),
+            _dispatch(101.0, "sonnet", "Fix it", "a1", "t1", outcome="async"),
+        ])
+        self.assertEqual([r["outcome"] for r in cc], ["error"])
+
+    def test_both_finished_prefers_the_plugin_row(self):
+        _, cc = self._cc([
+            _dispatch(100.0, "sonnet", "Fix it", "a1", "t1", outcome="ok"),
+            _plugin(140.0, "sonnet", "Fix it", "a1", "t1", outcome="error"),
+        ])
+        self.assertEqual([(r["outcome"], r["ts"]) for r in cc], [("error", 140.0)])
+
+    def test_a_duplicate_never_self_escalates(self):
+        # hook rows log the requested tier, the plugin row the same dispatch: one row, no escalation
+        res, cc = self._cc([
+            _dispatch(100.0, "haiku", "Fix the flaky test", "a1", "t1", outcome="async"),
+            _plugin(130.0, "haiku", "Fix the flaky test", "a1", "t1", outcome="ok"),
+            _dispatch(200.0, "opus", "Fix the flaky test", "a2", "t2"),
+        ])
+        self.assertEqual([r["tool_use_id"] for r in cc], ["t1", "t2"])
+        self.assertEqual(res["stats"]["escalated_inferred"], 1)
+        self.assertEqual(cc[0]["escalated_by"], "t2")
+
+    def test_rows_without_a_key_are_never_merged(self):
+        _, cc = self._cc([
+            _dispatch(100.0, "haiku", "A", None, None, outcome="async"),
+            _dispatch(110.0, "haiku", "A", None, None, outcome="async"),
+            _dispatch(120.0, "haiku", "B", "a3", "t3", sid=S1),
+            _dispatch(130.0, "haiku", "B", "a3", "t3", sid=S2),  # same tool_use_id, other session
+        ])
+        self.assertEqual(len(cc), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
