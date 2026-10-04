@@ -15,7 +15,7 @@ OUTPUT_DIR = HOME / ".apex-router"
 OUTPUT_PATH = OUTPUT_DIR / "handoff_threshold.json"
 
 FLOOR = 25_000_000
-CAP = 500_000_000
+CAP = 100_000_000  # the hook's static fallback; a nudge later than this is not a nudge
 MIN_SESSIONS = 5
 STALE_SECONDS = 2 * 24 * 60 * 60
 
@@ -117,10 +117,10 @@ def compute_threshold(session_totals, days):
         threshold = FLOOR
         basis = "insufficient-data"
     else:
-        threshold = p80
-        threshold = max(threshold, FLOOR)
-        threshold = min(threshold, CAP)
-        basis = f"p80 of {n} sessions over {days}d"
+        # Median, not p80: p80 of CUMULATIVE reads is dominated by the longest sessions, so each
+        # long session raised the bar for the next — the nudge receded instead of firing.
+        threshold = min(max(p50, FLOOR), CAP)
+        basis = f"median of {n} sessions over {days}d (clamped {FLOOR}-{CAP})"
 
     return threshold, basis, p50, p80, max_total, n
 

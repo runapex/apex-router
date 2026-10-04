@@ -33,13 +33,11 @@ case "$session_id" in
 esac
 
 # --- tunables (env-overridable) --------------------------------------------
-# Policy: START AGGRESSIVE (nudge early), RELAX over time only if signals show
-# the nudges are premature. 100M read tokens ~ $50 of accumulated read cost —
-# catches the fat-tail sessions, not just the single largest. This is a
-# deliberately low initial cap, NOT a data-fit; the per-repo adaptive threshold
-# (proposed nightly from cache_report.py once >=7d of data exist) raises it per
-# key as the measured distribution justifies. Override per repo/task via env.
-# Adaptive threshold (B2): env override wins; else the nightly-computed p80 of per-session
+# Policy: START AGGRESSIVE (nudge early). 100M read tokens ~ $50 of accumulated read cost —
+# the static ceiling/fallback, catching the fat-tail sessions. The adaptive threshold (nightly
+# clamped median of per-session reads, floored at 25M, capped at CAP) can only LOWER it toward
+# the measured typical session; CAP is the ceiling. Override per repo/task via env.
+# Adaptive threshold (B2): env override wins; else the nightly-computed clamped median of per-session
 # cumulative reads (scripts/handoff_threshold.py → ~/.apex-router/handoff_threshold.json);
 # else the static 100M fallback. Extract with python3 (jq is not guaranteed); any failure
 # falls through to the static default — the nudge is advisory and must never break a Stop.

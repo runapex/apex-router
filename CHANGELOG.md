@@ -4,6 +4,26 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
+## 0.3.1 — 2026-10-03
+
+Local-handoff hang and over-shed fixes.
+
+### Added
+- `python -m apex_router.ornith.ornith_client --probe-thinking` — proves `reasoning_effort:
+  none` is honoured. Exit 0 = thinking off; 1 = evidence of thinking (reasoning present, an
+  unterminated inline `<think>`, or an empty answer); 2 = inconclusive (busy, down, other error).
+
+### Fixed
+- ornith: inference lock is bounded (`ORNITH_LOCK_TIMEOUT_SECS`, 120 s) → `OrnithBusy`
+  escalates instead of hanging a turn.
+- apex-ornith review: thinking OFF, 1024-token budget, bounded `git diff`; a busy or failed
+  local tier now exits 3 (unavailable) / advisory 0 instead of a traceback, and truncated
+  reviews keep their partial findings.
+- pressure: connect-retried-then-succeeded rows no longer count as transport faults (they
+  pushed flaky-link boxes to AMBER/RED and shed work for no upstream reason).
+- handoff nudge: threshold is the clamped median (25M–100M) of per-session cache reads,
+  not a p80 that rose with every long session.
+
 ## 0.3.0 — 2026-10-02
 
 The theme of this release is closing the loop between what the proxy measures and how an

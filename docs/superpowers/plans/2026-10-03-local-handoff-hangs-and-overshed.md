@@ -491,8 +491,8 @@ git commit -m "fix(handoff): threshold is the clamped median (25M-100M), not a s
 - Test: `tests/test_ornith_thinking_probe.py` (create)
 
 **Interfaces:**
-- Produces: `thinking_off_probe() -> tuple[bool, str]` — sends one `enable_thinking=False` request (`max_tokens=64`, prompt `"Reply exactly: ok"`), returns `(True, "thinking off")` iff `result.reasoning` is falsy (`_parse` already folds `reasoning`, `reasoning_content` and a legacy inline `<think>` block into that field). Otherwise `(False, <why>)`. Never raises: transport/protocol errors return `(False, "<ExcName>: msg")`.
-- CLI: `python -m apex_router.ornith.ornith_client --probe-thinking` prints the reason, exit 0/1.
+- Produces: `thinking_off_probe() -> tuple[bool | None, str]` — sends one `enable_thinking=False` request (`max_tokens=64`, prompt `"Reply exactly: ok"`), returns `(True, "thinking off")` iff `result.reasoning` is falsy (`_parse` already folds `reasoning`, `reasoning_content` and a legacy inline `<think>` block into that field). Otherwise `(False, <why>)` (also for an "empty content" protocol error: thinking likely ON). Never raises: busy/transport/other errors return `(None, "<ExcName>: msg")` = inconclusive.
+- CLI: `python -m apex_router.ornith.ornith_client --probe-thinking` prints the reason; exit 0 = thinking off, 1 = evidence of thinking (reasoning, unterminated `<think>`, or empty content), 2 = inconclusive (busy/down/other error).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -576,7 +576,7 @@ def thinking_off_probe() -> tuple[bool, str]:
     Every lane that is 'thinking-OFF' (codegen, review, preread) assumes `reasoning_effort: none`
     is respected. When an ollama build or a chat template ignores it, the model thinks anyway —
     the measured hang/truncation signature — while the lane believes it is in safe mode. Run this
-    on any box before trusting the local tier (apex-router doctor / RUNBOOK-pressure)."""
+    on any box before trusting the local tier (RUNBOOK-pressure)."""
     try:
         r = chat_messages([{"role": "user", "content": "Reply exactly: ok"}],
                           max_tokens=64, enable_thinking=False, temperature=0.0,
@@ -617,7 +617,12 @@ Every local lane sends `reasoning_effort: "none"`. If the serving stack ignores 
 thinking-ON (measured: 0/3 complete, budget burned in `<think>`) and scripts hang up to 900 s.
 Check once per box, and after any ollama upgrade:
 
-    .venv/bin/python -m apex_router.ornith.ornith_client --probe-thinking   # exit 0 = off
+    .venv/bin/python -m apex_router.ornith.ornith_client --probe-thinking
+
+Exit codes: 0 = thinking off (verified); 1 = evidence thinking is ON (reasoning present, an
+unterminated inline `<think>`, or an empty answer because reasoning ate the budget); 2 =
+inconclusive (server busy, down, in maintenance, or another error — re-run, don't conclude).
+The probe waits at most 10 s for the inference lock.
 
 Related knobs: `ORNITH_LOCK_TIMEOUT_SECS` (default 120) bounds the wait on the inference lock;
 `ORNITH_SOCKET_TIMEOUT_SECS` (default 900) bounds one inference.
@@ -670,7 +675,7 @@ git commit -m "docs: changelog for local-handoff hang/over-shed fixes"
 
 ## Foundry checks to run before/after (verification, not implementation)
 
-1. `python -m apex_router.ornith.ornith_client --probe-thinking` (Task 5) — if exit 1, that alone explains the hangs.
+1. `python -m apex_router.ornith.ornith_client --probe-thinking` (Task 5) — exit 1 (thinking evidence) alone explains the hangs; exit 2 is inconclusive (busy/down), re-run.
 2. `apex-router pressure` before and after Task 3 — expect `transport` to drop to the SSLError/ReadError rate only.
 3. `cat ~/.apex-router/handoff_threshold.json` after the next nightly — expect `basis: median …`.
 4. `grep -c '"escalate": true' ~/.apex/offload_telemetry.jsonl` vs total — the share of local calls that still cost a frontier turn.
