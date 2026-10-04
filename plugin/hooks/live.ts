@@ -28,7 +28,7 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   const observed: Level = worst([limitLevel(m?.limitPercent ?? null), burn.alert ? 'AMBER' : 'GREEN', worst(Object.values(rt.backend.families))])
   const before = rt.level.level
   rt.level = levelStep(rt.level, observed)
-  if (rt.level.level === 'RED' && before !== 'RED') toasts.push(['red', 'datapce: pressure RED — serialize heavy fan-out'])
+  if (rt.level.level === 'RED' && before !== 'RED') toasts.push(['red', 'pressure RED — serialize heavy fan-out'])
   if (rt.level.level !== 'GREEN') {
     const hours = [...rt.profile.hours]
     const h = new Date(now).getHours()
@@ -49,7 +49,7 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   }
   const breakers = Object.fromEntries(Object.entries(rt.breakers).map(([k, b]) => [k, breakerState(b, now)]))
   for (const [k, state] of Object.entries(breakers)) {
-    if (state === 'open' && !wasOpen.has(k)) toasts.push([`breaker:${k}`, `datapce: ${k} lane breaker open — escalate for 10 min`])
+    if (state === 'open' && !wasOpen.has(k)) toasts.push([`breaker:${k}`, `${k} lane breaker open — escalate for 10 min`])
   }
 
   const budget = rt.options.budgetUsd
@@ -64,7 +64,7 @@ export function tick(rt: Runtime, now: number, m: Measure | null, _prev: Signals
   const spent = m?.costUsd != null && rt.costAtStart !== null ? Math.max(0, m.costUsd - rt.costAtStart) : null
   const whole = budget > 0 && spent !== null && rt.startedAt > 0 ? budgetBurn(spent, Math.max(1, (now - rt.startedAt) / 60_000), budget) : null
   if (short !== null && long !== null && short > SHORT_LIMIT && long > LONG_LIMIT) {
-    toasts.push(['budget', `datapce: budget burning ${short.toFixed(0)}× (5 min) / ${long.toFixed(0)}× (60 min)`])
+    toasts.push(['budget', `budget burning ${short.toFixed(0)}× (5 min) / ${long.toFixed(0)}× (60 min)`])
   }
 
   const hist = rt.limitHistory.filter(s => now - s.t <= SLOPE_MS)
