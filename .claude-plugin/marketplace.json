@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "datapce",
+  "description": "datapce (apex-router): adaptive model routing you can see.",
+  "owner": { "name": "datapce" },
+  "plugins": [
+    {
+      "name": "datapce",
+      "description": "Adaptive model routing you can see. A status bar and pane showing every subagent's tier, cost and why; routing advice that only enforces what it has measured on your machine; evidence injected into the planning tools you already use. Optional local-model lanes.",
+      "author": { "name": "datapce" },
+      "category": "productivity",
+      "keywords": ["apex-router", "model-routing", "subagents", "evidence"],
+      "source": "./plugin"
+    }
+  ]
+}
