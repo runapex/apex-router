@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# DEPRECATED in 0.4.0: the datapce plugin's handoff toast and /apex handoff replace this hook; retired in 0.4.1.
 # cache-handoff-nudge hook — Stop matcher
 # When a Claude Code session has grown large enough that its re-read-every-turn
 # prefix is expensive (cache-read tokens), write a handoff doc and nudge the user

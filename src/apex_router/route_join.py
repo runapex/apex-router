@@ -29,6 +29,7 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -305,10 +306,41 @@ def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
     return kept, dropped
 
 
+def writer_parity(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """0.4.1 retirement gate. Claude-code dispatch rows per UTC day by writer, before dedupe: the datapce
+    plugin (rows carry inject_arm) vs the agent-route-log hook. Workflow rows are plugin-only (the hook
+    cannot see them) and are counted apart. The trailing streak walks back over days with rows while
+    plugin > 0 and plugin >= hook; days without rows do not break it."""
+    days: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        ts = r.get("ts")
+        if not _is_finite_ts(ts):
+            continue
+        day = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+        d = days.setdefault(day, {"plugin": 0, "hook": 0, "workflow": 0})
+        if "inject_arm" not in r:
+            d["hook"] += 1
+        elif r.get("source") == "workflow":
+            d["workflow"] += 1
+        else:
+            d["plugin"] += 1
+    ordered = sorted(days)
+    streak: List[str] = []
+    for day in reversed(ordered):
+        d = days[day]
+        if d["plugin"] == 0 or d["plugin"] < d["hook"]:
+            break
+        streak.append(day)
+    span = (date.fromisoformat(streak[0]) - date.fromisoformat(streak[-1])).days + 1 if streak else 0
+    return {"days": {k: days[k] for k in ordered}, "parity_since": streak[-1] if streak else None,
+            "parity_span_days": span}
+
+
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                          errors: Optional[Dict[str, str]] = None
                          ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Materialize claude-code dispatch rows: dedupe, telemetry join + offline escalation inference."""
+    parity = writer_parity(rows)
     rows, deduped = _dedupe_dispatch(rows)
     wanted = {(r.get("session_id"), r.get("agent_id")) for r in rows
               if isinstance(r.get("session_id"), str) and isinstance(r.get("agent_id"), str)}
@@ -401,6 +433,7 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
     return out, {
         "claude_code_rows": len(out),
         "dispatch_deduped": deduped,
+        "writer_parity": parity,
         "telemetry_joined": sum(1 for r in out if r["telemetry_joined"]),
         "escalated_inferred": escalated,
         "unlabeled": sum(1 for r in out if r["label_status"] == UNLABELED),
@@ -517,6 +550,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 "no_partner": no_partner,
                 "claude_code_rows": cc_stats["claude_code_rows"],
                 "dispatch_deduped": cc_stats["dispatch_deduped"],
+                "writer_parity": cc_stats["writer_parity"],
                 "telemetry_joined": cc_stats["telemetry_joined"],
                 "escalated_inferred": cc_stats["escalated_inferred"],
                 "unlabeled": cc_stats["unlabeled"],
@@ -670,6 +704,9 @@ def main(argv=None) -> int:
               f"telemetry_joined={st.get('telemetry_joined', 0)}  "
               f"escalated_inferred={st.get('escalated_inferred', 0)}  "
               f"unlabeled={st.get('unlabeled', 0)}")
+        wp = st.get("writer_parity") or {}
+        print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
+              f"({wp.get('parity_span_days', 0)} d; the 0.4.1 hook retirement needs 14)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):
                 print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")

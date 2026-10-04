@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -523,3 +524,63 @@ class TestResumedSessionSecondStretch(unittest.TestCase):
         ])
         self.assertEqual(res["stats"]["escalated_inferred"], 1)
         self.assertEqual([r["escalated_by"] for r in cc if r["tool_use_id"] == "t1"], ["t3"])
+
+
+def _day(d: int, sec: float = 3600.0) -> float:
+    return datetime(2026, 10, d, tzinfo=timezone.utc).timestamp() + sec
+
+
+def _wf(ts, agent_id):
+    row = _plugin(ts, "haiku", "", agent_id, None)
+    row["source"] = "workflow"
+    return row
+
+
+class TestWriterParity(unittest.TestCase):
+    """0.4.1 retirement gate: plugin vs hook dispatch rows per UTC day, counted before dedupe."""
+
+    def test_counts_both_writers_per_day_and_keeps_workflow_apart(self):
+        p = route_join.writer_parity([
+            _dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"),
+            _plugin(_day(1, 4000), "haiku", "A", "a1", "t1"),
+            _wf(_day(1, 5000), "w1"),
+            _dispatch(_day(2), "sonnet", "B", "a2", "t2", outcome="async"),
+            _plugin(_day(2, 4000), "sonnet", "B", "a2", "t2"),
+            _dispatch(_day(3), "opus", "C", "a3", "t3", outcome="async"),  # plugin missed it
+        ])
+        self.assertEqual(p["days"], {
+            "2026-10-01": {"plugin": 1, "hook": 1, "workflow": 1},
+            "2026-10-02": {"plugin": 1, "hook": 1, "workflow": 0},
+            "2026-10-03": {"plugin": 0, "hook": 1, "workflow": 0},
+        })
+        self.assertIsNone(p["parity_since"])
+        self.assertEqual(p["parity_span_days"], 0)
+
+    def test_fourteen_days_of_parity_open_the_gate_and_quiet_days_do_not_break_it(self):
+        rows = []
+        for d in range(1, 16):
+            if d == 8:
+                continue  # a day with no dispatches at all
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["parity_since"], "2026-10-01")
+        self.assertEqual(p["parity_span_days"], 15)
+
+    def test_an_older_shortfall_only_moves_the_start(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only
+        for d in (2, 3, 4):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual((p["parity_since"], p["parity_span_days"]), ("2026-10-02", 3))
+
+    def test_join_labels_reports_writer_parity(self):
+        d = Path(tempfile.mkdtemp())
+        log, conf, tel = d / "route_log.jsonl", d / "conformance.jsonl", d / "telemetry.jsonl"
+        _w(conf, [])
+        _w(tel, [])
+        _w(log, [_dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"), _plugin(_day(1, 9), "haiku", "A", "a1", "t1")])
+        st = route_join.join_labels(route_log_path=log, conformance_path=conf, telemetry_path=tel)["stats"]
+        self.assertEqual(st["writer_parity"]["days"], {"2026-10-01": {"plugin": 1, "hook": 1, "workflow": 0}})
+        self.assertEqual(st["dispatch_deduped"], 1)

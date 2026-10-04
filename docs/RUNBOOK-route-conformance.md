@@ -225,6 +225,11 @@ different tier suggestion but never forces a change.
 
 ## Claude Code outcome labels (`agent-route-log` hook → `route-join`)
 
+In 0.4.0 the datapce plugin writes the same rows, finished at `turn.complete`. The
+`agent-route-log` hook is deprecated and kept side by side, and `route-join` keeps one row per
+`(session_id, tool_use_id)`. The hook is retired in 0.4.1, once `stats.writer_parity.parity_span_days`
+(also printed as the `writer parity` line of `route-join`) is at least 14.
+
 Until this hook, only the Pi extension wrote `route_log` rows, so Claude Code's subagent
 dispatches produced no labels (the phase-0 NO-GO: zero joined rows). The label flow:
 
