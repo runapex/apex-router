@@ -51,7 +51,7 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
   const advised = ds.filter(d => d.advised !== null)
   const agree = advised.filter(d => d.advised === tierOf(d.resolved)).length
   const done = ds.filter(d => d.outcome !== 'running')
-  const rows = [`agreement ${agree}/${advised.length} with advice · pass ${done.filter(d => d.outcome === 'ok').length}/${done.length}`]
+  const rows = [`agreement ${agree}/${advised.length} with advice · ok ${done.filter(d => d.outcome === 'ok').length}/${done.length}`]
   for (const d of [...ds].reverse().slice(0, DISPATCH_ROWS)) {
     const ran = tierOf(d.resolved) ?? d.resolved ?? '—'
     const tok = d.tokens === null ? '' : ` ${kTok(d.tokens)}`
@@ -112,7 +112,7 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
         failed - a.unavailable > 0 ? `${failed - a.unavailable} other` : '',
       ].filter(k => k !== '')
       const ok = `ok ${Math.round((100 * a.pass) / a.n)}%${kinds.length > 0 ? ` (${kinds.join(', ')})` : ''}`
-      return `${a.taskType} · ${a.tier} · n ${a.n} · ${ok} · tok μ ${kTok(a.tokN > 0 ? a.tokSum / a.tokN : null)} · dur μ ${durMu(a.durN > 0 ? a.durSum / a.durN : null)}`
+      return `${a.taskType} · ${a.tier} · n ${a.n} · ${ok} · tok(all) μ ${kTok(a.tokN > 0 ? a.tokSum / a.tokN : null)} · dur μ ${durMu(a.durN > 0 ? a.durSum / a.durN : null)}`
     })
 }
 

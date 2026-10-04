@@ -32,26 +32,26 @@ describe('pane: sections', () => {
   test('dispatch rows, the ▲ basis, agreement and pass rate', () => {
     const s = paneSections(empty({
       ds: [
-        d({ advised: 'sonnet', advisedState: 'READY', basis: 'opus→sonnet: 35/35 pass; GREEN now' }),
+        d({ advised: 'sonnet', advisedState: 'READY', basis: 'opus→sonnet: 35/35 ok; GREEN now' }),
         d({ description: 'Review diff', taskType: 'review', outcome: 'failed', resolved: 'claude-sonnet-5-5', requested: 'sonnet' }),
       ],
     }))
     expect(s[0]!.rows).toEqual([
-      'agreement 0/1 with advice · pass 1/2',
+      'agreement 0/1 with advice · ok 1/2',
       'Review diff · review · sonnet→sonnet · failed 41s 12k',
-      'Find X · explore · inherit→opus · ok 41s 12k ▲ sonnet: opus→sonnet: 35/35 pass; GREEN now',
+      'Find X · explore · inherit→opus · ok 41s 12k ▲ sonnet: opus→sonnet: 35/35 ok; GREEN now',
     ])
   })
 
-  test('ledger: n, ok% with error kinds, tok μ per task type × tier, levels pooled, dur μ shown', () => {
+  test('ledger: n, ok% with error kinds, tok(all) μ per task type × tier, levels pooled, dur μ shown', () => {
     const rows = ledgerRows([
       view({ n: 10, pass: 9, unavailable: 1, tokMean: 40000, tokN: 10, durationMean: 41000, durationN: 10 }),
       view({ key: 'explore|AMBER|sonnet', level: 'AMBER', n: 10, pass: 7, unavailable: 1, tokMean: 20000, tokN: 10, durationMean: 30000, durationN: 10 }),
       view({ key: 'review|GREEN|opus', taskType: 'review', tier: 'opus', n: 4, pass: 4, tokMean: null, tokN: 0, durationMean: null, durationN: 0 }),
     ])
     expect(rows).toEqual([
-      'explore · sonnet · n 20 · ok 80% (2 unavailable, 2 other) · tok μ 30k · dur μ 35.5s',
-      'review · opus · n 4 · ok 100% · tok μ — · dur μ —',
+      'explore · sonnet · n 20 · ok 80% (2 unavailable, 2 other) · tok(all) μ 30k · dur μ 35.5s',
+      'review · opus · n 4 · ok 100% · tok(all) μ — · dur μ —',
     ])
   })
 
@@ -158,7 +158,7 @@ describe('pane: hooks', () => {
     } as never)
     const r = await $.command.run(command('apex', 'json'))
     const ev = (JSON.parse(r.text ?? '{}') as { sections: { id: string; rows: string[] }[] }).sections.find(x => x.id === 'evidence')!
-    expect(ev.rows[0]).toBe('explore · opus · n 1 · ok 100% · tok μ 41k · dur μ 41.0s')
+    expect(ev.rows[0]).toBe('explore · opus · n 1 · ok 100% · tok(all) μ 41k · dur μ 41.0s')
   })
 
   test('only a known /apex subcommand is logged', async ($, on) => {

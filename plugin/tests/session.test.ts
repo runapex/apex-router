@@ -67,18 +67,20 @@ describe('session: /clear and resume re-identify', () => {
     expect(row).not.toHaveProperty('session_id')
   })
 
-  test('the 2 KB cap is fresh for the new session', async ($, on) => {
+  test('the session byte counter is fresh for the new session (describe line; the skill table is off in v1)', async ($, on) => {
     const world = worldOf(on)
-    seedReady(world)
     await $.session.start(SESSION)
-    for (let i = 0; i < 20; i++) await $.skill.prompt(PLAN)
-    expect((await $.skill.prompt(PLAN)).text).toBe('PLAN') // capped
+    await $.session.measure(RED_MEASURE as never)
+    await world.clock.advance(120_000)
+    const describeOnce = () => $.tool.describe({ tool: 'Agent', description: 'D', provider: { plugin: 'engine', tier: 'core' } as never })
+    expect((await describeOnce()).description).not.toBe('D')
+    const first = world.published.get('inject') as { bytes: number; sections: number }
+    expect(first).toMatchObject({ arm: 'evidence', sections: 1 })
+    expect(first.bytes).toBeGreaterThan(0)
     await clear($, world, EVIDENCE_2)
     await $.turn.start({ text: '', turnId: 'turn-n1' })
-    expect((await $.skill.prompt(PLAN)).text).not.toBe('PLAN')
-    await world.clock.advance(5000)
-    const fresh = injectRows(world).filter(r => r.capped !== true).at(-1)!
-    expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: fresh.bytes, sections: 1 })
+    expect((await describeOnce()).description).not.toBe('D')
+    expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: first.bytes, sections: 1 })
   })
 
   test('the handoff toast does not repeat for the session the user started fresh', async ($, on) => {

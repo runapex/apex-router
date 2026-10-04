@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Cell, Level, Tier } from '../types/index.d.ts'
 import { welfordNew, welfordPush } from '../hooks/core/stats.ts'
 import {
-  adviceFor, asCells, asStats, cellKey, cellViews, evidenceRows, parseKey, recordOutcome, type Stats,
+  QUALITY_LABELS, adviceFor, asCells, asStats, cellKey, cellViews, evidenceRows, parseKey, recordOutcome, type Stats,
 } from '../hooks/evidence.ts'
 import { tierOf, tiersBelow } from '../hooks/tiers.ts'
 
@@ -46,8 +46,8 @@ describe('evidence', () => {
     const stats: Stats = {}
     const key = feed(cells, 'explore', 'GREEN', 'sonnet', 35)
     tokens(stats, key, 41000)
-    expect(adviceFor(cells, stats, 'explore', 'GREEN', 'opus')).toEqual({
-      tier: 'sonnet', effort: null, confidence: 'READY', own: true, basis: 'opus→sonnet: 35/35 pass, 41k tok; GREEN now',
+    expect(adviceFor(cells, stats, 'explore', 'GREEN', 'opus', true)).toEqual({
+      tier: 'sonnet', effort: null, confidence: 'READY', own: true, basis: 'opus→sonnet: 35/35 ok, 41k tok; GREEN now',
     })
   })
 
@@ -55,24 +55,24 @@ describe('evidence', () => {
     const cells: Record<string, Cell> = {}
     feed(cells, 'explore', 'GREEN', 'sonnet', 35)
     feed(cells, 'explore', 'GREEN', 'haiku', 35)
-    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')?.tier).toBe('haiku')
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus', true)?.tier).toBe('haiku')
   })
 
   test('a COLD cell inherits from the same task type at other levels — advice only', () => {
     const cells: Record<string, Cell> = {}
     feed(cells, 'explore', 'AMBER', 'sonnet', 35)
-    const a = adviceFor(cells, {}, 'explore', 'GREEN', 'opus')
+    const a = adviceFor(cells, {}, 'explore', 'GREEN', 'opus', true)
     expect(a?.tier).toBe('sonnet')
     expect(a?.confidence).toBe('WARMING')
     expect(a?.own).toBe(false)
-    expect(a?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 pass')
+    expect(a?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 ok')
   })
 
   test('P5: no "all tasks" inheritance — another task type never lends its evidence', () => {
     const cells: Record<string, Cell> = {}
     feed(cells, 'review', 'GREEN', 'sonnet', 35)
     feed(cells, 'debug', 'AMBER', 'sonnet', 35)
-    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus', true)).toBeNull()
   })
 
   test('P5: DRIFTING cells are excluded from the inheritance aggregate', () => {
@@ -80,9 +80,9 @@ describe('evidence', () => {
     const amber = feed(cells, 'explore', 'AMBER', 'sonnet', 40)
     for (let i = 0; i < 20; i++) recordOutcome(cells, amber, i % 10 < 8)
     expect(cells[amber]?.state).toBe('DRIFTING')
-    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus', true)).toBeNull()
     feed(cells, 'explore', 'RED', 'sonnet', 35)
-    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 pass')
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus', true)?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 ok')
   })
 
   test('a DRIFTING own cell is neither advised nor allowed to inherit', () => {
@@ -91,7 +91,7 @@ describe('evidence', () => {
     const key = feed(cells, 'review', 'GREEN', 'sonnet', 40)
     for (let i = 0; i < 20; i++) recordOutcome(cells, key, i % 10 < 8)
     expect(cells[key]?.state).toBe('DRIFTING')
-    expect(adviceFor(cells, {}, 'review', 'GREEN', 'opus')).toBeNull()
+    expect(adviceFor(cells, {}, 'review', 'GREEN', 'opus', true)).toBeNull()
   })
 
   test('AMBER sheds explore one tier down as COLD advice; GREEN and review do not shed', () => {
@@ -134,5 +134,24 @@ describe('evidence', () => {
     const hostile = asStats(JSON.parse('{"__proto__": {"leak": {"n": 1, "mean": 1, "m2": 0}}, "k": {"__proto__": {"n": 1, "mean": 1, "m2": 0}}}'))
     expect((hostile as Record<string, unknown>).leak).toBeUndefined()
     expect(Object.keys(hostile)).toEqual([])
+  })
+})
+
+describe('v1 quality gate (QUALITY_LABELS = false)', () => {
+  test('the flag is off in v1', () => {
+    expect(QUALITY_LABELS).toBe(false)
+  })
+
+  test('an own READY cell gives no advice by default; the cell still counts', () => {
+    const cells: Record<string, Cell> = {}
+    const key = feed(cells, 'explore', 'GREEN', 'sonnet', 35)
+    expect(cells[key]?.state).toBe('READY')
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
+  })
+
+  test('inherited WARMING advice is off by default', () => {
+    const cells: Record<string, Cell> = {}
+    feed(cells, 'explore', 'AMBER', 'sonnet', 35)
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
   })
 })

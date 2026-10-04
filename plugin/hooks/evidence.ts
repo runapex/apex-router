@@ -10,6 +10,12 @@ export type EvidenceRow = { taskType: string; tier: Tier; n: number; passPct: nu
 
 export const SHED_TASKS: ReadonlySet<string> = new Set(['explore', 'mechanical'])
 export const LEVELS: readonly Level[] = ['GREEN', 'AMBER', 'RED']
+
+/** v1 has no answer-quality label: completion (answer && !aborted) is ~100% on real traffic, so READY
+ * would reward the cheapest tier for merely finishing. Cells keep counting; READY and inherited tier
+ * advice and the planning-skill table stay off until a quality label exists (v1.1, spec §18).
+ * Pressure shedding is policy, not evidence, and stays on. */
+export const QUALITY_LABELS = false
 const STATES: readonly CellState[] = ['COLD', 'WARMING', 'READY', 'DRIFTING']
 
 export const cellKey = (taskType: string, level: Level, tier: Tier): string => `${taskType}|${level}|${tier}`
@@ -41,7 +47,7 @@ export function unavailableOf(stats: Stats, key: string): number {
 export const kTok = (t: number | null): string => (t === null ? '—' : `${Math.round(t / 1000)}k`)
 
 export function basisOf(requested: Tier, tier: Tier, c: Cell, level: Level, tok: number | null): string {
-  return `${requested}→${tier}: ${c.pass}/${c.n} pass${tok === null ? '' : `, ${kTok(tok)} tok`}; ${level} now`
+  return `${requested}→${tier}: ${c.pass}/${c.n} ok${tok === null ? '' : `, ${kTok(tok)} tok`}; ${level} now`
 }
 
 function aggregate(cells: Record<string, Cell>, match: (p: { taskType: string; level: Level; tier: Tier }) => boolean): { n: number; pass: number } {
@@ -58,22 +64,27 @@ function aggregate(cells: Record<string, Cell>, match: (p: { taskType: string; l
   return { n, pass }
 }
 
-export function adviceFor(cells: Record<string, Cell>, stats: Stats, taskType: string, level: Level, requested: Tier | null): Advice | null {
+export function adviceFor(
+  cells: Record<string, Cell>, stats: Stats, taskType: string, level: Level, requested: Tier | null,
+  quality: boolean = QUALITY_LABELS,
+): Advice | null {
   if (requested === null) return null
   const lower = tiersBelow(requested)
-  for (const t of lower) {
-    const key = cellKey(taskType, level, t)
-    const c = cells[key]
-    if (c?.state === 'READY') return { tier: t, effort: null, confidence: 'READY', own: true, basis: basisOf(requested, t, c, level, tokMean(stats, key)) }
-  }
-  for (const t of lower) {
-    const own = cells[cellKey(taskType, level, t)]
-    if (own !== undefined && own.state !== 'COLD') continue
-    // P5: the only parent is the same task type at other pressure levels ("all tasks" was dropped:
-    // another task type's pass rate says nothing about this one).
-    const agg = aggregate(cells, p => p.taskType === taskType && p.tier === t)
-    if (agg.n >= MIN_N && wilsonLo(agg.pass, agg.n) >= TARGET) {
-      return { tier: t, effort: null, confidence: 'WARMING', own: false, basis: `${requested}→${t}: inherited from ${taskType} all levels, ${agg.pass}/${agg.n} pass` }
+  if (quality) {
+    for (const t of lower) {
+      const key = cellKey(taskType, level, t)
+      const c = cells[key]
+      if (c?.state === 'READY') return { tier: t, effort: null, confidence: 'READY', own: true, basis: basisOf(requested, t, c, level, tokMean(stats, key)) }
+    }
+    for (const t of lower) {
+      const own = cells[cellKey(taskType, level, t)]
+      if (own !== undefined && own.state !== 'COLD') continue
+      // P5: the only parent is the same task type at other pressure levels ("all tasks" was dropped:
+      // another task type's pass rate says nothing about this one).
+      const agg = aggregate(cells, p => p.taskType === taskType && p.tier === t)
+      if (agg.n >= MIN_N && wilsonLo(agg.pass, agg.n) >= TARGET) {
+        return { tier: t, effort: null, confidence: 'WARMING', own: false, basis: `${requested}→${t}: inherited from ${taskType} all levels, ${agg.pass}/${agg.n} ok` }
+      }
     }
   }
   if (level !== 'GREEN' && SHED_TASKS.has(taskType) && lower.length > 0) {

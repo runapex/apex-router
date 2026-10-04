@@ -7,7 +7,7 @@
 import type { PromptComposeInput, PromptComposeSection } from 'claude-code'
 
 import type { Arm, Level } from '../types/index.d.ts'
-import { evidenceRows, kTok, type EvidenceRow } from './evidence.ts'
+import { evidenceRows, kTok, QUALITY_LABELS, type EvidenceRow } from './evidence.ts'
 import type { Host } from './host.ts'
 import { record } from './observe.ts'
 import { everyOnce, type Runtime } from './runtime.ts'
@@ -52,13 +52,14 @@ export const budgetLeft = (rt: Runtime): number | null =>
   rt.options.budgetUsd > 0 && rt.lastCostUsd !== null ? Math.max(0, rt.options.budgetUsd - rt.lastCostUsd) : null
 
 /** The evidence table: READY rows only (never WARMING/COLD/DRIFTING); no READY row → no text at all. */
-export function evidenceSection(rows: readonly EvidenceRow[], level: Level, budgetLeftUsd: number | null): string | null {
+export function evidenceSection(rows: readonly EvidenceRow[], level: Level, budgetLeftUsd: number | null, quality: boolean = QUALITY_LABELS): string | null {
+  if (!quality) return null
   const ready = rows.filter(r => r.state === 'READY')
   if (ready.length === 0) return null
   const lines = [
     '## datapce evidence (this machine)',
     `pressure ${level}${budgetLeftUsd === null ? '' : ` · budget $${budgetLeftUsd.toFixed(2)} left`}`,
-    '| task_type | tier | n pass% | tok μ | state |',
+    '| task_type | tier | n ok% | tok(all) μ | state |',
     '|---|---|---|---|---|',
     ...ready.slice(0, MAX_ROWS).map(r => `| ${r.taskType} | ${r.tier} | ${r.n} ${r.passPct}% | ${kTok(r.tokMean)} | READY |`),
     RULE,
@@ -151,10 +152,10 @@ async function admitOnce(host: Host, rt: Runtime, site: string, name: string, ap
   return decision
 }
 
-export async function skillSection(host: Host, rt: Runtime, skill: string, text: string, now: number): Promise<string> {
+export async function skillSection(host: Host, rt: Runtime, skill: string, text: string, now: number, quality: boolean = QUALITY_LABELS): Promise<string> {
   try {
     if (!INJECT_SKILLS.has(bareSkill(skill))) return text
-    const section = evidenceSection(rowsNow(rt), rt.level.level, budgetLeft(rt))
+    const section = evidenceSection(rowsNow(rt), rt.level.level, budgetLeft(rt), quality)
     if (section === null) return text
     const appended = `\n\n${section}`
     return (await admit(host, rt, 'skill', skill, appended, now)) ? `${text}${appended}` : text

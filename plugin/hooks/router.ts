@@ -315,7 +315,8 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
   try {
     if (e.agentId === undefined || e.agentId === null) return
     const f = finishOf(e)
-    const tokens = e.usage === undefined ? null : e.usage.input_tokens + e.usage.output_tokens
+    const u = e.usage
+    const tokens = u === undefined ? null : u.input_tokens + u.output_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
     let key = rt.byAgent.get(e.agentId)
     let d = key === undefined ? undefined : rt.dispatches.get(key)
     if (key !== undefined && (d === undefined || d.outcome !== 'running')) return

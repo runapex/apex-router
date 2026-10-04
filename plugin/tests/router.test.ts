@@ -17,19 +17,19 @@ const END = { reason: 'prompt_input_exit', sessionId: 'sess-0001' } as never
 const workflowCall = (id = 'toolu_wf') => ({ tool: 'Workflow', tool_use_id: id, script: "agent('x', { model: 'haiku' })" }) as never
 
 describe('router: decisions', () => {
-  test('advice is text only: a READY cell is advised, nothing is applied', () => {
+  test('v1 gate: a READY cell gets no advice, and nothing is applied', () => {
     const d = decideSpawn(spawnInput(), ctx())
     expect(d.taskType).toBe('explore')
     expect(d.requested).toBe('inherit')
     expect(d.requestedTier).toBe('opus')
-    expect(d.advice?.tier).toBe('sonnet')
+    expect(d.advice).toBeNull()
     expect(d.hardLimit).toBeNull()
     expect('apply' in d).toBe(false)
   })
 
-  test('hard limits are checked before advice: explicit model keeps text advice; fork, Fable, unknown tier get none', () => {
+  test('v1 gate: hard limits are checked before advice: explicit model, fork, Fable, unknown tier get none', () => {
     const cells = { [cellKey('explore', 'GREEN', 'sonnet')]: READY, [cellKey('explore', 'GREEN', 'opus')]: READY }
-    expect(decideSpawn(spawnInput({ model: 'opus' }), ctx({ cells }))).toMatchObject({ hardLimit: 'explicit model', requested: 'opus', advice: { tier: 'sonnet' } })
+    expect(decideSpawn(spawnInput({ model: 'opus' }), ctx({ cells }))).toMatchObject({ hardLimit: 'explicit model', requested: 'opus', advice: null })
     expect(decideSpawn(spawnInput({ fork: true }), ctx({ cells }))).toMatchObject({ hardLimit: 'a fork inherits the parent model', advice: null })
     expect(decideSpawn(spawnInput({ parentModel: 'claude-fable-5' }), ctx({ cells }))).toMatchObject({ hardLimit: 'Fable is never downshifted silently', advice: null })
     expect(decideSpawn(spawnInput({ model: 'fable' }), ctx({ cells }))).toMatchObject({ hardLimit: 'explicit model', advice: null })
@@ -42,7 +42,7 @@ describe('router: decisions', () => {
     expect(decideSpawn(spawnInput({ parentModel: 'claude-sonnet-5-5' }), ctx({ level: 'RED' })).serialize).toBe(false)
   })
 
-  test('route rows keep the route_join schema: optional fields are strings, never null', () => {
+  test('v1 gate: route rows keep the route_join schema, with no advice keys: optional fields are strings, never null', () => {
     const rt = newRuntime(optionsOf({}))
     rt.sessionId = 'sess-1'
     const e = spawnInput()
@@ -51,7 +51,7 @@ describe('router: decisions', () => {
       ts: 1791028800, task_type: 'explore', model: 'inherit', passed: null, escalated: false, note: 'agent:Explore',
       label_pending: true, outcome: 'async', surface: 'claude-code', tool_use_id: 'toolu_1', start_tier: 'inherit',
       description: 'Find pressure gate state file', resolved_model: 'claude-opus-5-5', applied: 'no',
-      inject_arm: 'evidence', injected: 'no', session_id: 'sess-1', agent_id: 'agent-1', advice_tier: 'sonnet', advice_state: 'READY',
+      inject_arm: 'evidence', injected: 'no', session_id: 'sess-1', agent_id: 'agent-1',
     })
   })
 
@@ -80,7 +80,7 @@ describe('router: decisions', () => {
 })
 
 describe('router: hooks', () => {
-  test('advise-only: a READY cell never rewrites the spawn; the row is written at turn.complete as ok', async ($, on) => {
+  test('v1 gate: a READY cell never rewrites the spawn; the row is written at turn.complete as ok', async ($, on) => {
     const world = worldOf(on)
     world.store.set('datapce.cells', { [cellKey('explore', 'GREEN', 'sonnet')]: READY })
     await $.session.start(SESSION)
@@ -93,10 +93,12 @@ describe('router: hooks', () => {
     expect(routeRows(world)).toEqual([
       expect.objectContaining({
         model: 'inherit', start_tier: 'inherit', resolved_model: 'claude-opus-5-5', agent_id: 'agent-1', applied: 'no',
-        advice_tier: 'sonnet', outcome: 'ok', end_reason: 'answer', label_pending: true, escalated: false,
+        outcome: 'ok', end_reason: 'answer', label_pending: true, escalated: false,
       }),
     ])
     expect(routeRows(world)[0]).not.toHaveProperty('error_kind')
+    expect(routeRows(world)[0]).not.toHaveProperty('advice_tier')
+    expect(routeRows(world)[0]).not.toHaveProperty('advice_state')
   })
 
   test('explicit model, fork and Fable spawns reach the engine exactly as requested', async ($, on) => {
@@ -151,6 +153,26 @@ describe('router: hooks', () => {
     const stats = world.store.get('datapce.stats') as Record<string, Record<string, { mean: number }>>
     expect(stats[cellKey('explore', 'GREEN', 'opus')]?.tokens?.mean).toBe(41000)
     expect(stats[cellKey('explore', 'GREEN', 'opus')]?.unavailable?.mean).toBe(0)
+  })
+
+  test('tokens count everything billed: input + output + cache read + cache creation', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.agent.spawn(spawnInput())
+    await $.turn.complete(complete({ usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 50000, cache_creation_input_tokens: 3000, model: 'claude-opus-5' } }))
+    await world.clock.advance(5000)
+    const stats = world.store.get('datapce.stats') as Record<string, Record<string, { mean: number }>>
+    expect(stats[cellKey('explore', 'GREEN', 'opus')]?.tokens?.mean).toBe(54200)
+  })
+
+  test('a null cache field counts as zero', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.agent.spawn(spawnInput())
+    await $.turn.complete(complete({ usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 50000, cache_creation_input_tokens: null as unknown as number, model: 'claude-opus-5' } }))
+    await world.clock.advance(5000)
+    const stats = world.store.get('datapce.stats') as Record<string, Record<string, { mean: number }>>
+    expect(stats[cellKey('explore', 'GREEN', 'opus')]?.tokens?.mean).toBe(51200)
   })
 
   test('a promotion to READY never toasts (advise-only: no enforce eligibility)', async ($, on) => {

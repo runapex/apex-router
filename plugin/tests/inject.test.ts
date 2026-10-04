@@ -40,6 +40,16 @@ const observed = (world: World): Record<string, unknown>[] =>
 const injectRows = (world: World) => observed(world).filter(r => r.ev === 'inject')
 const routeRows = (world: World): Record<string, unknown>[] => (world.appended.get(`${BACKEND}/route_log.jsonl`) ?? []).map(l => JSON.parse(l))
 const seed = (world: World, cells: Record<string, Cell>): void => void world.store.set('datapce.cells', cells)
+/** A runtime and host stub for the skill-site machinery (cap, arm, log) with the v1.1 table switched on. */
+const quality = (sessionId: string, cells: Record<string, Cell> = { [cellKey('explore', 'GREEN', 'sonnet')]: READY }) => {
+  const rt = newRuntime(optionsOf({}))
+  rt.sessionId = sessionId
+  rt.cells = cells
+  const published: unknown[] = []
+  const host = { publish: { inject: async (v: unknown) => void published.push(v) } } as unknown as Host
+  const plan = (skill = 'superpowers:writing-plans') => skillSection(host, rt, skill, 'PLAN', T0, true)
+  return { rt, host, published, plan }
+}
 const seedReady = (world: World): void => seed(world, { [cellKey('explore', 'GREEN', 'sonnet')]: READY })
 /** Two 1-minute windows at 95% of the five-hour limit: the live tick moves pressure to RED. */
 const goRed = async ($: { session: { measure(e: never): Promise<unknown> } }, world: World): Promise<void> => {
@@ -62,9 +72,9 @@ describe('inject: pure', () => {
   })
 
   test('no READY row, no section (P3): empty, WARMING-only and DRIFTING-only all give nothing', () => {
-    expect(evidenceSection([], 'GREEN', null)).toBeNull()
-    expect(evidenceSection([{ taskType: 'review', tier: 'opus', n: 12, passPct: 92, tokMean: null, state: 'WARMING' }], 'GREEN', null)).toBeNull()
-    expect(evidenceSection([{ taskType: 'review', tier: 'opus', n: 40, passPct: 80, tokMean: null, state: 'DRIFTING' }], 'GREEN', null)).toBeNull()
+    expect(evidenceSection([], 'GREEN', null, true)).toBeNull()
+    expect(evidenceSection([{ taskType: 'review', tier: 'opus', n: 12, passPct: 92, tokMean: null, state: 'WARMING' }], 'GREEN', null, true)).toBeNull()
+    expect(evidenceSection([{ taskType: 'review', tier: 'opus', n: 40, passPct: 80, tokMean: null, state: 'DRIFTING' }], 'GREEN', null, true)).toBeNull()
   })
 
   test('the section is a table of READY rows only plus one rule', () => {
@@ -75,12 +85,13 @@ describe('inject: pure', () => {
       ],
       'AMBER',
       5.88,
+      true,
     )
     expect(text).toBe(
       [
         '## datapce evidence (this machine)',
         'pressure AMBER · budget $5.88 left',
-        '| task_type | tier | n pass% | tok μ | state |',
+        '| task_type | tier | n ok% | tok(all) μ | state |',
         '|---|---|---|---|---|',
         '| explore | sonnet | 35 100% | 41k | READY |',
         'rule: advice only — name the tier per task in the plan; your choice of model is never changed.',
@@ -90,7 +101,13 @@ describe('inject: pure', () => {
 
   test('≤ 25 lines however many task types', () => {
     const rows = Array.from({ length: 40 }, (_, i) => ({ taskType: `t${i}`, tier: 'sonnet' as const, n: 35, passPct: 100, tokMean: null, state: 'READY' as const }))
-    expect(evidenceSection(rows, 'GREEN', null)!.split('\n').length).toBeLessThanOrEqual(MAX_SECTION_LINES)
+    expect(evidenceSection(rows, 'GREEN', null, true)!.split('\n').length).toBeLessThanOrEqual(MAX_SECTION_LINES)
+  })
+
+  test('v1 gate: READY rows exist, but no section is produced without a quality label', () => {
+    const rows = [{ taskType: 'explore', tier: 'sonnet' as const, n: 35, passPct: 100, tokMean: 41000, state: 'READY' as const }]
+    expect(evidenceSection(rows, 'GREEN', null)).toBeNull()
+    expect(evidenceSection(rows, 'GREEN', null, true)).not.toBeNull()
   })
 
   test('describe text is pressure only, ≤ 2 lines, nothing when GREEN', () => {
@@ -124,7 +141,7 @@ describe('inject: pure', () => {
     rt.level = { level: 'RED', up: 0, down: 0 }
     rt.cells = { [cellKey('explore', 'RED', 'sonnet')]: READY }
     const host = {} as Host
-    expect(await skillSection(host, rt, 'superpowers:writing-plans', 'PLAN', T0)).toBe('PLAN')
+    expect(await skillSection(host, rt, 'superpowers:writing-plans', 'PLAN', T0, true)).toBe('PLAN')
     expect(await describeHook(host, rt, 'Agent', 'D', T0)).toBe('D')
     expect((await composeSections(host, rt, { tools: ['Agent'], traits: [] }, [], T0)).length).toBe(0)
     expect(rt.rows.map(l => JSON.parse(l)).map(r => [r.site, r.arm, r.withheld])).toEqual([
@@ -199,21 +216,18 @@ describe('inject: hooks', () => {
     expect(injectRows(world)).toEqual([])
   })
 
-  test('READY row, evidence arm: planning skills only, logged, and stamped on route rows', async ($, on) => {
+  test('v1 gate: a READY row exists, yet planning skills get nothing and nothing is logged; route rows carry the arm', async ($, on) => {
     const world = worldOf(on)
     seedReady(world)
     await $.session.start(SESSION)
     const plan = await $.skill.prompt({ skill: 'superpowers:writing-plans', text: 'PLAN' })
-    expect(plan.text.startsWith('PLAN\n\n## datapce evidence (this machine)\npressure GREEN\n')).toBe(true)
-    expect(plan.text).toContain('| explore | sonnet | 35 100% | — | READY |')
+    expect(plan.text).toBe('PLAN')
     expect((await $.skill.prompt({ skill: 'commit', text: 'COMMIT' })).text).toBe('COMMIT')
     await $.agent.spawn(spawnInput())
     await $.turn.complete(complete())
     await world.clock.advance(5000)
-    const inject = injectRows(world)
-    expect(inject).toEqual([expect.objectContaining({ site: 'skill', skill: 'superpowers:writing-plans', arm: 'evidence' })])
-    expect(inject[0]!.bytes as number).toBeGreaterThan(0)
-    expect(routeRows(world)[0]).toMatchObject({ inject_arm: 'evidence', injected: 'yes' })
+    expect(injectRows(world)).toEqual([])
+    expect(routeRows(world)[0]).toMatchObject({ inject_arm: 'evidence', injected: 'no' })
   })
 
   test('no injection in the session: route rows still carry the arm, injected no', async ($, on) => {
@@ -225,12 +239,10 @@ describe('inject: hooks', () => {
     expect(routeRows(world)[0]).toMatchObject({ inject_arm: 'evidence', injected: 'no' })
   })
 
-  test('the same planning skill many times: each invocation appends again until the 2 KB session cap', async ($, on) => {
-    const world = worldOf(on)
-    seedReady(world)
-    await $.session.start(SESSION)
+  test('the same planning skill many times (v1.1 path): each invocation appends again until the 2 KB session cap', async () => {
+    const { rt, published, plan } = quality('sess-0001')
     const outs: string[] = []
-    for (let i = 0; i < 20; i++) outs.push((await $.skill.prompt({ skill: 'superpowers:writing-plans', text: 'PLAN' })).text)
+    for (let i = 0; i < 20; i++) outs.push(await plan())
     const appended = outs.filter(t => t !== 'PLAN')
     expect(appended.length).toBeGreaterThan(1)
     expect(appended.length).toBeLessThan(20)
@@ -238,31 +250,28 @@ describe('inject: hooks', () => {
     expect(outs.slice(appended.length).every(t => t === 'PLAN')).toBe(true)
     const appendedBytes = appended.reduce((s, t) => s + utf8Bytes(t) - utf8Bytes('PLAN'), 0)
     expect(appendedBytes).toBeLessThanOrEqual(SESSION_CAP_BYTES)
-    await world.clock.advance(5000)
-    const rows = injectRows(world)
+    const rows = rt.rows.map(l => JSON.parse(l)).filter(r => r.ev === 'inject')
     expect(rows.length).toBe(20)
     expect(rows.reduce((s, r) => s + (r.bytes as number), 0)).toBe(appendedBytes)
     expect(rows.filter(r => r.capped === true).length).toBe(20 - appended.length)
-    expect(world.published.get('inject')).toEqual({ arm: 'evidence', bytes: appendedBytes, sections: appended.length })
+    expect(published.at(-1)).toEqual({ arm: 'evidence', bytes: appendedBytes, sections: appended.length })
   })
 
-  test('the cap is per session across sites: skill, describe and compose share the 2 KB', async ($, on) => {
-    const world = worldOf(on)
-    seedReady(world)
-    await $.session.start(SESSION)
-    for (let i = 0; i < 20; i++) await $.skill.prompt({ skill: 'superpowers:writing-plans', text: 'PLAN' })
-    await goRed($, world)
+  test('the cap is per session across sites: skill, describe and compose share the 2 KB', async () => {
+    const { rt, host, plan } = quality('sess-0001')
+    for (let i = 0; i < 20; i++) await plan()
+    rt.level = { level: 'RED', up: 0, down: 0 }
     const line = 'Launch work\ndatapce: pressure RED — serialize heavy fan-out'
     for (let i = 0; i < 10; i++) {
       for (const tool of ['Agent', 'Workflow']) {
         // memoised: the line admitted on the first render is re-sent on every later one
-        expect((await $.tool.describe({ tool, description: 'Launch work', provider: PROVIDER })).description).toBe(line)
+        expect(await describeHook(host, rt, tool, 'Launch work', T0)).toBe(line)
       }
     }
-    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
-    expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
-    await world.clock.advance(5000)
-    const rows = injectRows(world)
+    const compose = { tools: ['Agent', 'Bash'], traits: [] }
+    expect((await composeSections(host, rt, compose, [], T0)).length).toBe(0)
+    expect((await composeSections(host, rt, compose, [], T0)).length).toBe(0)
+    const rows = rt.rows.map(l => JSON.parse(l)).filter(r => r.ev === 'inject')
     expect(rows.filter(r => r.site === 'describe').map(r => [r.skill, (r.bytes as number) > 0])).toEqual([
       ['Agent', true],
       ['Workflow', true],
@@ -314,22 +323,15 @@ describe('inject: hooks', () => {
     expect((world.published.get('inject') as { sections: number }).sections).toBe(1)
   })
 
-  test('holdout arm: the same skill many times never injects; each withheld section is logged', async ($, on) => {
-    const world = worldOf(on, {}, HOLDOUT_ID)
-    seedReady(world)
-    await $.session.start(SESSION)
-    for (let i = 0; i < 10; i++) {
-      expect((await $.skill.prompt({ skill: 'superpowers:executing-plans', text: 'EXEC' })).text).toBe('EXEC')
-    }
-    await $.agent.spawn(spawnInput())
-    await $.turn.complete(complete())
-    await world.clock.advance(5000)
-    const rows = injectRows(world)
+  test('holdout arm (v1.1 path): the same skill many times never injects; each withheld section is logged', async () => {
+    const { rt, published, plan } = quality(HOLDOUT_ID)
+    for (let i = 0; i < 10; i++) expect(await plan('superpowers:executing-plans')).toBe('PLAN')
+    const rows = rt.rows.map(l => JSON.parse(l)).filter(r => r.ev === 'inject')
     expect(rows.length).toBe(10)
     expect(rows[0]).toEqual({ ev: 'inject', ts: T0, site: 'skill', skill: 'superpowers:executing-plans', arm: 'holdout', bytes: 0, withheld: true })
     expect(rows.every(r => r.withheld === true && r.bytes === 0)).toBe(true)
-    expect(routeRows(world)[0]).toMatchObject({ inject_arm: 'holdout', injected: 'no' })
-    expect(world.published.get('inject')).toEqual({ arm: 'holdout', bytes: 0, sections: 0 })
+    expect(rt.injectedBytes).toBe(0)
+    expect(published).toEqual([])
   })
 
   test('holdout arm under RED: describe and compose withheld', async ($, on) => {

@@ -16,7 +16,7 @@ dispatching-parallel-agents) and covers the checking that comes after.
 Feed the plan's model selection with measured numbers, then pick a tier per task.
 
 - **Read the ledger.** `/apex` opens the pane; its Evidence section has one row per task type and
-  tier: `n`, `ok%` with the failure kinds (unavailable / other), `tok μ` (mean tokens), `dur μ`
+  tier: `n`, `ok%` with the failure kinds (unavailable / other), `tok(all) μ` (mean tokens billed: input, output, cache reads and cache writes), `dur μ`
   (mean duration). `/apex json` prints the same sections as JSON for a headless run. Quote those
   numbers in the plan next to each task's tier; never invent a rate.
 - **Read ok% correctly.** There is no quality label yet. `ok%` means the dispatch finished and the
@@ -26,8 +26,9 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
   route needs 35 of 35 clean at a 0.9 target, and none is proven yet). Use the ledger to compare
   cost and duration between tiers you were already considering, and to spot a tier that keeps
   failing; do not use it to justify a cheaper tier on quality grounds.
-- **Cost is the measured part.** If two tiers have comparable `n` and `ok%`, `tok μ` and `dur μ`
-  tell you the cheaper and the faster one. A row with no tokens or duration shows `—`.
+- **Cost is the measured part.** `tok(all) μ` and `dur μ` record what a dispatch cost here. Compare
+  within a task type and expect allocation bias (harder work goes to bigger tiers); they do not pick
+  a tier for you. A row with no tokens or duration shows `—`.
 - **Never override an explicit `model:`.** If the user or the task names a model, pass it through.
   datapce never rewrites it, and neither should you. Where the pane shows `▲ <tier>: basis`, that is
   advice that differed from what ran; it is informational.

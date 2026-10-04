@@ -2,10 +2,12 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Cell } from '../types/index.d.ts'
 import { cellKey } from '../hooks/evidence.ts'
-import { MAX_COMPOSE_LINES, MAX_DESCRIBE_LINES, MAX_SECTION_LINES, SESSION_CAP_BYTES, utf8Bytes } from '../hooks/inject.ts'
+import type { Host } from '../hooks/host.ts'
+import { MAX_COMPOSE_LINES, MAX_DESCRIBE_LINES, MAX_SECTION_LINES, SESSION_CAP_BYTES, skillSection, utf8Bytes } from '../hooks/inject.ts'
+import { newRuntime, optionsOf } from '../hooks/runtime.ts'
 import { decideSpawn, type SpawnContext } from '../hooks/router.ts'
 import { MEASURE, SESSION, spawnInput } from './fixtures/inputs.ts'
-import { BACKEND, worldOf, type World } from './fixtures/world.ts'
+import { BACKEND, T0, worldOf, type World } from './fixtures/world.ts'
 
 const READY: Cell = { n: 35, pass: 35, state: 'READY', winN: 5, winPass: 5, below: 0, above: 0, cusum: 0, p0: 1 }
 const PLANNING = [
@@ -15,6 +17,7 @@ const PLANNING = [
   'superpowers:executing-plans',
   'datapce:datapce',
 ]
+const SESSION_ID = 'sess-0001' // armOf → evidence
 const PROVIDER = { plugin: 'engine', tier: 'core' } as never
 const RED_MEASURE = { ...MEASURE, rateLimits: [{ kind: 'five_hour' as const, percentUsed: 95, resetsAt: '2026-10-03T20:00:00Z' }] }
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: ['Agent', 'Bash'], outputStyle: null, traits: [] } as never
@@ -32,14 +35,15 @@ describe('§17 efficiency contract', () => {
     expect((await $.prompt.compose(COMPOSE)).sections.map(s => s.id)).toEqual(['intro'])
   })
 
-  test('the per-session cap holds however often the planning skills run; every decision is logged', async ($, on) => {
-    const world = worldOf(on)
-    world.store.set('datapce.cells', manyReady(18))
-    await $.session.start(SESSION)
+  test('the per-session cap holds however often the planning skills run; every decision is logged (v1.1 path)', async () => {
+    const rt = newRuntime(optionsOf({}))
+    rt.sessionId = SESSION_ID
+    rt.cells = manyReady(18)
+    const host = { publish: { inject: async () => {} } } as unknown as Host
     let appended = 0
     let sections = 0
     for (let i = 0; i < 10; i++) {
-      const text = (await $.skill.prompt({ skill: PLANNING[i % PLANNING.length]!, text: 'X' })).text
+      const text = await skillSection(host, rt, PLANNING[i % PLANNING.length]!, 'X', T0, true)
       if (text !== 'X') {
         sections += 1
         expect(text.slice(3).split('\n').length).toBeLessThanOrEqual(MAX_SECTION_LINES)
@@ -48,12 +52,20 @@ describe('§17 efficiency contract', () => {
     }
     expect(sections).toBeGreaterThan(0)
     expect(appended).toBeLessThanOrEqual(SESSION_CAP_BYTES)
-    await world.clock.advance(5000)
-    const rows = injectRows(world)
+    const rows = rt.rows.map(l => JSON.parse(l)).filter(r => r.ev === 'inject')
     expect(rows).toHaveLength(10)
     expect(rows.every(r => r.arm === 'evidence')).toBe(true)
     expect(rows.filter(r => r.capped === true).length).toBe(10 - sections)
     expect(rows.filter(r => r.capped === true).length).toBeGreaterThan(0)
+  })
+
+  test('v1 gate: planning skills get nothing even with many READY cells', async ($, on) => {
+    const world = worldOf(on)
+    world.store.set('datapce.cells', manyReady(18))
+    await $.session.start(SESSION)
+    for (const skill of PLANNING) expect((await $.skill.prompt({ skill, text: 'X' })).text).toBe('X')
+    await world.clock.advance(5000)
+    expect(injectRows(world)).toEqual([])
   })
 
   test('tool.describe appends at most two lines, and only when pressure is not GREEN', async ($, on) => {
