@@ -46,6 +46,11 @@ class TestThinkingProbe(unittest.TestCase):
         ok, why = oc.thinking_off_probe()
         self.assertFalse(ok); self.assertIn("reasoning", why)
 
+    def test_unterminated_think_tag_means_on(self):
+        oc._post = lambda *a, **k: _resp("<think>unterminated")
+        ok, why = oc.thinking_off_probe()
+        self.assertFalse(ok); self.assertIn("thinking is ON", why)
+
     def test_reasoning_content_field_means_on(self):
         oc._post = lambda *a, **k: _resp("ok", extra={"reasoning_content": "hmm"})
         ok, why = oc.thinking_off_probe()

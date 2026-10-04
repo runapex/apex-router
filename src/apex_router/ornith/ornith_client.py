@@ -260,6 +260,9 @@ def thinking_off_probe() -> tuple[bool, str]:
     # inline <think> block) into ChatResult.reasoning — one check covers them all.
     if r.reasoning:
         return False, f"backend returned reasoning ({len(r.reasoning)} chars) despite reasoning_effort=none: thinking is ON"
+    # A truncated inline block ("<think>…" with no closing tag) is not folded by _parse.
+    if r.answer.lstrip().startswith("<think>"):
+        return False, "backend emitted an unterminated inline <think> block despite reasoning_effort=none: thinking is ON"
     return True, "thinking off"
 
 
