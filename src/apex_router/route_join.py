@@ -306,12 +306,13 @@ def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
     return kept, dropped
 
 
-def writer_parity(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> Dict[str, Any]:
     """0.4.1 retirement gate. Claude-code dispatch rows per UTC day by writer, before dedupe: the datapce
     plugin (rows carry inject_arm) vs the agent-route-log hook. Workflow rows are plugin-only (the hook
     cannot see them) and are counted apart. The trailing streak walks back over days with rows while
     plugin > 0 and plugin >= hook; days without rows, and Workflow-only days (plugin 0 and hook 0), are
-    quiet and neither break nor count. parity_days counts the days in the streak where both writers matched."""
+    quiet and neither break nor count. parity_days counts the days in the streak where both writers matched. parity_until is the last matched day;
+    gate_open = span >= 14 and parity_days >= 10 and parity_until within 2 days of `today` (default: UTC today)."""
     days: Dict[str, Dict[str, int]] = {}
     for r in rows:
         ts = r.get("ts")
@@ -335,8 +336,12 @@ def writer_parity(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             break
         streak.append(day)
     span = (date.fromisoformat(streak[0]) - date.fromisoformat(streak[-1])).days + 1 if streak else 0
+    until = streak[0] if streak else None
+    today = today or datetime.now(timezone.utc).date()
+    gate_open = bool(streak) and span >= 14 and len(streak) >= 10 \
+        and (today - date.fromisoformat(until)).days <= 2
     return {"days": {k: days[k] for k in ordered}, "parity_since": streak[-1] if streak else None,
-            "parity_span_days": span, "parity_days": len(streak)}
+            "parity_until": until, "parity_span_days": span, "parity_days": len(streak), "gate_open": gate_open}
 
 
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
@@ -709,8 +714,9 @@ def main(argv=None) -> int:
               f"unlabeled={st.get('unlabeled', 0)}")
         wp = st.get("writer_parity") or {}
         print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
-              f"({wp.get('parity_span_days', 0)} d span, {wp.get('parity_days', 0)} matched; "
-              f"the 0.4.1 hook retirement needs span >= 14 and matched >= 10)")
+              f"until {wp.get('parity_until')} ({wp.get('parity_span_days', 0)} d span, "
+              f"{wp.get('parity_days', 0)} matched; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.1 hook "
+              f"retirement needs span >= 14, matched >= 10 and the last matched day within 2 days)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):
                 print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")

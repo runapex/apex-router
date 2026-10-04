@@ -16,9 +16,10 @@ the optional backend (local model lanes, cross-client proxy telemetry, nightly l
 
 Listing (marketplace category `productivity`):
 
-> Adaptive model routing you can see. A status bar and pane showing every subagent's tier, cost
-> and why; routing advice that only enforces what it has measured on your machine; evidence
-> injected into the planning tools you already use. Optional local-model lanes.
+> An advise-only view of your subagents: a status band and pane with pressure, cost and every
+> dispatch, a session-handoff prompt, and a short pressure note in Agent/Workflow planning. Its
+> ledger records completion and cost, not answer quality; tier advice arrives with a quality
+> label in v1.1. Optional local-model lanes.
 > v1 wording and behaviour: see §18 (no tier advice until a quality label exists).
 
 Non-goals (do not compete): a planner or plan format (superpowers owns it); a status line
@@ -287,7 +288,7 @@ and attention taken from the task, so the contract is:
    on the plugin (all file reads are off the hot path on `$.clock.every`, cached in `$.state`).
 5. **Offer, then enforce only what is proven.** Advise mode is the default; enforce is per-cell,
    earned by labels, demoted by CUSUM. The model keeps `model:` it was explicitly given.
-6. **Close the loop so the model evolves.** Every spawn's outcome becomes a label; labels change
+6. **Close the loop so the model evolves.** Every spawn's outcome becomes a label (v1: completion only; quality labels per §18); labels change
    the next evidence row. The plugin's own value is measured the same way: each injection is
    logged with the dispatch it preceded, so `route-advise` can report pass-rate with vs without
    the evidence section (self A/B). An injection that does not move outcomes is removed.
@@ -296,7 +297,7 @@ and attention taken from the task, so the contract is:
    and the skill text shrinks accordingly. The condensed skill is the floor, not the ceiling.
 
 Acceptance for v1: injected text per session ≤ 2 KB at p95; advise-vs-requested agreement and
-pass-rate reported in the pane; no hook adds > 5 ms to `agent.spawn` at p99.
+pass-rate reported in the pane (superseded for v1 by §18); no hook adds > 5 ms to `agent.spawn` at p99.
 
 ## 18. v1 quality gate and v1.1 quality labels (added 2026-10-04)
 

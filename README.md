@@ -546,7 +546,8 @@ plugin replaces it; retired in 0.4.1) is a `PostToolUse`
 hook (matcher `Agent`) that appends one label-pending row per dispatch. `apex-router
 route-join` then infers escalations offline (a later same-description dispatch at a
 strictly higher tier) and joins the proxy telemetry on `(session_id, agent_id)`; the
-nightly pass runs the join.
+nightly pass runs the join. The hook is retired in 0.4.1 once `route-join --json` reports
+`stats.writer_parity.gate_open` (span ≥ 14 days, ≥ 10 matched days, last matched day within 2 days).
 
 ```bash
 ./install.sh --agent-route-log-hook     # wires the hook into ~/.claude/settings.json
@@ -683,6 +684,8 @@ Logs to check: `~/.apex-router/logs/com.apex-router.{drain,daily}.{log,err}` (ma
 ```bash
 apex-router watch uninstall            # remove the launchd/systemd units first
 rm -rf "$HOME/.apex-router"            # package, venv, logs, route tables, telemetry
+claude plugin uninstall datapce@datapce   # the datapce plugin
+claude plugin marketplace remove datapce  # and its marketplace
 ```
 
 That removes everything apex-router created under its own dir. ollama and the Ornith

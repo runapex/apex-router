@@ -87,3 +87,10 @@ def test_changelog_says_what_0_4_0_is_and_is_not():
     assert "enforc" not in low
     assert "quality_labels" in low and "0.4.1" in section and "writer_parity" in section
     assert "parity_span_days" in section and "parity_days" in section and "10" in section
+
+
+def test_changelog_covers_branch_content_and_the_recency_gate():
+    section = _section_0_4_0()
+    assert "connect-retry backoff test no longer depends on wall-clock timing" in section
+    assert "repository hygiene test" in section
+    assert "parity_until" in section and "gate_open" in section

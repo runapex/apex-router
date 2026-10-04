@@ -589,6 +589,20 @@ class TestWriterParity(unittest.TestCase):
         self.assertEqual(route_join.writer_parity(rows)["parity_days"], 3)
         self.assertEqual(route_join.writer_parity([])["parity_days"], 0)
 
+    def test_gate_needs_recency_not_just_a_long_old_streak(self):
+        rows = []
+        for d in range(1, 15):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        from datetime import date
+        fresh = route_join.writer_parity(rows, today=date(2026, 10, 16))
+        self.assertEqual((fresh["parity_until"], fresh["gate_open"]), ("2026-10-14", True))
+        stale = route_join.writer_parity(rows, today=date(2026, 10, 17))
+        self.assertEqual((stale["parity_span_days"], stale["parity_days"], stale["gate_open"]), (14, 14, False))
+        short = route_join.writer_parity(rows[:20], today=date(2026, 10, 10))
+        self.assertFalse(short["gate_open"])
+        self.assertFalse(route_join.writer_parity([], today=date(2026, 10, 10))["gate_open"])
+
     def test_an_older_shortfall_only_moves_the_start(self):
         rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only
         for d in (2, 3, 4):
