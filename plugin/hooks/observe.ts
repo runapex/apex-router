@@ -186,6 +186,8 @@ export async function flushAll(host: Host, rt: Runtime): Promise<void> {
   if (rows.length > 0 && !(await appendLines(host, observePath(rt.backendDir, now), rows))) keep(rt.rows, rows)
   const route = rt.routeRows.splice(0)
   if (route.length > 0 && !(await appendLines(host, routeLogPath(rt.backendDir), route))) keep(rt.routeRows, route)
+  // Before session.start loaded them (a hot reload), writing would replace the persisted values.
+  if (!rt.storeLoaded) return
   try {
     if (rt.statsDirty) {
       rt.statsDirty = false

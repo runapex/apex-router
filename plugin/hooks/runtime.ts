@@ -58,6 +58,8 @@ export type Runtime = {
   level: LevelState
   enforce: boolean
   cells: Record<string, Cell>
+  /** True once session.start loaded the persisted cells/stats/profile; before that nothing is persisted. */
+  storeLoaded: boolean
   cellsDirty: boolean
   stats: Record<string, Record<string, Welford>>
   statsDirty: boolean
@@ -99,6 +101,7 @@ export function newRuntime(options: Options): Runtime {
     level: { level: 'GREEN', up: 0, down: 0 },
     enforce: options.enforce,
     cells: {},
+    storeLoaded: false,
     cellsDirty: false,
     stats: {},
     statsDirty: false,

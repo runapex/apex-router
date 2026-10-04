@@ -33,8 +33,13 @@ const DISPATCH_VIEW_MAX = 200
 /** route_join: only an explicit cheap start can be escalated; a redo after 2 h is a new task. */
 export const CHEAP_START_TIERS: ReadonlySet<string> = new Set(['haiku', 'sonnet'])
 export const ESCALATION_WINDOW_MS = 2 * 3600_000
-/** A Workflow run gives no end signal: it counts as active this long after its launch or its last agent. */
-export const WORKFLOW_ACTIVE_MS = 60 * 60_000
+/**
+ * A Workflow run gives no end signal. An unknown agent is attributed to a run only if it STARTED
+ * (now − durationMs) after the run's launch (+ clock slack): an agent that survived a reload started
+ * earlier and is ignored. Launch times never move; the expiry only bounds memory.
+ */
+export const WORKFLOW_SLACK_MS = 2_000
+export const WORKFLOW_EXPIRY_MS = 24 * 3600_000
 const EXPLICIT = 'explicit model'
 
 type SpawnFields = Pick<AgentSpawnInput, 'subagentType' | 'description' | 'prompt' | 'model' | 'parentModel' | 'fork'>
@@ -67,6 +72,10 @@ export function decideSpawn(e: SpawnFields, ctx: SpawnContext): Decision {
     hardLimit,
   }
 }
+
+/** route_join's tier of a later dispatch: `requested or tier_of(resolved)` (inherit/unknown → resolved). */
+export const escalationTierOf = (requested: string, resolved: string): Tier | null =>
+  (requested !== 'inherit' ? tierOf(requested) : null) ?? tierOf(resolved)
 
 /** route_join.normalize_description: lowercase, non-alphanumerics → space, collapsed. */
 export function normalizeDescription(desc: unknown): string {
@@ -230,7 +239,7 @@ export async function afterSpawn(host: Host, rt: Runtime, e: AgentSpawnInput, d:
     if (resolved !== null) {
       pruneRoutes(rt, now)
       const desc = normalizeDescription(e.description.slice(0, DESC_MAX))
-      const tier = d.requested !== 'inherit' ? tierOf(d.requested) : tierOf(resolved)
+      const tier = escalationTierOf(d.requested, resolved)
       markEscalations(rt, desc, tier, e.tool_use_id, now)
       rt.routes.set(e.tool_use_id, { row: routeRow(e, d, resolved, agentId, rt, now), start: d.requested, desc, at: now, done: false })
       if (agentId !== null) rt.byAgent.set(agentId, e.tool_use_id)
@@ -243,9 +252,10 @@ export async function afterSpawn(host: Host, rt: Runtime, e: AgentSpawnInput, d:
   }
 }
 
-function activeWorkflows(rt: Runtime, now: number): string[] {
-  for (const [id, at] of rt.workflows) if (now - at > WORKFLOW_ACTIVE_MS) rt.workflows.delete(id)
-  return [...rt.workflows.keys()]
+/** Runs launched no later than the agent's start (+ slack); expired runs are forgotten. */
+function workflowsBefore(rt: Runtime, agentStart: number, now: number): string[] {
+  for (const [id, at] of rt.workflows) if (now - at > WORKFLOW_EXPIRY_MS) rt.workflows.delete(id)
+  return [...rt.workflows].filter(([, at]) => at <= agentStart + WORKFLOW_SLACK_MS).map(([id]) => id)
 }
 
 /** tool.call Workflow: a run whose agent() calls will raise turn.complete with agentIds never spawned. */
@@ -266,9 +276,8 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
     let d = key === undefined ? undefined : rt.dispatches.get(key)
     if (key !== undefined && (d === undefined || d.outcome !== 'running')) return
     if (key === undefined || d === undefined) {
-      const runs = activeWorkflows(rt, now)
+      const runs = workflowsBefore(rt, now - e.durationMs, now)
       if (runs.length === 0) return
-      for (const id of runs) rt.workflows.set(id, now)
       const toolUseId = runs.length === 1 ? runs[0]! : null
       const model = e.usage?.model ?? null
       key = `wf:${e.agentId}`
@@ -300,7 +309,8 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
       queue(rt, route)
     }
     const tier = tierOf(d.resolved)
-    if (tier !== null) {
+    // Until start() has loaded the persisted cells, a label would be flushed over them (hot reload).
+    if (tier !== null && rt.storeLoaded) {
       const cell = cellKey(d.taskType, d.level, tier)
       pushStat(rt.stats, cell, 'tokens', tokens)
       pushStat(rt.stats, cell, 'duration_ms', e.durationMs)
@@ -319,6 +329,9 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
 export function end(rt: Runtime): void {
   try {
     for (const route of rt.routes.values()) if (!route.done) queue(rt, route)
+    // The next session (after /clear) shares neither runs nor escalation candidates with this one.
+    rt.routes.clear()
+    rt.workflows.clear()
   } catch {
     // fail open
   }
@@ -328,6 +341,7 @@ export function end(rt: Runtime): void {
 export async function start(host: Host, rt: Runtime): Promise<void> {
   try {
     rt.cells = asCells(await host.storeGet('datapce.cells'))
+    rt.storeLoaded = true
     await host.publish.cells(cellViews(rt.cells, rt.stats))
   } catch {
     // a store that cannot be read starts with no cells

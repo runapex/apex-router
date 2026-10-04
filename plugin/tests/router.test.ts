@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Cell } from '../types/index.d.ts'
 import { cellKey } from '../hooks/evidence.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
-import { decideSpawn, finishOf, normalizeDescription, routeRow, type SpawnContext } from '../hooks/router.ts'
+import { decideSpawn, escalationTierOf, finishOf, normalizeDescription, routeRow, type SpawnContext } from '../hooks/router.ts'
 import { complete, SESSION, spawnInput } from './fixtures/inputs.ts'
 import { BACKEND, worldOf, type World } from './fixtures/world.ts'
 
@@ -60,6 +60,13 @@ describe('router: decisions', () => {
     expect(normalizeDescription('naïve—café')).toBe('na ve caf')
     expect(normalizeDescription('!!!')).toBe('')
     expect(normalizeDescription(undefined)).toBe('')
+  })
+
+  test('the later tier of an escalation follows route_join: explicit tier, else resolved tier', () => {
+    expect(escalationTierOf('opus', 'claude-sonnet-5-5')).toBe('opus')
+    expect(escalationTierOf('inherit', 'claude-opus-5-5')).toBe('opus')
+    expect(escalationTierOf('best-model', 'claude-opus-5-5')).toBe('opus')
+    expect(escalationTierOf('best-model', 'gpt-5')).toBeNull()
   })
 
   test('outcome from structured fields only: answer ok; no-usage API error is unavailable; anything else other', () => {
@@ -191,9 +198,10 @@ describe('router: hooks', () => {
     const world = worldOf(on)
     await $.session.start(SESSION)
     await $.tool.call(workflowCall())
+    await world.clock.advance(3000)
     const usage = { input_tokens: 900, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-haiku-4-5' }
-    await $.turn.complete(complete({ agentId: 'wf-agent-1', usage }))
-    await $.turn.complete(complete({ agentId: 'wf-agent-1', usage }))
+    await $.turn.complete(complete({ agentId: 'wf-agent-1', usage, durationMs: 2500 }))
+    await $.turn.complete(complete({ agentId: 'wf-agent-1', usage, durationMs: 2500 }))
     await world.clock.advance(5000)
     expect(routeRows(world)).toEqual([
       expect.objectContaining({
@@ -205,14 +213,48 @@ describe('router: hooks', () => {
     expect((world.store.get('datapce.cells') as Record<string, Cell>)[cellKey('other', 'GREEN', 'haiku')]).toMatchObject({ n: 1, pass: 1 })
   })
 
-  test('a Workflow run stops attracting unknown agents after an hour of silence', async ($, on) => {
+  test('a stranger that started before the Workflow launch (survived a reload) is ignored', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await world.clock.advance(60_000)
+    await $.tool.call(workflowCall())
+    await world.clock.advance(1000)
+    await $.turn.complete(complete({ agentId: 'pre-reload-agent', durationMs: 30_000 }))
+    await world.clock.advance(5000)
+    expect(routeRows(world)).toEqual([])
+  })
+
+  test('a Workflow agent running longer than an hour, started after the launch, is attributed', async ($, on) => {
     const world = worldOf(on)
     await $.session.start(SESSION)
     await $.tool.call(workflowCall())
-    await world.clock.advance(61 * 60_000)
-    await $.turn.complete(complete({ agentId: 'late-stranger' }))
+    await world.clock.advance(90 * 60_000)
+    await $.turn.complete(complete({ agentId: 'long-wf-agent', durationMs: 89 * 60_000 }))
+    await world.clock.advance(5000)
+    expect(routeRows(world)).toEqual([expect.objectContaining({ source: 'workflow', agent_id: 'long-wf-agent', tool_use_id: 'toolu_wf' })])
+  })
+
+  test('session.end (/clear) forgets active Workflow runs', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.tool.call(workflowCall())
+    await $.session.end(END)
+    await world.clock.advance(3000)
+    await $.turn.complete(complete({ agentId: 'next-session-stranger', durationMs: 1000 }))
     await world.clock.advance(5000)
     expect(routeRows(world)).toEqual([])
+  })
+
+  test('a turn.complete before session.start (hot reload) never overwrites persisted cells or stats', async ($, on) => {
+    const world = worldOf(on)
+    const persisted = { [cellKey('review', 'GREEN', 'sonnet')]: READY }
+    world.store.set('datapce.cells', persisted)
+    world.store.set('datapce.stats', { [cellKey('review', 'GREEN', 'sonnet')]: { tokens: { n: 3, mean: 10, m2: 1 } } })
+    await $.agent.spawn(spawnInput())
+    await $.turn.complete(complete())
+    await $.session.end(END)
+    expect(world.store.get('datapce.cells')).toEqual(persisted)
+    expect(world.store.get('datapce.stats')).toEqual({ [cellKey('review', 'GREEN', 'sonnet')]: { tokens: { n: 3, mean: 10, m2: 1 } } })
   })
 
   test('escalation: a same-description re-dispatch to a higher tier marks the earlier (still running) row', async ($, on) => {
