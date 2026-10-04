@@ -101,3 +101,14 @@ Without `--check`, a readout exits 0 even when it is UNKNOWN. An unexpected exce
 error still exits 3 or 4. Use `--json` for machine output; it has the same fields as
 `pressure.json`. An empty but readable telemetry file gives `GREEN (insufficient sample)` with
 0 requests. A missing file gives UNKNOWN.
+
+## Local tier: is thinking really off?
+
+Every local lane sends `reasoning_effort: "none"`. If the serving stack ignores it, every call is
+thinking-ON (measured: 0/3 complete, budget burned in `<think>`) and scripts hang up to 900 s.
+Check once per box, and after any ollama upgrade:
+
+    .venv/bin/python -m apex_router.ornith.ornith_client --probe-thinking   # exit 0 = off
+
+Related knobs: `ORNITH_LOCK_TIMEOUT_SECS` (default 120) bounds the wait on the inference lock;
+`ORNITH_SOCKET_TIMEOUT_SECS` (default 900) bounds one inference.

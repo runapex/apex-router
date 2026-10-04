@@ -2,7 +2,7 @@
 from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl, json, os, socket, time
+import fcntl, json, os, socket, sys, time
 from pathlib import Path
 from typing import Any
 from urllib import request, error
@@ -243,5 +243,29 @@ def readiness() -> bool:
         return False
 
 
+def thinking_off_probe() -> tuple[bool, str]:
+    """Prove the backend honours thinking-OFF. Returns (ok, why); never raises.
+
+    Every lane that is 'thinking-OFF' (codegen, review, preread) assumes `reasoning_effort: none`
+    is respected. When an ollama build or a chat template ignores it, the model thinks anyway —
+    the measured hang/truncation signature — while the lane believes it is in safe mode. Run this
+    on any box before trusting the local tier (apex-router doctor / RUNBOOK-pressure)."""
+    try:
+        r = chat_messages([{"role": "user", "content": "Reply exactly: ok"}],
+                          max_tokens=64, enable_thinking=False, temperature=0.0,
+                          raise_on_truncation=False)
+    except Exception as e:  # noqa: BLE001 — a probe reports, it never raises
+        return False, f"{type(e).__name__}: {e}"
+    # _parse already normalises every thinking surface (`reasoning`, `reasoning_content`, a legacy
+    # inline <think> block) into ChatResult.reasoning — one check covers them all.
+    if r.reasoning:
+        return False, f"backend returned reasoning ({len(r.reasoning)} chars) despite reasoning_effort=none: thinking is ON"
+    return True, "thinking off"
+
+
 if __name__ == "__main__":
+    if "--probe-thinking" in sys.argv:
+        ok, why = thinking_off_probe()
+        print(why)
+        raise SystemExit(0 if ok else 1)
     print(chat("Reply exactly: Ornith ready", max_tokens=32).answer)
