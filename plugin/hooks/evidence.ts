@@ -47,7 +47,7 @@ export function unavailableOf(stats: Stats, key: string): number {
 export const kTok = (t: number | null): string => (t === null ? '—' : `${Math.round(t / 1000)}k`)
 
 export function basisOf(requested: Tier, tier: Tier, c: Cell, level: Level, tok: number | null): string {
-  return `${requested}→${tier}: ${c.pass}/${c.n} ok${tok === null ? '' : `, ${kTok(tok)} tok`}; ${level} now`
+  return `${requested}→${tier}: ${c.pass}/${c.n} ok${tok === null ? '' : `, ${kTok(tok)} tok(all)`}; ${level} now`
 }
 
 function aggregate(cells: Record<string, Cell>, match: (p: { taskType: string; level: Level; tier: Tier }) => boolean): { n: number; pass: number } {

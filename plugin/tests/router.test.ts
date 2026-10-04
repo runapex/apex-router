@@ -36,6 +36,17 @@ describe('router: decisions', () => {
     expect(decideSpawn(spawnInput({ parentModel: 'gpt-5' }), ctx({ cells }))).toMatchObject({ hardLimit: 'unknown tier', advice: null })
   })
 
+  test('v1 gate: pressure shedding still advises (policy, not evidence) with no cells: COLD', () => {
+    for (const level of ['AMBER', 'RED'] as const) {
+      const d = decideSpawn(spawnInput(), ctx({ level, cells: {} }))
+      expect(d.requestedTier).toBe('opus')
+      expect(d.advice).toMatchObject({ confidence: 'COLD', own: false })
+      expect(d.advice?.tier).not.toBe('opus')
+      expect(d.advice?.basis).toContain(`${level} shed`)
+    }
+    expect(decideSpawn(spawnInput(), ctx({ level: 'GREEN', cells: {} })).advice).toBeNull()
+  })
+
   test('RED or a refused admission advises serializing heavy fan-out', () => {
     expect(decideSpawn(spawnInput(), ctx({ level: 'RED' })).serialize).toBe(true)
     expect(decideSpawn(spawnInput(), ctx({ admitted: false })).serialize).toBe(true)

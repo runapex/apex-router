@@ -29,7 +29,7 @@ describe('pane: sections', () => {
     expect(JSON.stringify(s)).not.toMatch(/anomaly|enforce/i)
   })
 
-  test('dispatch rows, the ▲ basis, agreement and pass rate', () => {
+  test('dispatch rows, the ▲ basis, agreement and ok count', () => {
     const s = paneSections(empty({
       ds: [
         d({ advised: 'sonnet', advisedState: 'READY', basis: 'opus→sonnet: 35/35 ok; GREEN now' }),
@@ -38,8 +38,8 @@ describe('pane: sections', () => {
     }))
     expect(s[0]!.rows).toEqual([
       'agreement 0/1 with advice · ok 1/2',
-      'Review diff · review · sonnet→sonnet · failed 41s 12k',
-      'Find X · explore · inherit→opus · ok 41s 12k ▲ sonnet: opus→sonnet: 35/35 ok; GREEN now',
+      'Review diff · review · sonnet→sonnet · failed 41s 12k tok(all)',
+      'Find X · explore · inherit→opus · ok 41s 12k tok(all) ▲ sonnet: opus→sonnet: 35/35 ok; GREEN now',
     ])
   })
 

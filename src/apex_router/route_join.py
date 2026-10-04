@@ -310,7 +310,8 @@ def writer_parity(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """0.4.1 retirement gate. Claude-code dispatch rows per UTC day by writer, before dedupe: the datapce
     plugin (rows carry inject_arm) vs the agent-route-log hook. Workflow rows are plugin-only (the hook
     cannot see them) and are counted apart. The trailing streak walks back over days with rows while
-    plugin > 0 and plugin >= hook; days without rows do not break it."""
+    plugin > 0 and plugin >= hook; days without rows, and Workflow-only days (plugin 0 and hook 0), are
+    quiet and neither break nor count. parity_days counts the days in the streak where both writers matched."""
     days: Dict[str, Dict[str, int]] = {}
     for r in rows:
         ts = r.get("ts")
@@ -328,12 +329,14 @@ def writer_parity(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     streak: List[str] = []
     for day in reversed(ordered):
         d = days[day]
+        if d["plugin"] == 0 and d["hook"] == 0:
+            continue
         if d["plugin"] == 0 or d["plugin"] < d["hook"]:
             break
         streak.append(day)
     span = (date.fromisoformat(streak[0]) - date.fromisoformat(streak[-1])).days + 1 if streak else 0
     return {"days": {k: days[k] for k in ordered}, "parity_since": streak[-1] if streak else None,
-            "parity_span_days": span}
+            "parity_span_days": span, "parity_days": len(streak)}
 
 
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
@@ -706,7 +709,8 @@ def main(argv=None) -> int:
               f"unlabeled={st.get('unlabeled', 0)}")
         wp = st.get("writer_parity") or {}
         print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
-              f"({wp.get('parity_span_days', 0)} d; the 0.4.1 hook retirement needs 14)")
+              f"({wp.get('parity_span_days', 0)} d span, {wp.get('parity_days', 0)} matched; "
+              f"the 0.4.1 hook retirement needs span >= 14 and matched >= 10)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):
                 print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")

@@ -566,6 +566,28 @@ class TestWriterParity(unittest.TestCase):
         p = route_join.writer_parity(rows)
         self.assertEqual(p["parity_since"], "2026-10-01")
         self.assertEqual(p["parity_span_days"], 15)
+        self.assertEqual(p["parity_days"], 14)
+
+    def test_a_workflow_only_day_is_quiet_not_a_streak_break(self):
+        rows = []
+        for d in range(1, 15):
+            if d == 5:
+                rows.append(_wf(_day(d), "w5"))  # plugin=0 and hook=0: Workflow-only
+                continue
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["days"]["2026-10-05"], {"plugin": 0, "hook": 0, "workflow": 1})
+        self.assertEqual((p["parity_since"], p["parity_span_days"]), ("2026-10-01", 14))
+        self.assertEqual(p["parity_days"], 13)  # the quiet day spans but does not count
+
+    def test_parity_days_counts_matched_days_in_the_streak(self):
+        rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only: breaks
+        for d in (2, 3, 4):
+            rows += [_dispatch(_day(d), "haiku", f"D{d}", f"a{d}", f"t{d}", outcome="async"),
+                     _plugin(_day(d, 60), "haiku", f"D{d}", f"a{d}", f"t{d}")]
+        self.assertEqual(route_join.writer_parity(rows)["parity_days"], 3)
+        self.assertEqual(route_join.writer_parity([])["parity_days"], 0)
 
     def test_an_older_shortfall_only_moves_the_start(self):
         rows = [_dispatch(_day(1), "haiku", "X", "a0", "t0", outcome="async")]  # hook only
@@ -584,3 +606,4 @@ class TestWriterParity(unittest.TestCase):
         st = route_join.join_labels(route_log_path=log, conformance_path=conf, telemetry_path=tel)["stats"]
         self.assertEqual(st["writer_parity"]["days"], {"2026-10-01": {"plugin": 1, "hook": 1, "workflow": 0}})
         self.assertEqual(st["dispatch_deduped"], 1)
+        self.assertEqual(st["writer_parity"]["parity_days"], 1)

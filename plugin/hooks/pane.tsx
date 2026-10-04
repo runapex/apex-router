@@ -54,7 +54,7 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
   const rows = [`agreement ${agree}/${advised.length} with advice · ok ${done.filter(d => d.outcome === 'ok').length}/${done.length}`]
   for (const d of [...ds].reverse().slice(0, DISPATCH_ROWS)) {
     const ran = tierOf(d.resolved) ?? d.resolved ?? '—'
-    const tok = d.tokens === null ? '' : ` ${kTok(d.tokens)}`
+    const tok = d.tokens === null ? '' : ` ${kTok(d.tokens)} tok(all)`
     const delta = d.advised !== null && d.advised !== tierOf(d.resolved) ? ` ▲ ${d.advised}: ${d.basis}` : ''
     rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType} · ${d.requested}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}${delta}`)
   }

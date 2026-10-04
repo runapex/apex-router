@@ -61,6 +61,7 @@ export type Dispatch = {
   outcome: 'running' | 'ok' | 'failed'
   startedAt: number
   durationMs: number | null
+  /** tok(all): input + output + cache reads + cache writes. */
   tokens: number | null
   level: Level
 }

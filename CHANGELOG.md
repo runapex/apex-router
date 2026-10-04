@@ -4,14 +4,46 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
-## 0.3.1 — 2026-10-03
+## 0.4.0 — unreleased
 
-Local-handoff hang and over-shed fixes.
+One product, one install: datapce, a Claude Code plugin (alias apex-router), with the pip package
+as its optional backend. Advise-only: it never changes the model you chose.
 
 ### Added
+- `plugin/` — the datapce hooks module: a status band and the `/apex` pane with upstream pressure,
+  session cost and every Agent and Workflow dispatch (tier requested and run, outcome, duration,
+  tokens = input + output + cache reads + cache writes); `/apex handoff` and the handoff toast; a
+  ≤ 2-line pressure note in the Agent and Workflow tool descriptions only when pressure is not
+  GREEN; the one condensed `datapce` skill. One route row per dispatch (no prompt text, file
+  contents or command text), finished at `turn.complete` as `ok` or `error` (`async` only for
+  agents still running at session end). /clear and /resume re-identify the session on the next
+  turn. Marketplace: `.claude-plugin/marketplace.json`.
+- A ledger per task type × tier of completion and cost (n, ok %, error kind, `tok(all) μ`, `dur μ`).
+  It is not answer quality: `QUALITY_LABELS` is off in v1, so no tier advice and no evidence table
+  reach the planning skills; cells keep counting for v1.1's quality label.
+- `apex_router.core` (pce-core): Welford, EWMA (float and Q16), Jacobi PCA, Q/T² with the χ²
+  limit, Page CUSUM, the penalty and cell state machines, OLS cost and budget burn, with a
+  TypeScript mirror held to generated parity fixtures (`python -m apex_router.core.fixtures`).
+- `route-join` keeps one row per `(session_id, tool_use_id)` (finished over async, plugin over
+  hook; `dispatch_deduped`) and reports `writer_parity`: plugin vs hook rows per UTC day
+  (`parity_span_days`, and `parity_days`, the days both writers matched; a Workflow-only day is quiet,
+  neither a break nor a match).
 - `python -m apex_router.ornith.ornith_client --probe-thinking` — proves `reasoning_effort:
   none` is honoured. Exit 0 = thinking off; 1 = evidence of thinking (reasoning present, an
   unterminated inline `<think>`, or an empty answer); 2 = inconclusive (busy, down, other error).
+
+### Changed
+- `apex_router.stats` re-exports from `apex_router.core.stats`; `bradley_terry` removed (no caller).
+- `install.sh` adds the datapce marketplace from the install directory and installs
+  `datapce@datapce`; `apex-router-skills` is no longer added by default (opt in with
+  `--skills-marketplace runapex/apex-router-skills`).
+
+### Deprecated
+- `hooks/agent-route-log.sh` and `hooks/cache-handoff-nudge.sh`: they keep running beside the
+  plugin (route-join counts each dispatch once). `--agent-route-log-hook` and
+  `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.1, once
+  `apex-router route-join --json` shows `stats.writer_parity.parity_span_days` ≥ 14
+  and `parity_days` ≥ 10.
 
 ### Fixed
 - ornith: inference lock is bounded (`ORNITH_LOCK_TIMEOUT_SECS`, 120 s) → `OrnithBusy`

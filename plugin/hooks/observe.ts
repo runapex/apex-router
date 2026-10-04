@@ -93,6 +93,7 @@ export function bashEventOf(command: string, output: string, isError: boolean, t
 
 export const bashRow = (b: BashEvent): Row => ({ ev: 'bash', ts: b.t, cmd: b.cmd, signal: b.signal, error: b.isError })
 export const skillRow = (skill: string, ts: number): Row => ({ ev: 'skill', ts, skill })
+/** `tokens` = tok(all): input + output + cache reads + cache writes. */
 export const completeRow = (agentId: string, ok: boolean, durationMs: number, tokens: number | null, ts: number): Row => ({
   ev: 'complete',
   ts,

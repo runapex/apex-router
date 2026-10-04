@@ -47,7 +47,7 @@ describe('evidence', () => {
     const key = feed(cells, 'explore', 'GREEN', 'sonnet', 35)
     tokens(stats, key, 41000)
     expect(adviceFor(cells, stats, 'explore', 'GREEN', 'opus', true)).toEqual({
-      tier: 'sonnet', effort: null, confidence: 'READY', own: true, basis: 'opus→sonnet: 35/35 ok, 41k tok; GREEN now',
+      tier: 'sonnet', effort: null, confidence: 'READY', own: true, basis: 'opus→sonnet: 35/35 ok, 41k tok(all); GREEN now',
     })
   })
 
