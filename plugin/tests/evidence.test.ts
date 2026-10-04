@@ -68,6 +68,23 @@ describe('evidence', () => {
     expect(a?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 pass')
   })
 
+  test('P5: no "all tasks" inheritance — another task type never lends its evidence', () => {
+    const cells: Record<string, Cell> = {}
+    feed(cells, 'review', 'GREEN', 'sonnet', 35)
+    feed(cells, 'debug', 'AMBER', 'sonnet', 35)
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
+  })
+
+  test('P5: DRIFTING cells are excluded from the inheritance aggregate', () => {
+    const cells: Record<string, Cell> = {}
+    const amber = feed(cells, 'explore', 'AMBER', 'sonnet', 40)
+    for (let i = 0; i < 20; i++) recordOutcome(cells, amber, i % 10 < 8)
+    expect(cells[amber]?.state).toBe('DRIFTING')
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')).toBeNull()
+    feed(cells, 'explore', 'RED', 'sonnet', 35)
+    expect(adviceFor(cells, {}, 'explore', 'GREEN', 'opus')?.basis).toBe('opus→sonnet: inherited from explore all levels, 35/35 pass')
+  })
+
   test('a DRIFTING own cell is neither advised nor allowed to inherit', () => {
     const cells: Record<string, Cell> = {}
     feed(cells, 'review', 'AMBER', 'sonnet', 35)

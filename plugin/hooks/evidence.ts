@@ -38,7 +38,8 @@ function aggregate(cells: Record<string, Cell>, match: (p: { taskType: string; l
   let pass = 0
   for (const [key, c] of Object.entries(cells)) {
     const p = parseKey(key)
-    if (p !== null && match(p)) {
+    // P5: a DRIFTING cell's history no longer describes it — it lends nothing to an aggregate.
+    if (p !== null && c.state !== 'DRIFTING' && match(p)) {
       n += c.n
       pass += c.pass
     }
@@ -57,15 +58,11 @@ export function adviceFor(cells: Record<string, Cell>, stats: Stats, taskType: s
   for (const t of lower) {
     const own = cells[cellKey(taskType, level, t)]
     if (own !== undefined && own.state !== 'COLD') continue
-    const parents: [string, (p: { taskType: string; tier: Tier }) => boolean][] = [
-      [`${taskType} all levels`, p => p.taskType === taskType && p.tier === t],
-      ['all tasks', p => p.tier === t],
-    ]
-    for (const [scope, match] of parents) {
-      const agg = aggregate(cells, match)
-      if (agg.n >= MIN_N && wilsonLo(agg.pass, agg.n) >= TARGET) {
-        return { tier: t, effort: null, confidence: 'WARMING', own: false, basis: `${requested}→${t}: inherited from ${scope}, ${agg.pass}/${agg.n} pass` }
-      }
+    // P5: the only parent is the same task type at other pressure levels ("all tasks" was dropped:
+    // another task type's pass rate says nothing about this one).
+    const agg = aggregate(cells, p => p.taskType === taskType && p.tier === t)
+    if (agg.n >= MIN_N && wilsonLo(agg.pass, agg.n) >= TARGET) {
+      return { tier: t, effort: null, confidence: 'WARMING', own: false, basis: `${requested}→${t}: inherited from ${taskType} all levels, ${agg.pass}/${agg.n} pass` }
     }
   }
   if (level !== 'GREEN' && SHED_TASKS.has(taskType) && lower.length > 0) {

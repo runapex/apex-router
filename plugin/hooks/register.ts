@@ -9,6 +9,15 @@ import {
   skill as observeSkill,
   start as observeStart,
 } from './observe.ts'
+import {
+  afterSpawn,
+  beforeSpawn,
+  end as routerEnd,
+  install as router,
+  onComplete,
+  start as routerStart,
+  type Decision,
+} from './router.ts'
 import { identify, newRuntime, optionsOf } from './runtime.ts'
 
 // Wiring only. Shared events are registered once here (engine rule) and every engine call the
@@ -64,10 +73,12 @@ export const register: Register = (on, raw) => {
     const host = hostOf($)
     await identify(host, e, rt)
     await observeStart(host, e, rt)
+    await routerStart(host, rt)
     return r
   })
 
   on('session.end', async ($, e, next) => {
+    routerEnd(rt)
     await flushAll(hostOf($), rt)
     return next(e)
   })
@@ -85,6 +96,28 @@ export const register: Register = (on, raw) => {
     return r
   })
 
+  // Advise-only (pivot P1): the spawn always reaches the engine exactly as requested.
+  on('agent.spawn', async ($, e, next) => {
+    const host = hostOf($)
+    let d: Decision | null = null
+    try {
+      d = beforeSpawn(rt, e, await host.now())
+    } catch {
+      d = null
+    }
+    const res = await next(e)
+    if (d !== null) await afterSpawn(host, rt, e, d, res, await host.now())
+    return res
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    const host = hostOf($)
+    await onComplete(host, rt, e, await host.now())
+    return r
+  })
+
   band(on, rt)
   observe(on, rt)
+  router(on, rt)
 }

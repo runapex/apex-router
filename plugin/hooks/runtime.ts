@@ -39,6 +39,12 @@ export type MinuteBucket = { steps: number; failed: number; spend: number }
 /** A Bash call to a backend command, as observe classified it — never its text. */
 export type BashEvent = { cmd: string; signal: string | null; isError: boolean; t: number }
 
+/**
+ * A route_log row of this session, kept until it can no longer change: pending until the agent's
+ * turn.complete (or session.end), then kept ≤ 2 h so a higher-tier re-dispatch can mark it escalated.
+ */
+export type RouteEntry = { row: Record<string, unknown>; start: string; desc: string; at: number; done: boolean }
+
 /** Module-local session state shared by every hooks module (lost on hot reload; $.state is not). */
 export type Runtime = {
   options: Options
@@ -59,6 +65,8 @@ export type Runtime = {
   routeRows: string[]
   dispatches: Map<string, Dispatch>
   byAgent: Map<string, string>
+  routes: Map<string, RouteEntry>
+  workflows: Map<string, number>
   injectedBytes: number
   injectedSections: number
   toastAt: Map<string, number>
@@ -97,6 +105,8 @@ export function newRuntime(options: Options): Runtime {
     routeRows: [],
     dispatches: new Map(),
     byAgent: new Map(),
+    routes: new Map(),
+    workflows: new Map(),
     injectedBytes: 0,
     injectedSections: 0,
     toastAt: new Map(),
