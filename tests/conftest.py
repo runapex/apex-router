@@ -19,7 +19,15 @@ Two layers:
      than session start;
    - an exact append-only live file (route_log.jsonl, telemetry.jsonl, state.db*) shrank or was
      replaced (inode changed);
-   - a ~/.claude config file / plugins/ file changed content (sha256 snapshot, not mtime).
+   - a watched ~/.claude config file changed content (sha256 snapshot, not mtime). The watch
+     list is deliberately narrow: settings.json, settings.local.json, CLAUDE.md,
+     keybindings.json, plugins/installed_plugins.json, plugins/known_marketplaces.json and
+     marketplace/plugin manifests (.claude-plugin/{marketplace,plugin}.json). These are what a
+     test could plausibly clobber and Claude Code does not rewrite on its own. NOT watched:
+     plugins/**/.in_use/<pid>, plugins/.last_inuse_sweep, plugin data/store dirs, caches,
+     projects/ transcripts, todos, statsig, shell-snapshots -- Claude Code churns these
+     continuously while any session is open, so hashing them made the guard fail (rc=1 with all
+     tests passing) whenever the developer had Claude open.
    If a live daemon (daily agent / ornith overnight) ran during the session, rewrites of the
    files it legitimately regenerates are downgraded to a printed WARNING.
 """
@@ -64,12 +72,25 @@ def _walk(root: Path):
             yield here / fn
 
 
+_CLAUDE_PLUGIN_FILES = ("plugins/installed_plugins.json", "plugins/known_marketplaces.json")
+_CLAUDE_MANIFEST_GLOBS = (
+    "plugins/marketplaces/*/.claude-plugin/marketplace.json",
+    "plugins/marketplaces/*/plugins/*/.claude-plugin/plugin.json",
+    "plugins/cache/*/*/*/.claude-plugin/plugin.json",
+)
+
+
+def _claude_watch_files(claude_dir: Path):
+    """Config files under ``claude_dir`` a test could clobber and Claude Code doesn't churn."""
+    names = [*_CLAUDE_GUARDED_FILES, *_CLAUDE_PLUGIN_FILES]
+    found = [claude_dir / n for n in names if (claude_dir / n).is_file()]
+    for pat in _CLAUDE_MANIFEST_GLOBS:
+        found.extend(p for p in sorted(claude_dir.glob(pat)) if p.is_file())
+    return found
+
+
 def _claude_files():
-    for fn in _CLAUDE_GUARDED_FILES:
-        if (_CL / fn).is_file():
-            yield _CL / fn
-    if (_CL / "plugins").is_dir():
-        yield from _walk(_CL / "plugins")
+    yield from _claude_watch_files(_CL)
 
 
 def _sha(p: Path):
@@ -77,6 +98,12 @@ def _sha(p: Path):
         return hashlib.sha256(p.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def _claude_changed(snapshot: dict, claude_dir: Path):
+    """Watched files under ``claude_dir`` whose content differs from ``snapshot``."""
+    return sorted(p for p in set(snapshot) | set(_claude_watch_files(claude_dir))
+                  if snapshot.get(p) != _sha(p))
 
 
 def _stat_sig(p: Path):
@@ -137,9 +164,8 @@ def _violations():
             fails.append(f"{p} (replaced: inode changed)")
         elif now[1] < before[1]:
             fails.append(f"{p} (shrank {before[1]} -> {now[1]} bytes)")
-    for p in set(_CLAUDE_SNAPSHOT) | set(_claude_files()):
-        if _CLAUDE_SNAPSHOT.get(p) != _sha(p):
-            fails.append(f"{p} (content changed)")
+    for p in _claude_changed(_CLAUDE_SNAPSHOT, _CL):
+        fails.append(f"{p} (content changed)")
     return sorted(fails), sorted(warns)
 
 
