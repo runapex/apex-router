@@ -182,7 +182,7 @@ describe('live: settling', () => {
 describe('live: hooks', () => {
   test('the status entry follows the level on the same tick that publishes it', async ($, on) => {
     const world = worldOf(on)
-    await $.session.start(SESSION)
+    await $.session.start({ ...SESSION, surface: 'vscode' })
     await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 75, resetsAt: '2026-10-03T20:00:00Z' }] })
     expect(world.statuses.at(-1)).toMatch(/^apex ●GREEN/)
     await world.clock.advance(60_000)

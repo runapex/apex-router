@@ -4,6 +4,13 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
+## 0.4.2 — unreleased
+
+### Fixed
+- The datapce plugin no longer repeats the band as a status entry (`⚠ datapce: apex ●GREEN $0.91`)
+  in the terminal and desktop app. The status entry now appears only where the band can't draw:
+  VS Code, mobile, `band: false`, or after Hide.
+
 ## 0.4.1 — 2026-10-04
 
 ### Security
