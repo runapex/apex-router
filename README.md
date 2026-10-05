@@ -23,13 +23,13 @@ claude plugin install datapce@datapce
 > ledger per task type and tier records completion and cost — not answer quality; tier advice
 > arrives with a quality label in v1.1. Optional local-model lanes.
 
-**Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone.
+**Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone. Repos are counted by a token salted per install, so tokens can't be matched across machines or against precomputed hashes; anyone who can read the local plugin store can still test candidate paths against them. Rows also keep the dispatch description (a label of up to 120 characters that may name a repo or path) and the session id, which Claude Code's local transcript folders map back to a directory. Nothing leaves the machine. (0.4.0 stored an unsalted repo hash; 0.4.1 drops those values on first load.)
 
 The pip package `apex-router` documented below is the optional backend: local model lanes,
 cross-client proxy telemetry, nightly learning. The plugin works without it.
 
 > **New in 0.4:** the datapce plugin. The `agent-route-log` and `cache-handoff` hooks are
-> deprecated and keep running beside it until 0.4.1; see [CHANGELOG.md](CHANGELOG.md).
+> deprecated and keep running beside it until 0.4.2; see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -303,7 +303,7 @@ measurements said so:
 | codegen A/B bench | `python -m apex_router.ornith.state_bench [--suite s.jsonl]` | pass-rate CIs, tokens/pass, taxonomy (paper §5.7 labels) |
 | (P,Σ,O) frontier driver + bench | `python -m apex_router.proxy_engine.tuner.driver_bench [--live]` | behavior parity; token parity at 4-round horizon |
 | GPT bench via codex exec | `python -m apex_router.proxy_engine.tuner.codex_driver_bench [--drift]` | identical refs/answers both arms; **drift: both recovered** — no anchoring on a frontier model |
-| structured session handoff | automatic (datapce handoff toast; the cache-handoff-nudge hook is deprecated in 0.4.0, retired in 0.4.1) | 6-field state block replaces prose handoff; `python -m apex_router.handoff_state validate <file>` |
+| structured session handoff | automatic (datapce handoff toast; the cache-handoff-nudge hook is deprecated in 0.4.0, retired in 0.4.2) | 6-field state block replaces prose handoff; `python -m apex_router.handoff_state validate <file>` |
 | `/learn` chain contract | automatic (pi extension) | VALIDATE emits a JSON verdict Σ; EXPLAIN consumes (P, Σ); fail-open to legacy |
 
 The design record — including the negative results and when to re-run — lives in
@@ -545,11 +545,11 @@ findings". Runbook: [`docs/RUNBOOK-review-preread.md`](docs/RUNBOOK-review-prere
 
 The outcome router's blind spot was Claude Code itself: subagent dispatches never reached
 the route log, so there was nothing to label. `hooks/agent-route-log.sh` (deprecated in 0.4.0; the datapce
-plugin replaces it; retired in 0.4.1) is a `PostToolUse`
+plugin replaces it; retired in 0.4.2) is a `PostToolUse`
 hook (matcher `Agent`) that appends one label-pending row per dispatch. `apex-router
 route-join` then infers escalations offline (a later same-description dispatch at a
 strictly higher tier) and joins the proxy telemetry on `(session_id, agent_id)`; the
-nightly pass runs the join. The hook is retired in 0.4.1 once `route-join --json` reports
+nightly pass runs the join. The hook is retired in 0.4.2 once `route-join --json` reports
 `stats.writer_parity.gate_open` (span ≥ 14 days, ≥ 10 clean days with plugin rows and no hook-only dispatch, last streak day within 2 days).
 
 ```bash
@@ -586,7 +586,7 @@ guide: [`docs/RUNBOOK-cache-cost.md`](docs/RUNBOOK-cache-cost.md).
 |---|---|
 | `scripts/cache_report.py` | Where does cache-read cost go this week? Per-session ranking + offload ROI gate. |
 | `scripts/prefix_budget.py` | How big is the re-read-every-turn prefix (CLAUDE.md + tool schemas)? |
-| `scripts/cache-handoff-nudge.sh` | Stop hook (deprecated in 0.4.0; the datapce plugin replaces it; retired in 0.4.1): nudge to start a fresh session before its prefix gets expensive. |
+| `scripts/cache-handoff-nudge.sh` | Stop hook (deprecated in 0.4.0; the datapce plugin replaces it; retired in 0.4.2): nudge to start a fresh session before its prefix gets expensive. |
 | `scripts/codex_session_report.py` | Same per-session cache-cost view, for Codex sessions (reads `~/.codex/sessions`). |
 | `scripts/memory_compact.py` | Hierarchically compact a project-memory dir (cluster + tier + freshness); advisory, `--apply` auto-creates a reversible git checkpoint (or `--no-init-git` to require an existing repo). |
 | `scripts/memory-compact-nudge.sh` | Stop hook: nudge to compact a large project `MEMORY.md` (advisory; never mutates). |

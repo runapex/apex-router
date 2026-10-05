@@ -537,7 +537,7 @@ def _wf(ts, agent_id):
 
 
 class TestWriterParity(unittest.TestCase):
-    """0.4.1 retirement gate: plugin vs hook dispatch rows per UTC day, counted before dedupe."""
+    """0.4.2 retirement gate: plugin vs hook dispatch rows per UTC day, counted before dedupe."""
 
     def test_counts_both_writers_per_day_and_keeps_workflow_apart(self):
         p = route_join.writer_parity([

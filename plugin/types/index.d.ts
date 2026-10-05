@@ -122,6 +122,8 @@ export type ProfileStore = {
   skills: Record<string, number>
   hours: number[]
   backend: boolean
+  /** Per-install random key of the repo tokens: 32 hex characters, drawn at the first session.start. Never published. */
+  salt?: string
 }
 
 export type ProfileView = {

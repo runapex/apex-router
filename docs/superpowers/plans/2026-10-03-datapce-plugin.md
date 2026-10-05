@@ -4420,7 +4420,7 @@ export function asProfile(v: unknown): ProfileStore {
   return { repos, taskMix: counts(p.taskMix), skills: counts(p.skills), hours, backend: p.backend === true }
 }
 
-/** A path hash: the profile counts repos without recording where they are. */
+/** A path hash (as shipped in 0.4.0: unsalted, so a list of candidate paths matches it; 0.4.1 replaced it with the per-install salted repoToken). */
 export async function repoHash(cwd: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cwd))
   return [...new Uint8Array(digest)]

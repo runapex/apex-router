@@ -4,6 +4,27 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
+## 0.4.1 — 2026-10-04
+
+### Security
+- 0.4.0 stored an unsalted repo hash that one list of candidate paths, hashed once, could match
+  on any machine; 0.4.1 salts it per install and drops old values. The token is the first 16 hex
+  of HMAC-SHA-256 of the path, keyed with a random salt drawn once and kept in the local plugin
+  store, so tokens can't be matched across machines or against precomputed hashes; anyone who can
+  read the local plugin store can still test candidate paths against them. Rows also keep the
+  dispatch description (up to 120 characters, may name a repo or path) and the session id, which
+  Claude Code's local transcript folders map back to a directory. Nothing leaves the machine. The
+  repos-seen count restarts once; other counts are kept. Restart open sessions after upgrading: a
+  session still running 0.4.0 keeps writing unsalted values until the next 0.4.1 session start
+  drops them.
+
+### Fixed
+- The test suite no longer writes to the live install; a guard fails the run if it does.
+
+### Changed
+- Hook retirement moves from 0.4.1 to 0.4.2; the deprecated hooks keep running beside the plugin
+  until then.
+
 ## 0.4.0 — 2026-10-04
 
 One product, one install: datapce, a Claude Code plugin (alias apex-router), with the pip package
@@ -44,7 +65,7 @@ as its optional backend. Advise-only: it never changes the model you chose.
 ### Deprecated
 - `hooks/agent-route-log.sh` and `hooks/cache-handoff-nudge.sh`: they keep running beside the
   plugin (route-join counts each dispatch once). `--agent-route-log-hook` and
-  `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.1, once
+  `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.2, once
   `apex-router route-join --json` shows `stats.writer_parity.parity_span_days` ≥ 14
   and `parity_days` ≥ 10 and `parity_until` (the last streak day) is within the last 2 days
   (`stats.writer_parity.gate_open`).

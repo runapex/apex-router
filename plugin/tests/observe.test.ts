@@ -2,7 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Host } from '../hooks/host.ts'
 import {
-  bashEventOf, expiredFiles, flushAll, measureRow, observePath, record, spawnRow, start as observeStart, ROW_MAX_BYTES,
+  asProfile, bashEventOf, expiredFiles, flushAll, hmacSha256, measureRow, observePath, record, repoToken, spawnRow, start as observeStart,
+  ROW_MAX_BYTES,
 } from '../hooks/observe.ts'
 import { start as routerStart } from '../hooks/router.ts'
 import { newRuntime, optionsOf } from '../hooks/runtime.ts'
@@ -177,4 +178,116 @@ describe('observe: a store part that cannot be read is never overwritten', () =>
       expect(keys).toContain('datapce.cells')
     })
   }
+})
+
+describe('observe: repos are a salted per-install token', () => {
+  const hexOf = (b: Uint8Array): string => [...b].map(x => x.toString(16).padStart(2, '0')).join('')
+  const enc = (t: string): Uint8Array => new TextEncoder().encode(t)
+  const unsalted = async (cwd: string): Promise<string> => hexOf(new Uint8Array(await crypto.subtle.digest('SHA-256', enc(cwd)))).slice(0, 16)
+  const SALT_A = '00112233445566778899aabbccddeeff'
+  const SALT_B = 'ffeeddccbbaa99887766554433221100'
+
+  /** A host over an in-memory store; everything else is a no-op. */
+  const hostOver = (store: Map<string, unknown>): Host => {
+    const noop = async (): Promise<undefined> => undefined
+    const publish = new Proxy({}, { get: () => noop })
+    const over: Record<string, unknown> = {
+      now: async () => T0,
+      list: async () => [],
+      every: () => undefined,
+      storeGet: async (key: string) => store.get(key),
+      storeSet: async (key: string, value: unknown) => void store.set(key, structuredClone(value)),
+    }
+    return new Proxy({}, { get: (_t, key: string) => (key in over ? over[key] : key === 'publish' ? publish : noop) }) as never
+  }
+  const session = async (store: Map<string, unknown>, cwd: string): Promise<void> => {
+    const host = hostOver(store)
+    const rt = newRuntime(optionsOf({}))
+    rt.backendDir = BACKEND
+    rt.sessionId = 'sess-0001'
+    rt.storeLoaded = true
+    await observeStart(host, { ...SESSION, cwd }, rt)
+    await flushAll(host, rt)
+  }
+  type Stored = { repos: string[]; salt?: string; skills: Record<string, number> }
+
+  test('HMAC-SHA-256 matches RFC 4231 test case 2', async () => {
+    const mac = await hmacSha256(enc('Jefe'), enc('what do ya want for nothing?'))
+    expect(hexOf(mac)).toBe('5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843')
+  })
+
+  test('HMAC-SHA-256 hashes a key longer than the block first (RFC 4231 test case 6)', async () => {
+    const key = new Uint8Array(131).fill(0xaa)
+    const mac = await hmacSha256(key, enc('Test Using Larger Than Block-Size Key - Hash Key First'))
+    expect(hexOf(mac)).toBe('60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54')
+  })
+
+  test('the token is not the unsalted path hash, and two salts give two tokens', async () => {
+    const a = await repoToken('/w/x', SALT_A)
+    // pinned (Python: hmac.new(bytes.fromhex(salt), b'/w/x', sha256).hexdigest()[:16]): keyed with the salt's bytes, not its ASCII
+    expect(a).toBe('4b3ee3cc128bacff')
+    expect(a).not.toBe(await unsalted('/w/x'))
+    expect(await repoToken('/w/x', SALT_B)).not.toBe(a)
+    expect(await repoToken('/w/x', SALT_A)).toBe(a)
+    expect(await repoToken('/w/y', SALT_A)).not.toBe(a)
+  })
+
+  test('the salt is created once and reused across sessions', async () => {
+    const store = new Map<string, unknown>()
+    await session(store, '/w/x')
+    const first = store.get('datapce.profile') as Stored
+    expect(first.salt).toMatch(/^[0-9a-f]{32}$/)
+    expect(first.repos).toEqual([await repoToken('/w/x', first.salt as string)])
+    await session(store, '/w/x')
+    await session(store, '/w/y')
+    const later = store.get('datapce.profile') as Stored
+    expect(later.salt).toBe(first.salt)
+    expect(later.repos).toEqual([await repoToken('/w/x', first.salt as string), await repoToken('/w/y', first.salt as string)])
+    expect(later.repos).not.toContain(await unsalted('/w/x'))
+  })
+
+  test('two installs draw two salts', async () => {
+    const one = new Map<string, unknown>()
+    const two = new Map<string, unknown>()
+    await session(one, '/w/x')
+    await session(two, '/w/x')
+    expect((one.get('datapce.profile') as Stored).salt).not.toBe((two.get('datapce.profile') as Stored).salt)
+  })
+
+  test('a 0.4.0 profile (unsalted hashes, no salt) drops its repos once and keeps its counts', async () => {
+    const store = new Map<string, unknown>()
+    const old = [await unsalted('/w/x'), await unsalted('/w/old')]
+    store.set('datapce.profile', { repos: old, taskMix: { explore: 3 }, skills: { s: 2 }, backend: true })
+    await session(store, '/w/x')
+    const p = store.get('datapce.profile') as Stored & { taskMix: Record<string, number> }
+    expect(p.repos).toEqual([await repoToken('/w/x', p.salt as string)])
+    for (const h of old) expect(p.repos).not.toContain(h)
+    expect(p.taskMix).toEqual({ explore: 3 })
+    expect(p.skills).toEqual({ s: 2 })
+  })
+
+  test('a malformed salt is treated as no salt: repos dropped, never fatal', async () => {
+    for (const salt of ['nope', 42, null, 'A'.repeat(32), '0'.repeat(31)]) {
+      expect(asProfile({ repos: ['0123456789abcdef'], salt })).toMatchObject({ repos: [] })
+      expect(asProfile({ repos: ['0123456789abcdef'], salt }).salt).toBeUndefined()
+    }
+    expect(asProfile({ repos: ['0123456789abcdef', 7, 'not-a-token'], salt: SALT_A })).toMatchObject({ repos: ['0123456789abcdef'], salt: SALT_A })
+    const store = new Map<string, unknown>([['datapce.profile', { repos: ['0123456789abcdef'], salt: 'zz' }]])
+    await session(store, '/w/x')
+    const p = store.get('datapce.profile') as Stored
+    expect(p.salt).toMatch(/^[0-9a-f]{32}$/)
+    expect(p.repos).toEqual([await repoToken('/w/x', p.salt as string)])
+  })
+
+  test('a profile without a salt is never written with repos', async () => {
+    const store = new Map<string, unknown>()
+    const rt = newRuntime(optionsOf({}))
+    rt.backendDir = BACKEND
+    rt.storeLoaded = true
+    rt.profileLoaded = true
+    rt.profileDirty = true
+    rt.profile = { ...rt.profile, repos: [await unsalted('/w/x')] }
+    await flushAll(hostOver(store), rt)
+    expect((store.get('datapce.profile') as Stored).repos).toEqual([])
+  })
 })

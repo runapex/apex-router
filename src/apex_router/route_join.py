@@ -307,7 +307,7 @@ def _dedupe_dispatch(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
 
 
 def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> Dict[str, Any]:
-    """0.4.1 retirement gate. Claude-code dispatch rows by writer, before dedupe: the datapce plugin
+    """0.4.2 retirement gate. Claude-code dispatch rows by writer, before dedupe: the datapce plugin
     (rows carry inject_arm) vs the agent-route-log hook. Writers are compared by (session_id, tool_use_id)
     key, not by raw counts, and a key is filed under the UTC day of its plugin row (else of its earliest
     row): the plugin stamps the spawn and the hook the PostToolUse end, so one dispatch can straddle
@@ -755,7 +755,7 @@ def main(argv=None) -> int:
         wp = st.get("writer_parity") or {}
         print(f"  writer parity:      plugin>=hook since {wp.get('parity_since')} "
               f"until {wp.get('parity_until')} ({wp.get('parity_span_days', 0)} d span, "
-              f"{wp.get('parity_days', 0)} clean days; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.1 hook "
+              f"{wp.get('parity_days', 0)} clean days; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.2 hook "
               f"retirement needs span >= 14, matched >= 10 and the last matched day within 2 days)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):

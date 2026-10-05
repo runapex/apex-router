@@ -28,9 +28,9 @@
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
-#         --cache-handoff-hook  DEPRECATED (retired in 0.4.1): the datapce plugin's handoff toast and /apex handoff replace it
+#         --cache-handoff-hook  DEPRECATED (retired in 0.4.2): the datapce plugin's handoff toast and /apex handoff replace it
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
-#         --agent-route-log-hook  DEPRECATED (retired in 0.4.1): the datapce plugin logs every Agent and Workflow dispatch
+#         --agent-route-log-hook  DEPRECATED (retired in 0.4.2): the datapce plugin logs every Agent and Workflow dispatch
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
 #         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
@@ -569,7 +569,7 @@ install_cache_handoff_hook() {
     return 0
   }
   say "wiring cache-handoff Stop hook into settings.json"
-  warn "--cache-handoff-hook is deprecated: the datapce plugin's handoff toast and /apex handoff replace it; the hook is retired in 0.4.1"
+  warn "--cache-handoff-hook is deprecated: the datapce plugin's handoff toast and /apex handoff replace it; the hook is retired in 0.4.2"
   if _wire_stop_hook "$INSTALL_DIR/hooks/cache-handoff-nudge.sh" "cache-handoff-nudge.sh"; then
     ok "cache-handoff hook wired"
     echo "     starts with an AGGRESSIVE (low) cap; relax per repo/task as signals show — see docs/RUNBOOK-cache-cost.md"
@@ -605,7 +605,7 @@ install_agent_route_log_hook() {
     return 0
   }
   say "wiring agent-route-log PostToolUse(Agent) hook into settings.json"
-  warn "--agent-route-log-hook is deprecated: the datapce plugin logs every Agent and Workflow dispatch; the hook is retired in 0.4.1"
+  warn "--agent-route-log-hook is deprecated: the datapce plugin logs every Agent and Workflow dispatch; the hook is retired in 0.4.2"
   if _wire_hook PostToolUse Agent "$INSTALL_DIR/hooks/agent-route-log.sh" "agent-route-log.sh" 5; then
     ok "agent-route-log hook wired (rows land in ~/.apex-router/route_log.jsonl, surface=claude-code)"
     echo "     resolve labels + telemetry join: apex-router route-join   (see docs/RUNBOOK-route-conformance.md)"
