@@ -11,8 +11,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-_DEFAULT = Path.home() / ".apex-router" / "queue"
-
 
 def queue_root(env: dict | None = None) -> Path:
     """Resolve the queue root: APEX_ORNITH_QUEUE if set (non-blank), else the stable default.
@@ -21,4 +19,4 @@ def queue_root(env: dict | None = None) -> Path:
     override = (source.get("APEX_ORNITH_QUEUE") or "").strip()
     if override:
         return Path(override).expanduser()
-    return _DEFAULT
+    return Path.home() / ".apex-router" / "queue"   # resolved at call time (HOME may change)
