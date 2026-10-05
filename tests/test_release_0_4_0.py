@@ -72,7 +72,10 @@ def test_readme_skill_claim_matches_the_skill():
 
 def test_changelog_0_4_0_on_top_with_0_3_1_folded_in():
     text = (ROOT / "CHANGELOG.md").read_text()
-    assert re.findall(r"^## (\d+\.\d+\.\d+)", text, re.M)[:2] == ["0.4.0", "0.3.0"]
+    # released headings carry a date; an unreleased next version may sit above them
+    released = re.findall(r"^## (\d+\.\d+\.\d+) — \d{4}-\d{2}-\d{2}", text, re.M)
+    assert released[:2] == ["0.4.0", "0.3.0"]
+    assert re.findall(r"^## (.+)$", text, re.M)[0] in ("0.4.0 — 2026-10-04", "0.4.1 — unreleased")
     section = _section_0_4_0()
     heads = re.findall(r"^### (\w+)", section, re.M)
     assert heads == ["Added", "Changed", "Deprecated", "Fixed"], heads

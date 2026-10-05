@@ -80,8 +80,14 @@ Storage:
   rows: resolved model known), so `route-join`/`route-advise`/`labeled_table` keep working.
 - Running stats: Welford `(n, mean, M2)` per metric per cell in `$.store` (`datapce.stats`),
   persisted across sessions; never raw rows. Per `math.md A9`: persist parameters, not data.
-- Machine profile (derived, `$.store` `datapce.profile`): repos seen (path hash), task_type
-  mix, skills in use, hours-of-day pressure histogram, backend present/absent. Read by §5 and §8.
+- Machine profile (derived, `$.store` `datapce.profile`): repos seen (a salted per-install
+  token: the first 16 hex of HMAC-SHA-256 of the path, keyed with a random 16-byte `salt` drawn
+  once from `crypto.getRandomValues` and kept in the same profile), task_type mix, skills in use,
+  hours-of-day pressure histogram, backend present/absent. Read by §5 and §8. A token is
+  unreadable without this machine's salt; anyone holding the local store holds the salt too, so
+  it hides paths from the store's contents only when the salt is not with them. A profile without
+  a valid salt (0.4.0 stored unsalted `sha256(path)[:16]`, which a list of candidate paths
+  reverses) has its repos dropped on load; the count restarts and the other fields are kept.
 
 Task-type classification: `route_log.classify_dispatch` rules (description + subagentType →
 `explore | review | debug | refactor | generate | mechanical | synthesis | other`) ported to TS,
@@ -203,7 +209,8 @@ limits only.
 
 Writes only under `~/.apex-router/` and `$.store`. Never stores prompt text, file contents, or
 command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone.
-Stated verbatim in the listing and README. Mods run unsandboxed; the module's `tool.call` hook
+Repos are recorded only as a salted per-install token (§4), unreadable without this machine's
+salt; nothing leaves the machine. Stated verbatim in the listing and README. Mods run unsandboxed; the module's `tool.call` hook
 never denies or rewrites a call — it observes `Bash` output only.
 
 ## 11. userConfig

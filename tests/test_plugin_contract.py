@@ -147,3 +147,38 @@ def test_listings_describe_advise_only_behaviour():
         json.loads(text)
         assert not re.search(r"enforc", text, re.I), f"{p.name} promises enforcement"
         assert "advise-only" in text, f"{p.name} does not say advise-only"
+
+
+def test_privacy_no_unsalted_cwd_hash():
+    """§10: a repo is stored only as a per-install salted token (HMAC-SHA-256 keyed with the profile salt).
+
+    0.4.0 stored sha256(cwd)[:16], which a list of candidate paths reverses. The only digest calls are
+    inside hmacSha256; the cwd reaches the profile only through repoToken(e.cwd, <salt>)."""
+    files = _files()
+    for name, src in files.items():
+        code = _code(src)
+        assert "repoHash" not in code, name
+        if name != "observe.ts":
+            assert "subtle.digest" not in code, name
+            assert "repoToken(" not in code, name
+    obs = _code(files["observe.ts"])
+    m = re.search(r"export async function hmacSha256\(.*?\n}\n", obs, re.S)
+    assert m, "observe.ts defines hmacSha256"
+    outside = obs[: m.start()] + obs[m.end() :]
+    assert "subtle.digest" not in outside, "every digest is inside hmacSha256"
+    assert len(re.findall(r"subtle\.digest", m.group(0))) == 3  # long-key fold, inner, outer
+    calls = [a for _, a in _calls(obs, ("repoToken",))]
+    assert calls, "repoToken is called"
+    for args in calls:
+        parts = [x.strip() for x in args.split(",")]
+        assert len(parts) == 2 and parts[1], args
+    assert "cwd" not in re.sub(r"repoToken\(e\.cwd,", "", obs), "observe.ts reads the cwd only to key it"
+
+
+def test_privacy_claim_names_the_salted_repo_token():
+    """§10: README and both listings say how repos are recorded, and say it the way the code does it."""
+    root = Path(__file__).resolve().parents[1]
+    for p in (root / "README.md", *LISTINGS):
+        text = p.read_text()
+        assert "salted per-install token" in text, p.name
+        assert "unreadable without this machine's salt" in text, p.name

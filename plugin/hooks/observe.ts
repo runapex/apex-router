@@ -160,20 +160,55 @@ function counts(v: unknown): Record<string, number> {
   return out
 }
 
+const SALT = /^[0-9a-f]{32}$/
+const TOKEN = /^[0-9a-f]{16}$/
+
+/**
+ * The persisted profile, field by field. Repo tokens are kept only beside the salt that keyed them:
+ * a profile without a valid salt is a 0.4.0 one (unsalted path hashes) or a damaged one, and its
+ * repos are dropped (the repos-seen count restarts; the other counts are kept).
+ */
 export function asProfile(v: unknown): ProfileStore {
   const p = v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : {}
-  const repos = Array.isArray(p.repos) ? p.repos.filter((r): r is string => typeof r === 'string').slice(-200) : []
   const hours = Array.isArray(p.hours) && p.hours.length === 24 && p.hours.every(isCount) ? (p.hours as number[]) : EMPTY_PROFILE_STORE.hours
-  return { repos, taskMix: counts(p.taskMix), skills: counts(p.skills), hours, backend: p.backend === true }
+  const base = { repos: [] as string[], taskMix: counts(p.taskMix), skills: counts(p.skills), hours, backend: p.backend === true }
+  if (typeof p.salt !== 'string' || !SALT.test(p.salt)) return base
+  const repos = Array.isArray(p.repos) ? p.repos.filter((r): r is string => typeof r === 'string' && TOKEN.test(r)).slice(-200) : []
+  return { ...base, repos, salt: p.salt }
 }
 
-/** A path hash: the profile counts repos without recording where they are. */
-export async function repoHash(cwd: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cwd))
-  return [...new Uint8Array(digest)]
-    .slice(0, 8)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
+const hex = (bytes: Uint8Array): string => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
+
+/** A per-install salt: 16 bytes from the engine's crypto.getRandomValues (a CSPRNG), as 32 hex characters. */
+export const newSalt = (): string => hex(crypto.getRandomValues(new Uint8Array(16)))
+
+function joined(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
+/**
+ * HMAC-SHA-256 (RFC 2104) built on SHA-256: the engine's crypto.subtle offers digest only, no
+ * importKey or sign. Checked against RFC 4231 in the tests.
+ */
+export async function hmacSha256(key: Uint8Array, msg: Uint8Array): Promise<Uint8Array> {
+  const k = key.length > 64 ? new Uint8Array(await crypto.subtle.digest('SHA-256', key)) : key
+  const pad = (x: number): Uint8Array => Uint8Array.from({ length: 64 }, (_, i) => (k[i] ?? 0) ^ x)
+  const inner = new Uint8Array(await crypto.subtle.digest('SHA-256', joined(pad(0x36), msg)))
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', joined(pad(0x5c), inner)))
+}
+
+/**
+ * A repo token: the first 8 bytes (16 hex) of HMAC-SHA-256(salt, path), the salt this install's own.
+ * Without this machine's salt a list of candidate paths cannot be matched to it; with the salt (it
+ * sits in the same local plugin store) it can, so the token hides where you work only from someone
+ * who does not have this machine's store. Nothing leaves the machine. Runs once per session.start.
+ */
+export async function repoToken(path: string, salt: string): Promise<string> {
+  const key = Uint8Array.from(salt.match(/../g) ?? [], h => parseInt(h, 16))
+  return hex((await hmacSha256(key, new TextEncoder().encode(path))).slice(0, 8))
 }
 
 function keep(into: string[], rows: string[]): void {
@@ -204,7 +239,8 @@ export async function flushAll(host: Host, rt: Runtime): Promise<void> {
     }
     if (rt.profileDirty && rt.profileLoaded) {
       rt.profileDirty = false
-      await host.storeSet('datapce.profile', rt.profile)
+      // Repo tokens are written only beside their salt: never a repo list without one.
+      await host.storeSet('datapce.profile', rt.profile.salt === undefined ? { ...rt.profile, repos: [] } : rt.profile)
       await host.publish.profile(profileView(rt.profile))
     }
   } catch {
@@ -232,9 +268,12 @@ export async function start(host: Host, e: SessionStartInput, rt: Runtime): Prom
     // unreadable: counted in memory only
   }
   try {
-    const p = asProfile(await host.storeGet('datapce.profile'))
-    const hash = await repoHash(e.cwd)
-    rt.profile = p.repos.includes(hash) ? p : { ...p, repos: [...p.repos, hash].slice(-200) }
+    const read = asProfile(await host.storeGet('datapce.profile'))
+    // First load after 0.4.0 (or a damaged salt): asProfile dropped the repos; draw the salt once.
+    const salt = read.salt ?? newSalt()
+    const p = { ...read, salt }
+    const token = await repoToken(e.cwd, salt)
+    rt.profile = p.repos.includes(token) ? p : { ...p, repos: [...p.repos, token].slice(-200) }
     rt.profileLoaded = true
     rt.profileDirty = true
   } catch {

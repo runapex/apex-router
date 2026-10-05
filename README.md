@@ -23,7 +23,7 @@ claude plugin install datapce@datapce
 > ledger per task type and tier records completion and cost — not answer quality; tier advice
 > arrives with a quality label in v1.1. Optional local-model lanes.
 
-**Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone.
+**Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone. Repos are recorded only as a salted per-install token (HMAC-SHA-256 of the path, keyed with a random salt drawn once on this machine and kept in the same local plugin store): unreadable without this machine's salt, and nothing leaves the machine. 0.4.0 stored an unsalted hash instead; 0.4.1 drops those values.
 
 The pip package `apex-router` documented below is the optional backend: local model lanes,
 cross-client proxy telemetry, nightly learning. The plugin works without it.

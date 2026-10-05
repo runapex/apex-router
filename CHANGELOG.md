@@ -4,6 +4,15 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
+## 0.4.1 — unreleased
+
+### Security
+- 0.4.0 stored an unsalted repo hash that could be reversed from a list of candidate paths; 0.4.1
+  salts it per install and drops old values. Repos are now a salted per-install token (the first
+  16 hex of HMAC-SHA-256 of the path, keyed with a random salt drawn once and kept in the local
+  plugin store), unreadable without this machine's salt; nothing leaves the machine. The profile's
+  repos-seen count restarts once on upgrade; its other counts are kept.
+
 ## 0.4.0 — 2026-10-04
 
 One product, one install: datapce, a Claude Code plugin (alias apex-router), with the pip package
