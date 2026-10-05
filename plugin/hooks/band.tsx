@@ -87,13 +87,18 @@ export const statusText = (level: Level, costUsd: number | null): string => `ape
 /** Surfaces that raise AbovePrompt: only there can the band draw. */
 const BAND_SURFACES = new Set(['terminal', 'desktop'])
 
-/** True while the band shows this session; the status entry would only repeat it. */
-export const bandShows = (rt: Runtime): boolean =>
-  rt.options.band && !rt.bandHidden && rt.surface !== null && BAND_SURFACES.has(rt.surface)
+/** True while the band can show this session; the status entry would only repeat it. */
+const bandShows = (rt: Runtime, hidden: boolean): boolean =>
+  rt.options.band && !hidden && rt.surface !== null && BAND_SURFACES.has(rt.surface)
 
-/** §12: the status entry is for surfaces without a band (vscode, mobile, band off or hidden); `claude -p` (surface null) gets none. */
-export function refreshStatus(host: Host, rt: Runtime, m: Measure | null): void {
-  if (rt.surface !== null && !bandShows(rt)) host.status(statusText(rt.level.level, m?.costUsd ?? null))
+/**
+ * §12: the status entry is for surfaces without a band (vscode, mobile, band off or hidden); where
+ * the band shows, the entry is cleared (one set earlier, e.g. by an older version, would linger).
+ * `claude -p` (surface null) gets none.
+ */
+export async function refreshStatus(host: Host, rt: Runtime, m: Measure | null): Promise<void> {
+  if (rt.surface === null) return
+  host.status(bandShows(rt, await host.bandHidden()) ? undefined : statusText(rt.level.level, m?.costUsd ?? null))
 }
 
 export function install(on: On, rt: Runtime): void {
@@ -101,8 +106,7 @@ export function install(on: On, rt: Runtime): void {
     if (!rt.options.band || e.props.hasSurvey) return next(e)
     const m = await read($, measure)
     const ds = await read($, dispatches)
-    rt.bandHidden = await read($, bandHidden)
-    if ((m === null && ds.length === 0) || rt.bandHidden) return next(e)
+    if ((m === null && ds.length === 0) || (await read($, bandHidden))) return next(e)
     const line = bandLine({ m, s: await read($, signals), ds, b: await read($, backend), budgetUsd: rt.options.budgetUsd })
     const { Box, Text, Button } = $.ui.resolve(e)
     return (
@@ -110,9 +114,14 @@ export function install(on: On, rt: Runtime): void {
         <Box key="datapce-band-line">
           <Text wrap="truncate-end">{line}</Text>
         </Box>
-        <Button key="datapce-hide" label="Hide" plain onPress={() => {
-            rt.bandHidden = true
-            return update($, bandHidden, () => true)
+        <Button
+          key="datapce-hide"
+          label="Hide"
+          plain
+          onPress={async () => {
+            await update($, bandHidden, () => true)
+            // The figures move to the status entry now, not at the next measure or tick.
+            $.ui.status(statusText(rt.level.level, (await read($, measure))?.costUsd ?? null))
           }}
         />
       </Box>

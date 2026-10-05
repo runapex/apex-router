@@ -37,6 +37,7 @@ const SIGNALS = { plugin: 'datapce', key: 'signals' } as const
 const BACKEND = { plugin: 'datapce', key: 'backend' } as const
 const PROFILE = { plugin: 'datapce', key: 'profile' } as const
 const INJECT = { plugin: 'datapce', key: 'inject' } as const
+const BAND_HIDDEN = { plugin: 'datapce', key: 'bandHidden' } as const
 
 function hostOf($: EngineInterface): Host {
   return {
@@ -54,6 +55,7 @@ function hostOf($: EngineInterface): Host {
     storeSet: (key, value) => $.store.set(key, value),
     toast: text => $.ui.toast(text),
     status: text => $.ui.status(text),
+    bandHidden: async () => (await $.state.get(BAND_HIDDEN)).value === true,
     invalidate: event => $.ui.invalidate(event),
     open: args => $.ui.open(args),
     close: id => $.ui.close({ id }),
@@ -127,7 +129,7 @@ export const register: Register = (on, raw) => {
     await host.publish.measure(lastMeasure)
     const now = await host.now()
     observeMeasure(rt, e, now)
-    refreshStatus(host, rt, lastMeasure)
+    await refreshStatus(host, rt, lastMeasure)
     checkHandoff(host, rt, now)
     return next(e)
   })

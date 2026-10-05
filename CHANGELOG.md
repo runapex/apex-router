@@ -9,7 +9,8 @@ next tag will carry.
 ### Fixed
 - The datapce plugin no longer repeats the band as a status entry (`⚠ datapce: apex ●GREEN $0.91`)
   in the terminal and desktop app. The status entry now appears only where the band can't draw:
-  VS Code, mobile, `band: false`, or after Hide.
+  VS Code, mobile, `band: false`, or after Hide (at once, with the current cost). A status entry left
+  by an earlier version is cleared on the next update.
 
 ## 0.4.1 — 2026-10-04
 
