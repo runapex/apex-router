@@ -37,7 +37,7 @@ DEFAULTS: dict = {
     # Frontier Claude tiers (codeqa tier_router; pi frontier/deep families resolve through these).
     "tiers": {
         "haiku": "claude-haiku-4-5",
-        "sonnet": "claude-sonnet-5",
+        "sonnet": "claude-sonnet-5-5",
         "opus": "claude-opus-5-5",
         # Fable is deliberately separate from the standard heavy/Opus tier: it is the
         # expensive ceiling for the hardest pure-reasoning checks, not the routine
@@ -60,11 +60,13 @@ DEFAULTS: dict = {
         "sonnet": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
         "opus": {"provider": "anthropic", "tier": "opus", "effort": "high"},
         "fable": {"provider": "anthropic", "tier": "fable", "effort": "max"},
-        # GPT-5.6 tiers are explicit pi families. They use the Codex provider so they
+        # GPT tiers are explicit pi families. They use the Codex provider so they
         # work with the ChatGPT/Codex subscription without an OpenAI API key.
+        # `gpt-sol` is the deep tier and tracks the newest sol deployment (6.1);
+        # luna/terra stay on 5.6 — no 6.1 luna/terra deployment exists (probed 404).
         "gpt-luna": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
         "gpt-terra": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
-        "gpt-sol": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
+        "gpt-sol": {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
     # /learn pipeline stages resolve through tiers too.

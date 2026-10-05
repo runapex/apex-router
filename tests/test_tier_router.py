@@ -19,8 +19,8 @@ class TestResolve(unittest.TestCase):
             "conclude": ("opus", "claude-opus-5-5", "high"),
             "verify": ("opus", "claude-opus-5-5", "xhigh"),
             "runtime": ("opus", "claude-opus-5-5", "xhigh"),
-            "synthesis": ("sonnet", "claude-sonnet-5", "medium"),
-            "inference": ("sonnet", "claude-sonnet-5", "medium"),
+            "synthesis": ("sonnet", "claude-sonnet-5-5", "medium"),
+            "inference": ("sonnet", "claude-sonnet-5-5", "medium"),
             "extract": ("haiku", "claude-haiku-4-5", None),
             "value": ("haiku", "claude-haiku-4-5", None),
         }
@@ -52,7 +52,7 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(tier_router.resolve("judge", env=env).model, "my-opus")
         self.assertEqual(tier_router.resolve("value", env=env).model, "my-haiku")
         # sonnet untouched → default id
-        self.assertEqual(tier_router.resolve("inference", env=env).model, "claude-sonnet-5")
+        self.assertEqual(tier_router.resolve("inference", env=env).model, "claude-sonnet-5-5")
 
     def test_env_route_override(self):
         env = {"CODEQA_TIER_ROUTES": "judge=sonnet/low"}

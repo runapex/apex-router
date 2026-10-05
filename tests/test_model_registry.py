@@ -43,7 +43,7 @@ class TestModelRegistry(unittest.TestCase):
         self.assertEqual(result, model_registry.DEFAULTS)
 
     def test_tier_model_resolves_tiers(self):
-        self.assertEqual(model_registry.tier_model("sonnet"), "claude-sonnet-5")
+        self.assertEqual(model_registry.tier_model("sonnet"), "claude-sonnet-5-5")
         self.assertEqual(model_registry.tier_model("opus"), "claude-opus-5-5")
         self.assertEqual(model_registry.tier_model("haiku"), "claude-haiku-4-5")
         self.assertEqual(model_registry.tier_model("fable"), "claude-fable-5-1")
@@ -51,21 +51,21 @@ class TestModelRegistry(unittest.TestCase):
     def test_tier_model_returns_none_for_unknown(self):
         self.assertIsNone(model_registry.tier_model("nonexistent"))
 
-    def test_gpt_5_6_families_use_the_codex_provider_and_matching_effort(self):
+    def test_gpt_families_use_the_codex_provider_and_matching_effort(self):
         fams = model_registry.families()
         self.assertEqual(fams["gpt-luna"],
                          {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"})
         self.assertEqual(fams["gpt-terra"],
                          {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"})
         self.assertEqual(fams["gpt-sol"],
-                         {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"})
+                         {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"})
 
     def test_anthropic_families_match_routing_and_cross_validation_policy(self):
         fams = model_registry.families()
         self.assertEqual(fams["haiku"],
                          {"provider": "anthropic", "id": "claude-haiku-4-5"})
         self.assertEqual(fams["sonnet"],
-                         {"provider": "anthropic", "id": "claude-sonnet-5", "effort": "medium"})
+                         {"provider": "anthropic", "id": "claude-sonnet-5-5", "effort": "medium"})
         self.assertEqual(fams["opus"],
                          {"provider": "anthropic", "id": "claude-opus-5-5", "effort": "high"})
         self.assertEqual(fams["fable"],
@@ -83,7 +83,7 @@ class TestModelRegistry(unittest.TestCase):
             model_registry._local_model = lambda: "ollama-local"
             fams = model_registry.families(registry=registry)
             self.assertIn("frontier", fams)
-            self.assertEqual(fams["frontier"], {"provider": "anthropic", "id": "claude-sonnet-5", "effort": "medium"})
+            self.assertEqual(fams["frontier"], {"provider": "anthropic", "id": "claude-sonnet-5-5", "effort": "medium"})
             self.assertIn("local", fams)
             self.assertEqual(fams["local"], {"provider": "ollama", "id": "ollama-local"})
 
@@ -118,14 +118,14 @@ class TestModelRegistry(unittest.TestCase):
     def test_learn_resolves_through_tiers(self):
         result = model_registry.learn()
         self.assertEqual(result["provider"], "anthropic")
-        self.assertEqual(result["validate"], "claude-sonnet-5")
+        self.assertEqual(result["validate"], "claude-sonnet-5-5")
         self.assertEqual(result["explain"], "claude-opus-5-5")
 
     def test_learn_uses_custom_registry(self):
         registry = {"learn": {"provider": "custom", "validate_tier": "sonnet", "explain_tier": "opus"}}
         result = model_registry.learn(registry=registry)
         self.assertEqual(result["provider"], "custom")
-        self.assertEqual(result["validate"], "claude-sonnet-5")
+        self.assertEqual(result["validate"], "claude-sonnet-5-5")
         self.assertEqual(result["explain"], "claude-opus-5-5")
 
 

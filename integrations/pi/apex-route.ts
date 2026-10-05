@@ -63,15 +63,15 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	// code-specialized Kimi (DECISION-kimi-codex-routing): ~3x cheaper than k3 for <=262k ctx
 	"kimi-code": { provider: "moonshotai", id: "kimi-k2.7-code" },
 	"kimi-deep": { provider: "moonshotai", id: "kimi-k3" },  // 1M ctx — long sessions (K1)
-	frontier: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
+	frontier: { provider: "anthropic", id: "claude-sonnet-5-5", effort: "medium" },
 	deep: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
 	haiku: { provider: "anthropic", id: "claude-haiku-4-5" },
-	sonnet: { provider: "anthropic", id: "claude-sonnet-5", effort: "medium" },
+	sonnet: { provider: "anthropic", id: "claude-sonnet-5-5", effort: "medium" },
 	opus: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
 	fable: { provider: "anthropic", id: "claude-fable-5-1", effort: "max" },
 	"gpt-luna": { provider: "openai-codex", id: "gpt-5.6-luna", effort: "low" },
 	"gpt-terra": { provider: "openai-codex", id: "gpt-5.6-terra", effort: "medium" },
-	"gpt-sol": { provider: "openai-codex", id: "gpt-5.6-sol", effort: "high" },
+	"gpt-sol": { provider: "openai-codex", id: "gpt-6.1-sol", effort: "high" },
 };
 
 function readJson(path: string): any | undefined {

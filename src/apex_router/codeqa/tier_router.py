@@ -42,7 +42,7 @@ from dataclasses import dataclass
 # tier -> default Claude model id. Hardcoded defaults (like model_router.ORNITH), env-overridable.
 _DEFAULT_TIER_MODELS = {
     "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-5",
+    "sonnet": "claude-sonnet-5-5",
     "opus": "claude-opus-5-5",
 }
 # Only these tiers accept output_config.effort + adaptive thinking on the Claude API. haiku does NOT.
