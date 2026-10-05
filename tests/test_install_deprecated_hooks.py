@@ -31,7 +31,7 @@ def test_deprecated_flags_still_wire_and_warn(tmp_path):
         assert on.returncode == 0, on.stderr
         assert f"WIRED /opt/apex/hooks/{script}" in on.stdout, on.stdout
         warns = [l for l in on.stdout.splitlines() if l.startswith("WARN ")]
-        assert len(warns) == 1 and "deprecated" in warns[0] and "0.4.1" in warns[0] and "datapce" in warns[0], warns
+        assert len(warns) == 1 and "deprecated" in warns[0] and "0.4.2" in warns[0] and "datapce" in warns[0], warns
         off = _run(STUBS + _fn(fn) + f"\nINSTALL_DIR=/opt/apex\n{flag}=0\n{fn}\n", tmp_path)
         assert "WIRED" not in off.stdout and "WARN" not in off.stdout, off.stdout
 

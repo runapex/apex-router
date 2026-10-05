@@ -4,7 +4,7 @@ Notable changes to apex-router. Dates are the day the change landed on `main`.
 Version numbers follow `pyproject.toml`; between tags, the heading is the version the
 next tag will carry.
 
-## 0.4.1 — unreleased
+## 0.4.1 — 2026-10-04
 
 ### Security
 - 0.4.0 stored an unsalted repo hash that one list of candidate paths, hashed once, could match
@@ -17,6 +17,13 @@ next tag will carry.
   repos-seen count restarts once; other counts are kept. Restart open sessions after upgrading: a
   session still running 0.4.0 keeps writing unsalted values until the next 0.4.1 session start
   drops them.
+
+### Fixed
+- The test suite no longer writes to the live install; a guard fails the run if it does.
+
+### Changed
+- Hook retirement moves from 0.4.1 to 0.4.2; the deprecated hooks keep running beside the plugin
+  until then.
 
 ## 0.4.0 — 2026-10-04
 
@@ -58,7 +65,7 @@ as its optional backend. Advise-only: it never changes the model you chose.
 ### Deprecated
 - `hooks/agent-route-log.sh` and `hooks/cache-handoff-nudge.sh`: they keep running beside the
   plugin (route-join counts each dispatch once). `--agent-route-log-hook` and
-  `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.1, once
+  `--cache-handoff-hook` still wire them, with a warning. Both are retired in 0.4.2, once
   `apex-router route-join --json` shows `stats.writer_parity.parity_span_days` ≥ 14
   and `parity_days` ≥ 10 and `parity_until` (the last streak day) is within the last 2 days
   (`stats.writer_parity.gate_open`).

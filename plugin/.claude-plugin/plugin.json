@@ -1,6 +1,6 @@
 {
   "name": "datapce",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "An advise-only model-routing ledger you can see (alias apex-router); never changes the model you chose. Writes only under ~/.apex-router and the plugin store; never stores prompt text, file contents or command text; no network calls; no telemetry to anyone. Repos are counted by a token salted per install, so tokens can't be matched across machines or against precomputed hashes; anyone who can read the local plugin store can still test candidate paths against them. Rows also keep the dispatch description (a label of up to 120 characters that may name a repo or path) and the session id, which Claude Code's local transcript folders map back to a directory. Nothing leaves the machine.",
   "author": { "name": "datapce" },
   "keywords": ["apex-router"],

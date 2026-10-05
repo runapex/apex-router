@@ -30,11 +30,11 @@ def _section_0_4_0() -> str:
 def test_hooks_are_deprecated_not_deleted():
     for name in ("agent-route-log.sh", "cache-handoff-nudge.sh"):
         head = "\n".join((ROOT / "hooks" / name).read_text().splitlines()[:4])
-        assert "DEPRECATED in 0.4.0" in head and "0.4.1" in head, name
+        assert "DEPRECATED in 0.4.0" in head and "0.4.2" in head, name
 
 
-def test_version_is_0_4_0():
-    assert tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"] == "0.4.0"
+def test_version_is_0_4_1():
+    assert tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"] == "0.4.1"
 
 
 def test_privacy_is_stated_in_readme_and_listing():
@@ -70,12 +70,17 @@ def test_readme_skill_claim_matches_the_skill():
         assert f"`{name}`" in _readme(), name
 
 
+def _date_of(text, version):
+    return re.search(rf"^## {re.escape(version)} — (\d{{4}}-\d{{2}}-\d{{2}})$", text, re.M).group(1)
+
+
 def test_changelog_0_4_0_on_top_with_0_3_1_folded_in():
     text = (ROOT / "CHANGELOG.md").read_text()
     # released headings carry a date; an unreleased next version may sit above them
     released = re.findall(r"^## (\d+\.\d+\.\d+) — \d{4}-\d{2}-\d{2}", text, re.M)
-    assert released[:2] == ["0.4.0", "0.3.0"]
-    assert re.findall(r"^## (.+)$", text, re.M)[0] in ("0.4.0 — 2026-10-04", "0.4.1 — unreleased")
+    assert released[:3] == ["0.4.1", "0.4.0", "0.3.0"]
+    heads = re.findall(r"^## (.+)$", text, re.M)
+    assert heads[:2] == [f"0.4.1 — {_date_of(text, '0.4.1')}", "0.4.0 — 2026-10-04"]
     section = _section_0_4_0()
     heads = re.findall(r"^### (\w+)", section, re.M)
     assert heads == ["Added", "Changed", "Deprecated", "Fixed"], heads
@@ -88,7 +93,7 @@ def test_changelog_says_what_0_4_0_is_and_is_not():
     low = section.lower()
     assert "injection-ab" not in section
     assert "enforc" not in low
-    assert "quality_labels" in low and "0.4.1" in section and "writer_parity" in section
+    assert "quality_labels" in low and "0.4.2" in section and "writer_parity" in section
     assert "parity_span_days" in section and "parity_days" in section and "10" in section
 
 

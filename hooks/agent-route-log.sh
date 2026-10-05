@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEPRECATED in 0.4.0: the datapce plugin writes these rows (finished at turn.complete). Kept side by side
-# until route-join's writer_parity shows 14 days of parity; retired in 0.4.1.
+# until route-join's writer_parity shows 14 days of parity; retired in 0.4.2.
 # agent-route-log hook — PostToolUse matcher "Agent"
 # Label source for the outcome router: appends ONE label-pending row per Claude Code
 # Agent dispatch to the route log (~/.apex-router/route_log.jsonl, override APEX_ROUTER_LOG).

@@ -70,7 +70,7 @@ character estimate. Advisory — it edits nothing.
 
 ## 3. Session-handoff nudge — `cache-handoff-nudge.sh` (Stop hook)
 
-Deprecated in 0.4.0 — the datapce plugin's handoff toast and `/apex handoff` replace it; retired in 0.4.1.
+Deprecated in 0.4.0 — the datapce plugin's handoff toast and `/apex handoff` replace it; retired in 0.4.2.
 
 An advisory Claude Code **Stop hook**. When a session's cumulative cache-read
 crosses a threshold, it writes a handoff doc under `~/.claude/handoffs/<session>.md`
