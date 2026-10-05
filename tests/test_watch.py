@@ -5,6 +5,7 @@ generated launchd plist and systemd units must be well-formed and pin the instal
 """
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -49,7 +50,11 @@ class TestSystemdUnits(unittest.TestCase):
 class TestRunDailyFailOpen(unittest.TestCase):
     def test_run_daily_never_raises(self):
         # even if the report can't be built, the scheduled run must exit 0 (never break the timer)
-        rc = watch.run_daily()
+        # nightly.run() reaches the local model / network (skill bench, judge probe) and is
+        # covered in test_nightly; stub it so this test stays hermetic and fast.
+        from apex_router import nightly
+        with mock.patch.object(nightly, "run", return_value="\n## nightly adaptivity\n"):
+            rc = watch.run_daily()
         self.assertEqual(rc, 0)
 
 
