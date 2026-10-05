@@ -67,9 +67,35 @@ describe('band, status, handoff: hooks', () => {
     await ui.unmount()
   })
 
-  test('status on a drawing surface, none under claude -p', async ($, on) => {
+  test('status where no band draws (vscode, mobile)', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start({ ...SESSION, surface: 'vscode' })
+    await $.session.measure(MEASURE)
+    expect(world.statuses).toEqual(['apex ●GREEN $4.12'])
+  })
+
+  test('no status where the band draws: it would repeat the band', async ($, on) => {
     const world = worldOf(on)
     await $.session.start(SESSION)
+    await $.session.measure(MEASURE)
+    expect(world.statuses).toEqual([])
+  })
+
+  test('band: false gets the status instead', { options: { band: false } }, async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.session.measure(MEASURE)
+    expect(world.statuses).toEqual(['apex ●GREEN $4.12'])
+  })
+
+  test('Hide hands the figures to the status entry', async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start(SESSION)
+    await $.session.measure(MEASURE)
+    const ui = await $.ui.mount({ plugin: 'datapce', surface: 'terminal', ...BAND })
+    await ui.press({ key: 'datapce-hide' })
+    await ui.unmount()
+    expect(world.statuses).toEqual([])
     await $.session.measure(MEASURE)
     expect(world.statuses).toEqual(['apex ●GREEN $4.12'])
   })
@@ -81,7 +107,7 @@ describe('band, status, handoff: hooks', () => {
     const ui = await $.ui.mount({ plugin: 'datapce', surface: 'terminal', ...BAND })
     expect((await ui.find({ key: 'datapce-band-line' }))?.text).toBe('apex ●GREEN  ctx ▇░░░░░░░ 10%')
     await ui.unmount()
-    expect(world.statuses).toEqual(['apex ●GREEN'])
+    expect(world.statuses).toEqual([])
   })
 
   test('band line never carries an enforce cell', () => {
