@@ -7,12 +7,27 @@ Two layers:
    a throwaway dir. This happens at conftest import time (before any test module is imported) so
    module-level constants that capture ``Path.home()`` / ``os.environ`` at import also resolve
    to the sandbox, and again per test (autouse fixture) so a test that mutates them is reset.
-2. Guard: the REAL dirs are resolved before any override; at session end the run FAILS if a
-   non-daemon file in them is newer than session start.
+   NOTE: import-time constants bind to the SESSION sandbox (shared across tests), not the
+   per-test one; tests needing per-test state must override explicitly. A test that spawns a
+   subprocess with an explicit ``env=`` (e.g. tests/test_handoff_state.py's CLI runner passes no
+   HOME) bypasses this layer; such a subprocess falls back to the real home -- only safe if the
+   command never writes state.
+2. Guard: the REAL dirs are resolved before any override (and exported in ``_APEX_REAL_HOME`` so
+   xdist workers, which import this module after the parent overrode HOME, agree). At session end
+   the run FAILS if:
+   - any file under ~/.apex-router or ~/.apex (except the exact live-writer paths below) is newer
+     than session start;
+   - an exact append-only live file (route_log.jsonl, telemetry.jsonl, state.db*) shrank or was
+     replaced (inode changed);
+   - a ~/.claude config file / plugins/ file changed content (sha256 snapshot, not mtime).
+   If a live daemon (daily agent / ornith overnight) ran during the session, rewrites of the
+   files it legitimately regenerates are downgraded to a printed WARNING.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -20,19 +35,134 @@ from pathlib import Path
 import pytest
 
 # ---- real paths + session start: computed BEFORE any env override -------------------------
-_REAL_HOME = Path(os.path.expanduser("~"))
-_SESSION_START = time.time()
+_REAL_HOME = Path(os.environ.get("_APEX_REAL_HOME") or os.path.expanduser("~"))
+os.environ.setdefault("_APEX_REAL_HOME", str(_REAL_HOME))
+_SESSION_START = float(os.environ.setdefault("_APEX_SESSION_START", str(time.time())))
 
-# Files that live daemons / the host CLI legitimately write while a suite runs (the proxy, the
-# route logger, Claude Code itself). A blanket mtime check would be flaky against them, so the
-# guard ignores exactly these and watches everything else.
-_APEX_IGNORE_NAMES = {
-    "route_log.jsonl", "telemetry.jsonl", "state.db", "state.db-wal", "state.db-shm",
-}
-_IGNORE_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__", "logs"}
-# ~/.claude is owned by Claude Code (transcripts, history, sessions churn constantly). Guard only
-# the configuration surface that tests could plausibly clobber.
-_CLAUDE_GUARDED_FILES = {"settings.json", "settings.local.json", "CLAUDE.md", "keybindings.json"}
+_AR, _AX, _CL = _REAL_HOME / ".apex-router", _REAL_HOME / ".apex", _REAL_HOME / ".claude"
+# Exact paths the live proxy / route logger append to while a suite runs.
+_APPEND_ONLY = [_AR / "route_log.jsonl", _AX / "telemetry.jsonl",
+                _AX / "state.db", _AX / "state.db-wal", _AX / "state.db-shm"]
+# Root-level dirs the live system writes constantly.
+_IGNORE_ROOT_DIRS = {_AR / "observe", _AR / "queue", _AR / "logs"}
+_IGNORE_ANY_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__"}
+# Files the daily agent / ornith overnight legitimately regenerate.
+_DAEMON_REGENERATED = {_AR / n for n in (
+    "labeled_table.jsonl", "handoff_threshold.json", "offload_daily.md", "memory_index.db")}
+_DAEMON_LOGS = [_AR / "logs" / n for n in (
+    "com.apex-router.daily.log", "com.apex-router.daily.err",
+    "com.ornith.overnight.out", "com.ornith.overnight.err")]
+_CLAUDE_GUARDED_FILES = ("settings.json", "settings.local.json", "CLAUDE.md", "keybindings.json")
+
+
+def _walk(root: Path):
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = [d for d in dirnames
+                       if d not in _IGNORE_ANY_DIRS and (here / d) not in _IGNORE_ROOT_DIRS]
+        for fn in filenames:
+            yield here / fn
+
+
+def _claude_files():
+    for fn in _CLAUDE_GUARDED_FILES:
+        if (_CL / fn).is_file():
+            yield _CL / fn
+    if (_CL / "plugins").is_dir():
+        yield from _walk(_CL / "plugins")
+
+
+def _sha(p: Path):
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _stat_sig(p: Path):
+    try:
+        st = p.stat()
+        return (st.st_ino, st.st_size)
+    except OSError:
+        return None
+
+
+_CLAUDE_SNAPSHOT = {p: _sha(p) for p in _claude_files()}
+_APPEND_SNAPSHOT = {p: _stat_sig(p) for p in _APPEND_ONLY}
+
+
+def _daemon_active() -> bool:
+    for p in _DAEMON_LOGS:
+        try:
+            if p.stat().st_mtime > _SESSION_START:
+                return True
+        except OSError:
+            pass
+    try:
+        r = subprocess.run(["pgrep", "-f", "apex_router.watch --run-daily"],
+                           capture_output=True, timeout=5)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _violations():
+    """Return (failures, warnings)."""
+    fails, warns = [], []
+    daemon = None
+    ignored = set(_APPEND_ONLY)
+    for root in (_AR, _AX):
+        if not root.is_dir():
+            continue
+        for p in _walk(root):
+            if p in ignored:
+                continue
+            try:
+                if p.stat().st_mtime <= _SESSION_START:
+                    continue
+            except OSError:
+                continue
+            if p in _DAEMON_REGENERATED:
+                if daemon is None:
+                    daemon = _daemon_active()
+                if daemon:
+                    warns.append(f"{p} (rewritten; a live daily/overnight job ran this session)")
+                    continue
+            fails.append(f"{p} (mtime newer than session start)")
+    for p, before in _APPEND_SNAPSHOT.items():
+        now = _stat_sig(p)
+        if before is None or now is None:
+            continue
+        if now[0] != before[0]:
+            fails.append(f"{p} (replaced: inode changed)")
+        elif now[1] < before[1]:
+            fails.append(f"{p} (shrank {before[1]} -> {now[1]} bytes)")
+    for p in set(_CLAUDE_SNAPSHOT) | set(_claude_files()):
+        if _CLAUDE_SNAPSHOT.get(p) != _sha(p):
+            fails.append(f"{p} (content changed)")
+    return sorted(fails), sorted(warns)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput"):   # xdist worker: the controller reports
+        return
+    fails, warns = _violations()
+    session.config._isolation_warnings = warns
+    if fails:
+        session.config._isolation_violations = fails
+        if session.exitstatus == 0:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    bad = getattr(config, "_isolation_violations", None)
+    if bad:
+        terminalreporter.section("ISOLATION GUARD FAILED", red=True)
+        terminalreporter.write_line("tests modified the live install:")
+        for p in bad:
+            terminalreporter.write_line(f"  {p}")
+    for w in getattr(config, "_isolation_warnings", None) or []:
+        terminalreporter.write_line(f"WARNING isolation guard: {w}", yellow=True)
 
 
 # ---- isolation ----------------------------------------------------------------------------
@@ -42,7 +172,10 @@ _PATH_OVERRIDES = (
     "APEX_TELEMETRY", "APEX_ROUTER_LOG", "APEX_LABELED_TABLE", "APEX_ORNITH_TIER_FILE",
     "APEX_ROUTE_TABLE", "APEX_MODEL_REGISTRY", "APEX_LOCAL_POINTER", "APEX_LEARN_CHAIN_LOG",
     "APEX_CHAIN_PAYLOADS", "APEX_RAG_CYCLE_LOG", "APEX_POLICY_PATH", "APEX_CONFORMANCE_LOG",
-    "APEX_JUDGE_PROBE_BASELINE", "ORNITH_ROOT", "CODEQA_REPOS", "CODEQA_DIR", "APEX_ORNITH_QUEUE",
+    "APEX_JUDGE_PROBE_BASELINE", "ORNITH_ROOT", "CODEQA_REPOS", "CODEQA_DIR", "APEX_ORNITH_QUEUE", "APEX_HANDOFF_THRESHOLD_FILE",
+    "APEX_ROUTER_DIR", "ORNITH_HEALTH_PATH", "APEX_PROXY_CONFIG", "APEX_ROUTE_LOG_PYTHON",
+    "APEX_ROUTER_PY", "APEX_GROUND_PYTHON", "CLAUDE_CONFIG_DIR", "BOOKS_DIR", "BOOKSEARCH_DB",
+    "CLASSIFIER_PANEL",
 )
 _SANDBOX = Path(tempfile.mkdtemp(prefix="apex-test-home-"))
 
@@ -81,57 +214,3 @@ def _isolated_state(tmp_path):
         yield
     finally:
         _restore(prev)
-
-
-def _guard_candidates():
-    for sub in (".apex-router", ".apex"):
-        root = _REAL_HOME / sub
-        if not root.is_dir():
-            continue
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
-            for fn in filenames:
-                if fn in _APEX_IGNORE_NAMES:
-                    continue
-                yield Path(dirpath) / fn
-    claude = _REAL_HOME / ".claude"
-    if claude.is_dir():
-        for fn in _CLAUDE_GUARDED_FILES:
-            if (claude / fn).is_file():
-                yield claude / fn
-        plugins = claude / "plugins"
-        if plugins.is_dir():
-            for dirpath, dirnames, filenames in os.walk(plugins):
-                dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
-                for fn in filenames:
-                    yield Path(dirpath) / fn
-
-
-def _touched_since_start():
-    bad = []
-    for p in _guard_candidates():
-        try:
-            if p.stat().st_mtime > _SESSION_START:
-                bad.append(str(p))
-        except OSError:
-            pass
-    return sorted(bad)
-
-
-def pytest_sessionfinish(session, exitstatus):
-    bad = _touched_since_start()
-    if not bad:
-        return
-    session.config._isolation_violations = bad
-    if session.exitstatus == 0:
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
-
-
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    bad = getattr(config, "_isolation_violations", None)
-    if bad:
-        terminalreporter.section("ISOLATION GUARD FAILED", red=True)
-        terminalreporter.write_line(
-            "tests modified the live install (mtime newer than session start):")
-        for p in bad:
-            terminalreporter.write_line(f"  {p}")
