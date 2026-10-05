@@ -24,6 +24,7 @@
  *   >>gpt-luna  find the config loader      -> GPT-5.6 Luna (Codex)
  *   >>gpt-terra implement the feature       -> GPT-5.6 Terra (Codex)
  *   >>gpt-sol   audit this for race hazards -> GPT-5.6 Sol (Codex)
+ *   >>review    cross-validate this diff     -> GPT-6.1 Sol via foundry-gpt (high effort)
  *   >>auto      <task>                      -> apex-router resolve picks the model
  *                                             (adaptive core; static floor until cells promote)
  *
@@ -76,6 +77,9 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	"gpt-terra": { provider: "openai-codex", id: "gpt-5.6-terra", effort: "medium" },
 	// gpt-6.1-sol is not in pi's openai-codex catalog yet — keep 5.6 until it is.
 	"gpt-sol": { provider: "openai-codex", id: "gpt-5.6-sol", effort: "high" },
+	// Independent cross-validation reviewer (different vendor than the Claude author):
+	// GPT-6.1 Sol via the proxy's Azure GPT path — pi provider `foundry-gpt` (RUNBOOK).
+	review: { provider: "foundry-gpt", id: "it-entra-gpt-6.1-sol", effort: "high" },
 };
 
 // Prefix for TIER-resolved family ids, by provider (mirrors model_registry.DEFAULTS):

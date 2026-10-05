@@ -24,8 +24,8 @@
  *   LEARN_EXPLAIN_MODEL    default: registry opus tier
  *   BOOKSEARCH_BIN         default ~/.local/bin/booksearch
  *
- * Requires: booksearch indexed (`booksearch ingest`), and the anthropic provider
- * wired through the apex proxy (integrations/pi/models.json).
+ * Requires: booksearch indexed (`booksearch ingest`), and the `foundry` provider
+ * (it-entra-claude-* via the apex proxy) in ~/.pi/agent/models.json.
  *
  * Install:  pi install ~/.apex-router/integrations/pi/learn.ts
  */
@@ -42,15 +42,28 @@ const BIN = process.env.BOOKSEARCH_BIN || join(homedir(), ".local", "bin", "book
 
 // Registry-driven defaults (fall back to the built-ins on any read failure).
 function learnModels(): { provider: string; validate: string; explain: string } {
-	const fallback = { provider: "anthropic", validate: "claude-sonnet-5", explain: "claude-opus-5-5" };
+	// Mirrors apex_router.model_registry.learn(): Claude via pi's `foundry` provider, whose
+	// model ids are the Azure deployment names (`it-entra-<claude id>`); pi's built-in
+	// `anthropic` catalog lags the live ids.
+	const fallback = {
+		provider: "foundry",
+		validate: "it-entra-claude-sonnet-5-5",
+		explain: "it-entra-claude-opus-5-5",
+	};
 	try {
 		const reg = JSON.parse(readFileSync(join(homedir(), ".apex-router", "models.json"), "utf8"));
-		const tiers = reg?.tiers || {};
 		const spec = reg?.learn || {};
+		const tiers = reg?.tiers || {};
+		const provider = typeof spec.provider === "string" ? spec.provider : fallback.provider;
+		const prefixes = reg?.provider_id_prefix && typeof reg.provider_id_prefix === "object"
+			? reg.provider_id_prefix : { foundry: "it-entra-" };
+		const prefix = typeof prefixes[provider] === "string" ? prefixes[provider] : "";
+		const v = tiers[spec.validate_tier || "sonnet"];
+		const e = tiers[spec.explain_tier || "opus"];
 		return {
-			provider: typeof spec.provider === "string" ? spec.provider : fallback.provider,
-			validate: tiers[spec.validate_tier || "sonnet"] || fallback.validate,
-			explain: tiers[spec.explain_tier || "opus"] || fallback.explain,
+			provider,
+			validate: typeof v === "string" && v ? prefix + v : fallback.validate,
+			explain: typeof e === "string" && e ? prefix + e : fallback.explain,
 		};
 	} catch {
 		return fallback;

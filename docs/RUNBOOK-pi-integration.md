@@ -72,6 +72,7 @@ rather than `@` because pi reserves `@` for file mentions.)
 >>gpt-luna  locate the config loader       # GPT-5.6 Luna (Codex)
 >>gpt-terra implement a feature           # GPT-5.6 Terra (Codex)
 >>gpt-sol   audit a concurrency design    # GPT-5.6 Sol (Codex)
+>>review    cross-validate this diff      # GPT-6.1 Sol via foundry-gpt (independent reviewer)
 ```
 
 **Sticky switch** — changes the active model until you change it again:
@@ -94,10 +95,43 @@ The Anthropic families follow the model-routing policy: `haiku` is the light,
 mechanical tier (and receives no unsupported effort field), `sonnet` is mid/medium,
 `opus` is heavy/high, and `fable` is the max-effort ceiling for exceptional pure
 reasoning. `frontier` and `deep` remain compatibility aliases for `sonnet` and `opus`.
-Routine independent cross-validation deliberately uses `opus`/`deep`, **not Fable**;
-Fable is opt-in when the review is explicitly escalated or genuinely load-bearing.
+Routine independent cross-validation uses `review` — GPT-6.1 Sol, a different vendor than
+the Claude families that write the code, so author and reviewer can disagree. `opus`/`deep`
+stay the heavy Claude tier; Fable is opt-in when a review is explicitly escalated or
+genuinely load-bearing.
 
-The built-in GPT-5.6 families use Pi's `openai-codex` provider: `gpt-luna` (low
+The Claude families (and `/learn`) use pi's `foundry` provider: ids are Azure deployment
+names, built as `provider_id_prefix[provider]` + the tier id (`it-entra-claude-sonnet-5-5`).
+`review` uses a second provider, `foundry-gpt`, for Azure GPT through the proxy's
+`/gpt5/openai` path. Add it to `~/.pi/agent/models.json`:
+
+```json
+"foundry-gpt": {
+  "baseUrl": "http://127.0.0.1:8788/gpt5/openai",
+  "api": "azure-openai-responses",
+  "apiKey": "!az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv",
+  "authHeader": true,
+  "models": [{ "id": "it-entra-gpt-6.1-sol", "name": "GPT-6.1 Sol (foundry)", "reasoning": true,
+               "input": ["text", "image"], "contextWindow": 272000, "maxTokens": 128000,
+               "cost": { "input": 15, "output": 60, "cacheRead": 1.5, "cacheWrite": 0 },
+               "thinkingLevelMap": { "off": null, "minimal": null, "max": null } }]
+}
+```
+
+The gateway 404s on pi's default Azure `api-version` (`v1`), so pin the one Codex uses in
+`~/.pi/agent/auth.json`:
+
+```json
+"foundry-gpt": {
+  "type": "api_key",
+  "key": "!az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv",
+  "env": { "AZURE_OPENAI_API_VERSION": "2025-04-01-preview" }
+}
+```
+
+Check: `pi -p --model foundry-gpt/it-entra-gpt-6.1-sol --thinking low "say pong"`.
+
+The `gpt-*` families use Pi's `openai-codex` provider: `gpt-luna` (low
 reasoning), `gpt-terra` (medium), and `gpt-sol` (high). They use the existing Codex
 provider directly; they are not sent through the Anthropic/Kimi measuring proxy.
 

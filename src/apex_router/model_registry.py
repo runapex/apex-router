@@ -76,10 +76,14 @@ DEFAULTS: dict = {
         "gpt-luna": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
         "gpt-terra": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
         "gpt-sol": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
+        # Independent cross-validation reviewer: a DIFFERENT vendor than the Claude author, so the
+        # two can disagree. GPT-6.1 Sol via the proxy's Azure GPT path (pi provider `foundry-gpt`,
+        # api azure-openai-responses; see RUNBOOK-pi-integration.md for the provider entry).
+        "review": {"provider": "foundry-gpt", "id": "it-entra-gpt-6.1-sol", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
-    # /learn pipeline stages resolve through tiers too.
-    "learn": {"provider": "anthropic", "validate_tier": "sonnet", "explain_tier": "opus"},
+    # /learn pipeline stages resolve through tiers too (+ provider_id_prefix, like pi families).
+    "learn": {"provider": "foundry", "validate_tier": "sonnet", "explain_tier": "opus"},
     # Venue routing policies (DECISION-kimi-codex-routing, measured 2026-08-24):
     # the codex venue's workload runs at p50 346k context (73.8% of requests >250k),
     # so the 1M-window kimi-k3 is the only Kimi model that fits it AS USED — k3's window
@@ -149,6 +153,15 @@ def tier_model(tier: str, *, registry: dict | None = None) -> str | None:
     return m if isinstance(m, str) and m else None
 
 
+def _provider_prefix(provider: str, reg: dict) -> str:
+    """`provider_id_prefix[provider]` (e.g. foundry -> "it-entra-"), else ""."""
+    prefixes = reg.get("provider_id_prefix")
+    if not isinstance(prefixes, dict):
+        prefixes = DEFAULTS["provider_id_prefix"]
+    prefix = prefixes.get(provider)
+    return prefix if isinstance(prefix, str) else ""
+
+
 def _local_model() -> str:
     """The ACTIVE ornith tier's api model id (from ornith.env via local_tier.resolve())."""
     from .ornith import local_tier
@@ -179,11 +192,7 @@ def families(*, registry: dict | None = None) -> dict[str, dict]:
             mid = tier_model(spec["tier"], registry=reg)
             if not mid:
                 continue
-            prefixes = reg.get("provider_id_prefix")
-            if not isinstance(prefixes, dict):
-                prefixes = DEFAULTS["provider_id_prefix"]
-            prefix = prefixes.get(provider)
-            entry["id"] = (prefix if isinstance(prefix, str) else "") + mid
+            entry["id"] = _provider_prefix(provider, reg) + mid
         elif isinstance(spec.get("id"), str) and spec["id"]:
             entry["id"] = spec["id"]
         else:
@@ -205,9 +214,12 @@ def learn(*, registry: dict | None = None) -> dict:
     """The /learn pipeline's (provider, validate_model, explain_model), tier-resolved."""
     reg = DEFAULTS if registry is None else registry
     spec = reg.get("learn") or {}
-    provider = spec.get("provider") if isinstance(spec.get("provider"), str) else "anthropic"
+    provider = spec.get("provider") if isinstance(spec.get("provider"), str) else "foundry"
+    prefix = _provider_prefix(provider, reg)
+    validate = tier_model(spec.get("validate_tier", "sonnet"), registry=reg)
+    explain = tier_model(spec.get("explain_tier", "opus"), registry=reg)
     return {
         "provider": provider,
-        "validate": tier_model(spec.get("validate_tier", "sonnet"), registry=reg),
-        "explain": tier_model(spec.get("explain_tier", "opus"), registry=reg),
+        "validate": prefix + validate if validate else validate,
+        "explain": prefix + explain if explain else explain,
     }
