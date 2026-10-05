@@ -54,8 +54,6 @@ export type Runtime = {
   /** Why backend detection is off (a configured backendDir that is not absolute), or null. */
   backendRefused: string | null
   surface: string | null
-  /** The band was hidden (the Hide button); mirrors the bandHidden atom, which survives a reload. */
-  bandHidden: boolean
   arm: Arm
   level: LevelState
   cells: Record<string, Cell>
@@ -115,7 +113,6 @@ export function newRuntime(options: Options): Runtime {
     backendDir: '',
     backendRefused: null,
     surface: null,
-    bandHidden: false,
     arm: 'evidence',
     level: { level: 'GREEN', up: 0, down: 0 },
     cells: {},

@@ -20,6 +20,8 @@ export type Host = {
   storeSet(key: string, value: unknown): Promise<void>
   toast(text: string): void
   status(text: string | undefined): void
+  /** The Hide button was pressed this session (the bandHidden value; it survives a hot reload). */
+  bandHidden(): Promise<boolean>
   invalidate(event: 'tool.describe'): void
   open(args: PaneOpenArgs): Promise<unknown>
   close(id: string): Promise<void>

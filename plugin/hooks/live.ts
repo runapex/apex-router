@@ -115,7 +115,7 @@ export async function start(host: Host, rt: Runtime, measureNow: () => Measure |
       prev = view
       for (const [kind, text] of toasts) toastOnce(host, rt, kind, text, now)
       await host.publish.signals(view)
-      refreshStatus(host, rt, measureNow())
+      await refreshStatus(host, rt, measureNow())
     })().catch(() => undefined)
   })
 }
