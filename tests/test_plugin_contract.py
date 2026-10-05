@@ -147,3 +147,54 @@ def test_listings_describe_advise_only_behaviour():
         json.loads(text)
         assert not re.search(r"enforc", text, re.I), f"{p.name} promises enforcement"
         assert "advise-only" in text, f"{p.name} does not say advise-only"
+
+
+def test_privacy_no_unsalted_cwd_hash():
+    """§10: a repo is stored only as a per-install salted token (HMAC-SHA-256 keyed with the profile salt).
+
+    0.4.0 stored sha256(cwd)[:16], which a list of candidate paths matches. The cwd appears in exactly
+    one place in the hooks, `repoToken(e.cwd, salt)`, where `salt` is the loaded or freshly drawn salt;
+    every hash call is inside hmacSha256."""
+    files = _files()
+    obs = _code(files["observe.ts"])
+    m = re.search(r"export async function hmacSha256\(.*?\n}\n", obs, re.S)
+    assert m, "observe.ts defines hmacSha256"
+    assert len(re.findall(r"\.digest\(", m.group(0))) == 3  # long-key fold, inner, outer
+    calls = [a for n, src in files.items() for _, a in _calls(_code(src), ("repoToken",))]
+    assert calls == ["e.cwd, salt"], calls
+    assert len(re.findall(r"\bconst salt = read\.salt \?\? newSalt\(\)", obs)) == 1, "salt is the loaded one or a new draw"
+    assert re.search(r"export const newSalt = \(\): string => hex\(crypto\.getRandomValues\(new Uint8Array\(16\)\)\)", obs)
+    hasher = re.compile(r"createHash|createHmac|Bun\.hash|CryptoHasher|\bsha256\(|\bmd5\(|\.digest\(|crypto\.subtle|\bsubtle\b")
+    for name, src in files.items():
+        code = _code(src)
+        assert "repoHash" not in code, name
+        if name == "observe.ts":
+            code = code[: m.start()] + code[m.end() :]
+            code = code.replace("repoToken(e.cwd, salt)", "", 1)
+        assert not re.search(r"\bcwd\b", code), f"{name} reads the cwd outside repoToken(e.cwd, salt)"
+        assert not hasher.search(code), f"{name} hashes outside hmacSha256"
+
+
+REPO_PRIVACY = (
+    "Repos are counted by a token salted per install, so tokens can't be matched across machines or "
+    "against precomputed hashes; anyone who can read the local plugin store can still test candidate "
+    "paths against them. Rows also keep the dispatch description (a label of up to 120 characters that "
+    "may name a repo or path) and the session id, which Claude Code's local transcript folders map back "
+    "to a directory. Nothing leaves the machine."
+)
+
+
+def test_privacy_claim_states_what_the_repo_token_does_and_does_not_hide():
+    """§10: README, both listings and the spec carry the same repo paragraph, verbatim; no overclaim."""
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    spec = root / "docs" / "superpowers" / "specs" / "2026-10-03-apex-router-plugin-design.md"
+    texts = {p.name: p.read_text() for p in (root / "README.md", spec)}
+    for p in LISTINGS:
+        doc = json.loads(p.read_text())
+        texts[p.name] = doc["plugins"][0]["description"] if "plugins" in doc else doc["description"]
+    for name, text in texts.items():
+        flat = " ".join(text.split())
+        assert REPO_PRIVACY in flat, name
+        assert "recorded only as" not in flat and "unreadable without" not in flat, name
