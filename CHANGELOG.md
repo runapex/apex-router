@@ -7,11 +7,16 @@ next tag will carry.
 ## 0.4.1 — unreleased
 
 ### Security
-- 0.4.0 stored an unsalted repo hash that could be reversed from a list of candidate paths; 0.4.1
-  salts it per install and drops old values. Repos are now a salted per-install token (the first
-  16 hex of HMAC-SHA-256 of the path, keyed with a random salt drawn once and kept in the local
-  plugin store), unreadable without this machine's salt; nothing leaves the machine. The profile's
-  repos-seen count restarts once on upgrade; its other counts are kept.
+- 0.4.0 stored an unsalted repo hash that one list of candidate paths, hashed once, could match
+  on any machine; 0.4.1 salts it per install and drops old values. The token is the first 16 hex
+  of HMAC-SHA-256 of the path, keyed with a random salt drawn once and kept in the local plugin
+  store, so tokens can't be matched across machines or against precomputed hashes; anyone who can
+  read the local plugin store can still test candidate paths against them. Rows also keep the
+  dispatch description (up to 120 characters, may name a repo or path) and the session id, which
+  Claude Code's local transcript folders map back to a directory. Nothing leaves the machine. The
+  repos-seen count restarts once; other counts are kept. Restart open sessions after upgrading: a
+  session still running 0.4.0 keeps writing unsalted values until the next 0.4.1 session start
+  drops them.
 
 ## 0.4.0 — 2026-10-04
 

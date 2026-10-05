@@ -224,7 +224,8 @@ describe('observe: repos are a salted per-install token', () => {
 
   test('the token is not the unsalted path hash, and two salts give two tokens', async () => {
     const a = await repoToken('/w/x', SALT_A)
-    expect(a).toMatch(/^[0-9a-f]{16}$/)
+    // pinned (Python: hmac.new(bytes.fromhex(salt), b'/w/x', sha256).hexdigest()[:16]): keyed with the salt's bytes, not its ASCII
+    expect(a).toBe('4b3ee3cc128bacff')
     expect(a).not.toBe(await unsalted('/w/x'))
     expect(await repoToken('/w/x', SALT_B)).not.toBe(a)
     expect(await repoToken('/w/x', SALT_A)).toBe(a)

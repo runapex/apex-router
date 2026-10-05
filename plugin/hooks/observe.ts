@@ -201,10 +201,10 @@ export async function hmacSha256(key: Uint8Array, msg: Uint8Array): Promise<Uint
 }
 
 /**
- * A repo token: the first 8 bytes (16 hex) of HMAC-SHA-256(salt, path), the salt this install's own.
- * Without this machine's salt a list of candidate paths cannot be matched to it; with the salt (it
- * sits in the same local plugin store) it can, so the token hides where you work only from someone
- * who does not have this machine's store. Nothing leaves the machine. Runs once per session.start.
+ * A repo token: the first 8 bytes (16 hex) of HMAC-SHA-256(salt, path), keyed with the salt's bytes.
+ * Salted per install, so tokens can't be matched across machines or against precomputed hashes; the
+ * salt sits beside the tokens in the profile, so anyone who can read the local plugin store can still
+ * test candidate paths against them. Nothing leaves the machine. Runs once per session.start.
  */
 export async function repoToken(path: string, salt: string): Promise<string> {
   const key = Uint8Array.from(salt.match(/../g) ?? [], h => parseInt(h, 16))
