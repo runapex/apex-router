@@ -6,6 +6,12 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+### Added
+- pi: `>>review` — the independent cross-validation reviewer, GPT-6.1 Sol through the proxy's Azure
+  GPT path (a different vendor than the Claude families that write the code). It needs a
+  `foundry-gpt` provider in `~/.pi/agent/models.json` and an `api-version` pin in `auth.json`; see
+  RUNBOOK-pi-integration.md.
+
 ### Fixed
 - The datapce plugin no longer repeats the band as a status entry (`⚠ datapce: apex ●GREEN $0.91`)
   in the terminal and desktop app. The status entry now appears only where the band can't draw:
@@ -16,6 +22,8 @@ next tag will carry.
   the Claude shortcuts (and `>>haiku`) now go through the `foundry` provider (`it-entra-claude-*`, via
   the proxy), and `>>gpt-sol` is back on `gpt-5.6-sol`. `>>fable` is unchanged. New registry key
   `provider_id_prefix` maps a provider to the prefix its model ids carry (`foundry` → `it-entra-`).
+- pi `/learn` now validates with Sonnet 5.5 and explains with Opus 5.5 on `foundry`; it asked for
+  `anthropic/claude-sonnet-5`, which your setup has no credentials for.
 
 ## 0.4.1 — 2026-10-04
 

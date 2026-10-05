@@ -94,6 +94,13 @@ class TestModelRegistry(unittest.TestCase):
             broken_fams = model_registry.families(registry=broken_registry)
             self.assertNotIn("frontier", broken_fams)
 
+    def test_review_family_is_an_independent_gpt_reviewer(self):
+        fams = model_registry.families()
+        self.assertEqual(fams["review"],
+                         {"provider": "foundry-gpt", "id": "it-entra-gpt-6.1-sol", "effort": "high"})
+        # Cross-vendor: the reviewer must not be a Claude family.
+        self.assertNotIn("claude", fams["review"]["id"])
+
     def test_provider_id_prefix_is_keyed_by_provider_not_family(self):
         # The foundry prefix must not leak onto a family an overlay moves back to anthropic,
         # and the shared `tiers` (proxy/codeqa) stay plain Claude ids.
@@ -133,9 +140,9 @@ class TestModelRegistry(unittest.TestCase):
 
     def test_learn_resolves_through_tiers(self):
         result = model_registry.learn()
-        self.assertEqual(result["provider"], "anthropic")
-        self.assertEqual(result["validate"], "claude-sonnet-5-5")
-        self.assertEqual(result["explain"], "claude-opus-5-5")
+        self.assertEqual(result["provider"], "foundry")
+        self.assertEqual(result["validate"], "it-entra-claude-sonnet-5-5")
+        self.assertEqual(result["explain"], "it-entra-claude-opus-5-5")
 
     def test_learn_uses_custom_registry(self):
         registry = {"learn": {"provider": "custom", "validate_tier": "sonnet", "explain_tier": "opus"}}
