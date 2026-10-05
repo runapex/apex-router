@@ -44,29 +44,38 @@ DEFAULTS: dict = {
         # coding or cross-validation default.
         "fable": "claude-fable-5-1",
     },
+    # Per-provider prefix for TIER-resolved pi family ids. pi's `foundry` provider names Azure
+    # deployments `it-entra-<claude id>`, while `tiers` stays the plain Claude id the
+    # proxy/codeqa consumers use. Keyed by provider (not per family) so an overlay that moves a
+    # family back to `anthropic` gets the plain id. pi's built-in `anthropic` catalog lags the
+    # live ids (pi 0.85.1 has no claude-sonnet-5-5 / claude-opus-5-5), hence foundry.
+    "provider_id_prefix": {"foundry": "it-entra-"},
     # pi per-task families. A family either pins an explicit {"provider","id"} or names a
     # frontier {"provider","tier"} (resolved via `tiers`, so a tier bump moves every family).
     # "effort" is the optional reasoning-effort knob the pi extension applies per request.
+    # A tier family's id gets `provider_id_prefix[provider]` prepended (see below).
     # "local" is special: source=ornith.env — resolved from the ACTIVE tier at read time.
     "pi_families": {
         "kimi": {"provider": "moonshotai", "id": "kimi-k2.6"},
         "kimi-code": {"provider": "moonshotai", "id": "kimi-k2.7-code"},
-        "frontier": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
-        "deep": {"provider": "anthropic", "tier": "opus", "effort": "high"},
+        "frontier": {"provider": "foundry", "tier": "sonnet", "effort": "medium"},
+        "deep": {"provider": "foundry", "tier": "opus", "effort": "high"},
         # Named Anthropic families mirror model-routing's tiers. `opus` is the routine
         # heavy/coding + independent-review route; `fable` is opt-in max-effort pure
         # reasoning. Haiku has no effort knob and rejects output_config.effort.
-        "haiku": {"provider": "anthropic", "tier": "haiku"},
-        "sonnet": {"provider": "anthropic", "tier": "sonnet", "effort": "medium"},
-        "opus": {"provider": "anthropic", "tier": "opus", "effort": "high"},
+        # Fable stays on `anthropic`: there is no foundry deployment for it.
+        "haiku": {"provider": "foundry", "tier": "haiku"},
+        "sonnet": {"provider": "foundry", "tier": "sonnet", "effort": "medium"},
+        "opus": {"provider": "foundry", "tier": "opus", "effort": "high"},
         "fable": {"provider": "anthropic", "tier": "fable", "effort": "max"},
         # GPT tiers are explicit pi families. They use the Codex provider so they
         # work with the ChatGPT/Codex subscription without an OpenAI API key.
-        # `gpt-sol` is the deep tier and tracks the newest sol deployment (6.1);
-        # luna/terra stay on 5.6 — no 6.1 luna/terra deployment exists (probed 404).
+        # Ids must exist in pi's openai-codex catalog: gpt-6.1-sol is live on the Azure
+        # gateway but absent from pi 0.85.1's catalog (modelRegistry.find -> undefined),
+        # so `gpt-sol` stays on 5.6 until pi ships it.
         "gpt-luna": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
         "gpt-terra": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
-        "gpt-sol": {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"},
+        "gpt-sol": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
     # /learn pipeline stages resolve through tiers too.
@@ -170,7 +179,11 @@ def families(*, registry: dict | None = None) -> dict[str, dict]:
             mid = tier_model(spec["tier"], registry=reg)
             if not mid:
                 continue
-            entry["id"] = mid
+            prefixes = reg.get("provider_id_prefix")
+            if not isinstance(prefixes, dict):
+                prefixes = DEFAULTS["provider_id_prefix"]
+            prefix = prefixes.get(provider)
+            entry["id"] = (prefix if isinstance(prefix, str) else "") + mid
         elif isinstance(spec.get("id"), str) and spec["id"]:
             entry["id"] = spec["id"]
         else:

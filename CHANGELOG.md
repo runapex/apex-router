@@ -11,6 +11,11 @@ next tag will carry.
   in the terminal and desktop app. The status entry now appears only where the band can't draw:
   VS Code, mobile, `band: false`, or after Hide (at once, with the current cost). A status entry left
   by an earlier version is cleared on the next update.
+- pi: `>>sonnet`, `>>frontier`, `>>opus`, `>>deep` and `>>gpt-sol` no longer fail with "model not
+  found". pi's built-in model list has no `claude-sonnet-5-5`, `claude-opus-5-5` or `gpt-6.1-sol`, so
+  the Claude shortcuts (and `>>haiku`) now go through the `foundry` provider (`it-entra-claude-*`, via
+  the proxy), and `>>gpt-sol` is back on `gpt-5.6-sol`. `>>fable` is unchanged. New registry key
+  `provider_id_prefix` maps a provider to the prefix its model ids carry (`foundry` → `it-entra-`).
 
 ## 0.4.1 — 2026-10-04
 

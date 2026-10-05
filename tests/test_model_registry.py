@@ -58,16 +58,16 @@ class TestModelRegistry(unittest.TestCase):
         self.assertEqual(fams["gpt-terra"],
                          {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"})
         self.assertEqual(fams["gpt-sol"],
-                         {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"})
+                         {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"})
 
     def test_anthropic_families_match_routing_and_cross_validation_policy(self):
         fams = model_registry.families()
         self.assertEqual(fams["haiku"],
-                         {"provider": "anthropic", "id": "claude-haiku-4-5"})
+                         {"provider": "foundry", "id": "it-entra-claude-haiku-4-5"})
         self.assertEqual(fams["sonnet"],
-                         {"provider": "anthropic", "id": "claude-sonnet-5-5", "effort": "medium"})
+                         {"provider": "foundry", "id": "it-entra-claude-sonnet-5-5", "effort": "medium"})
         self.assertEqual(fams["opus"],
-                         {"provider": "anthropic", "id": "claude-opus-5-5", "effort": "high"})
+                         {"provider": "foundry", "id": "it-entra-claude-opus-5-5", "effort": "high"})
         self.assertEqual(fams["fable"],
                          {"provider": "anthropic", "id": "claude-fable-5-1", "effort": "max"})
         # Routine independent review remains Opus; Fable is an explicit reasoning ceiling.
@@ -93,6 +93,22 @@ class TestModelRegistry(unittest.TestCase):
             model_registry._local_model = lambda: "ollama-local"
             broken_fams = model_registry.families(registry=broken_registry)
             self.assertNotIn("frontier", broken_fams)
+
+    def test_provider_id_prefix_is_keyed_by_provider_not_family(self):
+        # The foundry prefix must not leak onto a family an overlay moves back to anthropic,
+        # and the shared `tiers` (proxy/codeqa) stay plain Claude ids.
+        self.assertEqual(model_registry.tier_model("sonnet"), "claude-sonnet-5-5")
+        with tempfile.TemporaryDirectory() as tmp:
+            overlay = {
+                "pi_families": {"sonnet": {"provider": "anthropic"}},
+                "provider_id_prefix": {"moonshotai": "x-"},
+            }
+            registry = model_registry.load(self._write_overlay(Path(tmp), overlay))
+            model_registry._local_model = lambda: "ollama-local"
+            fams = model_registry.families(registry=registry)
+            self.assertEqual(fams["sonnet"]["id"], "claude-sonnet-5-5")
+            self.assertEqual(fams["opus"]["id"], "it-entra-claude-opus-5-5")  # default prefix kept
+            self.assertEqual(fams["kimi"]["id"], "kimi-k2.6")  # explicit ids never prefixed
 
     def test_families_local_raises_is_omitted(self):
         with tempfile.TemporaryDirectory() as tmp:
