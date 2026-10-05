@@ -4,7 +4,8 @@
  * Families come from the SHARED model registry `~/.apex-router/models.json` (the same
  * file codeqa/tier_router reads — one edit moves every component). Resolution:
  *   1. models.json `pi_families` (a family pins {"provider","id"} or {"provider","tier"},
- *      tier resolved via the registry's `tiers` map; "local" follows ornith.env — the
+ *      tier resolved via the registry's `tiers` map plus `provider_id_prefix[provider]`
+ *      — e.g. foundry's "it-entra-"; "local" follows ornith.env — the
  *      ACTIVE tier, so >>local never triggers a second resident model load)
  *   2. ~/.apex-router/pi-routes.json overlay (back-compat)
  *   3. built-in defaults
@@ -16,9 +17,9 @@
  *   >>kimi     summarise this diff         -> Kimi (via the apex proxy)
  *   >>frontier  design the migration plan   -> sonnet tier (via the apex proxy)
  *   >>deep      audit this for race hazards -> opus tier (via the apex proxy)
- *   >>haiku     grep/summarise cheaply       -> Anthropic light tier (no effort knob)
- *   >>sonnet    explore/implement            -> Anthropic mid tier (medium effort)
- *   >>opus      code/review/cross-validate   -> Anthropic heavy tier (high effort)
+ *   >>haiku     grep/summarise cheaply       -> Claude light tier via foundry (no effort knob)
+ *   >>sonnet    explore/implement            -> Claude mid tier via foundry (medium effort)
+ *   >>opus      code/review/cross-validate   -> Claude heavy tier via foundry (high effort)
  *   >>fable     hardest pure reasoning only  -> Anthropic ceiling (max effort)
  *   >>gpt-luna  find the config loader      -> GPT-5.6 Luna (Codex)
  *   >>gpt-terra implement the feature       -> GPT-5.6 Terra (Codex)
@@ -63,16 +64,23 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 	// code-specialized Kimi (DECISION-kimi-codex-routing): ~3x cheaper than k3 for <=262k ctx
 	"kimi-code": { provider: "moonshotai", id: "kimi-k2.7-code" },
 	"kimi-deep": { provider: "moonshotai", id: "kimi-k3" },  // 1M ctx — long sessions (K1)
-	frontier: { provider: "anthropic", id: "claude-sonnet-5-5", effort: "medium" },
-	deep: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
-	haiku: { provider: "anthropic", id: "claude-haiku-4-5" },
-	sonnet: { provider: "anthropic", id: "claude-sonnet-5-5", effort: "medium" },
-	opus: { provider: "anthropic", id: "claude-opus-5-5", effort: "high" },
+	// Claude tiers go through the `foundry` provider (Azure deployments named it-entra-<id>):
+	// pi's built-in `anthropic` catalog lags the live ids. Fable has no foundry deployment.
+	frontier: { provider: "foundry", id: "it-entra-claude-sonnet-5-5", effort: "medium" },
+	deep: { provider: "foundry", id: "it-entra-claude-opus-5-5", effort: "high" },
+	haiku: { provider: "foundry", id: "it-entra-claude-haiku-4-5" },
+	sonnet: { provider: "foundry", id: "it-entra-claude-sonnet-5-5", effort: "medium" },
+	opus: { provider: "foundry", id: "it-entra-claude-opus-5-5", effort: "high" },
 	fable: { provider: "anthropic", id: "claude-fable-5-1", effort: "max" },
 	"gpt-luna": { provider: "openai-codex", id: "gpt-5.6-luna", effort: "low" },
 	"gpt-terra": { provider: "openai-codex", id: "gpt-5.6-terra", effort: "medium" },
-	"gpt-sol": { provider: "openai-codex", id: "gpt-6.1-sol", effort: "high" },
+	// gpt-6.1-sol is not in pi's openai-codex catalog yet — keep 5.6 until it is.
+	"gpt-sol": { provider: "openai-codex", id: "gpt-5.6-sol", effort: "high" },
 };
+
+// Prefix for TIER-resolved family ids, by provider (mirrors model_registry.DEFAULTS):
+// foundry names Azure deployments `it-entra-<claude id>`.
+const DEFAULT_PROVIDER_ID_PREFIX: Record<string, string> = { foundry: "it-entra-" };
 
 function readJson(path: string): any | undefined {
 	try {
@@ -103,6 +111,10 @@ function loadRoutes(): Record<string, Route> {
 	const reg = readJson(join(APEX_HOME, "models.json"));
 	const tiers = reg?.tiers && typeof reg.tiers === "object" ? reg.tiers : {};
 	const fams = reg?.pi_families && typeof reg.pi_families === "object" ? reg.pi_families : {};
+	const prefixes: Record<string, unknown> =
+		reg?.provider_id_prefix && typeof reg.provider_id_prefix === "object"
+			? reg.provider_id_prefix
+			: DEFAULT_PROVIDER_ID_PREFIX;
 	for (const [name, spec] of Object.entries<any>(fams)) {
 		if (!spec || typeof spec.provider !== "string") continue;
 		const entry: Partial<Route> = { provider: spec.provider };
@@ -113,7 +125,8 @@ function loadRoutes(): Record<string, Route> {
 		} else if (typeof spec.tier === "string") {
 			const id = tiers[spec.tier];
 			if (typeof id !== "string" || !id) continue;
-			entry.id = id;
+			const prefix = prefixes[spec.provider];
+			entry.id = (typeof prefix === "string" ? prefix : "") + id;
 		} else if (typeof spec.id === "string" && spec.id) {
 			entry.id = spec.id;
 		} else {
