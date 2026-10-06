@@ -115,6 +115,12 @@ def _skill_bench(args) -> int:
 
 
 def main(argv=None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["xval"]:
+        # Adaptive `codex exec` wrapper for cross-validation. Dispatched BEFORE argparse: its args are
+        # codex's (-m/-s/-c/review …), which this parser must not try to interpret.
+        from .xval_router import main as _xval
+        return _xval(raw[1:])
     ap = argparse.ArgumentParser(prog="apex-router", description="Adaptive model routing.")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("status", help="report which components are live")
@@ -261,6 +267,9 @@ def main(argv=None) -> int:
     # a recommendation; `--check` exits 0/1/2/3 (UNKNOWN=3, usage=4) to gate a fan-out. Args forwarded to pressure.main.
     sub.add_parser("pressure", help="upstream rate-limit pressure (GREEN/AMBER/RED) before a "
                                     "fan-out; --check exits 0/1/2/3 (4=usage)", add_help=False)
+    sub.add_parser("xval", help="adaptive `codex exec` for cross-validation (per-category P2C over "
+                                "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
+                   add_help=False)
     args, extra = ap.parse_known_args(argv)
 
     if args.cmd == "watch":

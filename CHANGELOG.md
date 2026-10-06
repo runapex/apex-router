@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router xval <codex exec args…>`: a drop-in for `codex exec` in cross-validation that
+  controls GPT cost per run. It sorts the review into diff / report / files / investigate and
+  picks a per-command output cap (2k–10k tokens) plus an optional "evidence budget" hint. Each
+  category learns which setting to use, by picking the better of two candidates sampled from
+  running probabilities that fade older runs. The cost comes from the Codex session log; success
+  means the run finished with a verdict. Repeated command output is ~54% of GPT review tokens, and
+  ~40% of report reviews died before giving a verdict. `xval stats` shows the probabilities;
+  `xval feedback <run_id> ok|bad` corrects a run's result. The cross-validate-codex skill now uses it.
 - Proxy: opt-in stable Codex cache key (`APEX_CODEX_CACHE_KEY=1`, shards via
   `APEX_CODEX_CACHE_KEY_SHARDS`, default 4). Codex starts every run and subagent with a new cache
   key, so the identical ~15k-token start of each run was never reused. The proxy now gives runs with
