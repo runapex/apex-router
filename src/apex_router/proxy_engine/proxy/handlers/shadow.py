@@ -152,6 +152,7 @@ async def handle(
 
     async def body_stream():
         first = True
+        midstream = None
         try:
             async for chunk in response.aiter_raw():
                 if first:
@@ -166,8 +167,9 @@ async def handle(
                 if err_scanner is not None:
                     err_scanner.feed(chunk)  # copy-scan, bounded; never raises
                 yield chunk  # forward the ORIGINAL bytes, unchanged
-        except Exception:
+        except Exception as exc:
             event.is_error = True
+            midstream = type(exc).__name__  # labeled in finally, AFTER any http_<status>
             raise
         finally:
             # apex's own request-path cost = pre-forward compute + any connect-retry backoff slept
@@ -180,6 +182,11 @@ async def handle(
             # captures rate-limits/client errors the is_error>=500 rule intentionally ignores.
             if event.error_cause is None and response.status_code >= 400:
                 event.error_cause = f"http_{response.status_code}"
+            # A stream that broke AFTER the response started had is_error but no cause, so it read as
+            # unlabeled — 56% of all error rows on the live box (zeno discovery). The prefix keeps it
+            # apart from the upstream-raise path (pressure.py ignores midstream_* — measure only).
+            if event.error_cause is None and midstream is not None:
+                event.error_cause = f"midstream_{midstream}"
             # v7: pair the mechanism label with the provider's own words + its rate-limit headers.
             if err_scanner is not None:
                 event.error_detail = {

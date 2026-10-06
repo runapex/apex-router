@@ -208,6 +208,10 @@ def _classify(row) -> str | None:
     if not cause:
         return None
     cause = str(cause)
+    if cause.startswith("midstream_"):
+        # A stream that broke after the response began (0.4.2 label; was unlabeled → None before).
+        # Kept out of pressure until measured: it may be a client cancel, not an upstream fault.
+        return None
     if cause in LOCAL_CAUSES:
         return "local"
     if cause == "http_429":
