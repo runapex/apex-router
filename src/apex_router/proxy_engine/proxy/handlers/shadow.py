@@ -98,6 +98,10 @@ async def handle(
     if isinstance(raw_path, bytes):
         raw_path = raw_path.split(b"?", 1)[0].decode("latin-1")
     url = upstream.build_url(client_kind, raw_path, request.scope.get("query_string", b""))
+    # Opt-in stable Codex cache key (identity unless APEX_CODEX_CACHE_KEY=1). Measurement above ran
+    # on the client's original bytes; only the forwarded copy carries the edit (proxy.cache_key).
+    prepare = getattr(upstream, "prepare_body", None)  # duck-typed upstreams (tests) forward as-is
+    fwd_body, event.cache_key_rewrite = prepare(client_kind, raw_path, body) if prepare else (body, None)
     raw_req_headers = request.scope.get("headers", [])
     fwd_headers = filter_request_headers(raw_req_headers)
     # Opt-in Azure-AD auth injection (strict superset): adds Authorization ONLY when enabled AND the
@@ -110,7 +114,7 @@ async def handle(
     send_stats: dict = {}  # out-param: connect-retry backoff apex slept (xval F4), billed to apex
     try:
         response = await upstream.send_stream(
-            request.method, url, headers=fwd_headers, content=body, stats=send_stats
+            request.method, url, headers=fwd_headers, content=fwd_body, stats=send_stats
         )
     except Exception as exc:
         event.is_error = True

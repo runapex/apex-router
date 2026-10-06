@@ -235,6 +235,17 @@ class Upstream:
         endpoints table lands (A-Proto), this becomes a lookup on the resolved endpoint profile."""
         return "openai" if client_kind == "codex" else "anthropic"
 
+    def prepare_body(self, client_kind: str, raw_path: str, body: bytes) -> tuple[bytes, dict | None]:
+        """The body to forward, plus a telemetry note when it was edited. Identity unless the
+        opt-in stable Codex cache key is on AND this is the Responses wire (proxy.cache_key)."""
+        if not (self._cfg.codex_cache_key and client_kind == "codex" and raw_path.endswith("/responses")):
+            return body, None
+        from apex_router.proxy_engine.proxy import cache_key
+        try:
+            return cache_key.rewrite(body, self._cfg.codex_cache_key_shards)
+        except Exception:  # noqa: BLE001 — fail-open: never break a request over a cache hint
+            return body, None
+
     def build_url(self, client_kind: str, raw_path: str, query_string: bytes) -> str:
         """Preserve the raw path AND query string (xval #1/#2). `?beta=…`, pagination, and
         signed params must reach the upstream verbatim."""

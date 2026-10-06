@@ -7,6 +7,13 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Proxy: opt-in stable Codex cache key (`APEX_CODEX_CACHE_KEY=1`, shards via
+  `APEX_CODEX_CACHE_KEY_SHARDS`, default 4). Codex starts every run and subagent with a new cache
+  key, so the identical ~15k-token start of each run was never reused. The proxy now gives runs with
+  the same start (model, instructions, tools, permissions, repo and date) one shared key, split over
+  a few shards by the first task prompt. It's the only change the proxy makes to request bytes, it's
+  off by default, and each row records it (`cache_key_rewrite`, telemetry schema 9). Measured: a new
+  run's first call went from 0 to 14,919 of 15,122 tokens cached.
 - pi: `>>review` — the independent cross-validation reviewer, GPT-6.1 Sol through the proxy's Azure
   GPT path (a different vendor than the Claude families that write the code). It needs a
   `foundry-gpt` provider in `~/.pi/agent/models.json` and an `api-version` pin in `auth.json`; see
