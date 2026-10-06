@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router zeno`: where the last bit of reliability goes. `zeno report` reads the proxy
+  telemetry and xval runs and shows how per-call failures compound over long sessions (p^n against
+  the clean-session rate actually seen), whether each extra "nine" costs more than the last (cost
+  per nine across xval output caps), how much of the failure space has no name yet (failures with
+  no recorded cause, chance the next failure is a new kind), and which clients or context sizes the
+  overall rate hides. It measures whether calls finished, not whether answers were right.
+  `zeno horizon`, `zeno ladder` and `zeno frontier` are the same math on numbers you give it. See
+  docs/research/2026-10-06-zeno-frontier.md.
 - `apex-router xval <codex exec args…>`: a drop-in for `codex exec` in cross-validation that
   controls GPT cost per run. It sorts the review into diff / report / files / investigate and
   picks a per-command output cap (2k–10k tokens) plus an optional "evidence budget" hint. Each
@@ -28,6 +36,11 @@ next tag will carry.
   RUNBOOK-pi-integration.md.
 
 ### Fixed
+- Proxy: a response stream that breaks after it started now records why
+  (`error_cause = midstream_<error>`, e.g. `midstream_ReadError`). Before, these rows were marked as
+  errors with no cause — 56% of all error rows on the test machine. A rejected request keeps its
+  `http_<status>` label. Pressure levels are unchanged: they ignore `midstream_*` as they ignored
+  the unlabeled rows.
 - The datapce plugin no longer repeats the band as a status entry (`⚠ datapce: apex ●GREEN $0.91`)
   in the terminal and desktop app. The status entry now appears only where the band can't draw:
   VS Code, mobile, `band: false`, or after Hide (at once, with the current cost). A status entry left
