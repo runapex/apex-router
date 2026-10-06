@@ -90,6 +90,11 @@ class Config:
     inject_azure_token: bool = _env_bool("APEX_INJECT_AZURE_TOKEN")
     azure_token_resource: str = _env("APEX_AZURE_TOKEN_RESOURCE", "https://cognitiveservices.azure.com")
     az_bin: str = _env("APEX_AZ_BIN", "az")
+    # Stable Codex prompt_cache_key (opt-in; the proxy's ONLY request-byte edit). Codex keys the
+    # cache by a per-run thread UUID, so runs never share their identical ~16k prefix. When on,
+    # the codex wire's key becomes apex:<run-invariant-head-hash>:<shard>. See proxy.cache_key.
+    codex_cache_key: bool = _env_bool("APEX_CODEX_CACHE_KEY")
+    codex_cache_key_shards: int = int(_env("APEX_CODEX_CACHE_KEY_SHARDS", "4"))
 
     @property
     def db_path(self) -> Path:

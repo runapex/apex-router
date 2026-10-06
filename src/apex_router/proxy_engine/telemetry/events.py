@@ -83,7 +83,10 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # retries (SSLError/ReadError/WriteError/RemoteProtocolError before response headers) — fast-fail only
 # (< APEX_RETRY_FAST_FAIL_MS, default 3000 ms) and on POST/GET completion endpoints only. A declined
 # body-sent retry (slow failure or non-completion path) records `error_cause` as before.
-TELEMETRY_SCHEMA_VERSION = 8
+# v9: added `cache_key_rewrite` — a row records when the proxy edited the forwarded body (the opt-in
+# APEX_CODEX_CACHE_KEY stable prompt_cache_key; proxy.cache_key). None = forwarded byte-identical, so
+# a with/without-rewrite cache-hit comparison is a filter, not an inference.
+TELEMETRY_SCHEMA_VERSION = 9
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -190,6 +193,10 @@ class TelemetryEvent:
     # marked when truncated, so a telemetry row can't balloon and a consumer can't mistake a clipped
     # envelope for a whole one.
     error_detail: dict | None = None
+    # cache_key_rewrite (v9) — set when the opt-in stable Codex prompt_cache_key replaced the
+    # client's key on the forwarded body ({"from": "client", "key": "apex:<head>:<shard>"}); None when
+    # the request was forwarded byte-identical (the default, and every non-Responses request).
+    cache_key_rewrite: dict | None = None
     # content_encoding — the response Content-Encoding the usage scanner saw (gzip/br/identity/...).
     # None when unset (non-shadow line, or no header). Logged so a `usage=null` row is attributable
     # to its encoding: the pre-registered acceptance test joins this against usage-present to

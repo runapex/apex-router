@@ -124,7 +124,8 @@ def test_upstream_rejected_defaults_false_and_serializes():
 
 
 def test_schema_bumped_for_upstream_rejected():
-    assert TELEMETRY_SCHEMA_VERSION == 8
+    # v8 introduced upstream_rejected; later bumps keep it (v9 added cache_key_rewrite).
+    assert TELEMETRY_SCHEMA_VERSION >= 8
 
 
 def test_doctor_accepts_schema_v8():

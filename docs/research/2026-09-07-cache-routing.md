@@ -166,6 +166,13 @@ Rules:
 - Cache scope must distinguish tenant/account/region without logging credentials. A namespace is not permission to reuse state across tenants.
 - Separate affinity-policy invalidation from content/KV incompatibility. Updating a routing threshold need not flush a still-compatible cache. Use an atomic route epoch/state-generation check for concurrent requests and stale completions.
 - Stable cache hints at the **client adapter** may help when supported. OpenAI explicitly says `prompt_cache_key` influences routing but does **not pin a machine or guarantee a hit**. Do not mutate request bytes in the measuring proxy to add one.
+  - **Decision 2026-10-06 (exception, opt-in):** Codex exposes no client-side key setting and mints a fresh
+    `prompt_cache_key` per run/subagent, so 98% of run-first calls had 0 cached tokens (1,449 runs). The proxy
+    may now replace the Codex Responses key with `apex:<run-invariant-head-hash>:<shard>` when
+    `APEX_CODEX_CACHE_KEY=1` (`proxy/cache_key.py`). It is the only request-byte edit, off by default,
+    a single in-place splice of the key member, recorded per row as `cache_key_rewrite` (telemetry v9),
+    so with/without cache hits stay comparable. Verified live: a new run's first call went from 0 to
+    14,919/15,122 cached.
 
 Rejection taxonomy should cover revision/model/scope mismatch, prefix divergence, expired evidence, missing identity, and policy incompatibility. Log `capacity_pressure` only with engine evidence; otherwise residency cause is unknown. Rejection falls back deterministically without resurrecting deleted content.
 
