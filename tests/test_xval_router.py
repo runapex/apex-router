@@ -75,6 +75,14 @@ def test_learning_moves_probability_to_a_cheaper_equally_reliable_arm():
     assert wins > 200
 
 
+def test_one_cheap_run_does_not_flip_a_category():
+    cat = xr._fresh_state()["categories"]["diff"]
+    xr.update(cat, xr.BASELINE, ok=True, cost=137_000)
+    xr.update(cat, "2000/focused", ok=True, cost=77_000)
+    pi = xr.probabilities(cat)
+    assert max(pi, key=pi.get) == xr.BASELINE
+
+
 def test_cheap_but_failing_arm_loses():
     cat = xr._fresh_state()["categories"]["report"]
     for _ in range(30):
