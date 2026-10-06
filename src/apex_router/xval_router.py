@@ -49,6 +49,7 @@ BASELINE = "10000/open"
 GAMMA = 0.97     # per-observation discount within a category (effective window ~33 runs)
 LAMBDA = 0.5     # utility weight of relative cost vs success probability
 TEMP = 0.15      # softmax temperature for the running probabilities pi_c
+COST_PRIOR_W = 3.0  # pseudo-observations pulling an arm's relative cost toward 1.0 (= baseline)
 PRIOR_OK = (3.0, 1.0)        # Beta prior for a non-baseline arm (optimistic, weak)
 PRIOR_OK_BASE = (19.0, 1.0)  # baseline starts trusted (~half the cold-start picks): cheaper arms EARN their place
 FOCUS_HINT = (
@@ -165,10 +166,12 @@ def _baseline_cost(cat: dict) -> float | None:
 
 def _rel_cost(cat: dict, arm: str) -> float:
     ref = _baseline_cost(cat)
-    c = cat["arms"][arm]["cost"]
-    if not ref or not c:
+    x = cat["arms"][arm]
+    if not ref or not x["cost"]:
         return 1.0  # unknown cost: assume baseline-equal (no free lunch for unexplored arms)
-    return c / ref
+    # Shrink toward 1.0 by the arm's (decayed) evidence: one cheap run must not flip a category.
+    w = x.get("w", 0.0)
+    return (x["cost"] / ref * w + COST_PRIOR_W) / (w + COST_PRIOR_W)
 
 
 def probabilities(cat: dict) -> dict[str, float]:
