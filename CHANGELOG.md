@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
+  upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
+  Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local
+  worker and its queue, and whether the proxy answers. It writes nothing (not even
+  `pressure.json`) and every part fails open. `--menubar` prints a SwiftBar plugin: a dot that is
+  green, orange or red for GREEN/AMBER/RED and gray when the sample is too small to tell, plus the
+  count of active agents. `integrations/swiftbar/` has the plugin script. Other programs can add a
+  menu section by dropping `{title, rows, ts}` JSON into an `adapters/` directory.
 - `apex-router zeno`: where the last bit of reliability goes. `zeno report` reads the proxy
   telemetry and xval runs and shows how per-call failures compound over long sessions (p^n against
   the clean-session rate actually seen), whether each extra "nine" costs more than the last (cost
