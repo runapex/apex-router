@@ -82,7 +82,8 @@ DEFAULTS: dict = {
         "review": {"provider": "foundry-gpt", "id": "it-entra-gpt-6.1-sol", "effort": "high"},
         "local": {"provider": "ollama", "source": "ornith.env"},
     },
-    # /learn pipeline stages resolve through tiers too (+ provider_id_prefix, like pi families).
+    # /learn pipeline stages resolve through tiers too (+ provider_id_prefix, like pi families);
+    # an explicit "validate"/"explain" id overrides its tier and is used verbatim.
     "learn": {"provider": "foundry", "validate_tier": "sonnet", "explain_tier": "opus"},
     # Venue routing policies (DECISION-kimi-codex-routing, measured 2026-08-24):
     # the codex venue's workload runs at p50 346k context (73.8% of requests >250k),
@@ -128,6 +129,24 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return out
 
 
+_FAMILY_SOURCES = ("source", "tier", "id")
+
+
+def _merge_registry(base: dict, overlay: dict) -> dict:
+    """`_deep_merge`, except a pi family is resolved by ONE of id/tier/source: an overlay family
+    that names any of them replaces the base's (else a pinned id under a default `tier` family
+    would keep resolving through the tier). Other keys (provider, effort) still merge."""
+    out = _deep_merge(base, overlay)
+    fams = overlay.get("pi_families")
+    if isinstance(fams, dict) and isinstance(out.get("pi_families"), dict):
+        for name, spec in fams.items():
+            merged = out["pi_families"].get(name)
+            if isinstance(spec, dict) and isinstance(merged, dict) and any(k in spec for k in _FAMILY_SOURCES):
+                out["pi_families"][name] = {k: v for k, v in merged.items()
+                                            if k not in _FAMILY_SOURCES or k in spec}
+    return out
+
+
 def load(path: Path | None = None) -> dict:
     """DEFAULTS merged with the user overlay. Never raises: a missing/malformed overlay
     yields DEFAULTS (routing must not break because a config file is bad)."""
@@ -135,7 +154,7 @@ def load(path: Path | None = None) -> dict:
     try:
         overlay = json.loads(p.read_text())
         if isinstance(overlay, dict):
-            return _deep_merge(DEFAULTS, overlay)
+            return _merge_registry(DEFAULTS, overlay)
     except (OSError, ValueError):
         pass
     return dict(DEFAULTS)
@@ -188,13 +207,14 @@ def families(*, registry: dict | None = None) -> dict[str, dict]:
                 entry["id"] = _local_model()
             except Exception:
                 continue
+        elif isinstance(spec.get("id"), str) and spec["id"]:
+            # A pinned id beats a tier left beside it (e.g. by a deep-merged models.json).
+            entry["id"] = spec["id"]
         elif isinstance(spec.get("tier"), str):
             mid = tier_model(spec["tier"], registry=reg)
             if not mid:
                 continue
             entry["id"] = _provider_prefix(provider, reg) + mid
-        elif isinstance(spec.get("id"), str) and spec["id"]:
-            entry["id"] = spec["id"]
         else:
             continue
         if isinstance(spec.get("effort"), str) and spec["effort"]:
@@ -216,10 +236,14 @@ def learn(*, registry: dict | None = None) -> dict:
     spec = reg.get("learn") or {}
     provider = spec.get("provider") if isinstance(spec.get("provider"), str) else "foundry"
     prefix = _provider_prefix(provider, reg)
-    validate = tier_model(spec.get("validate_tier", "sonnet"), registry=reg)
-    explain = tier_model(spec.get("explain_tier", "opus"), registry=reg)
-    return {
-        "provider": provider,
-        "validate": prefix + validate if validate else validate,
-        "explain": prefix + explain if explain else explain,
-    }
+
+    def stage(name: str, default_tier: str) -> str | None:
+        # An explicit id (`validate`/`explain`) is used as-is, like a pinned pi family — it lets a
+        # deployment run /learn off Claude (e.g. on openai-codex). Else tier-resolved + prefix.
+        explicit = spec.get(name)
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        mid = tier_model(spec.get(f"{name}_tier", default_tier), registry=reg)
+        return prefix + mid if mid else mid
+
+    return {"provider": provider, "validate": stage("validate", "sonnet"), "explain": stage("explain", "opus")}

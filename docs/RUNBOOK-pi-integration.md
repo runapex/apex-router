@@ -72,7 +72,7 @@ rather than `@` because pi reserves `@` for file mentions.)
 >>gpt-luna  locate the config loader       # GPT-5.6 Luna (Codex)
 >>gpt-terra implement a feature           # GPT-5.6 Terra (Codex)
 >>gpt-sol   audit a concurrency design    # GPT-5.6 Sol (Codex)
->>review    cross-validate this diff      # GPT-6.1 Sol via foundry-gpt (independent reviewer)
+>>review    cross-validate this diff      # GPT-6.1 Sol via foundry-gpt, or openai-codex on a subscription setup
 ```
 
 **Sticky switch** — changes the active model until you change it again:
@@ -130,6 +130,41 @@ The gateway 404s on pi's default Azure `api-version` (`v1`), so pin the one Code
 ```
 
 Check: `pi -p --model foundry-gpt/it-entra-gpt-6.1-sol --thinking low "say pong"`.
+
+**Subscription setup (no Foundry).** On a machine where Claude runs on a Claude Pro/Max
+subscription (OAuth) and GPT on a ChatGPT/Codex subscription, pi cannot use the Claude
+families: Anthropic bills a third-party client's subscription OAuth to extra usage and
+rejects the request with `400 … Third-party apps now draw from your extra usage` when none
+is available. Claude stays in Claude Code; pi's Claude-named families move to `openai-codex`.
+Merge `integrations/pi/registry-overlay.subscription.json` into `~/.apex-router/models.json`,
+replacing each family whole (a plain deep merge, `jq '.[0] * .[1]'`, leaves the old `tier` next
+to the new `id`; the `id` wins, but the leftover is misleading):
+
+```bash
+cd ~/.apex-router && cp models.json models.json.bak
+jq -s '.[0] as $b | (.[1] | del(._comment)) as $o | ($b * $o)
+       | .pi_families = (($b.pi_families // {}) + $o.pi_families) | .learn = $o.learn' \
+  models.json.bak integrations/pi/registry-overlay.subscription.json > models.json
+```
+
+A legacy `~/.apex-router/pi-routes.json` still wins per family — move it aside if it pins
+`anthropic`.
+
+
+| family | model (openai-codex) | effort |
+|---|---|---|
+| `haiku` | gpt-5.6-luna | low |
+| `sonnet`, `frontier` | gpt-5.6-terra | medium |
+| `opus`, `deep` | gpt-5.6-sol | high |
+| `fable` | gpt-6.1-sol (272k ctx, not 1M) | xhigh |
+| `review` | gpt-6.1-sol | high |
+| `/learn` | validate gpt-5.6-terra, explain gpt-5.6-sol | — |
+
+`>>auto` follows the same remap: a tier id from `resolve` (e.g. `claude-sonnet-5-5`) is sent
+through that tier's family. The overlay keeps `tiers` on the Claude ids — Claude Code,
+codeqa and route conformance still read them. An overlay family that pins an `id` replaces a
+default `tier` (it no longer deep-merges into it). Check:
+`pi -p --model openai-codex/gpt-6.1-sol --thinking low "say pong"`.
 
 The `gpt-*` families use Pi's `openai-codex` provider: `gpt-luna` (low
 reasoning), `gpt-terra` (medium), and `gpt-sol` (high). They use the existing Codex

@@ -7,6 +7,48 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
+  upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
+  Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local
+  worker and its queue, and whether the proxy answers. It writes nothing (not even
+  `pressure.json`) and every part fails open. `--menubar` prints a SwiftBar plugin: a dot that is
+  green, orange or red for GREEN/AMBER/RED and gray when the sample is too small to tell, plus the
+  count of active agents. `integrations/swiftbar/` has the plugin script. Other programs can add a
+  menu section by dropping `{title, rows, ts}` JSON into an `adapters/` directory.
+- `apex-router snapshot`: which agent is using what. Each Claude Code session is tied to its
+  process through `~/.claude/sessions/<pid>.json` (stale files for dead or reused pids are
+  ignored); pi and Codex sessions through the process's working directory, only when that match is
+  unambiguous. Each agent row shows, in fixed-width columns, Claude's own busy/idle status, the
+  physical footprint of the session process plus everything it started, its cpu % and disk MB/s
+  right now (two samples ~250 ms apart; lifetime io, cpu time, uptime and resident size are in the
+  tooltip), its requests and output tokens through the proxy in the last 60 min, and the context
+  size of its latest request. Its submenu has the token split (uncached input, cache reads, cache
+  writes, output) and cache share summed over the main thread and every subagent, the main thread,
+  up to 8 subagents (running, then erroring, then by output; each with its run time, time since
+  its last write and its context size), the busiest child processes by real name (the basename of
+  a node/python script, e.g. `pyright-langserver`; nothing else from the command line is kept) and
+  the models it called. Subagents and sessions past the caps (8 active sessions, 8 subagents per
+  session, about 80 menu lines) become one `… N more (x req, out y)` line, so no total is lost.
+  The context is shown against its window from a model-family table (Opus / Sonnet 4.6+ and
+  Fable 1M, Haiku 4.5 200k, `[1m]` 1M): `ctx 283k/1M 28%`; any other model shows the size alone
+  unless a successful request of the same thread and model passed 200k. Active / idle for a
+  Claude session is Claude's own busy / idle status (log mtime only as the fallback), and each
+  row adds `r5 N/min` (requests per minute over 5 min) and the age of its newest request.
+  The bar reads `● N ⚠` when a subagent has run for more than 20 min, an agent had an error in
+  the last 5 min or a 60-min error rate of 5 % or more, or a context is 85 % of a known window;
+  the dot colour is still the pressure rule. Lines stay within 110 characters (`--graph`: 120,
+  wrapped) and control characters are stripped from every line.
+  The widget shows no dollar amounts. A refresh run inside a session does not count itself. The
+  System section shows GPU load and memory (system-wide: macOS gives no per-process GPU figure
+  without root), the load average, and ollama once, with each model's VRAM and when it unloads.
+  All subprocess and network calls, the sampling window and the subagent log scan share a
+  0.45 s deadline; a source that would start later is skipped and listed as unavailable. Subagent
+  logs are read only for the (at most 8) active sessions the menu shows. `--graph` prints who-spawned-what / who-runs-what /
+  who-calls-which-model as a text tree; `--json` carries the same data under `system`, `graph`
+  and each agent's `res`. Subagents run inside their session's process, so memory, cpu and io are
+  per session; a subagent's load is its proxy traffic. Still read-only and fail-open. A Claude
+  session that is only waiting on a working subagent now counts as active (it used to drop into
+  the idle fold after 5 min).
 - `apex-router zeno`: where the last bit of reliability goes. `zeno report` reads the proxy
   telemetry and xval runs and shows how per-call failures compound over long sessions (p^n against
   the clean-session rate actually seen), whether each extra "nine" costs more than the last (cost
@@ -15,6 +57,14 @@ next tag will carry.
   overall rate hides. It measures whether calls finished, not whether answers were right.
   `zeno horizon`, `zeno ladder` and `zeno frontier` are the same math on numbers you give it. See
   docs/research/2026-10-06-zeno-frontier.md.
+- `zeno report`: a Markov column beside p^n (section 1b). On this machine a failed call is far
+  more likely right after another failure (lag-1 autocorrelation ≈ 0.45), so p^n badly
+  under-predicts how many long sessions finish clean. The new section fits a two-state chain
+  (P(ok|ok), P(fail|fail), mean failure-burst length) and shows its P(clean) per session length next
+  to the observed rate and the p^n prediction, plus a held-out check (fit on the first 70% of
+  sessions, score the rest). It is a second, independent estimate; zeno's p^n numbers are unchanged.
+  The chain is closer than p^n but still under-predicts long sessions: it treats every session
+  alike and ignores between-session and over-time differences. Also in `--json` as `markov`.
 - `apex-router xval <codex exec args…>`: a drop-in for `codex exec` in cross-validation that
   controls GPT cost per run. It sorts the review into diff / report / files / investigate and
   picks a per-command output cap (2k–10k tokens) plus an optional "evidence budget" hint. Each
@@ -35,6 +85,13 @@ next tag will carry.
   `foundry-gpt` provider in `~/.pi/agent/models.json` and an `api-version` pin in `auth.json`; see
   RUNBOOK-pi-integration.md.
 
+- pi on a subscription setup (Claude Pro/Max OAuth, ChatGPT/Codex subscription, no Foundry):
+  `integrations/pi/registry-overlay.subscription.json` moves pi's Claude-named families,
+  `>>review` and `/learn` to `openai-codex`. Anthropic now bills third-party clients on
+  subscription OAuth to extra usage (`400 … Third-party apps now draw from your extra usage`), so
+  Claude stays in Claude Code. The `learn` spec accepts explicit `validate`/`explain` ids. See
+  RUNBOOK-pi-integration.md.
+
 ### Fixed
 - Proxy: a response stream that breaks after it started now records why
   (`error_cause = midstream_<error>`, e.g. `midstream_ReadError`). Before, these rows were marked as
@@ -50,6 +107,13 @@ next tag will carry.
   the Claude shortcuts (and `>>haiku`) now go through the `foundry` provider (`it-entra-claude-*`, via
   the proxy), and `>>gpt-sol` is back on `gpt-5.6-sol`. `>>fable` is unchanged. New registry key
   `provider_id_prefix` maps a provider to the prefix its model ids carry (`foundry` → `it-entra-`).
+- Registry: an overlay pi family that pins an `id` no longer keeps the default family's `tier`
+  (deep merge made the stale tier win, so the Python side kept resolving the Claude id). The
+  resolution key (`id`/`tier`/`source`) an overlay names replaces the default's; `provider` and
+  `effort` still merge. A family carrying both `id` and `tier` resolves the `id` (Python and pi).
+- pi `>>auto` dispatches a resolved tier id through that tier's family, so a family remap
+  (foundry, subscription overlay) applies to it; before, it looked the raw Claude id up under
+  `anthropic` first. If that family's switch fails it stays put instead of trying `anthropic`.
 - pi `/learn` now validates with Sonnet 5.5 and explains with Opus 5.5 on `foundry`; it asked for
   `anthropic/claude-sonnet-5`, which your setup has no credentials for.
 

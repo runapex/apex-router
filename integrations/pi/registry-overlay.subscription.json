@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "_comment": "Subscription deployment (Claude Pro/Max OAuth + ChatGPT/Codex subscription, no Foundry). Merge into ~/.apex-router/models.json. Anthropic bills third-party clients (pi) on subscription OAuth to extra usage, so pi's Claude families run on openai-codex; Claude stays in Claude Code. See RUNBOOK-pi-integration.md.",
+  "tiers": {
+    "haiku": "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+    "fable": "claude-fable-5-1"
+  },
+  "pi_families": {
+    "haiku": {"provider": "openai-codex", "id": "gpt-5.6-luna", "effort": "low"},
+    "sonnet": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
+    "frontier": {"provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "medium"},
+    "opus": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
+    "deep": {"provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "high"},
+    "fable": {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "xhigh"},
+    "review": {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"}
+  },
+  "learn": {"provider": "openai-codex", "validate": "gpt-5.6-terra", "explain": "gpt-5.6-sol"}
+}

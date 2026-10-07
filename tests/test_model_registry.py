@@ -117,6 +117,44 @@ class TestModelRegistry(unittest.TestCase):
             self.assertEqual(fams["opus"]["id"], "it-entra-claude-opus-5-5")  # default prefix kept
             self.assertEqual(fams["kimi"]["id"], "kimi-k2.6")  # explicit ids never prefixed
 
+    def test_subscription_overlay_keeps_pi_off_claude(self):
+        # The shipped subscription overlay: Anthropic bills pi's subscription OAuth to extra
+        # usage, so no pi family (bar ollama/kimi) may resolve to a Claude id, `review` lands on
+        # the Codex subscription, and the shared tiers (Claude Code / codeqa) stay Claude.
+        src = Path(__file__).resolve().parents[1] / "integrations/pi/registry-overlay.subscription.json"
+        registry = model_registry.load(src)
+        model_registry._local_model = lambda: "ollama-local"
+        fams = model_registry.families(registry=registry)
+        for name, fam in fams.items():
+            self.assertNotIn(fam["provider"], ("anthropic", "foundry", "foundry-gpt"), name)
+            self.assertNotIn("claude", fam["id"], name)
+            self.assertFalse(fam["id"].startswith("it-entra-"), name)
+        self.assertEqual(fams["review"], {"provider": "openai-codex", "id": "gpt-6.1-sol", "effort": "high"})
+        self.assertEqual(model_registry.tier_model("sonnet", registry=registry), "claude-sonnet-5-5")
+        self.assertEqual(model_registry.learn(registry=registry),
+                         {"provider": "openai-codex", "validate": "gpt-5.6-terra", "explain": "gpt-5.6-sol"})
+
+    def test_overlay_family_pinning_an_id_drops_the_default_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            overlay = {"pi_families": {"sonnet": {"provider": "openai-codex", "id": "gpt-x"},
+                                       "opus": {"provider": "anthropic"}}}
+            registry = model_registry.load(self._write_overlay(Path(tmp), overlay))
+        model_registry._local_model = lambda: "ollama-local"
+        fams = model_registry.families(registry=registry)
+        # effort still merges from the default; the stale tier does not win over the pinned id.
+        self.assertEqual(fams["sonnet"], {"provider": "openai-codex", "id": "gpt-x", "effort": "medium"})
+        self.assertEqual(registry["pi_families"]["opus"]["tier"], "opus")  # no source key named → merge
+
+    def test_family_with_both_id_and_tier_resolves_the_id(self):
+        registry = {"pi_families": {"sonnet": {"provider": "openai-codex", "tier": "sonnet", "id": "gpt-x"}}}
+        fams = model_registry.families(registry=registry)
+        self.assertEqual(fams["sonnet"], {"provider": "openai-codex", "id": "gpt-x"})
+
+    def test_learn_explicit_ids_override_tiers(self):
+        registry = {"learn": {"provider": "foundry", "validate": "v-id", "explain_tier": "opus"}}
+        self.assertEqual(model_registry.learn(registry=registry),
+                         {"provider": "foundry", "validate": "v-id", "explain": "it-entra-claude-opus-5-5"})
+
     def test_families_local_raises_is_omitted(self):
         with tempfile.TemporaryDirectory() as tmp:
             overlay = {"pi_families": {"local": {"provider": "ollama", "source": "ornith.env"}}}
