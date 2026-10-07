@@ -145,6 +145,12 @@ result is a valid, publishable outcome.
   escalated; the escalation label is a floor on failure, not a ceiling on quality.
 - Frontier difficulty scores and arena priors (Phase 2) answer a different question
   ("does this look hard") and must stay provenance-tagged features/priors, never targets.
+  Measured 2026-10-07 in `RESEARCH-difficulty-teacher-router.md`: a frontier teacher score is
+  repeatable (ρ 0.98) and cross-vendor consistent (ρ 0.93) but only moderately related to effort
+  (ρ 0.47) and mostly tracks request length (ρ 0.72).
+- **Threshold note (2026-10-07):** §2's "route_advise's break-even, currently 0.80 at cost-ratio 5"
+  is a bound on the *escalation* rate (cheap-first is cheaper iff P(escalate) < 0.80), not on τ̂ =
+  P(kept). A quality bar on τ̂ is a separate, additional constraint — see the research note §5.1.
 
 ## 7. Build order (each step gated)
 
