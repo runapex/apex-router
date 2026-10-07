@@ -659,7 +659,7 @@ def _cache_write(r):
 def context_window(model) -> int | None:
     """Context window by model family (VERIFIED 2026-10-06: pi 0.99.1 catalog + a live 283k-token
     request on claude-opus-5-5): ``[1m]`` suffix, claude-opus / claude-sonnet >= 4.6 (any 5.x),
-    claude-fable-* -> 1,000,000; claude-haiku-4-5* -> 200,000. Anything else -> None (no guess;
+    claude-fable-*, claude-sonnet-4-5 -> 1,000,000; claude-haiku-4-5*, claude-opus-4-5 -> 200,000. Anything else -> None (no guess;
     ``_stats`` may still prove 1M from an observed > 200k request)."""
     if not isinstance(model, str) or not model:
         return None
@@ -675,6 +675,11 @@ def context_window(model) -> int | None:
         return 1_000_000 if major is not None or "fable-" in model.lower() else None
     if major is None:
         return None
+    # pi 0.99.1 models-store: claude-sonnet-4-5 -> 1M, claude-opus-4-5 -> 200k.
+    if fam == "sonnet" and major == 4 and minor == 5:
+        return 1_000_000
+    if fam == "opus" and major == 4 and minor == 5:
+        return 200_000
     if fam in ("opus", "sonnet"):
         if major >= 5 or (major == 4 and minor is not None and minor >= 6):
             return 1_000_000
@@ -821,7 +826,8 @@ def _lifecycle(age, run_s, tel) -> tuple:
     flags = []
     if state == "running" and isinstance(run_s, (int, float)) and run_s > SUBAGENT_STUCK_S:
         flags.append("long")
-    if err_flag(tel):
+    # A finished/quiet subagent's old errors are history: only a fresh one (5 min) flags it.
+    if err_flag(tel) if state == "running" else (tel or {}).get("errors_5m"):
         flags.append("errors")
     if ctx_flag(tel):
         flags.append("ctx")

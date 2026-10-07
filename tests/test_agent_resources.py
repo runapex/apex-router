@@ -534,7 +534,9 @@ def test_subagent_lifecycle_states_and_flags(tmp_path):
     _sub_at(tmp_path, "s", "quiet", 12 * 60, 3 * 60)
     _sub_at(tmp_path, "s", "done", 40 * 60, 20 * 60)
     _sub_at(tmp_path, "s", "errs", 31 * 60, 9 * 60)
+    _sub_at(tmp_path, "s", "fresh", 20 * 60, 8 * 60)
     tel = {"errs": {"requests": 12, "errors": 5, "tokens_out": 10},
+           "fresh": {"requests": 4, "errors": 1, "errors_5m": 1, "tokens_out": 3},
            "run1": {"requests": 3, "errors": 0, "tokens_out": 5}}
     out = ar.subagents(tmp_path, "s", NOW, tel)
     by = {s["id"]: s for s in out["list"]}
@@ -542,13 +544,15 @@ def test_subagent_lifecycle_states_and_flags(tmp_path):
     assert by["run1"]["flags"] == []
     assert by["long"]["flags"] == ["long"]
     assert by["quiet"]["state"] == "quiet" and by["done"]["state"] == "done"
-    assert by["errs"]["state"] == "done" and by["errs"]["flags"] == ["errors"]
-    assert [s["id"] for s in out["list"]][:3] == ["run1", "long", "errs"]   # running, then erroring
-    assert (out["count"], out["running"], out["quiet"], out["flagged"]) == (5, 2, 1, 2)
+    # a finished subagent's old errors are history; a fresh (5-min) error still flags it
+    assert by["errs"]["state"] == "done" and by["errs"]["flags"] == []
+    assert by["fresh"]["state"] == "done" and by["fresh"]["flags"] == ["errors"]
+    assert [s["id"] for s in out["list"]][:3] == ["run1", "long", "fresh"]  # running, then erroring
+    assert (out["count"], out["running"], out["quiet"], out["flagged"]) == (6, 2, 1, 2)
     assert ar.lifecycle_text(by["run1"]) == "run 13m · last 2s"
     assert ar.lifecycle_text(by["quiet"]) == "run 9m · quiet 3m"
     assert ar.lifecycle_text(by["done"]) == "run 20m · done 20m"
-    assert ar.lifecycle_text(by["errs"]) == "run 22m · last 9m"
+    assert ar.lifecycle_text(by["errs"]) == "run 22m · done 9m"
     assert ar.err_text(tel["errs"]) == "5 err 42%" and ar.err_text(tel["run1"]) == ""
 
 
@@ -692,7 +696,7 @@ def test_graph_subagent_state_word_not_repeated():
     ("claude-sonnet-5-1", 1_000_000), ("claude-fable-1", 1_000_000),
     ("us.anthropic.claude-opus-5-5-v1:0", 1_000_000), ("claude-sonnet-4-5[1m]", 1_000_000),
     ("claude-haiku-4-5", 200_000), ("claude-haiku-4-5-20251001", 200_000),
-    ("claude-opus-4-5", None), ("claude-sonnet-4-5", None), ("claude-opus-4-20250514", None),
+    ("claude-opus-4-5", 200_000), ("claude-sonnet-4-5", 1_000_000), ("claude-opus-4-20250514", None),
     ("claude-3-5-sonnet-20241022", None), ("kimi-k2.6", None), ("gpt-5", None), (None, None),
     ("", None)])
 def test_context_window_family_table(model, window):

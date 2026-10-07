@@ -500,6 +500,9 @@ def _last_text(ts, now) -> str:
     return f"last {fmt_age(max(0.0, now - t))}"
 
 
+IO_ROW_MIN_MBS = 0.5  # disk read+write MB/s worth a column on the active row
+
+
 def _agent_row(a: dict, prefix: str = "", now: float | None = None) -> str:
     """Fixed-width monospace row for an active agent: label, status, footprint, cpu now, then
     traffic 60 min (main + all subagents), context of the latest main-thread request, the 5-min
@@ -515,6 +518,9 @@ def _agent_row(a: dict, prefix: str = "", now: float | None = None) -> str:
     head = (f"{_col(_agent_label(a, LABEL_W), LABEL_W)} {_col(_status_word(a), 6)} "
             f"{mem.rjust(6)} {cpu.rjust(5)}")
     bits = [f"{tot['requests']} req", f"out {agent_resources._k(tot['tokens_out'])}"]
+    io = agent_resources.io_rate(tree) if alive else None
+    if isinstance(io, (int, float)) and io >= IO_ROW_MIN_MBS:
+        bits.insert(0, f"io {agent_resources.fmt_rate(io)}")  # only when disk is actually busy
     ctx = agent_resources.ctx_text(res.get("telemetry"))
     if ctx:
         bits.append(ctx)

@@ -841,3 +841,13 @@ def test_idle_row_keeps_the_session_id():
     a["repo"] = "a-really-long-repo-name-without-slash"
     lines = _plain(snapshot.menubar({"pressure": {}, "agents": [a]}).splitlines())
     assert any(ln.startswith("--a-really-lon… s0000002  idle") for ln in lines), lines
+
+
+def test_active_row_shows_io_only_when_disk_is_busy():
+    def row(r, w):
+        a = {"kind": "claude", "repo": "r", "session": "abcd1234", "state": "active",
+             "res": {"status": "busy", "tree": {"alive": True, "footprint_mb": 100.0, "cpu_pct": 1.0,
+                                                "read_mbs": r, "write_mbs": w}}}
+        return snapshot._agent_row(a, now=NOW).split(" | ")[0]   # visible text, not the tooltip
+    assert "io 2.5MB/s" in row(2.0, 0.5)
+    assert "io " not in row(0.1, 0.1)
