@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from apex_router.proxy_engine.readout.pricing import Rates
 
-SUPPORTED_SCHEMA = {2, 3, 4, 5, 6, 7, 8, 9}  # v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; v7 error_detail; v8 upstream_rejected; v9 cache_key_rewrite; doctor's fields are v2-compatible
+SUPPORTED_SCHEMA = {2, 3, 4, 5, 6, 7, 8, 9, 10}  # v10 bytes_up/bytes_down; v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; v7 error_detail; v8 upstream_rejected; v9 cache_key_rewrite; doctor's fields are v2-compatible
 
 # Cache-served floor below which a large session is flagged for prefix instability. A BOUND, not a
 # policy: derived from CORRECTED two-wire data (the reference window, served = read/(read+FRESH), wire-aware —

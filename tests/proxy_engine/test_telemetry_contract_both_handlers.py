@@ -163,6 +163,36 @@ def test_gzip_usage_decoded_and_captured_on_both_handlers(handler):
 
 
 @pytest.mark.parametrize("handler", HANDLERS)
+@pytest.mark.parametrize("enc", [None, "gzip"])
+def test_wire_bytes_recorded_on_both_handlers(handler, enc):
+    # v10: the per-agent network figure in the widget. Up = the forwarded body; down = the raw
+    # (still-encoded) bytes streamed back, i.e. what crossed the wire.
+    ev = _drive(handler, enc)
+    assert ev.bytes_up == len(asyncio.run(_Req().body()))
+    assert ev.bytes_down == len(_encode(_sse_bytes(), enc)) > 0
+
+
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_wire_bytes_zero_when_upstream_raised(handler):
+    # The body may never have left (PoolTimeout/ConnectError): no bytes are claimed (xval).
+    up = _make_upstream(None)
+
+    async def boom(*a, **k):
+        raise httpx.PoolTimeout("pool")
+    up.send_stream = boom
+
+    async def go():
+        tel = _Tel()
+        if handler == "passthrough":
+            await passthrough.handle(_Req(), up, tel)
+        else:
+            await shadow_h.handle(_Req(), up, tel, None)
+        return tel.ev[0]
+    ev = asyncio.run(go())
+    assert ev.is_error and ev.bytes_up == 0 and ev.bytes_down == 0
+
+
+@pytest.mark.parametrize("handler", HANDLERS)
 def test_model_resolved_from_x_model_on_both_handlers(handler):
     ev = _drive(handler, None)
     assert ev.model_resolved == "claude-opus-4-8-resolved"
