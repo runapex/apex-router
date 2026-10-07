@@ -1029,3 +1029,14 @@ def test_active_row_shows_io_only_when_disk_is_busy():
         return snapshot._agent_row(a, now=NOW).split(" | ")[0]   # visible text, not the tooltip
     assert "io 2.5MB/s" in row(2.0, 0.5)
     assert "io " not in row(0.1, 0.1)
+
+
+def test_ollama_line_names_its_clients():
+    s = {"ollama": [{"name": "qwen3.8:27b-mlx", "vram_mb": 26800.0, "pinned": True}],
+         "ollama_clients": [{"pid": 55074, "name": "apex-router labels", "worker": False},
+                            {"pid": 12369, "name": "python", "worker": True}]}
+    (line,) = snapshot._ollama_lines(s, {})
+    assert line.split(" | ")[0] == "ollama qwen3.8:27b-mlx 26.2GB pinned ← apex-router labels, worker"
+    assert "pid 55074" in line and snapshot.INK["violet"] in line
+    idle = dict(s, ollama_clients=[])
+    assert "←" not in snapshot._ollama_lines(idle, {})[0]

@@ -121,6 +121,10 @@ def main(argv=None) -> int:
         # codex's (-m/-s/-c/review …), which this parser must not try to interpret.
         from .xval_router import main as _xval
         return _xval(raw[1:])
+    if raw[:1] == ["labels"]:
+        # Task outcome labels (weak rules + local judge + gold). Own subcommands, like zeno.
+        from .labels import main as _labels
+        return _labels(raw[1:])
     if raw[:1] == ["zeno"]:
         # Zeno frontier report (diminishing reliability returns, horizon compounding, failure-mode
         # discovery). Own subcommands, so it parses its own args like xval.
@@ -279,6 +283,8 @@ def main(argv=None) -> int:
     sub.add_parser("xval", help="adaptive `codex exec` for cross-validation (per-category P2C over "
                                 "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
                    add_help=False)
+    sub.add_parser("labels", help="task outcome labels: rules + local judge + hand-labeled gold; "
+                                  "`labels build [--judge N]|report|review [-n N]`", add_help=False)
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
