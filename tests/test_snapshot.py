@@ -46,6 +46,26 @@ def _worker():
     return {"label": "w", "pid": None, "running": False, "inbox": 0, "queue_running": 0}
 
 
+_PARAM_KEYS = {"size", "color", "font", "emojize", "symbolize", "tooltip", "refresh"}
+
+
+def _param_line_ok(ln: str) -> bool:
+    """A SwiftBar line with parameters: exactly one '|' and only our own key=value params."""
+    import shlex
+    if ln.count("|") != 1:
+        return False
+    try:
+        params = shlex.split(ln.split(" | ", 1)[1])
+    except (IndexError, ValueError):
+        return False
+    return all("=" in p and p.split("=", 1)[0] in _PARAM_KEYS for p in params)
+
+
+def _user_lines_disable_emoji(lines, needles) -> bool:
+    return all("emojize=false symbolize=false" in ln for ln in lines
+               if any(n in ln for n in needles))
+
+
 def _collect(tmp_path, **kw):
     kw.setdefault("home", tmp_path)
     kw.setdefault("telemetry", tmp_path / ".apex" / "telemetry.jsonl")
@@ -146,7 +166,7 @@ def test_measure_newest_event_ms_ts(tmp_path):
     m = snapshot.measure_block(d, NOW)
     assert m["limit_kind"] == "seven_day" and m["limit_pct"] == 71
     assert m["cost_usd"] == 2.5 and m["age_s"] == pytest.approx(900, abs=1)
-    assert snapshot._measure_line(m) == "7d 71% · $2.50 · age 15m"
+    assert snapshot._measure_line(m) == "7d 71% · age 15m"           # no $ in the widget; cost_usd stays in --json
 
 
 def test_measure_camelcase_and_missing(tmp_path):
@@ -158,7 +178,7 @@ def test_measure_camelcase_and_missing(tmp_path):
          "costUsd": 0.004}) + "\n")
     m = snapshot.measure_block(d, NOW)
     assert (m["limit_kind"], m["limit_pct"], m["age_s"]) == ("five_hour", 3, 60.0)
-    assert snapshot._measure_line(m) == "5h 3% · <$0.01 · age 1m"
+    assert snapshot._measure_line(m) == "5h 3% · age 1m"
 
 
 # ---------------------------------------------------------------- adapters
@@ -256,12 +276,11 @@ def test_user_text_is_escaped_in_menu(tmp_path):
     lines = out.splitlines()
     # only our own lines carry a parameter separator
     with_params = [ln for ln in lines if "|" in ln]
-    assert all(ln.startswith(("● ", "Refresh |")) or ln.endswith(f"size=12 color={snapshot.COLORS['gray']}")
-               or (ln.endswith(" | emojize=false") and ln.count("|") == 1)
-               for ln in with_params), with_params
+    assert all(_param_line_ok(ln) for ln in with_params), with_params
     assert "evil ¦ bash=/bin/rm" in out
     assert "––T ¦ x | size=12" in out
-    assert "––– | emojize=false" in lines and lines[-1] == "Refresh | refresh=true"
+    assert "––– | emojize=false symbolize=false" in lines and lines[-1] == "Refresh | refresh=true"
+    assert _user_lines_disable_emoji(lines, ["evil", "Bad¦Cause", "––T", "r ¦ refresh"])
 
 
 def test_menubar_sections_and_idle_submenu(tmp_path):
@@ -280,9 +299,11 @@ def test_menubar_sections_and_idle_submenu(tmp_path):
     lines = out.splitlines()
     assert lines[0] == "● 1 | color=#8E8E93" and lines[1] == "---"
     assert "insufficient sample (n=4)" in out
-    assert "7d 71% · $3.10 · age 12m" in out
-    assert "claude · r1 · active · 30s · s1 · 2 subagents" in out
-    assert "idle (1)" in lines and "--pi · r2 · idle · 15m · s2" in lines
+    assert "7d 71% · age 12m" in out and "$" not in out
+    assert any(ln.startswith("r1 s1 ") and " active " in ln and "font=Menlo" in ln for ln in lines)
+    assert "idle (1)" in lines
+    assert "--pi:r2 s2                idle 15m | font=Menlo size=12 emojize=false symbolize=false" \
+        in lines
     assert "pid 42 · inbox 1 · running 0" in out
     assert "up :8788 v0.4.1" in out
     assert out.endswith("Refresh | refresh=true")
@@ -419,23 +440,39 @@ def _res_snap(name="pytest", desc="find x", model="claude-opus-5-5"):
     }
 
 
+def _plain(lines):
+    """Menu lines without their SwiftBar parameters."""
+    return [ln.split(" | ", 1)[0] for ln in lines]
+
+
 def test_menubar_agent_metrics_submenu_and_system():
     lines = snapshot.menubar(_res_snap()).splitlines()
-    assert "claude · r · active · 5s · s1 · busy · 412MB · 14% · io 745/569MB" in lines
-    i = lines.index("claude · r · active · 5s · s1 · busy · 412MB · 14% · io 745/569MB")
-    sub = lines[i + 1:lines.index("pi · q · active · 9s · s2")]
-    assert sub == ["--main thread 60m · 4 req · 2.5k out · 1 err · p50 ttft 1.2s",
-                   "--subagents (1 +3)",
-                   "--Explore · find x · 2 req · 10 out · 0 err · active",
-                   "--processes", "--pytest · 30MB · 20% · pid 10",
-                   "--models 60m", "--claude-opus-5-5 · 6 req"]
+    plain = _plain(lines)
+    row = next(ln for ln in lines if ln.startswith("r s1 "))
+    # footprint (not rss), cpu, Claude's own status; lifetime io only in the tooltip
+    assert row.split(" | ")[0] == ("r s1                    busy     412MB    14%            "
+                                   "6 req · out 2.5k  ⚠")
+    assert "font=Menlo size=12 emojize=false symbolize=false" in row
+    assert 'tooltip="pid 9 · io life 745/569MB · rss 300MB · cpu = ps average"' in row
+    i = plain.index(row.split(" | ")[0])
+    sub = plain[i + 1:plain.index("pi:q s2                 active       —      —            "
+                                  "0 req · out 0")]
+    assert sub == ["--Σ 60m  6 req · out 2.5k · 1 err 17%",
+                   "--main  4 req · out 2.5k · 1 err 25% · ttft 1.2s",
+                   "--Subagents 60m · 4 · 0 running",
+                   "--▶ find x                  2 req · out 10  no log",
+                   "--… 3 more (0 req, out 0)",
+                   "--Processes · ? · 412MB", "----pytest                       ?  20%",
+                   "--Models 60m", "----claude-opus-5-5         6 req"]
     assert "--process not attributed (2 candidates share this cwd)" in lines
-    assert "pid 42 · inbox 0 · running 0 · 8MB · 0%" in lines
-    assert "ollama server · 16MB · 1%" in lines and "ollama · qwen3:8b · 5.0GB VRAM" in lines
+    assert "pid 42 · inbox 0 · running 0 · ?MB · 0%" in plain     # rss-only tree: no footprint
+    assert "ollama server · 16MB · 1%" in plain
+    assert sum("ollama" in ln for ln in plain) == 2                 # once, in System
     s = lines.index("System | size=12 color=#8E8E93")
-    assert lines[s + 1:s + 7] == ["GPU 37% (system-wide) · 1.5GB in use", "load 3.29 3.11 2.69",
-                                  "agents 1.3GB in 10 processes", "ollama: no model loaded",
+    assert plain[s + 1:s + 6] == ["GPU 37% · 1.5GB in use (system-wide) · load 3.29 3.11 2.69",
+                                  "ollama server · 16MB · 1%", "ollama: no model loaded",
                                   "unavailable: lsof", "---"]
+    assert lines[0] == "● 2 ⚠ | color=#34C759"                     # main-thread errors flag
 
 
 def test_menubar_escapes_process_names_and_descriptions():
@@ -443,11 +480,12 @@ def test_menubar_escapes_process_names_and_descriptions():
                                      model="m|href=http://x"))
     lines = out.splitlines()
     with_params = [ln for ln in lines if "|" in ln]
-    assert all(ln.startswith(("● ", "Refresh |")) or ln.endswith(f"size=12 color={snapshot.COLORS['gray']}")
-               for ln in with_params), with_params
-    assert "--––evil ¦ bash=/bin/rm · 30MB · 20% · pid 10" in lines
-    assert "--Explore · x ¦ terminal=true nl · 2 req · 10 out · 0 err · active" in lines
-    assert "--m¦href=http://x · 6 req" in lines
+    assert all(_param_line_ok(ln) for ln in with_params), with_params
+    plain = _plain(lines)
+    assert "----––evil ¦ bash=/bin/rm        ?  20%" in plain
+    assert "--▶ x ¦ terminal=true nl    2 req · out 10  no log" in plain
+    assert "----m¦href=http://x         6 req" in plain
+    assert _user_lines_disable_emoji(lines, ["evil", "terminal=true", "href"])
 
 
 def test_menubar_system_missing_or_error():
@@ -493,3 +531,112 @@ def test_main_graph_prints_tree(monkeypatch, capsys):
     monkeypatch.setattr(snapshot, "collect", lambda **k: (_ for _ in ()).throw(RuntimeError("x")))
     assert snapshot.main(["--graph"]) == 0
     assert "snapshot error: RuntimeError: x" in capsys.readouterr().out
+
+
+# ---- iteration 2: caps, totals, dedupe, flags, deadline ---------------------------------------
+
+def _sub(i, state="done", req=1, out=100, errors=0, flags=()):
+    return {"id": f"a{i}", "type": "Explore", "description": f"task {i}", "depth": 1,
+            "age_s": 600.0, "run_s": 300.0, "state": state, "flags": list(flags),
+            "telemetry": {"requests": req, "tokens_out": out, "errors": errors, "tokens_in": 1,
+                          "cache_read": 99, "cache_write": 0, "models": {"claude-opus-5-5": req}}}
+
+
+def _session_agent(i, n_subs=25, state="active", status="busy", fp=100.0, flags=False):
+    subs = [_sub(j, flags=["errors"] if flags and j == 0 else []) for j in range(n_subs)]
+    from apex_router import agent_resources as ar
+    shown, rest = subs[:ar.SUBAGENTS_MAX], subs[ar.SUBAGENTS_MAX:]
+    return {"kind": "claude", "repo": f"repo{i}", "session": f"s{i:07d}", "session_id": f"sid{i}",
+            "state": state, "age_s": 30.0 if state == "active" else 2040.0,
+            "res": {"status": status,
+                    "tree": {"pid": 1000 + i, "alive": True, "footprint_mb": fp, "rss_mb": fp,
+                             "cpu_pct": 1.0, "read_mbs": 0.0, "write_mbs": 0.0, "top": []},
+                    "telemetry": {"requests": 2, "tokens_out": 10 * i, "errors": 0,
+                                  "tokens_in": 1, "cache_read": 10, "cache_write": 0,
+                                  "models": {"claude-opus-5-5": 2}},
+                    "subagents": {"list": shown, "more": len(rest),
+                                  "hidden": ar.merge_stats(*[s["telemetry"] for s in rest]),
+                                  "totals": ar.merge_stats(*[s["telemetry"] for s in subs]),
+                                  "count": len(subs), "running": 0, "quiet": 0,
+                                  "flagged": sum(1 for s in subs if s["flags"])}}}
+
+
+def test_menubar_is_bounded_with_more_totals():
+    agents = [_session_agent(i) for i in range(200)]
+    out = snapshot.menubar({"pressure": {}, "agents": agents})
+    lines = out.splitlines()
+    assert len(lines) <= snapshot.MENU_LINES_MAX + 5, len(lines)
+    rows = [ln for ln in lines if ln.startswith("repo")]
+    assert len(rows) == snapshot.ACTIVE_MAX
+    assert rows[0].startswith("repo199 s0000199")              # ranked by output tokens
+    hidden = agents[:200 - snapshot.ACTIVE_MAX]
+    req = sum(2 + 25 for _ in hidden)
+    out_tok = sum(10 * int(a["session"][1:]) + 25 * 100 for a in hidden)
+    from apex_router import agent_resources as ar
+    assert f"… {len(hidden)} more active ({req} req, out {ar._k(out_tok)})" in lines
+
+
+def test_menubar_session_totals_include_every_subagent():
+    a = _session_agent(3, n_subs=12)
+    lines = _plain(snapshot.menubar({"pressure": {}, "agents": [a]}).splitlines())
+    sigma = next(ln for ln in lines if ln.startswith("--Σ 60m"))
+    assert sigma.startswith("--Σ 60m  14 req · in 13 · cached 1.2k · out 1.2k")   # main + 12 subs
+    assert "--Subagents 60m · 12 · 0 running" in lines
+    assert sum(1 for ln in lines if ln.startswith("--✓ task")) == 8
+    assert "--… 4 more (4 req, out 400)" in lines
+    row = next(ln for ln in lines if ln.startswith("repo3"))
+    assert "14 req · out 1.2k" in row
+
+
+def test_menubar_claude_status_replaces_mtime_state():
+    active = _session_agent(1, n_subs=0, status="busy")
+    idle = _session_agent(2, n_subs=0, state="idle", status="idle", fp=342.0)
+    lines = _plain(snapshot.menubar({"pressure": {}, "agents": [active, idle]}).splitlines())
+    row = next(ln for ln in lines if ln.startswith("repo1"))
+    assert " busy " in row and " active " not in row and " 0s" not in row
+    assert "idle (1) · 342MB held" in lines
+    assert "--repo2 s0000002          idle 34m   342MB" in lines
+    assert not any("idle · idle" in ln or "0 err" in ln for ln in lines)
+
+
+def test_bar_warns_on_a_flagged_agent_but_keeps_the_pressure_colour():
+    p = {"level": "GREEN", "insufficient_sample": False}
+    calm = snapshot.menubar({"pressure": p, "agents": [_session_agent(1)]})
+    assert calm.splitlines()[0] == "● 1 | color=#34C759"
+    hot = snapshot.menubar({"pressure": p, "agents": [_session_agent(1, flags=True)]})
+    assert hot.splitlines()[0] == "● 1 ⚠ | color=#34C759"
+    assert any(ln.startswith("--⚠ task 0") for ln in hot.splitlines())
+
+
+def test_agents_header_tokens_cache_and_no_dollars():
+    snap = {"pressure": {}, "agents": [_session_agent(1)],
+            "system": {"agents_footprint_mb": 1228.8, "agents_cpu_pct": 18.0,
+                       "rate_window_s": 0.25,
+                       "traffic_60m": {"requests": 74, "tokens_out": 120_000, "tokens_in": 10,
+                                       "cache_read": 980, "cache_write": 10}}}
+    out = snapshot.menubar(snap)
+    hdr = next(ln for ln in out.splitlines() if ln.startswith("Agents ·"))
+    assert hdr.startswith("Agents · 1 active · 0 idle · 1.2GB · cpu 18% · 74 req/h · "
+                          "out 120.0k/h · cache 98% | size=12")
+    assert "$" not in out
+
+
+def test_ollama_shown_once_with_unload_time():
+    snap = {"pressure": {}, "system": {"ollama": [{"name": "Ornith-9B Q4_K_M", "vram_mb": 6553.6,
+                                                   "unloads_in_s": 180}]},
+            "worker": {"label": "w", "pid": 7, "inbox": 0, "queue_running": 0,
+                       "res": {"ollama_models": [{"name": "Ornith-9B Q4_K_M", "vram_mb": 6553.6}]}}}
+    lines = _plain(snapshot.menubar(snap).splitlines())
+    assert [ln for ln in lines if "Ornith" in ln] == \
+        ["ollama Ornith-9B Q4_K_M · 6.4GB VRAM · unloads 3m"]
+
+
+def test_snapshot_deadline_skips_proxy(tmp_path):
+    from apex_router import agent_resources as ar
+    clock = iter([0.0] + [99.0] * 100)
+    dl = ar.Deadline(1.5, clock=lambda: next(clock))
+    snap = snapshot.collect(home=tmp_path, telemetry=tmp_path / "t.jsonl",
+                            observe_dir=tmp_path / "o", adapters=tmp_path / "a", now=NOW,
+                            worker_fn=_worker, deadline=dl)
+    assert snap["proxy"] == {"up": False, "skipped": True, "error": "skipped: deadline"}
+    assert "not checked (deadline)" in snapshot.menubar(snap)

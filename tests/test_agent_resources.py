@@ -1,6 +1,7 @@
 """Tests for apex_router.agent_resources — every OS source is a fake (no real ps/lsof/ioreg/libproc)."""
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import time
@@ -12,6 +13,12 @@ from apex_router import agent_resources as ar
 
 NOW = 1_790_000_000.0
 FMT = "%a %b %d %H:%M:%S %Y"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """The two-sample rate window must not slow the suite."""
+    monkeypatch.setattr(ar, "_sleep", lambda s: None)
 
 
 def _lstart(epoch: float) -> str:
@@ -213,13 +220,15 @@ def test_subagents_meta_states_and_cap(tmp_path):
     by = {s["id"]: s for s in out["list"]}
     assert set(by) == {"aa1", "aa2", "oldbusy", "ghost"}
     assert by["aa1"] == {"id": "aa1", "type": "Explore", "description": "find x", "depth": 2,
-                         "age_s": 30.0, "state": "active", "telemetry": None}
-    assert by["aa2"]["type"] == "?" and by["aa2"]["state"] == "idle"
+                         "age_s": 30.0, "run_s": 0.0, "state": "running", "flags": [],
+                         "telemetry": None}
+    assert by["aa2"]["type"] == "?" and by["aa2"]["state"] == "done"
     assert by["ghost"]["state"] == "?" and out["list"][-1]["id"] == "ghost"
     for i in range(25):
         _subagent(tmp_path, "s2", f"x{i:02d}", i, {"agentType": "t"})
     out = ar.subagents(tmp_path, "s2", NOW)
-    assert len(out["list"]) == ar.SUBAGENTS_MAX and out["more"] == 5
+    assert len(out["list"]) == ar.SUBAGENTS_MAX and out["more"] == 25 - ar.SUBAGENTS_MAX
+    assert out["count"] == 25
     assert out["list"][0]["id"] == "x00"                                    # newest first
 
 
@@ -246,7 +255,8 @@ def test_graph_shape_and_caps():
     assert kinds.count("subagent") == ar.SUBAGENTS_MAX
     assert kinds.count("process") == ar.GRAPH_PROCS_MAX
     models = {n["label"]: n for n in g["nodes"] if n["kind"] == "model"}
-    assert models["claude-haiku-4-5"]["requests"] == 2 * ar.SUBAGENTS_MAX
+    assert models["claude-haiku-4-5"]["requests"] == 2 * 30          # hidden ones still counted
+    assert kinds.count("more") == 1
     assert models["claude-opus-5-5"]["requests"] == 5
     ek = {e["kind"] for e in g["edges"]}
     assert ek == {"spawned", "runs", "calls"}
@@ -260,10 +270,12 @@ def test_graph_shape_and_caps():
 def test_graph_text():
     text = ar.graph_text(ar.build_graph(_enriched()))
     lines = text.splitlines()
-    assert lines[0] == "claude · r · s1 · active · busy · pid 100 · 412MB · 14% · io 745/569MB"
-    assert "  spawned Explore · d · 2 req · 1.5k out · 0 err · active · depth 1" in lines
+    assert lines[0] == "claude · r · s1 · busy · pid 100 · 412MB · 14% · 65 req/h · out 45.0k/h"
+    assert "  spawned Explore · d · 2 req · out 1.5k · active · no log · depth 1" in lines
+    assert "  … 22 more subagents (44 req, out 33.0k)" in lines
+    assert "0 err" not in text and "active · busy" not in text
     assert "    calls claude-haiku-4-5 ×2" in lines
-    assert "  runs p0 (pid 200) · 1MB · 0%" in lines
+    assert "  runs p0 (pid 200) · ?MB · 0%" in lines                 # footprint only, never rss
     assert "  calls claude-opus-5-5 ×5" in lines
     assert "pi · q · s2 · idle" in lines
     assert ar.graph_text({}) == "no agents in the last hour"
@@ -271,9 +283,11 @@ def test_graph_text():
 
 def test_metrics_text():
     assert ar.metrics_text({"alive": True, "footprint_mb": 412.3, "cpu_pct": 14.0,
-                            "read_mb": 745.2, "write_mb": 569.0}) == "412MB · 14% · io 745/569MB"
+                            "read_mb": 745.2, "write_mb": 569.0}) == "412MB · 14%"
+    assert ar.metrics_text({"alive": True, "footprint_mb": 412.3, "cpu_pct": 14.0,
+                            "read_mbs": 0.3, "write_mbs": 0.1}) == "412MB · 14% · 0.4MB/s"
     assert ar.metrics_text({"alive": True, "rss_mb": 10.0, "cpu_pct": 0.5,
-                            "read_mb": None}) == "10MB · 0.5%"
+                            "read_mb": None}) == "?MB · 0.5%"
     assert ar.metrics_text({"alive": False}) == "" and ar.metrics_text({}) == ""
 
 
@@ -315,7 +329,8 @@ def test_collect_end_to_end_with_fakes(tmp_path):
     assert "res" not in agents[0]                                   # input not mutated
     c, p = out["agents"]
     assert c["res"]["status"] == "busy" and c["res"]["pid_source"] == "procStart"
-    assert c["res"]["tree"]["procs"] == 2 and c["res"]["tree"]["cpu_pct"] == 24.0
+    assert c["res"]["tree"]["procs"] == 2 and c["res"]["tree"]["cpu_pct_ps"] == 24.0
+    assert c["res"]["tree"]["cpu_pct"] == 0.0 and c["res"]["tree"]["cpu_src"] == "sampled"
     assert c["res"]["tree"]["top"][0]["name"] == "pytest"
     assert c["res"]["telemetry"]["requests"] == 1
     assert c["res"]["subagents"]["list"][0]["telemetry"]["requests"] == 1
@@ -370,3 +385,295 @@ def test_collect_fails_open_per_source(tmp_path, broken):
 
 def test_rusage_never_raises():
     assert ar.rusage(-1) is None                                     # invalid pid -> None
+
+
+# ---------------------------------------------------------------- iteration 2: rates
+
+def test_rates_from_two_samples():
+    s1 = {1: {"cpu_s": 10.0, "read_mb": 100.0, "write_mb": 50.0},
+          2: {"cpu_s": 5.0, "read_mb": 1.0, "write_mb": 1.0},
+          3: {"cpu_s": 1.0, "read_mb": 1.0, "write_mb": 1.0}}
+    s2 = {1: {"cpu_s": 10.125, "read_mb": 100.5, "write_mb": 50.25},
+          2: {"cpu_s": 4.0, "read_mb": 1.0, "write_mb": 1.0},       # went backwards: pid reused
+          4: {"cpu_s": 9.0, "read_mb": 0.0, "write_mb": 0.0}}       # not in the first sample
+    r = ar.rates_from_samples(s1, s2, 0.25)
+    assert set(r) == {1}
+    assert r[1]["cpu_pct"] == pytest.approx(50.0)
+    assert r[1]["read_mbs"] == pytest.approx(2.0) and r[1]["write_mbs"] == pytest.approx(1.0)
+    assert ar.rates_from_samples(s1, s2, 0) == {}
+
+
+def test_collect_cpu_and_io_now_from_two_samples(tmp_path, monkeypatch):
+    start = NOW - 7200
+    rows = [_ps_line(100, 1, 102400, 4.0, "claude", start)]
+    rows += [_ps_line(1000 + i, 100, 1024, float(i % 7), "zsh", start) for i in range(60)]
+    _session(tmp_path, 100, "sess-1", start)
+    calls: dict = {}
+
+    def ru(pid):                                       # +0.05 cpu s and +1 MB read per sample
+        n = calls[pid] = calls.get(pid, 0) + 1
+        return {"footprint_mb": 10.0, "read_mb": float(n), "write_mb": 0.0, "cpu_s": 0.05 * n}
+    ticks = iter([0.0, 0.0, 0.25, 0.25, 0.25])         # t1, gap check, dt, …
+    monkeypatch.setattr(ar, "_clock", lambda: next(ticks, 0.25))
+    out = ar.collect([{"kind": "claude", "session": "s", "session_id": "sess-1",
+                       "state": "active"}], home=tmp_path, telemetry=tmp_path / "none",
+                     now=NOW, run=_fake_run("\n".join(rows)), rusage_fn=ru,
+                     fetch=lambda u: b"{}", loadavg=lambda: (0, 0, 0),
+                     deadline=ar.Deadline(5, clock=time.monotonic), self_pid=999999)
+    tree = out["agents"][0]["res"]["tree"]
+    sampled = sum(1 for n in calls.values() if n == 2)
+    assert sampled == ar.RATE_PIDS_MAX                 # bounded second sample
+    assert calls[100] == 2                             # the session root is always sampled
+    assert tree["cpu_src"] == "sampled"
+    assert tree["cpu_pct"] == pytest.approx(ar.RATE_PIDS_MAX * 20.0, abs=0.5)   # 0.05/0.25 s
+    assert tree["read_mbs"] == pytest.approx(ar.RATE_PIDS_MAX * 4.0, abs=0.1)
+    assert tree["read_mb"] == 61.0                     # lifetime (first sample) kept for tooltip
+    assert tree["footprint_mb"] == 610.0
+    assert out["system"]["rate_pids"] == ar.RATE_PIDS_MAX
+
+
+# ---------------------------------------------------------------- iteration 2: self-exclusion
+
+def test_widget_does_not_count_itself():
+    t = _table((100, 1, 1024, 1.0, "claude"), (101, 100, 2048, 1.0, "/bin/zsh"),
+               (102, 101, 40960, 90.0, "python3.14"), (103, 102, 4096, 50.0, "ps"),
+               (104, 100, 8192, 5.0, "node"), (200, 1, 1024, 0.0, "launchd-child"))
+    ex = ar.self_exclusion(t, {100}, self_pid=102)
+    assert ex == {101, 102, 103}                       # self, its child, its shell below the root
+    m = ar.tree_metrics(t, 100, lambda p: None, exclude=ex)
+    assert m["procs"] == 2 and [p["pid"] for p in m["top"]] == [104]
+    assert m["cpu_pct"] == 6.0
+    # not inside any agent tree: only itself and its descendants
+    assert ar.self_exclusion(t, {100}, self_pid=200) == {200}
+
+
+def test_collect_excludes_own_process(tmp_path):
+    start = NOW - 7200
+    ps_text = "\n".join([_ps_line(100, 1, 1024, 1.0, "claude", start),
+                         _ps_line(101, 100, 1024, 0.0, "/bin/zsh", start),
+                         _ps_line(102, 101, 99999, 80.0, "python3", start),
+                         _ps_line(104, 100, 2048, 2.0, "node", start)])
+    _session(tmp_path, 100, "sess-1", start)
+    out = ar.collect([{"kind": "claude", "session": "s", "session_id": "sess-1",
+                       "state": "active"}], home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+                     run=_fake_run(ps_text), rusage_fn=lambda p: None, fetch=lambda u: b"{}",
+                     loadavg=lambda: (0, 0, 0), self_pid=102)
+    tree = out["agents"][0]["res"]["tree"]
+    assert tree["procs"] == 2 and {p["pid"] for p in tree["top"]} == {104}
+    assert out["system"]["agents_procs"] == 2
+
+
+# ---------------------------------------------------------------- iteration 2: script names
+
+SECRET = "sk-live-DEADBEEF0123456789"
+
+
+@pytest.mark.parametrize("args,label", [
+    ("node /Users/x/node_modules/.bin/pyright-langserver --stdio", "pyright-langserver"),
+    (f"node /opt/app/server.mjs --token={SECRET}", "server"),
+    ("python3 -m pytest -q", "pytest"),
+    ("/usr/bin/python3 -X importtime ./serve.py --port 1", "serve"),
+    (f"python3 -c print('{SECRET}')", None),               # inline code: never a name
+    (f"node -e {SECRET}", None),
+    (f"node --token {SECRET} script.js", None),            # first non-flag arg is not a script
+    ("node abc/def+ghi==", None),                           # base64-ish, not a path
+    ("ruby", None),
+    ("bun run /x/y/dev-server.ts", "dev-server"),
+    ("python3 /x/" + "a" * 60 + ".py", None),               # over-long basename
+])
+def test_script_label(args, label):
+    assert ar.script_label(args) == label
+
+
+def test_script_labels_one_bounded_call_and_no_argv_kept():
+    t = _table(*[(10 + i, 1, 1024, float(i), "node") for i in range(50)],
+               (5, 1, 1024, 0.0, "zsh"))
+    seen = []
+
+    def run(argv, timeout=2.0):
+        seen.append(argv)
+        pids = argv[-1].split(",")
+        return "\n".join(f"{p} node /srv/{SECRET}/tool-{p}.js --key {SECRET}" for p in pids)
+    out = ar.script_labels(t, sorted(t), run)
+    assert len(seen) == 1 and seen[0][:3] == ["ps", "-o", "pid=,args="]
+    assert len(seen[0][-1].split(",")) == ar.ARGS_PIDS_MAX and "5" not in seen[0][-1].split(",")
+    assert out[10] == "tool-10" and SECRET not in json.dumps(out)
+
+
+def test_collect_process_names_from_args_without_secrets(tmp_path):
+    start = NOW - 7200
+    ps_text = "\n".join([_ps_line(100, 1, 1024, 1.0, "claude", start),
+                         _ps_line(104, 100, 2048, 2.0, "node", start)])
+    _session(tmp_path, 100, "sess-1", start)
+
+    def run(argv, timeout=2.0):
+        if argv[:2] == ["ps", "-o"]:
+            return f"104 node /x/pyright-langserver.js --stdio --api-key={SECRET}\n"
+        return {"ps": ps_text, "ioreg": ""}[argv[0]]
+    out = ar.collect([{"kind": "claude", "session": "s", "session_id": "sess-1",
+                       "state": "active"}], home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+                     run=run, rusage_fn=lambda p: None, fetch=lambda u: b"{}",
+                     loadavg=lambda: (0, 0, 0), self_pid=999999)
+    assert out["agents"][0]["res"]["tree"]["top"][0]["name"] == "pyright-langserver"
+    blob = json.dumps(out) + ar.graph_text(out["graph"])
+    assert SECRET not in blob and "--stdio" not in blob
+
+
+# ---------------------------------------------------------------- iteration 2: lifecycle
+
+def _sub_at(home, sid, aid, spawn_age, last_age, desc="d"):
+    _subagent(home, sid, aid, last_age, {"agentType": "Explore", "description": desc})
+    mp = home / ".claude" / "projects" / "-Users-you-src-r" / sid / "subagents" / \
+        f"agent-{aid}.meta.json"
+    os.utime(mp, (NOW - spawn_age, NOW - spawn_age))
+
+
+def test_subagent_lifecycle_states_and_flags(tmp_path):
+    _sub_at(tmp_path, "s", "run1", 14 * 60, 2)                 # running 14m
+    _sub_at(tmp_path, "s", "long", 31 * 60, 5)                 # running > 20 min -> flagged
+    _sub_at(tmp_path, "s", "quiet", 12 * 60, 3 * 60)
+    _sub_at(tmp_path, "s", "done", 40 * 60, 20 * 60)
+    _sub_at(tmp_path, "s", "errs", 31 * 60, 9 * 60)
+    tel = {"errs": {"requests": 12, "errors": 5, "tokens_out": 10},
+           "run1": {"requests": 3, "errors": 0, "tokens_out": 5}}
+    out = ar.subagents(tmp_path, "s", NOW, tel)
+    by = {s["id"]: s for s in out["list"]}
+    assert by["run1"]["state"] == "running" and by["run1"]["run_s"] == pytest.approx(14 * 60 - 2)
+    assert by["run1"]["flags"] == []
+    assert by["long"]["flags"] == ["long"]
+    assert by["quiet"]["state"] == "quiet" and by["done"]["state"] == "done"
+    assert by["errs"]["state"] == "done" and by["errs"]["flags"] == ["errors"]
+    assert [s["id"] for s in out["list"]][:3] == ["run1", "long", "errs"]   # running, then erroring
+    assert (out["count"], out["running"], out["quiet"], out["flagged"]) == (5, 2, 1, 2)
+    assert ar.lifecycle_text(by["run1"]) == "run 13m · last 2s"
+    assert ar.lifecycle_text(by["quiet"]) == "run 9m · quiet 3m"
+    assert ar.lifecycle_text(by["done"]) == "run 20m · done 20m"
+    assert ar.lifecycle_text(by["errs"]) == "run 22m · last 9m"
+    assert ar.err_text(tel["errs"]) == "5 err 42%" and ar.err_text(tel["run1"]) == ""
+
+
+def test_subagent_totals_are_summed_before_the_cut(tmp_path):
+    tel = {}
+    for i in range(12):
+        _sub_at(tmp_path, "s", f"a{i:02d}", 600, 120 + i)
+        tel[f"a{i:02d}"] = {"requests": i + 1, "tokens_out": 100 * (i + 1), "errors": 0,
+                            "tokens_in": 1, "cache_read": 10, "cache_write": 0,
+                            "models": {"claude-opus-5-5": i + 1}}
+    out = ar.subagents(tmp_path, "s", NOW, tel)
+    assert len(out["list"]) == ar.SUBAGENTS_MAX and out["more"] == 12 - ar.SUBAGENTS_MAX
+    assert out["totals"]["requests"] == sum(range(1, 13))
+    assert out["hidden"]["requests"] == sum(range(1, 13 - ar.SUBAGENTS_MAX))  # least output
+    assert out["list"][0]["id"] == "a11"                       # most output first
+    total = ar.session_totals({"telemetry": {"requests": 4, "tokens_out": 1, "models": {"x": 4}},
+                               "subagents": out})
+    assert total["requests"] == 4 + sum(range(1, 13))
+    assert total["models"] == {"claude-opus-5-5": sum(range(1, 13)), "x": 4}
+
+
+# ---------------------------------------------------------------- iteration 2: tokens, context
+
+def test_token_split_cache_share_and_wire_aware_input():
+    rows = [_row("s", tokens_in=2, cache_read_tokens=1000, cache_write_tokens=100,
+                 tokens_out=50, endpoint_id="anthropic"),
+            _row("s", tokens_in=1500, cache_read_tokens=1200, cache_write_tokens=0,
+                 tokens_out=10, endpoint_id="openai", model="kimi-k2.6")]   # cached ⊂ input
+    st = ar._stats(rows)
+    assert (st["tokens_in"], st["cache_read"], st["cache_write"], st["tokens_out"]) == \
+        (2 + 300, 2200, 100, 60)
+    assert ar.cache_share(st) == pytest.approx(2200 / (302 + 2200 + 100))
+    assert ar.tokens_text(st) == "in 302 · cached 2.2k · write 100 · out 60"
+    assert ar.tel_text(st).startswith("2 req · in 302 · cached 2.2k · write 100 · out 60 · cache 85%")
+    assert ar.cache_share({"requests": 1}) is None
+    assert "$" not in ar.tel_text(st)
+
+
+def test_context_is_the_latest_request_and_window_only_when_named():
+    rows = [_row("s", ts=NOW - 30, tokens_in=1, cache_read_tokens=240_000, cache_write_tokens=5000),
+            _row("s", ts=NOW - 10, tokens_in=3, cache_read_tokens=90_000, cache_write_tokens=0),
+            _row("s", ts=NOW - 5, is_error=True, tokens_in=0, cache_read_tokens=0,
+                 cache_write_tokens=0, tokens_out=0)]                     # no prompt: ignored
+    st = ar._stats(rows)
+    assert st["ctx_tokens"] == 90_003 and st["ctx_ts"] == NOW - 10       # latest, not largest
+    assert st["ctx_window"] is None and st["ctx_pct"] is None            # no 200k / 1M guess
+    assert ar.ctx_text(st) == "ctx 90.0k" and not ar.ctx_flag(st)
+    big = ar._stats([_row("s", model="claude-opus-5-5[1m]", tokens_in=1,
+                          cache_read_tokens=899_999, cache_write_tokens=0)])
+    assert big["ctx_window"] == 1_000_000 and big["ctx_pct"] == 90
+    assert ar.ctx_text(big) == "ctx 900.0k 90%" and ar.ctx_flag(big)
+    assert ar.context_window("claude-opus-5-5") is None
+    merged = ar.merge_stats(st, big)
+    assert "ctx_tokens" not in merged                                    # a latest value: no sum
+
+
+def test_context_flag_marks_subagent_and_agent():
+    _ = ar._lifecycle(30, 60, {"ctx_pct": 86, "errors": 0})
+    assert _ == ("running", ["ctx"])
+    assert ar.agent_flagged({"res": {"telemetry": {"ctx_pct": 90}}})
+    assert not ar.agent_flagged({"res": {"telemetry": {"ctx_pct": 50, "errors": 0}}})
+
+
+# ---------------------------------------------------------------- iteration 2: dedupe, ollama
+
+def test_graph_text_shows_claude_status_once():
+    agents = [{"kind": "claude", "repo": "r", "session": "s1", "session_id": "x", "state": "idle",
+               "res": {"status": "idle", "tree": {"pid": 5, "alive": True, "footprint_mb": 10.0,
+                                                  "cpu_pct": 0.0}}},
+              {"kind": "claude", "repo": "r", "session": "s2", "state": "active",
+               "res": {"status": "busy"}}]
+    text = ar.graph_text(ar.build_graph(agents))
+    assert "idle · idle" not in text and "active · busy" not in text
+    assert text.splitlines()[0] == "claude · r · s1 · idle · pid 5 · 10MB · 0%"
+    assert text.splitlines()[1] == "claude · r · s2 · busy"
+
+
+def test_parse_ollama_unload_time():
+    body = json.dumps({"models": [{"name": "m", "size": 1, "size_vram": 1048576,
+                                   "expires_at": "2026-10-06T12:03:00.123456789-07:00"}]})
+    now = calendar.timegm((2026, 10, 6, 19, 0, 0, 0, 0, 0))   # 19:00Z = 12:00-07:00
+    out = ar.parse_ollama(body, now=now)
+    assert out[0]["unloads_in_s"] == 180
+    assert "unloads_in_s" not in ar.parse_ollama(
+        json.dumps({"models": [{"name": "m", "expires_at": "garbage"}]}), now=now)[0]
+
+
+# ---------------------------------------------------------------- iteration 2: deadline
+
+def test_deadline_skips_remaining_sources(tmp_path):
+    calls = []
+
+    def run(argv, timeout=2.0):
+        calls.append((argv[0], timeout))
+        return ""
+    clock = iter([0.0] + [10.0] * 50)                   # budget gone after construction
+    dl = ar.Deadline(1.5, clock=lambda: next(clock))
+    out = ar.collect([{"kind": "pi", "session": "p", "session_id": "p", "cwd": "/x",
+                       "state": "active"}], home=tmp_path, telemetry=tmp_path / "none",
+                     now=NOW, run=run, rusage_fn=lambda p: None, loadavg=lambda: (0, 0, 0),
+                     deadline=dl)
+    errs = out["system"]["errors"]
+    assert calls == []                                  # nothing started after the deadline
+    assert errs["ps"].startswith("DeadlineSkip") and errs["ioreg"].startswith("DeadlineSkip")
+    assert errs["ollama"].startswith("DeadlineSkip")
+
+
+def test_deadline_caps_each_timeout_to_what_is_left():
+    t = [0.0]
+    dl = ar.Deadline(1.5, clock=lambda: t[0])
+    assert dl.timeout(1.0) == 1.0
+    t[0] = 1.2
+    assert dl.timeout(1.0) == pytest.approx(0.3)
+    t[0] = 1.47
+    with pytest.raises(ar.DeadlineSkip):
+        dl.timeout(1.0)
+
+
+def test_graph_subagent_state_word_not_repeated():
+    a = {"kind": "claude", "session": "s", "state": "active",
+         "res": {"subagents": {"list": [
+             {"id": "x", "type": "T", "description": "d", "state": "done", "age_s": 1200.0,
+              "run_s": 600.0, "flags": [], "telemetry": {"requests": 1}},
+             {"id": "y", "type": "T", "description": "e", "state": "running", "age_s": 2.0,
+              "run_s": 60.0, "flags": [], "telemetry": {"requests": 1}}]}}}
+    lines = ar.graph_text(ar.build_graph([a])).splitlines()
+    assert "  spawned T · d · 1 req · out 0 · run 10m · done 20m" in lines
+    assert "  spawned T · e · 1 req · out 0 · running · run 1m · last 2s" in lines

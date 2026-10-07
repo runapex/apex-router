@@ -11,8 +11,10 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
   worker     local worker launchd pid + queue counts (``res``: its process tree, the ollama
              server's tree and loaded models with VRAM)
   system     ``agent_resources`` — system-wide GPU utilisation / in-use memory, load average,
-             ollama models, total memory of all agent process trees; each agent gains ``res``
-             (pid, memory, cpu, disk io, top child processes, subagents, proxy traffic 60 min)
+             ollama models (VRAM, unload time), footprint / cpu of all agent process trees, all
+             proxy traffic 60 min; each agent gains ``res`` (pid, footprint, cpu % and disk MB/s
+             from two samples, top child processes, subagents with lifecycle, token split and
+             context size of the latest request)
   graph      ``{nodes, edges}``: session -spawned-> subagent, session -runs-> process,
              session/subagent -calls-> model
   proxy      ``/healthz`` on the loopback proxy
@@ -26,6 +28,11 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
 menu lines); ``--graph`` prints the call graph as an indented text tree. Every sub-collector fails open: an error becomes an ``error`` field, never an
 exception, and the command always exits 0. Stdlib only.
 
+The menu shows no dollar amounts (``measure.cost_usd`` stays in ``--json``). It is bounded: 8
+active sessions, 8 subagents each, about ``MENU_LINES_MAX`` lines; hidden rows are summed into a
+"… N more" line. All subprocess / network calls share one ``agent_resources.Deadline``.
+
+Bar: ``● N`` plus `` ⚠`` when an agent is stuck or erroring (``agent_resources.agent_flagged``).
 Bar dot colour: green = GREEN with a sufficient sample; orange = AMBER; red = RED; gray when the
 sample is insufficient (most 15-min windows), UNKNOWN, or the snapshot itself failed. A RED forced
 by a fresh retry-after stays red even on a small sample (the provider said back off).
@@ -54,7 +61,6 @@ ADAPTER_ROWS_MAX = 10
 ROW_CHARS_MAX = 120
 ADAPTER_BYTES_MAX = 256 * 1024
 STALE_S = 24 * 3600
-AGENTS_IDLE_MAX = 30
 
 COLORS = {"green": "#34C759", "orange": "#FF9500", "red": "#FF3B30", "gray": "#8E8E93"}
 _PLUGIN_LEVELS = ("GREEN", "AMBER", "RED")
@@ -240,18 +246,36 @@ def _safe(fn, *a, **kw):
         return {"error": _err(e)}
 
 
+def _default_worker(dl):
+    def pid_fn(label):
+        return agents_mod._launchd_pid(label, timeout=dl.timeout(0.5))
+    return agents_mod.worker(pid_fn=pid_fn)
+
+
+def _default_proxy(dl):
+    try:
+        t = dl.timeout(0.3)
+    except agent_resources.DeadlineSkip:
+        return {"up": False, "skipped": True, "error": "skipped: deadline"}
+    return agents_mod.proxy(timeout=t)
+
+
 def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
-            now: float | None = None, proxy_fn=None, worker_fn=None, resources_fn=None) -> dict:
+            now: float | None = None, proxy_fn=None, worker_fn=None, resources_fn=None,
+            deadline=None) -> dict:
     """The snapshot dict. ``home`` overrides ``~`` for agent discovery; the injectable
-    ``proxy_fn``/``worker_fn``/``resources_fn`` exist for tests. Never raises; never writes."""
+    ``proxy_fn``/``worker_fn``/``resources_fn`` exist for tests. Never raises; never writes.
+    Every subprocess / network call (launchctl, ps, lsof, ioreg, ollama, /healthz) shares one
+    ``agent_resources.Deadline``; a source that would start after it is skipped."""
     now = time.time() if now is None else now
+    dl = deadline or agent_resources.Deadline()
     found = _safe(agents_mod.discover, home, now)
     found = found if isinstance(found, list) else [found]
     adapters_out = _safe(adapters_block, adapters, now)
-    w = _safe(worker_fn or agents_mod.worker)
+    w = _safe(worker_fn) if worker_fn else _safe(_default_worker, dl)
     wpid = w.get("pid") if isinstance(w, dict) else None
     res = _safe(resources_fn or agent_resources.collect, found, home=home, telemetry=telemetry,
-                now=now, worker_pid=wpid if isinstance(wpid, int) else None)
+                now=now, worker_pid=wpid if isinstance(wpid, int) else None, deadline=dl)
     if isinstance(res, dict) and not res.get("error") and isinstance(res.get("agents"), list):
         found, system = res["agents"], res.get("system") or {}
         graph = res.get("graph") or {"nodes": [], "edges": []}
@@ -270,7 +294,7 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         "worker": w,
         "system": system,
         "graph": graph,
-        "proxy": _safe(proxy_fn or agents_mod.proxy),
+        "proxy": _safe(proxy_fn) if proxy_fn else _safe(_default_proxy, dl),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
     }
 
@@ -366,29 +390,196 @@ def _measure_line(m: dict) -> str:
     kind = m.get("limit_kind")
     if m.get("limit_pct") is not None:
         parts.append(f"{esc(_LIMIT_SHORT.get(kind, kind or 'limit'))} {m['limit_pct']:g}%")
-    if m.get("cost_usd") is not None:
-        c = m["cost_usd"]
-        parts.append("<$0.01" if 0 < c < 0.01 else f"${c:.2f}")
+    # cost_usd stays in --json only: the widget shows no dollar amounts (owner, 2026-10-06)
     parts.append(f"age {fmt_age(m.get('age_s'))}")
     return " · ".join(parts)
 
 
-def _agent_line(a: dict) -> str:
+ACTIVE_MAX = 8
+IDLE_SHOWN_MAX = 8
+MENU_LINES_MAX = 80
+LABEL_W = 22
+UPARAMS = "emojize=false symbolize=false"     # on every line that carries user-derived text
+MONO = "font=Menlo size=12"
+_SUB_SYM = {"running": "▶", "quiet": "◦", "done": "✓", "?": "?",
+            "active": "▶", "idle": "✓"}                 # the last two: pre-0.4.2 snapshots
+_LEVELS = {2: {"subs": 8, "procs": 3, "models": 3}, 1: {"subs": 3, "procs": 1, "models": 1}}
+
+
+def _tip(s) -> str:
+    """A tooltip value: our own numbers plus esc()'d text; no quotes, no '|', one line."""
+    return _clip(s, 240).replace('"', "'").replace("|", "¦")
+
+
+def _u(text: str, mono: bool = False, tip: str | None = None) -> str:
+    """One menu line that carries user-derived text (already esc()'d): emoji/SF-symbol
+    substitution off, optional monospace columns and tooltip."""
+    params = ([MONO] if mono else []) + [UPARAMS]
+    if tip:
+        params.append(f'tooltip="{_tip(tip)}"')
+    return f"{text} | {' '.join(params)}"
+
+
+def _col(s: str, w: int) -> str:
+    s = str(s)
+    return s.ljust(w) if len(s) <= w else s[:w - 1] + "…"
+
+
+def _res(a) -> dict:
+    return a.get("res") if isinstance(a, dict) and isinstance(a.get("res"), dict) else {}
+
+
+def _agent_label(a: dict) -> str:
+    """``repo session`` for Claude Code, ``kind:repo session`` for pi / Codex — esc()'d."""
+    kind, repo = str(a.get("kind", "?")), a.get("repo")
+    head = (repo or "") if kind == "claude" else (f"{kind}:{repo}" if repo else kind)
+    return esc(f"{head} {a.get('session', '')}".strip())
+
+
+def _tree_tip(tree: dict, extra=()) -> str:
+    if not tree.get("alive"):
+        return " · ".join(extra)
+    bits = [f"pid {tree.get('pid')}"]
+    if tree.get("uptime_s") is not None:
+        bits.append(f"up {fmt_age(tree['uptime_s'])}")
+    if tree.get("procs"):
+        bits.append(f"{tree['procs']} procs")
+    if isinstance(tree.get("cpu_s"), (int, float)):
+        bits.append(f"cpu time {fmt_age(tree['cpu_s'])}")
+    if isinstance(tree.get("read_mb"), (int, float)):
+        bits.append(f"io life {tree['read_mb']:.0f}/{tree.get('write_mb') or 0:.0f}MB")
+    if isinstance(tree.get("read_mbs"), (int, float)):
+        bits.append(f"io now r {tree['read_mbs']:.2f} w {tree.get('write_mbs') or 0:.2f} MB/s")
+    if isinstance(tree.get("rss_mb"), (int, float)):
+        bits.append(f"rss {fmt_mb(tree['rss_mb'])}")
+    bits.append("cpu sampled" if tree.get("cpu_src") == "sampled" else "cpu = ps average")
+    return " · ".join(bits + list(extra))
+
+
+def _status_word(a: dict) -> str:
+    """Claude's own busy/idle when known; else the log-mtime state."""
+    st = _res(a).get("status")
+    if st:
+        return esc(st)
+    return esc(a.get("state", "?"))
+
+
+def _agent_row(a: dict, prefix: str = "") -> str:
+    """Fixed-width monospace row for an active agent: label, status, footprint, cpu now, disk
+    io now, traffic 60 min (main + all subagents), context of the latest main-thread request."""
     if a.get("error"):
-        return f"{esc(a.get('kind', '?'))} · error · {esc(a['error'])}"
-    parts = [esc(a.get("kind", "?"))]
-    if a.get("repo"):
-        parts.append(esc(a["repo"]))
-    parts += [esc(a.get("state", "?")), fmt_age(a.get("age_s")), esc(a.get("session", ""))]
-    if a.get("subagents"):
-        parts.append(f"{a['subagents']} subagents")
-    res = a.get("res") if isinstance(a.get("res"), dict) else {}
-    if res.get("status") and res["status"] != a.get("state"):  # Claude's own busy/idle
-        parts.append(esc(res["status"]))
-    m = agent_resources.metrics_text(res.get("tree") or {})
-    if m:
-        parts.append(m)
-    return " · ".join(parts)
+        return _u(f"{prefix}{esc(a.get('kind', '?'))} · error · {esc(a['error'])}")
+    res = _res(a)
+    tree = res.get("tree") or {}
+    tot = agent_resources.session_totals(res)
+    alive = tree.get("alive")
+    mem = fmt_mb(tree.get("footprint_mb")) if alive else "—"
+    cpu = f"{tree.get('cpu_pct') or 0:g}%" if alive else "—"
+    io = agent_resources.io_rate(tree) if alive else None
+    cols = [_col(_agent_label(a), LABEL_W), _col(_status_word(a), 6), mem.rjust(6),
+            cpu.rjust(5), (agent_resources.fmt_rate(io) if io is not None else "").rjust(8)]
+    traffic = f"{tot['requests']} req · out {agent_resources._k(tot['tokens_out'])}"
+    ctx = agent_resources.ctx_text(res.get("telemetry"))
+    line = "  ".join(cols) + "  " + traffic + (f" · {ctx}" if ctx else "")
+    if agent_resources.agent_flagged(a):
+        line += "  ⚠"
+    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
+    extra = []
+    if subs.get("count"):
+        extra.append(f"subagents 60m {subs['count']} ({subs.get('running', 0)} running)")
+    if res.get("pid_source"):
+        extra.append(f"matched by {res['pid_source']}")
+    return _u(prefix + line, mono=True, tip=_tree_tip(tree, extra))
+
+
+def _sub_row(sa: dict, prefix: str) -> str:
+    st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
+    sym = "⚠" if sa.get("flags") else _SUB_SYM.get(sa.get("state"), "?")
+    label = esc(sa.get("description") or sa.get("type") or "?")
+    line = (f"{sym} {_col(label, LABEL_W)}  {agent_resources.tel_text(st)}  "
+            f"{agent_resources.lifecycle_text(sa)}")
+    tip = [f"type {esc(sa.get('type', '?'))}", f"id {esc(sa.get('id', '?'))}",
+           f"state {sa.get('state')}"]
+    if sa.get("depth"):
+        tip.append(f"depth {sa['depth']}")
+    if sa.get("flags"):
+        tip.append("flagged: " + ", ".join({"long": "running > 20 min", "errors": "errors in 60 min",
+                                            "ctx": "context ≥ 85%"}.get(f, f)
+                                           for f in sa["flags"]))
+    return _u(prefix + line, mono=True, tip=" · ".join(tip))
+
+
+def _more_text(n: int, st: dict, what: str = "more") -> str:
+    return (f"… {n} {what} ({st.get('requests', 0)} req, "
+            f"out {agent_resources._k(st.get('tokens_out', 0))})")
+
+
+def _agent_submenu(a: dict, level: int = 2) -> list:
+    """SwiftBar ``--`` lines under an active agent at a detail level (2 full, 1 compact, 0 only
+    the totals line). Totals are summed over the main thread and ALL subagents before any cut.
+    Every user-derived string goes through esc()."""
+    res = _res(a)
+    tot = agent_resources.session_totals(res)
+    out = [_u("--Σ 60m  " + agent_resources.tel_text(tot), mono=True,
+              tip="main thread + every subagent, last 60 min of proxy traffic")]
+    if level <= 0:
+        return out
+    cap = _LEVELS[level]
+    tel = res.get("telemetry")
+    if isinstance(tel, dict):
+        p50 = tel.get("p50_ttft_ms")
+        out.append(_u("--main  " + agent_resources.tel_text(tel)
+                      + (f" · ttft {p50 / 1000:.1f}s" if isinstance(p50, (int, float)) else ""),
+                      mono=True))
+    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
+    lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
+    if lst:
+        n = subs.get("count", len(lst) + (subs.get("more") or 0))
+        hdr = f"--Subagents 60m · {n} · {subs.get('running', 0)} running"
+        if subs.get("flagged"):
+            hdr += f" · {subs['flagged']} ⚠"
+        out.append(hdr)
+        shown, cut = lst[:cap["subs"]], lst[cap["subs"]:]
+        out += [_sub_row(sa, "--") for sa in shown]
+        hidden_n = len(cut) + (subs.get("more") or 0)
+        if hidden_n:
+            hid = agent_resources.merge_stats(subs.get("hidden"),
+                                              *[s.get("telemetry") for s in cut])
+            out.append("--" + _more_text(hidden_n, hid))
+    tree = res.get("tree") or {}
+    procs = [p for p in (tree.get("top") or [])[:cap["procs"]] if isinstance(p, dict)]
+    if procs:
+        out.append(f"--Processes · {tree.get('procs', '?')} · {fmt_mb(tree.get('footprint_mb'))}")
+        for p in procs:
+            tip = [f"pid {p.get('pid')}"]
+            if p.get("uptime_s") is not None:
+                tip.append(f"up {fmt_age(p['uptime_s'])}")
+            if isinstance(p.get("cpu_s"), (int, float)):
+                tip.append(f"cpu time {fmt_age(p['cpu_s'])}")
+            if isinstance(p.get("rss_mb"), (int, float)):
+                tip.append(f"rss {fmt_mb(p['rss_mb'])}")
+            out.append(_u(f"----{_col(esc(p.get('name', '?')), LABEL_W)}  "
+                          f"{fmt_mb(p.get('footprint_mb')).rjust(6)}  "
+                          f"{p.get('cpu_pct') or 0:g}%".rstrip(), mono=True, tip=" · ".join(tip)))
+    if isinstance(res.get("unattributed"), dict):
+        u = res["unattributed"]
+        out.append(f"--process not attributed ({u.get('ambiguous', '?')} candidates share this cwd)")
+    models = Counter(tot.get("models") or {})
+    if models:
+        out.append("--Models 60m")
+        out += [_u(f"----{_col(esc(name), LABEL_W)}  {n} req", mono=True)
+                for name, n in models.most_common(cap["models"])]
+    return out
+
+
+def _idle_row(a: dict) -> str:
+    if a.get("error"):
+        return _u(f"--{esc(a.get('kind', '?'))} · error · {esc(a['error'])}")
+    tree = _res(a).get("tree") or {}
+    mem = fmt_mb(tree.get("footprint_mb")) if tree.get("alive") else ""
+    line = (f"--{_col(_agent_label(a), LABEL_W)}  {_status_word(a)} {fmt_age(a.get('age_s'))}"
+            f"  {mem.rjust(6)}").rstrip()
+    return _u(line, mono=True, tip=_tree_tip(tree) or None)
 
 
 def fmt_mb(mb) -> str:
@@ -397,69 +588,100 @@ def fmt_mb(mb) -> str:
     return f"{mb / 1024:.1f}GB" if mb >= 1024 else f"{mb:.0f}MB"
 
 
-def _agent_submenu(a: dict) -> list:
-    """SwiftBar ``--`` lines under an active agent: main-thread traffic, subagents, child
-    processes, models called. Every user-derived string goes through esc()."""
-    res = a.get("res") if isinstance(a.get("res"), dict) else {}
-    out = []
-    tel = res.get("telemetry")
-    if isinstance(tel, dict):
-        p50 = tel.get("p50_ttft_ms")
-        out.append("--main thread 60m · " + agent_resources.tel_text(tel)
-                   + (f" · p50 ttft {p50 / 1000:.1f}s" if isinstance(p50, (int, float)) else ""))
-    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
-    lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
-    models: Counter = Counter((tel or {}).get("models") or {})
-    if lst:
-        more = subs.get("more") or 0
-        out.append(f"--subagents ({len(lst)}{f' +{more}' if more else ''})")
-        for sa in lst:
-            st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
-            models.update(st.get("models") or {})
-            desc = str(sa.get("description") or "")[:40]
-            out.append("--" + esc(f"{sa.get('type', '?')} · {desc} · "
-                                  f"{agent_resources.tel_text(st)} · {sa.get('state', '?')}"))
-    procs = [p for p in ((res.get("tree") or {}).get("top") or [])[:agent_resources.PROCS_TOP]
-             if isinstance(p, dict)]
-    if procs:
-        out.append("--processes")
-        out += ["--" + esc(f"{p.get('name', '?')} · {fmt_mb(p.get('rss_mb'))} · "
-                           f"{p.get('cpu_pct', 0):g}% · pid {p.get('pid')}") for p in procs]
-    if isinstance(res.get("unattributed"), dict):
-        u = res["unattributed"]
-        out.append(f"--process not attributed ({u.get('ambiguous', '?')} candidates share this cwd)")
-    if models:
-        out.append("--models 60m")
-        out += ["--" + esc(f"{name} · {n} req") for name, n in models.most_common(
-            agent_resources.GRAPH_MODELS_MAX)]
-    return out
+def _rank(a: dict):
+    tot = agent_resources.session_totals(_res(a))
+    tree = _res(a).get("tree") or {}
+    return (-(tot.get("tokens_out") or 0), -(tree.get("cpu_pct") or 0))
 
 
-def _system_lines(s: dict) -> list:
-    if s.get("error"):
-        return [f"unavailable · {esc(s['error'])}"]
-    gpu = (f"GPU {s['gpu_util_pct']}% (system-wide)" if isinstance(s.get("gpu_util_pct"), int)
-           else "GPU ? (system-wide)")
-    if isinstance(s.get("gpu_mem_mb"), (int, float)):
-        gpu += f" · {fmt_mb(s['gpu_mem_mb'])} in use"
-    lines = [gpu]
-    la = s.get("loadavg")
-    if isinstance(la, list) and la:
-        lines.append("load " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float))))
-    if isinstance(s.get("agents_rss_mb"), (int, float)):
-        lines.append(f"agents {fmt_mb(s['agents_rss_mb'])} in {s.get('agents_procs', '?')} processes")
+def _agents_header(snap: dict, n_active: int, n_idle: int) -> str:
+    s = snap.get("system") if isinstance(snap.get("system"), dict) else {}
+    bits = [f"Agents · {n_active} active · {n_idle} idle"]
+    if isinstance(s.get("agents_footprint_mb"), (int, float)):
+        bits.append(fmt_mb(s["agents_footprint_mb"]))
+    if isinstance(s.get("agents_cpu_pct"), (int, float)):
+        bits.append(f"cpu {s['agents_cpu_pct']:g}%")
+    tr = s.get("traffic_60m") if isinstance(s.get("traffic_60m"), dict) else None
+    if tr:
+        bits.append(f"{tr.get('requests', 0)} req/h")
+        bits.append(f"out {agent_resources._k(tr.get('tokens_out', 0))}/h")
+        share = agent_resources.cache_share(tr)
+        if share is not None:
+            bits.append(f"cache {agent_resources.fmt_pct(share)}")
+    tip = ("memory = physical footprint of every agent process tree · cpu sampled over "
+           f"{s.get('rate_window_s', '?')}s · req/out/cache = all proxy traffic, last 60 min · "
+           "cache = cached / (input + cached + cache write)")
+    return f"{' · '.join(bits)} | size=12 color={COLORS['gray']} tooltip=\"{_tip(tip)}\""
+
+
+def _agents_body(snap: dict, budget: int) -> list:
+    """Agent rows within a line budget: active sessions ranked by output tokens then cpu, at
+    most ACTIVE_MAX; each gets the most detail that still fits; idle ones fold into a submenu."""
+    ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
+    active = sorted([a for a in ags if a.get("state") != "idle"], key=_rank)
+    idlers = [a for a in ags if a.get("state") == "idle"]
+    shown, hidden = active[:ACTIVE_MAX], active[ACTIVE_MAX:]
+    idle_lines = (1 + min(len(idlers), IDLE_SHOWN_MAX) + (len(idlers) > IDLE_SHOWN_MAX)) \
+        if idlers else 0
+    reserve_tail = idle_lines + (1 if hidden else 0)
+    body, used = [], 0
+    for i, a in enumerate(shown):
+        rest = len(shown) - i - 1
+        row = [_agent_row(a)]
+        for level in (2, 1, 0):
+            sub = _agent_submenu(a, level) if not a.get("error") else []
+            if level == 0 or used + 1 + len(sub) + 2 * rest + reserve_tail <= budget:
+                break
+        body += row + sub
+        used += 1 + len(sub)
+    if hidden:
+        tot = agent_resources.merge_stats(*[agent_resources.session_totals(_res(a)) for a in hidden])
+        body.append(_more_text(len(hidden), tot, "more active"))
+    if idlers:
+        held = [(_res(a).get("tree") or {}).get("footprint_mb") for a in idlers]
+        held = [m for m in held if isinstance(m, (int, float))]
+        body.append(f"idle ({len(idlers)})" + (f" · {fmt_mb(sum(held))} held" if held else ""))
+        body += [_idle_row(a) for a in idlers[:IDLE_SHOWN_MAX]]
+        if len(idlers) > IDLE_SHOWN_MAX:
+            body.append(f"--… {len(idlers) - IDLE_SHOWN_MAX} more")
+    return body or ["none in the last hour"]
+
+
+def _ollama_lines(s: dict, wres: dict) -> list:
+    lines = []
+    ot = agent_resources.metrics_text(wres.get("ollama_tree") or {})
+    if ot:
+        lines.append(f"ollama server · {ot}")
     ol = s.get("ollama")
     if isinstance(ol, list):
         if not ol:
             lines.append("ollama: no model loaded")
         for m in ol[:5]:
             if isinstance(m, dict):
-                lines.append("ollama: " + esc(f"{m.get('name', '?')} · {fmt_mb(m.get('vram_mb'))} VRAM"))
+                t = f"ollama {esc(m.get('name', '?'))} · {fmt_mb(m.get('vram_mb'))} VRAM"
+                if isinstance(m.get("unloads_in_s"), (int, float)):
+                    t += f" · unloads {fmt_age(m['unloads_in_s'])}"
+                lines.append(_u(t))
     else:
         lines.append("ollama: unavailable")
+    return lines
+
+
+def _system_lines(s: dict, wres: dict | None = None) -> list:
+    if s.get("error"):
+        return [_u(f"unavailable · {esc(s['error'])}")]
+    gpu = (f"GPU {s['gpu_util_pct']}%" if isinstance(s.get("gpu_util_pct"), int) else "GPU ?")
+    if isinstance(s.get("gpu_mem_mb"), (int, float)):
+        gpu += f" · {fmt_mb(s['gpu_mem_mb'])} in use"
+    gpu += " (system-wide)"
+    la = s.get("loadavg")
+    if isinstance(la, list) and la:
+        gpu += " · load " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float)))
+    lines = [gpu] + _ollama_lines(s, wres or {})
     errs = s.get("errors")
     if isinstance(errs, dict) and errs:
-        lines.append("unavailable: " + esc(", ".join(sorted(str(k) for k in errs))))
+        lines.append(_u("unavailable: " + esc(", ".join(sorted(str(k) for k in errs))),
+                        tip=" · ".join(f"{esc(k)}: {esc(v)}" for k, v in sorted(errs.items()))))
     return lines
 
 
@@ -483,59 +705,51 @@ def _proxy_line(p: dict) -> str:
         if p.get("version"):
             bits.append(f"v{esc(p['version'])}")
         return " ".join(bits)
+    if p.get("skipped"):
+        return "not checked (deadline)"
     return "down"
 
 
 def menubar(snap: dict) -> str:
-    """SwiftBar/xbar plugin output for a snapshot."""
+    """SwiftBar/xbar plugin output for a snapshot. The bar is ``● N`` (active agents) plus
+    `` ⚠`` when any agent is stuck or erroring; the dot colour stays the pressure rule."""
     color = dot(snap)
-    lines = [_bar(color, f"● {_active(snap)}"), "---"]
+    ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
+    flag = " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
+    head = [_bar(color, f"● {_active(snap)}{flag}"), "---"]
+    sections: list = []
 
-    def section(title, body):
-        lines.append(f"{title} | size=12 color={COLORS['gray']}")
-        lines.extend(body)
-        lines.append("---")
+    def section(title, body, user_text=False):
+        hdr = f"{title} | size=12 color={COLORS['gray']}" + (f" {UPARAMS}" if user_text else "")
+        sections.append([hdr] + list(body) + ["---"])
 
     p = snap.get("pressure") if isinstance(snap.get("pressure"), dict) else {"error": "missing"}
-    section("Pressure", _pressure_lines(p, snap.get("errors15m") or {}))
+    section("Pressure", [_u(x) if "families" in x or "errors 15m" in x or "UNKNOWN" in x else x
+                         for x in _pressure_lines(p, snap.get("errors15m") or {})])
     m = snap.get("measure") if isinstance(snap.get("measure"), dict) else {"error": "missing"}
-    section("Measure", [_measure_line(m)])
-    ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
-    idle = sum(1 for a in ags if a.get("state") == "idle")
-    body = []
-    for a in ags:
-        if a.get("state") != "idle":
-            body.append(_agent_line(a))
-            body += _agent_submenu(a)
-    idlers = [a for a in ags if a.get("state") == "idle"]
-    if idlers:                                          # idle sessions fold into a submenu
-        body.append(f"idle ({len(idlers)})")
-        body += ["--" + _agent_line(a) for a in idlers[:AGENTS_IDLE_MAX]]
-        if len(idlers) > AGENTS_IDLE_MAX:
-            body.append(f"--… {len(idlers) - AGENTS_IDLE_MAX} more")
-    section(f"Agents ({_active(snap)} active, {idle} idle)", body or ["none in the last hour"])
+    section("Measure", [_u(_measure_line(m))])
+    agents_at = len(sections)
+    sections.append(None)                                   # filled once the budget is known
     w = snap.get("worker") if isinstance(snap.get("worker"), dict) else {}
-    wbody = [_worker_line(w)]
+    section(f"Worker · {esc(w.get('label', '?'))}", [_u(_worker_line(w))], user_text=True)
     wres = w.get("res") if isinstance(w.get("res"), dict) else {}
-    ot = agent_resources.metrics_text(wres.get("ollama_tree") or {})
-    if ot:
-        wbody.append(f"ollama server · {ot}")
-    for mdl in (wres.get("ollama_models") or [])[:5]:
-        if isinstance(mdl, dict):
-            wbody.append("ollama · " + esc(f"{mdl.get('name', '?')} · {fmt_mb(mdl.get('vram_mb'))} VRAM"))
-    section(f"Worker · {esc(w.get('label', '?'))}", wbody)
     sy = snap.get("system") if isinstance(snap.get("system"), dict) else {"error": "missing"}
-    section("System", _system_lines(sy))
+    section("System", _system_lines(sy, wres))
     px = snap.get("proxy") if isinstance(snap.get("proxy"), dict) else {}
-    section("Proxy", [_proxy_line(px)])
+    section("Proxy", [_u(_proxy_line(px))])
     for ad in snap.get("adapters") or []:
         if not isinstance(ad, dict) or ad.get("error"):
             continue
-        body = [f"{esc(r)} | emojize=false" for r in ad.get("rows") or []]
+        body = [f"{esc(r)} | {UPARAMS}" for r in ad.get("rows") or []]
         age = f"updated {fmt_age(ad.get('age_s'))} ago"
         body.append(f"stale · {age}" if ad.get("stale") else age)
-        section(esc(ad.get("title", "?")), body)
-    lines.append("Refresh | refresh=true")
+        section(esc(ad.get("title", "?")), body, user_text=True)
+    other = len(head) + 1 + sum(len(x) for x in sections if x)
+    budget = max(30, MENU_LINES_MAX - other - 2)
+    n_idle = sum(1 for a in ags if a.get("state") == "idle")
+    sections[agents_at] = ([_agents_header(snap, _active(snap), n_idle)]
+                           + _agents_body(snap, budget) + ["---"])
+    lines = head + [ln for sec in sections for ln in sec] + ["Refresh | refresh=true"]
     return "\n".join(lines)
 
 

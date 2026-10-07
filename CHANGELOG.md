@@ -18,18 +18,30 @@ next tag will carry.
 - `apex-router snapshot`: which agent is using what. Each Claude Code session is tied to its
   process through `~/.claude/sessions/<pid>.json` (stale files for dead or reused pids are
   ignored); pi and Codex sessions through the process's working directory, only when that match is
-  unambiguous. Each agent row shows the memory, cpu and disk io of the session process plus
-  everything it started (shell commands, test runs, MCP servers), and opens a submenu with its
-  subagents (type, description, requests / tokens / errors through the proxy in the last 60 min),
-  its busiest child processes and the models it called. A new System section shows GPU load and
-  memory (system-wide: macOS gives no per-process GPU figure without root), the load average, the
-  models ollama has loaded with their VRAM, and the memory of all agents together. `--graph`
-  prints who-spawned-what / who-runs-what / who-calls-which-model as a text tree; `--json` carries
-  the same data under `system`, `graph` and each agent's `res`. Subagents run inside their
-  session's process, so memory, cpu and io are per session; a subagent's load is its proxy
-  traffic. Still read-only and fail-open; one `ps`, at most one `lsof`, one `ioreg` per refresh.
-  A Claude session that is only waiting on a working subagent now counts as active (it used to
-  drop into the idle fold after 5 min).
+  unambiguous. Each agent row shows, in fixed-width columns, Claude's own busy/idle status, the
+  physical footprint of the session process plus everything it started, its cpu % and disk MB/s
+  right now (two samples ~250 ms apart; lifetime io, cpu time, uptime and resident size are in the
+  tooltip), its requests and output tokens through the proxy in the last 60 min, and the context
+  size of its latest request. Its submenu has the token split (uncached input, cache reads, cache
+  writes, output) and cache share summed over the main thread and every subagent, the main thread,
+  up to 8 subagents (running, then erroring, then by output; each with its run time, time since
+  its last write and its context size), the busiest child processes by real name (the basename of
+  a node/python script, e.g. `pyright-langserver`; nothing else from the command line is kept) and
+  the models it called. Subagents and sessions past the caps (8 active sessions, 8 subagents per
+  session, about 80 menu lines) become one `… N more (x req, out y)` line, so no total is lost.
+  A context percent is shown only when the request names its window (`[1m]`); none is assumed.
+  The bar reads `● N ⚠` when a subagent has run for more than 20 min, any agent had errors in the
+  last 60 min, or a known context window is 85 % full; the dot colour is still the pressure rule.
+  The widget shows no dollar amounts. A refresh run inside a session does not count itself. The
+  System section shows GPU load and memory (system-wide: macOS gives no per-process GPU figure
+  without root), the load average, and ollama once, with each model's VRAM and when it unloads.
+  All subprocess and network calls share a 1.5 s deadline; a source that would start later is
+  skipped and listed as unavailable. `--graph` prints who-spawned-what / who-runs-what /
+  who-calls-which-model as a text tree; `--json` carries the same data under `system`, `graph`
+  and each agent's `res`. Subagents run inside their session's process, so memory, cpu and io are
+  per session; a subagent's load is its proxy traffic. Still read-only and fail-open. A Claude
+  session that is only waiting on a working subagent now counts as active (it used to drop into
+  the idle fold after 5 min).
 - `apex-router zeno`: where the last bit of reliability goes. `zeno report` reads the proxy
   telemetry and xval runs and shows how per-call failures compound over long sessions (p^n against
   the clean-session rate actually seen), whether each extra "nine" costs more than the last (cost
