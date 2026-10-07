@@ -480,6 +480,9 @@ def _render_horizon(rep: dict) -> list:
     return L
 
 
+HOLDOUT_MIN_TEST = 20  # scored sessions before the held-out line prints a comparison
+
+
 def _render_markov(rep: dict) -> list:
     m = rep.get("markov")
     L = ["", "1b. horizon — Markov (bursty failures; independent of p^n)"]
@@ -500,7 +503,11 @@ def _render_markov(rep: dict) -> list:
                      f"observed {_pct(b['observed_clean'], 0):>5}  iid {_pct(b['iid_clean'], 0):>5}"
                      f"  markov {_pct(b['markov_clean'], 0):>5}")
     h = m["holdout"]
-    if h["markov_loglik"] is not None and h["iid_loglik"] is not None:
+    if h["n_test"] < HOLDOUT_MIN_TEST:
+        # Too few scored sessions for the comparison to mean anything (the prior can flip it).
+        L.append(f"  held out: too few sessions to compare ({h['n_train']} train / {h['n_test']} test, "
+                 f"need {HOLDOUT_MIN_TEST} test)")
+    elif h["markov_loglik"] is not None and h["iid_loglik"] is not None:
         L.append(f"  held out (fit first {h['n_train']} sessions, score next {h['n_test']}): "
                  f"clean/not log-lik iid {h['iid_loglik']:.1f} vs markov {h['markov_loglik']:.1f}; "
                  f"Brier iid {h['iid_brier']:.3f} vs markov {h['markov_brier']:.3f}")

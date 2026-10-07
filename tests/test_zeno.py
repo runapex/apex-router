@@ -281,6 +281,23 @@ def test_render_shows_markov_section(tmp_path):
     assert "markov" in json.loads(json.dumps(rep, default=str))
 
 
+def test_markov_sequences_follow_ts_not_file_order(tmp_path):
+    # Rows of one session written out of time order: the chain must see ok,fail,fail,ok.
+    tel = tmp_path / "t.jsonl"
+    order = [(4.0, False), (2.0, True), (1.0, False), (3.0, True)]
+    _write(tel, [{"ts": ts, "session_id": "s", "is_error": e} for ts, e in order])
+    c = zeno.report(tel, tmp_path / "none.jsonl")["markov"]["counts"]
+    assert (c["ok_fail"], c["fail_fail"], c["fail_ok"], c["ok_ok"]) == (1, 1, 1, 0)
+
+
+def test_render_holdout_needs_enough_test_sessions(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _bursty_telemetry(tel)                                   # 4 test sessions
+    assert "too few sessions to compare" in zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+    _bursty_telemetry(tel, sessions=72)                      # 22 test sessions
+    assert "clean/not log-lik" in zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+
+
 def test_render_markov_without_session_ids(tmp_path):
     tel = tmp_path / "t.jsonl"
     _write(tel, [{"ts": 1.0 + i, "is_error": i == 3} for i in range(9)])
