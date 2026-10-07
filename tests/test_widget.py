@@ -239,14 +239,16 @@ def test_menu_sparklines_from_history_and_telemetry():
     assert any(v.startswith("ctx  ▄") and v.endswith("29% 293k") for v in vis)
     assert any(v.startswith("req  ") and v.endswith("22 per 5 min · 60 min") for v in vis)
     assert any(v.startswith("tok  ") and v.endswith("out 9.8k per 5 min") for v in vis)
-    assert any(v.startswith("gpu  ") and v.endswith("6%") for v in vis)
+    assert any(v.startswith("gpu  ") and v.endswith("6% · mem 1.5GB · load 3.3") for v in vis)
     assert max(len(v) for v in vis) <= snapshot.MENU_WIDTH
 
 
 def test_menu_without_history_or_series_has_no_spark_lines():
     text = snapshot.menubar(_snap())
     vis = [snapshot.visible(ln) for ln in text.splitlines()]
-    assert not any(v.startswith(("cpu  ", "mem  ", "req  ", "gpu  ")) for v in vis)
+    assert not any(v.startswith(("cpu  ", "mem  ", "req  ")) for v in vis)
+    gpu = next(v for v in vis if v.startswith("gpu  "))                # System line, no spark yet
+    assert "▁" not in gpu and gpu.endswith("6% · mem 1.5GB · load 3.3")
     assert "bash=" not in text and "Open dashboard" not in text      # no binary: no actions
 
 
@@ -472,7 +474,7 @@ def test_detail_overview_page(tmp_path, monkeypatch):
     text = path.read_text()
     _check_html(text)
     for s in ("Sessions (small multiples", "GPU utilisation % (system-wide)", "Load average",
-              "GPU memory in use", "All proxy requests per 5 min", "ollama", "qwen3:8b"):
+              "GPU memory allocated", "All proxy requests per 5 min", "ollama", "qwen3:8b"):
         assert s in text, s
     assert "&lt;i&gt;repo&lt;/i&gt;" in text
 

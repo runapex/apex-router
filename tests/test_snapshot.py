@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
-from apex_router import cli, snapshot
+from apex_router import agent_resources, cli, snapshot
 
 NOW = 1_790_000_000.0
 
@@ -279,7 +280,9 @@ def test_user_text_is_escaped_in_menu(tmp_path):
     assert all(_param_line_ok(ln) for ln in with_params), with_params
     assert "evil ¦ ba…/rm abcd1234" in out          # repo cut, never the 8-char session id
     assert "––T ¦ x | size=12" in out
-    assert "––– | emojize=false symbolize=false" in lines and lines[-1] == "Refresh | refresh=true"
+    assert any(ln.startswith("––– | emojize=false symbolize=false") for ln in lines)
+    assert "Refresh | refresh=true" not in lines              # SwiftBar's own menu has Refresh
+    assert lines[-1] != "---"                                 # no dangling separator
     assert _user_lines_disable_emoji(lines, ["evil", "Bad¦Cause", "––T", "r ¦ refresh"])
 
 
@@ -301,12 +304,14 @@ def test_menubar_sections_and_idle_submenu(tmp_path):
     assert "insufficient sample (n=4)" in out
     assert "7d 71% · age 12m" in out and "$" not in out
     assert any(ln.startswith("r1 s1 ") and " active " in ln and "font=Menlo" in ln for ln in lines)
-    assert "idle (1)" in lines
+    assert "idle (1)" in _plain(lines)
     assert "--pi:r2 s2                idle 15m | font=Menlo size=12 emojize=false symbolize=false" \
-        in lines
-    assert "pid 42 · inbox 1 · running 0" in out
-    assert "up :8788 v0.4.1" in out
-    assert out.endswith("Refresh | refresh=true")
+        f" color={snapshot.INK['text']}" in lines
+    assert "worker up · queue 1 |" in out                  # running 0: not shown
+    assert "proxy" not in _plain(out.splitlines())[-8:][0]    # a proxy that answers: no line
+    assert "proxy up" not in out
+    assert "errors 15m" not in out                            # zero errors: no line
+    assert "Refresh" not in out
 
 
 def test_fmt_age():
@@ -362,7 +367,7 @@ def test_snapshot_writes_nothing(tmp_path, monkeypatch, capsys):
     assert _listing(home) == before
     assert not (home / ".apex-router" / "pressure.json").exists()
     out = capsys.readouterr().out
-    assert '"schema": 1' in out and "Refresh | refresh=true" in out
+    assert '"schema": 1' in out and "System | size=12" in out
 
 
 def test_menubar_writes_only_the_history_file(tmp_path, monkeypatch, capsys):
@@ -378,7 +383,7 @@ def test_menubar_writes_only_the_history_file(tmp_path, monkeypatch, capsys):
     rows = [json.loads(x) for x in (home / hist).read_text().splitlines()]
     assert len(rows) == 1 and rows[0]["v"] == 1 and isinstance(rows[0]["agents"], list)
     assert (home / lock).stat().st_size == 0                    # the lock file holds no data
-    assert "Refresh | refresh=true" in capsys.readouterr().out
+    assert "System | size=12" in capsys.readouterr().out
 
 
 def test_main_catastrophic_failure_is_gray(monkeypatch, capsys):
@@ -404,8 +409,8 @@ def test_non_finite_adapter_ts_does_not_crash(tmp_path):
 
 def test_proxy_port_from_healthz_is_never_interpolated_raw():
     line = snapshot._proxy_line({"up": True, "port": "1 | bash=/bin/sh terminal=false"})
-    assert line == "up" and "bash=" not in line
-    assert snapshot._proxy_line({"up": True, "port": 8788}) == "up :8788"
+    assert line == "proxy up" and "bash=" not in line
+    assert snapshot._proxy_line({"up": True, "port": 8788}) == "proxy up :8788"
 
 
 def test_formatter_failure_falls_back_to_gray(monkeypatch, capsys):
@@ -426,7 +431,151 @@ def test_family_level_lifts_the_dot():
 
 
 def test_worker_line_unknown_queue_is_question_mark():
-    assert snapshot._worker_line({"pid": 7, "inbox": None}) == "pid 7 · inbox ? · running ?"
+    assert snapshot._worker_line({"pid": 7, "inbox": None}) == "worker up · queue ? · running ?"
+    assert snapshot._worker_line({"pid": 7, "inbox": 0, "queue_running": 0}) == "worker up · queue 0"
+    assert snapshot._worker_line({"pid": 7, "inbox": 2, "queue_running": 1}) == \
+        "worker up · queue 2 · running 1"
+
+
+def test_worker_skipped_by_deadline_is_not_reported_down():
+    # A launchctl lookup the deadline skipped says nothing about the worker (it read
+    # "not running" for a live worker on a loaded machine).
+    w = {"label": "w", "error": "DeadlineSkip: deadline exceeded, source skipped"}
+    assert snapshot._worker_line(w) == "worker not checked (deadline) · w"
+    assert snapshot._worker_line({"label": "w", "error": "not loaded", "inbox": 0,
+                                  "queue_running": 0}) == "worker down (not loaded) · w · queue 0"
+
+
+def test_redundant_lines_are_dropped():
+    base = {"pressure": {"level": "GREEN", "insufficient_sample": False, "n": 50, "window_min": 15,
+                         "families": {"opus": "GREEN"}},
+            "errors15m": {"n": 0, "by_cause": {}},
+            "measure": {"limit_pct": None, "age_s": 90000.0, "ts": 1.0}}
+    out = snapshot.menubar(base)
+    assert "families:" not in out                    # same level as overall
+    assert "errors 15m" not in out                   # zero
+    assert "Limit" not in out and "age 1d" not in out   # a meter age without a meter
+    fam = dict(base, pressure=dict(base["pressure"], families={"opus": "GREEN", "haiku": "AMBER"}))
+    assert "families: haiku AMBER, opus GREEN" in snapshot.menubar(fam)
+    err = dict(base, errors15m={"n": 2, "by_cause": {"429": 2}})
+    assert "errors 15m: 2 (429 2)" in snapshot.menubar(err)
+    lim = dict(base, measure={"limit_kind": "five_hour", "limit_pct": 3, "age_s": 60})
+    assert "5h 3% · age 1m" in snapshot.menubar(lim)
+
+
+def test_no_subagents_drops_the_duplicate_totals():
+    # Without subagents Σ == main == the row: the submenu keeps only what the row lacks.
+    a = {"kind": "pi", "repo": "r", "session": "s1", "session_id": "0123abcd-0000", "state": "active",
+         "res": {"telemetry": {"requests": 4, "tokens_in": 1, "cache_read": 90, "cache_write": 9,
+                               "tokens_out": 50, "p50_ttft_ms": 900, "models": {"m": 4}}}}
+    sub = _plain(snapshot._agent_submenu(a, 2))
+    assert not any(x.startswith("--Σ") for x in sub)
+    assert sub[0] == "--cache 90% · ttft 0.9s"
+    assert sub[-1] == "--model  m"
+    # the collector's real zero-subagent shape: count 0 + a zero-filled totals dict (xval P2)
+    zero = {"list": [], "more": 0, "hidden": None, "count": 0, "running": 0, "flagged": 0,
+            "totals": agent_resources.merge_stats()}
+    sub0 = _plain(snapshot._agent_submenu(dict(a, res=dict(a["res"], subagents=zero)), 2))
+    assert not any(x.startswith("--Σ") for x in sub0) and sub0[0] == "--cache 90% · ttft 0.9s"
+    with_subs = dict(a, res=dict(a["res"], subagents={"list": [], "more": 1, "count": 1}))
+    assert _plain(snapshot._agent_submenu(with_subs, 2))[0].startswith("--Σ 60m  ")
+
+
+def test_menubar_collect_has_a_hard_wall_clock_limit(monkeypatch, capsys):
+    # The shared Deadline caps when a source starts, not a peer that trickles bytes (xval P1).
+    monkeypatch.setattr(snapshot, "HARD_LIMIT_S", 1)
+    monkeypatch.setattr(snapshot, "collect", lambda **k: time.sleep(5))
+    t = time.monotonic()
+    assert snapshot.main(["--menubar", "--no-history"]) == 0
+    assert time.monotonic() - t < 3
+    out = capsys.readouterr().out
+    assert out.startswith("● | color=#8E8E93") and "HardLimit" in out
+
+
+def test_hard_limit_is_not_swallowed_by_fail_open_sources(monkeypatch, capsys, tmp_path):
+    # Every source fails open with `except Exception`; the limit must still end the collect
+    # (xval pass 2: an Exception subclass was swallowed by _safe and the refresh ran on, green).
+    monkeypatch.setattr(snapshot, "HARD_LIMIT_S", 1)
+    monkeypatch.setenv("APEX_WIDGET_NO_HISTORY", "")
+    after = []
+
+    def stall(*a, **k):
+        time.sleep(5)
+    monkeypatch.setattr(snapshot.agent_resources, "collect", stall)
+    monkeypatch.setattr(snapshot, "proxy_fn", None, raising=False)
+    monkeypatch.setattr(snapshot.widget_history, "append", lambda cur: after.append(cur))
+    t = time.monotonic()
+    assert snapshot.main(["--menubar"]) == 0
+    assert time.monotonic() - t < 3
+    assert capsys.readouterr().out.startswith("● | color=#8E8E93")
+    assert after == []                                   # no history on the timeout path
+
+
+def test_gpu_line_does_not_say_unknown_beside_a_known_spark():
+    s = {"gpu_util_pct": 7, "gpu_mem_mb": 30830.5, "loadavg": [8.0, 11.2, 9.9], "ollama": []}
+    hist = [{"ts": 1.0, "agents": [], "system": {"gpu_util_pct": 5}}]
+    plain = _plain(snapshot._system_lines(s, {}, hist))
+    gpu = next(x for x in plain if x.startswith("gpu "))
+    assert gpu.endswith("7% · mem 30.1GB · load 8.0")      # one line: spark, %, memory, load
+    assert sum(x.startswith("gpu ") or "GPU" in x for x in plain) == 1
+    skipped = _plain(snapshot._system_lines({"loadavg": [1.0], "ollama": None}, {}, hist))
+    assert next(x for x in skipped if x.startswith("gpu ")).endswith("? · load 1.0")
+
+
+def test_every_menu_line_is_coloured_or_clickable():
+    # SwiftBar disables a line with neither an action nor a colour and AppKit greys it out.
+    out = snapshot.menubar(_res_snap())
+    for ln in out.splitlines()[1:]:
+        if ln.lstrip("-") == "" or ln.lstrip("-").startswith("---"):
+            continue
+        params = ln.partition(" | ")[2]
+        assert "color=" in params or "bash=" in params or "href=" in params, ln
+
+
+def test_ink_reads_parameter_keys_not_tooltip_text():
+    # xval: a subagent type "custom color=red" put "color=" in a tooltip; a substring check took it
+    # for a colour and left the row grey.
+    ln = 'x | font=Menlo tooltip="type custom color=red href=y"'
+    assert snapshot._ink(ln).endswith(f" color={snapshot.INK['text']}")
+    assert snapshot._ink("a | color=#000") == "a | color=#000"
+    assert snapshot._ink("a | bash=/x refresh=false") == "a | bash=/x refresh=false"
+    assert snapshot._ink("bare |") == f"bare | color={snapshot.INK['text']}"
+    assert snapshot._ink("plain") == f"plain | color={snapshot.INK['text']}"
+    assert snapshot._ink("-----") == "-----"
+    assert "color=" in snapshot.menubar_error("boom").splitlines()[2]
+
+
+def test_proxy_line_only_when_not_up():
+    up = dict(_res_snap(), proxy={"up": True, "port": 8788})
+    assert "proxy" not in " ".join(_plain(snapshot.menubar(up).splitlines()))
+    down = dict(_res_snap(), proxy={"up": False})
+    assert any(x.startswith("proxy down") for x in _plain(snapshot.menubar(down).splitlines()))
+
+
+def test_net_line_from_interface_counters():
+    t0 = 1_791_390_000.0
+    hist = [{"ts": t0 + 60 * i, "agents": [],
+             "system": {"net_rx": 1000 + 60_000 * i, "net_tx": 500 + 6_000 * i, "net_if": "en0"}}
+            for i in range(4)]
+    line = snapshot.net_spark_line(hist)
+    plain = line.split(" | ")[0]
+    assert plain.endswith("↓1000B/s ↑100B/s · 3m ↓176K ↑18K"), plain
+    assert "color=" + snapshot.INK["blue"] in line
+    # a counter reset (reboot) or an interface change gives no rate, never a negative one
+    reset = hist + [{"ts": t0 + 240, "agents": [], "system": {"net_rx": 5, "net_tx": 5,
+                                                              "net_if": "en0"}}]
+    assert len(snapshot.widget_history.net_rates(reset)) == 3
+    assert "measuring" in snapshot.net_spark_line(hist[:1])
+    # the newest sample gave no rate: say so instead of repeating the previous one (xval)
+    assert "counters restarted" in snapshot.net_spark_line(reset)
+    # the hour total counts only the part of an interval inside the hour (xval)
+    long = [{"ts": t0, "agents": [], "system": {"net_rx": 0, "net_tx": 0, "net_if": "en0"}},
+            {"ts": t0 + 300, "agents": [], "system": {"net_rx": 300_000, "net_tx": 0, "net_if": "en0"}}]
+    long += [{"ts": t0 + 300 + 600 * i, "agents": [],
+              "system": {"net_rx": 300_000 + 600_000 * i, "net_tx": 0, "net_if": "en0"}}
+             for i in range(1, 7)]                 # 1000 B/s for 3900 s; 10-min gaps allowed
+    plain = snapshot.net_spark_line(long).split(" | ")[0]
+    assert plain.endswith("1h ↓3.4M ↑0B"), plain        # 3,600,000 B, not 3,900,000
 
 
 def test_adapter_rows_disable_emoji(tmp_path):
@@ -487,15 +636,18 @@ def test_menubar_agent_metrics_submenu_and_system():
                    "--▶ find x                  2 req · out 10",
                    "--… 3 more (0 req, out 0)",
                    "--Processes · 1 · ?", "----pytest                       ?  20%",
-                   "--Models 60m", "----claude-opus-5-5         6 req"]
-    assert "--process not attributed (2 candidates share this cwd)" in lines
-    assert "pid 42 · inbox 0 · running 0 · ?MB · 0%" in plain     # rss-only tree: no footprint
-    assert "ollama server · 16MB · 1%" in plain
-    assert sum("ollama" in ln for ln in plain) == 2                 # once, in System
-    s = lines.index("System | size=12 color=#8E8E93")
-    assert plain[s + 1:s + 6] == ["GPU 37% · 1.5GB in use (system-wide) · load 3.29 3.11 2.69",
-                                  "ollama server · 16MB · 1%", "ollama: no model loaded",
-                                  "unavailable: lsof", "---"]
+                   "--model  claude-opus-5-5"]                   # one model: a line
+    assert "--process not attributed (2 candidates share this cwd)" in plain
+    assert sum("ollama" in ln for ln in plain) == 1                 # once, in System
+    s = plain.index("System")
+    assert plain[s + 1:s + 7] == ["proxy down", "worker up · queue 0",
+                                  "net  –                               measuring (needs two refreshes)",
+                                  "gpu  –                               37% · mem 1.5GB · load 3.3",
+                                  "ollama · no model loaded", "not read this refresh: lsof"]
+    wl = next(ln for ln in lines if ln.startswith("worker up"))
+    assert "pid 42 · ?MB · 0%" in wl                                # memory/cpu: tooltip only
+    ol = next(ln for ln in lines if ln.startswith("ollama"))
+    assert "server + runners 16MB · 1%" in ol
     assert lines[0] == "● 2 ⚠ | color=#34C759"                     # main-thread errors flag
 
 
@@ -508,7 +660,7 @@ def test_menubar_escapes_process_names_and_descriptions():
     plain = _plain(lines)
     assert "----––evil ¦ bash=/bin/rm        ?  20%" in plain
     assert "--▶ x ¦ terminal=true nl    2 req · out 10" in plain
-    assert "----m¦href=http://x         6 req" in plain
+    assert "--model  m¦href=http://x" in plain
     assert _user_lines_disable_emoji(lines, ["evil", "terminal=true", "href"])
 
 
@@ -597,7 +749,7 @@ def test_menubar_is_bounded_with_more_totals():
     req = sum(2 + 25 for _ in hidden)
     out_tok = sum(10 * int(a["session"][1:]) + 25 * 100 for a in hidden)
     from apex_router import agent_resources as ar
-    assert f"… {len(hidden)} more active ({req} req, out {ar._k(out_tok)})" in lines
+    assert f"… {len(hidden)} more active ({req} req, out {ar._k(out_tok)})" in _plain(lines)
 
 
 def test_menubar_session_totals_include_every_subagent():
@@ -651,8 +803,8 @@ def test_ollama_shown_once_with_unload_time():
             "worker": {"label": "w", "pid": 7, "inbox": 0, "queue_running": 0,
                        "res": {"ollama_models": [{"name": "Ornith-9B Q4_K_M", "vram_mb": 6553.6}]}}}
     lines = _plain(snapshot.menubar(snap).splitlines())
-    assert [ln for ln in lines if "Ornith" in ln] == \
-        ["ollama Ornith-9B Q4_K_M · 6.4GB VRAM · unloads 3m"]
+    # one line: the model's weights are in the runner, so no separate server-footprint line
+    assert [ln for ln in lines if "Ornith" in ln] == ["ollama Ornith-9B Q4_K_M 6.4GB 3m"]
 
 
 def test_snapshot_deadline_skips_proxy(tmp_path):
@@ -715,7 +867,7 @@ def test_session_row_label_keeps_the_session_id_and_shows_rate_and_last():
     lines = _plain(snapshot.menubar({"pressure": {}, "agents": [a], "ts": NOW}).splitlines())
     row = next(ln for ln in lines if "s0000001" in ln and not ln.startswith("--"))
     assert row.startswith("a-v…/worktree s0000001 busy")                  # 22 wide, id whole
-    assert "ctx 283k/1M 28% · r5 3.2/min · last 42s" in row
+    assert "ctx 283k/1M 28% · last 42s · r5 3.2/min" in row
 
 
 def test_processes_header_adds_up_to_the_listed_rows():
@@ -834,7 +986,8 @@ def test_large_home_line_widths(big_home):
     assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in out + g)
     # every shown session row keeps its full 8-char id
     sids = {a["session"] for a in snap["agents"]}
-    rows = [ln for ln in out.splitlines() if "font=Menlo" in ln and not ln.startswith("-")]
+    rows = [ln for ln in out.splitlines() if "font=Menlo" in ln and not ln.startswith("-")
+            and not ln.startswith(("net ", "gpu "))]                   # System spark rows
     assert rows and all(any(s in r for s in sids) for r in rows)
 
 

@@ -104,8 +104,12 @@ def sample(snap: dict) -> dict:
             break
     s = snap.get("system") if isinstance(snap.get("system"), dict) else {}
     la = s.get("loadavg")
+    net = s.get("net") if isinstance(s.get("net"), dict) else {}
     system = {"gpu_util_pct": _num(s.get("gpu_util_pct")), "gpu_mem_mb": _r(s.get("gpu_mem_mb")),
-              "load1": _r(la[0], 2) if isinstance(la, list) and la else None}
+              "load1": _r(la[0], 2) if isinstance(la, list) and la else None,
+              # cumulative interface bytes: the next refresh turns them into a rate
+              "net_rx": _num(net.get("rx")), "net_tx": _num(net.get("tx")),
+              "net_if": net.get("ifs") if isinstance(net.get("ifs"), str) else None}
     return {"v": SCHEMA, "ts": round(ts, 1), "agents": agents,
             "system": {k: v for k, v in system.items() if v is not None}}
 
@@ -305,11 +309,37 @@ def buckets(rows, now: float, n: int = 12, size_s: float = 300.0) -> dict:
         i = min(n - 1, int((ts - start) // size_s))
         b = out.get(sid)
         if b is None:
-            b = out[sid] = {k: [0] * n for k in ("req", "out", "in", "cached", "write", "err")}
+            b = out[sid] = {k: [0] * n for k in ("req", "out", "in", "cached", "write", "err",
+                                                 "net")}
         b["req"][i] += 1
         b["out"][i] += int(_num(r.get("tokens_out")) or 0)
         b["in"][i] += ar.fresh_input(r)
         b["cached"][i] += ar._cache_read(r)
         b["write"][i] += ar._cache_write(r)
         b["err"][i] += 1 if r.get("is_error") else 0
+        b["net"][i] += int(_num(r.get("bytes_up")) or 0) + int(_num(r.get("bytes_down")) or 0)
+    return out
+
+
+NET_GAP_MAX_S = 10 * 60          # a longer gap between samples is not one rate (sleep, plugin off)
+
+
+def net_rates(samples: list) -> list:
+    """[(ts, rx B/s, tx B/s, dt s)] between consecutive samples that carry interface counters for the
+    same interfaces, at most NET_GAP_MAX_S apart. A counter that went down (reboot, interface
+    reset) gives no point rather than a negative or a wrapped rate — the Stats app clamps the
+    same way."""
+    out = []
+    prev = None
+    for s in samples or []:
+        sy = s.get("system") if isinstance(s.get("system"), dict) else {}
+        rx, tx, ifs, ts = _num(sy.get("net_rx")), _num(sy.get("net_tx")), sy.get("net_if"), \
+            _num(s.get("ts"))
+        if rx is None or tx is None or ts is None:
+            continue
+        if prev and prev[3] == ifs and 0 < ts - prev[0] <= NET_GAP_MAX_S \
+                and rx >= prev[1] and tx >= prev[2]:
+            dt = ts - prev[0]
+            out.append((ts, (rx - prev[1]) / dt, (tx - prev[2]) / dt, dt))
+        prev = (ts, rx, tx, ifs)
     return out
