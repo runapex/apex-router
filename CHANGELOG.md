@@ -93,6 +93,34 @@ next tag will carry.
   RUNBOOK-pi-integration.md.
 
 ### Fixed
+- Menu bar widget: a loaded machine no longer misreports live services. The shared refresh
+  deadline is 1.2 s (was 0.45 s); with endpoint security slowing every spawn, the old budget
+  skipped launchctl / ioreg / ollama / `/healthz` on about half the refreshes, and a skipped
+  worker lookup read `not running`. A skipped source now says `not checked`. GPU memory is
+  ioreg's `Alloc system memory` (29.8GB beside a 26GB ollama model; `In use` read 1.4GB), and a
+  pinned ollama model (`keep_alive -1`) reads `pinned`, not `unloads 106751d`.
+- Menu bar widget: fewer, non-redundant lines (44 -> 31 on a one-session machine). No `errors 15m:
+  0`, no family levels equal to the overall level, no limit section without a meter, no `Σ` line
+  for a session without subagents (it repeated the row), one `model` line for a single model, no
+  plugin `Refresh` (SwiftBar has one); proxy, worker, GPU/load and ollama share one System section.
+- Menu bar widget: a `Quality · 24h` section — routing classification and escalations
+  (`route_log`), tier conformance (`conformance`), requests / retries / failures with causes (proxy
+  telemetry), and verification (xval verdicts, codeqa citation grounding). Read-only, fail-open,
+  ~40 ms.
+- Proxy telemetry v10: `bytes_up` / `bytes_down` per request (forwarded body / raw response bytes).
+- Menu bar widget: network traffic — per agent from the proxy's wire bytes, total for the Mac from
+  the physical interfaces' counters between refreshes (the Stats app's method). Anthropic palette
+  colours on every line (lines with neither colour nor action were greyed out by macOS); SwiftBar's
+  own submenu hidden; GPU sparkline, %, memory and load on one line; one ollama line; proxy only
+  when down; worker memory/cpu and disk io out of the way unless they say something.
+- Proxy: Codex traffic is now attributed to its session. codex-cli sends its thread id in a
+  `session-id` header (the same uuid as its rollout file); the proxy read only
+  `x-claude-code-session-id`, so every Codex row had `session_id` null and the widget showed a
+  Codex session at `0 req · out 0`. Claude Code's header still wins. Rows logged before this
+  stay unattributed.
+- Menu bar widget: one `--menubar` collect is bounded to 3 s wall clock (SIGALRM); the shared
+  deadline only caps when a source starts, so a peer trickling bytes could hold a refresh. The
+  timeout shows the gray dot and writes no history sample. GPU memory is read per accelerator.
 - Proxy: a response stream that breaks after it started now records why
   (`error_cause = midstream_<error>`, e.g. `midstream_ReadError`). Before, these rows were marked as
   errors with no cause — 56% of all error rows on the test machine. A rejected request keeps its

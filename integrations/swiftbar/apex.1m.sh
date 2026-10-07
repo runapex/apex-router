@@ -7,7 +7,8 @@
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideLastUpdated>false</swiftbar.hideLastUpdated>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
-# <swiftbar.hideSwiftBar>false</swiftbar.hideSwiftBar>
+# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
 #
 # Refreshes every minute (the ".1m." in the file name). Prints whatever
 # `apex-router snapshot --menubar` prints; a gray dot when the binary is missing or fails.

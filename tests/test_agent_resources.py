@@ -164,6 +164,34 @@ def test_parse_ioreg():
     assert ar.parse_ioreg("") == {"gpu_util_pct": None, "gpu_mem_mb": None}
 
 
+def test_parse_ioreg_prefers_allocated_memory():
+    # Live M-series sample: ollama held a 26GB model while "In use" read 1.4GB. "Alloc" is
+    # what the GPU holds; "In use" is only the fallback when Alloc is absent.
+    text = ('"PerformanceStatistics" = {"In use system memory (driver)"=0,'
+            '"Alloc system memory"=32658669568,"Device Utilization %"=5,'
+            '"In use system memory"=1445904384}')
+    assert ar.parse_ioreg(text) == {"gpu_util_pct": 5, "gpu_mem_mb": 31145.7}
+    # per accelerator: one with Alloc, one with only In use -> both counted (xval P2)
+    mixed = ('+-o A  <class AGXAccelerator>\n "Alloc system memory"=104857600\n'
+             '+-o B  <class AGXAccelerator>\n "In use system memory"=209715200\n')
+    assert ar.parse_ioreg(mixed)["gpu_mem_mb"] == 300.0
+
+
+def test_parse_ollama_pinned_model_has_no_countdown():
+    now = 1_791_393_000.0
+    body = json.dumps({"models": [
+        {"name": "big", "size": 1, "size_vram": 1, "expires_at": "2319-01-17T09:07:52.794456807-08:00"},
+        {"name": "small", "size": 1, "size_vram": 1,
+         "expires_at": "2026-10-07T10:27:16.508468-07:00"}]})
+    big, small = ar.parse_ollama(body, now)
+    assert big.get("pinned") is True and "unloads_in_s" not in big
+    assert "pinned" not in small and isinstance(small["unloads_in_s"], (int, float))
+    # a long but finite keep_alive (366 days) keeps its countdown (xval P2)
+    far = json.dumps({"models": [{"name": "f", "expires_at": "2027-10-08T10:00:00Z"}]})
+    (f,) = ar.parse_ollama(far, now)
+    assert "pinned" not in f and f["unloads_in_s"] > 365 * 86400
+
+
 def test_parse_ollama():
     body = json.dumps({"models": [{"name": "qwen3:8b", "size": 6 * 2**30, "size_vram": 5 * 2**30},
                                   {"bad": 1}, "x"]})
@@ -293,12 +321,31 @@ def test_metrics_text():
 
 # ---------------------------------------------------------------- collect
 
+_NETSTAT = (
+    "Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll\n"
+    "lo0        16384 <Link#1>                        717402     0 1731363854   717402     0 1731363854     0\n"
+    "en0        1500  <Link#14>   aa:bb:cc:dd:ee:ff  4549772     0 4273680726  3938938     0 3601569027     0\n"
+    "en0        1500  192.168.1/24  192.168.1.10       4549772     - 4273680726  3938938     - 3601569027     -\n"
+    "utun4      1406  <Link#22>                        44366     0   21666944    28562     0   21369378     0\n")
+
+
+def test_parse_netstat_counts_physical_link_rows_once():
+    # en0's link row only (not its address rows); loopback and the VPN tunnel left out (the
+    # tunnel's bytes also cross en0). Shape of a live `netstat -ibn` sample (address scrubbed).
+    assert ar.parse_netstat(_NETSTAT) == {"rx": 4273680726, "tx": 3601569027, "ifs": "en0"}
+    assert ar.parse_netstat("") is None and ar.parse_netstat("garbage\n") is None
+    # a link row without an Address column (xval): counted from the right
+    noaddr = _NETSTAT.splitlines()[0] + "\nen5        1500  <Link#9>      10     0       1000       20     0       2000     0\n"
+    assert ar.parse_netstat(noaddr) == {"rx": 1000, "tx": 2000, "ifs": "en5"}
+
+
 def _fake_run(ps_text, lsof_text="", ioreg_text='"Device Utilization %"=5 "In use system memory"=1048576'):
     calls = []
 
     def run(argv, timeout=2.0):
         calls.append(argv[0])
-        return {"ps": ps_text, "lsof": lsof_text, "ioreg": ioreg_text}[argv[0]]
+        return {"ps": ps_text, "lsof": lsof_text, "ioreg": ioreg_text,
+                "netstat": _NETSTAT}[argv[0]]
     run.calls = calls
     return run
 

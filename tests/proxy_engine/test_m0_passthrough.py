@@ -189,6 +189,22 @@ def test_telemetry_event_emitted_per_request(app_with_mock_upstream):
     assert ev["bust"] is False and ev["transforms"] == []  # M0: no transforms yet
 
 
+def test_codex_session_header_is_the_telemetry_session_id(app_with_mock_upstream):
+    """codex-cli sends its thread id as ``session-id`` (captured from codex-cli 0.146.1); without
+    it every Codex row had session_id null and the widget showed its session at 0 requests."""
+    app, _, cfg = app_with_mock_upstream
+    sid = "01a11770-8fa5-7970-b05b-d07a4df7cda0"
+    with TestClient(app) as client:
+        client.post("/v1/responses", content=b'{"model":"gpt","input":[]}',
+                    headers={"session-id": sid, "originator": "codex_exec"})
+        client.post("/v1/messages", content=b'{"messages":[]}',      # Claude's header wins
+                    headers={"anthropic-version": "2023-06-01",
+                             "x-claude-code-session-id": "cc", "session-id": "other"})
+    rows = [json.loads(x) for x in cfg.telemetry_path.read_text().strip().splitlines()]
+    assert rows[0]["session_id"] == sid and rows[0]["client"] == "codex"
+    assert rows[1]["session_id"] == "cc"
+
+
 # ---- byte-fidelity regressions (cross-validation) ----
 
 def test_query_string_preserved(app_with_mock_upstream):

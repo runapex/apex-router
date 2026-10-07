@@ -86,7 +86,11 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # v9: added `cache_key_rewrite` — a row records when the proxy edited the forwarded body (the opt-in
 # APEX_CODEX_CACHE_KEY stable prompt_cache_key; proxy.cache_key). None = forwarded byte-identical, so
 # a with/without-rewrite cache-hit comparison is a filter, not an inference.
-TELEMETRY_SCHEMA_VERSION = 9
+# v10: added `bytes_up` / `bytes_down` — wire bytes the proxy forwarded upstream (the request body
+# as sent) and streamed back (the raw, still-encoded response body). Per session they are that
+# agent's LLM network traffic; the menu-bar widget sums them (nettop only sees open sockets, and an
+# agent's requests are short-lived connections that close before it can be sampled).
+TELEMETRY_SCHEMA_VERSION = 10
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -210,6 +214,8 @@ class TelemetryEvent:
     # nothing but stays null). Together they are the (X, y) pair R1 consumes from request one.
     shadow: dict | None = None
     usage: dict | None = None
+    bytes_up: int = 0      # v10: request body bytes forwarded upstream
+    bytes_down: int = 0    # v10: response body bytes streamed back (as received, encoded)
 
     @classmethod
     def start(cls, *, apex_version: str, client: str) -> TelemetryEvent:

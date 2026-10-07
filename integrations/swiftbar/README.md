@@ -13,8 +13,10 @@ each refresh appends one small sample to `~/.apex-router/widget/history.jsonl` (
 node/python/… processes inside agent trees), `ioreg` once, `launchctl list` once and — only when a
 pi or Codex session is listed — `lsof` once, and makes two loopback calls: the proxy's `/healthz`
 and ollama's `/api/ps`. All of these, the 0.25 s cpu/io sampling window and the subagent log scan
-share one 0.45 s deadline; a source that would start after it is skipped and shown under System as
-unavailable, so even a hung source keeps a refresh near 0.5 s. A refresh takes about 0.35 s.
+share one 1.2 s deadline; a source that would start after it is skipped and shown under System as
+unavailable (or `not checked`), so even a hung source keeps a refresh near 1.2 s. A refresh takes
+about 0.35-0.5 s; with endpoint security scanning every spawn it can reach 1 s, which is why the
+budget is not tighter (0.45 s skipped sources on about half the refreshes of such a machine).
 Subagent logs are read only for the active sessions the menu shows (at most 8); 300 sessions with
 40 subagents each refresh in about 0.15 s plus the sampling window. Every visible line is at most
 110 characters (`--graph`: 120), and control characters (ESC, DEL, C1) never reach a line.
@@ -28,6 +30,55 @@ ln -s "$PWD/integrations/swiftbar/apex.1m.sh" "<your SwiftBar plugin folder>/ape
 
 `.1m.` in the file name is the refresh interval (one minute). The script looks for
 `~/.local/bin/apex-router`, then `apex-router` on `PATH`; if neither runs it shows a gray dot.
+
+## Quality (last 24 h)
+
+Four lines between Agents and System, each with the detail in its tooltip:
+
+| line | source | meaning |
+|---|---|---|
+| `routing 56 tasks · debug 45 review 10 generate 1 · escalated 4 (7%)` | `route_log.jsonl` | what the router classified each task as, and how many bounced to a bigger tier (tooltip: why) |
+| `tier match 69/69 (100%)` | `conformance.jsonl` | resolved model = the tier asked for (`route-check`); rows without an observed model are not counted |
+| `requests 1874 · ok 99.5% · retries 0 · failed 9` | proxy telemetry | failed = error or upstream rejection (a 400 is not an `is_error`); tooltip: retry wait, broken streams, causes, failures with no cause |
+| `verify xval 19/22 verdict · citations 92% grounded` | `xval_runs.jsonl`, `codeqa_impact.jsonl` | reviews that reached a verdict; codeqa citations that exist in the code |
+
+Amber when something needs a look (escalation ≥ 10 %, any tier mismatch, failures, a review
+without a verdict or with `bad` feedback, a stale or hallucinated citation); red at ≥ 2 %
+failed requests. A percentage is never rounded up to 100 % (99.5 %, not 100 %). "Accuracy" is
+the share of verifiable claims that verified — not whether answers were right.
+
+## Network
+
+- **Per agent** (`↑2.1M ↓19K` on the row, `↑↓` in the Agents header): the bytes the proxy sent
+  upstream for that session (request bodies — the whole context goes up on every call, so up is
+  usually far larger than down) and received back (the raw, still-encoded stream), last 60 min.
+  From telemetry `bytes_up`/`bytes_down` (schema v10). Traffic that does not go through the proxy
+  is not in it. Per-process sockets (`nettop`) were tried and rejected: an agent's requests are
+  short-lived connections, and nettop drops a socket's bytes once it closes.
+- **Total** (`net` in System): every byte this Mac sent and received on its physical `en*`
+  interfaces (VPN tunnels ride on them, loopback is local), from `netstat -ibn`'s 64-bit
+  counters — the same source and method as the Stats app's network module: the rate is the
+  counter difference between two refreshes (so a 1-min average), the sparkline one point per
+  refresh, and the total the sum over the refreshes of the last hour. A counter that went
+  backwards (reboot) or an interface change gives no point.
+
+## Colours
+
+Anthropic's palette, as SwiftBar `light,dark` pairs: section headers in clay, network in sky
+blue, GPU in heather, health green / amber / red. SwiftBar turns a line with neither an action nor
+a colour into a disabled menu item, which macOS greys out, so every line carries a colour.
+
+## Minimal by default
+
+Lines that would say nothing are left out: `errors 15m` when there were none, the per-family
+levels when every family has the overall level, the limit meter when no meter has been recorded,
+and the plugin's own `Refresh`. The plugin hides SwiftBar's own submenu and About item
+(`hideSwiftBar`, `hideAbout`); "Updated … ago" stays. System holds the worker, `net`, `gpu` (sparkline,
+utilisation, GPU memory, 1-min load on one line) and ollama (all loaded models on one line: the
+weights live in the runner, so a separate server footprint would count them twice). The proxy is
+listed only when it does not answer. Disk io appears only when it reached 0.5 MB/s in view (agents
+wait on the network, so it is almost always 0). A source that was not read in time says `not checked`
+or `?`, never `down`/`not running`.
 
 ## The dot
 
@@ -93,7 +144,9 @@ Models 60m
 ```
 
 - `Σ` sums the main thread and every subagent before anything is cut, so the totals never shrink
-  when rows are hidden.
+  when rows are hidden. A session without subagents has no `Σ` line (it would repeat the row);
+  its submenu keeps only what the row lacks — cache share, errors, ttft — and a single model is
+  one `model` line instead of a `Models 60m` submenu.
 - The main and subagent rows keep input / cached / cache-write tokens and run time in their
   tooltip; `Σ` shows the full split.
 - Subagents: `▶` running (wrote in the last 60 s), `◦` quiet (< 5 min), `✓` done, `⚠` flagged
@@ -121,8 +174,10 @@ row says the process is not attributed.
 What cannot be attributed:
 
 - **GPU per agent.** macOS reports GPU use per process only to root. The System section shows the
-  GPU utilisation and memory in use for the whole machine, and each model ollama has loaded with
-  its VRAM and when it unloads.
+  GPU utilisation and the memory allocated to the GPU (ioreg `Alloc system memory`, which
+  includes ollama's resident models; `In use system memory` is only the working set) for the whole
+  machine, and each model ollama has loaded with its VRAM and when it unloads (`pinned` for
+  `keep_alive -1`).
 - **Memory/cpu per subagent.** Subagents run inside their session's process. Their load is their
   proxy traffic; the process figures belong to the session.
 - **Traffic that skips the proxy.** Request and token counts only include calls routed through

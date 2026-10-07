@@ -51,7 +51,11 @@ def detect_client(request: Request) -> str:
 
 
 def _session_id(request: Request) -> str | None:
-    return request.headers.get("x-claude-code-session-id")
+    """The client's own session id: Claude Code's header, else Codex's ``session-id`` (codex-cli
+    0.146 sends its thread id there — the same uuid as its rollout file, so the widget joins a
+    Codex session's traffic to its row). Without either, the matcher derives one downstream."""
+    h = request.headers
+    return h.get("x-claude-code-session-id") or h.get("session-id") or None
 
 
 def _requested_model(body: bytes) -> str | None:
@@ -177,6 +181,9 @@ async def handle(
     # model_resolved: x-model header, or fall back to the client-requested model (the anthropic wire omits
     # x-model → the field was 100% null on the shadow window). Same as the shadow handler.
     event.model_resolved = response.headers.get("x-model") or event.model_requested
+    # v10: the forwarded body (after any opt-in rewrite) — set only once a response exists; on the
+    # raise path above it may never have left (PoolTimeout/ConnectError), so it stays 0 there.
+    event.bytes_up = len(fwd_body)
 
     # Usage capture — the SAME teed side-read the shadow handler runs, ported here so the shipping
     # (active) path emits the gates' inputs (usage/cache split/content_encoding), not just timing.
@@ -207,6 +214,7 @@ async def handle(
                     backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
                     event.t_upstream_ttfb_ms = (now - t_send) * 1000.0 - backoff_ms
                     first = False
+                event.bytes_down += len(chunk)  # v10: wire bytes back, as received
                 scanner.feed(chunk)  # copy-scan; never raises (fail-open inside)
                 if err_scanner is not None:
                     err_scanner.feed(chunk)  # copy-scan, bounded; never raises

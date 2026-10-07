@@ -86,7 +86,11 @@ TREE_PIDS_MAX = 300
 RATE_PIDS_MAX = 40                # pids sampled twice for cpu % / disk MB/s
 ARGS_PIDS_MAX = 40                # interpreter pids whose script name is looked up
 RATE_SAMPLE_S = 0.25
-DEADLINE_S = 0.45                 # all subprocess + network timeouts + the rate sample together
+# All subprocess + network timeouts + the rate sample together. A full refresh measures
+# 0.36-0.46 s, but endpoint security (Defender / CrowdStrike) makes each spawn 40-80 ms, so a
+# 0.45 s budget skipped ps args / ioreg / ollama / /healthz on ~half the refreshes and the menu
+# showed live services as "not running". The plugin refreshes once a minute; 1.2 s is cheap.
+DEADLINE_S = 1.2
 DEADLINE_MIN_S = 0.05             # a source is skipped when less than this remains
 META_BYTES_MAX = 64 * 1024
 SESSION_BYTES_MAX = 64 * 1024
@@ -96,6 +100,10 @@ _MB = 1024 * 1024
 _LSTART_FMT = "%a %b %d %H:%M:%S %Y"
 _IOREG_UTIL_RE = re.compile(r'"Device Utilization %"\s*=\s*(\d+)')
 _IOREG_MEM_RE = re.compile(r'"In use system memory"\s*=\s*(\d+)')
+_IOREG_ALLOC_RE = re.compile(r'"Alloc system memory"\s*=\s*(\d+)')
+# keep_alive -1 is reported as now + max time.Duration (~292 years: "2319-01-17..."); any finite
+# keep_alive a person sets is far below 100 years, so the gap is unambiguous.
+OLLAMA_PINNED_S = 100 * 365 * 86400
 _AGENT_FILE_RE = re.compile(r"^agent-([A-Za-z0-9_-]+)\.jsonl$")
 
 _sleep = time.sleep               # module attributes so tests can fake them
@@ -583,9 +591,49 @@ def match_by_cwd(agents: list, table: dict, cwds: dict) -> dict:
 
 # ---- GPU / ollama ---------------------------------------------------------------------------
 
+_NETSTAT_IF_RE = re.compile(r"^(en\d+)\s")
+
+
+def parse_netstat(text: str) -> dict | None:
+    """Physical interfaces' cumulative bytes from ``netstat -ibn`` (64-bit counters, unlike
+    getifaddrs' 32-bit ones, which wrap every 4GB): ``{"rx": B, "tx": B, "ifs": "en0"}`` summed
+    over the ``en*`` link rows. VPN tunnels (utun*) are left out — their traffic also crosses an
+    ``en`` interface, so adding them would count it twice; loopback is local. None without rows."""
+    lines = (text or "").splitlines()
+    if not lines:
+        return None
+    head = lines[0].split()
+    try:
+        i_in, i_out = head.index("Ibytes"), head.index("Obytes")
+    except ValueError:
+        return None
+    rx = tx = 0
+    ifs = []
+    for ln in lines[1:]:
+        cols = ln.split()
+        if not _NETSTAT_IF_RE.match(ln) or len(cols) < len(head) - 1 or "<Link#" not in ln:
+            continue
+        # a link row with no address has one column fewer: count from the right
+        try:
+            rxb, txb = int(cols[i_in - len(head)]), int(cols[i_out - len(head)])
+        except (ValueError, IndexError):
+            continue
+        if rxb or txb:
+            rx, tx = rx + rxb, tx + txb
+            ifs.append(cols[0])
+    return {"rx": rx, "tx": tx, "ifs": ",".join(sorted(set(ifs)))} if ifs else None
+
+
 def parse_ioreg(text: str) -> dict:
     util = [int(m) for m in _IOREG_UTIL_RE.findall(text or "")]
-    mem = [int(m) for m in _IOREG_MEM_RE.findall(text or "")]
+    # "Alloc system memory" is what the GPU holds (ollama's resident models included);
+    # "In use system memory" is only the current working set (1.4GB beside a 26GB model).
+    # Per accelerator (ioreg starts each with "+-o"): Alloc, else that one's In use.
+    mem = []
+    for block in re.split(r"(?m)^\+-o ", text or ""):
+        vals = [int(m) for m in _IOREG_ALLOC_RE.findall(block)] \
+            or [int(m) for m in _IOREG_MEM_RE.findall(block)]
+        mem += vals
     return {"gpu_util_pct": max(util) if util else None,
             "gpu_mem_mb": _mb(sum(mem)) if mem else None}
 
@@ -616,7 +664,9 @@ def parse_ollama(body, now: float | None = None) -> list:
             continue
         row = {"name": m["name"], "size_mb": _mb(m.get("size")), "vram_mb": _mb(m.get("size_vram"))}
         exp = _iso_epoch(m.get("expires_at"))
-        if exp is not None:
+        if exp is not None and exp - now > OLLAMA_PINNED_S:
+            row["pinned"] = True                     # keep_alive -1: never unloads
+        elif exp is not None:
             row["unloads_in_s"] = round(max(0.0, exp - now))
         out.append(row)
     return out
@@ -722,6 +772,7 @@ def _stats(rows: list, now: float | None = None) -> dict:
            "errors_5m": sum(1 for r in rows if r.get("is_error")
                             and (_ts(r) or 0) >= now - ERR_RECENT_S),
            "req_5m": sum(1 for t in stamps if t >= now - RATE_WINDOW_S),
+           "net_up": tot("bytes_up"), "net_down": tot("bytes_down"),   # v10 proxy wire bytes
            "last_ts": max(stamps) if stamps else None,
            "p50_ttft_ms": round(statistics.median(ttft)) if ttft else None,
            "models": dict(Counter(str(r.get("model_requested") or "?") for r in rows)
@@ -745,7 +796,7 @@ def _stats(rows: list, now: float | None = None) -> dict:
 
 
 _SUMMED = ("requests", "tokens_out", "tokens_in", "cache_read", "cache_write", "errors",
-           "errors_5m", "req_5m")
+           "errors_5m", "req_5m", "net_up", "net_down")
 
 
 def merge_stats(*parts) -> dict:
@@ -1132,6 +1183,26 @@ def _kc(n) -> str:
     return f"{n / 1000:.0f}k" if n >= 1000 else str(int(n))
 
 
+def fmt_bytes(n) -> str:
+    """``950B`` / ``12K`` / ``1.2M`` / ``3.4G`` (binary units, short for a menu column)."""
+    if not isinstance(n, (int, float)) or not math.isfinite(n) or n < 0:
+        return "?"
+    for unit, div in (("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)):
+        if n >= div:
+            v = n / div
+            return f"{v:.1f}{unit}" if v < 10 else f"{v:.0f}{unit}"
+    return f"{int(n)}B"
+
+
+def net_text(st: dict | None) -> str:
+    """``↑12M ↓0.9M`` — proxy wire bytes up / down (empty when none recorded: pre-v10 rows)."""
+    st = st or {}
+    up, down = st.get("net_up") or 0, st.get("net_down") or 0
+    if not (up or down):
+        return ""
+    return f"↑{fmt_bytes(up)} ↓{fmt_bytes(down)}"
+
+
 def fmt_rate_min(n5) -> str:
     """``r5 3.2/min`` from a 5-min request count."""
     if not isinstance(n5, (int, float)):
@@ -1181,6 +1252,9 @@ def tel_text(st: dict | None) -> str:
     c = ctx_text(st)
     if c:
         bits.append(c)
+    n = net_text(st)
+    if n:
+        bits.append(n)
     return " · ".join(bits)
 
 
@@ -1410,6 +1484,10 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     system.update(guard("ioreg", lambda: parse_ioreg(
         run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], timeout=dl.timeout(0.5))), {}))
     system["ollama"] = guard("ollama", lambda: parse_ollama(fetch(OLLAMA_URL), now), None)
+    net = guard("netstat", lambda: parse_netstat(run(["netstat", "-ibn"], timeout=dl.timeout(0.5))),
+                None)
+    if net:
+        system["net"] = net
     agent_pids = {p for r in roots.values() for p in tree_pids.get(r, [])}
     labels = guard("ps_args", lambda: script_labels(
         table, sorted(agent_pids, key=lambda p: -table[p]["cpu"]), run, dl.timeout(0.5)),

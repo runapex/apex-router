@@ -749,7 +749,7 @@ def overview_page(snap: dict, rows: list, hist: list, now: float) -> str:
               "agents cpu now"),
         _tile(f"{s['gpu_util_pct']}%" if _num(s.get("gpu_util_pct")) is not None else "—",
               "GPU (system)"),
-        _tile(ar.fmt_mem(s.get("gpu_mem_mb")), "GPU memory in use"),
+        _tile(ar.fmt_mem(s.get("gpu_mem_mb")), "GPU memory allocated"),
         _tile(" ".join(f"{x:.2f}" for x in s.get("loadavg") or []) or "—", "load 1/5/15"),
         _tile(str(tr.get("requests", 0)), "requests 60 min"),
         _tile(ar._k(tr.get("tokens_out", 0)), "output 60 min"),
@@ -786,7 +786,7 @@ def overview_page(snap: dict, rows: list, hist: list, now: float) -> str:
     body.append(line_chart("GPU utilisation % (system-wide)",
                            [("gpu", SERIES[0], widget_history.system_series(hist, "gpu_util_pct"))],
                            h0, now, lambda v: f"{v:g}%"))
-    body.append(line_chart("GPU memory in use (system-wide)",
+    body.append(line_chart("GPU memory allocated (system-wide)",
                            [("gpu memory", SERIES[0],
                              widget_history.system_series(hist, "gpu_mem_mb"))],
                            h0, now, _mb_axis, zero=False))

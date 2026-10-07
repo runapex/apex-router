@@ -63,7 +63,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import agent_resources, pressure, widget_history
+from . import agent_resources, pressure, quality, widget_history
 from . import agents as agents_mod
 
 SCHEMA = 1
@@ -76,7 +76,21 @@ ROW_CHARS_MAX = 120
 ADAPTER_BYTES_MAX = 256 * 1024
 STALE_S = 24 * 3600
 
+# The bar dot keeps the system status colours (readable on any menu bar).
 COLORS = {"green": "#34C759", "orange": "#FF9500", "red": "#FF3B30", "gray": "#8E8E93"}
+# Menu text: Anthropic's palette as SwiftBar ``light,dark`` pairs. A line with neither an action nor
+# a colour is a DISABLED NSMenuItem, which AppKit draws grey — so every line gets one (``_ink``).
+INK = {
+    "text": "#141413,#FAF9F5",      # slate dark / ivory
+    "muted": "#5E5D59,#B0AEA5",     # body muted / cloud
+    "accent": "#C15F3C,#D97757",    # crail / clay: section headers
+    "blue": "#3A6A9E,#6A9BCC",      # sky: network, sparklines
+    "green": "#5A7A3C,#8FB05F",     # cactus: healthy
+    "amber": "#A86A1E,#D4A27F",     # kraft: warn / not checked
+    "red": "#B5372B,#E06C5C",       # error / down
+    "violet": "#7A5C9E,#A88CC9",    # heather: GPU, models
+}
+_LEVEL_INK = {"GREEN": "green", "AMBER": "amber", "RED": "red"}
 _PLUGIN_LEVELS = ("GREEN", "AMBER", "RED")
 _LIMIT_SHORT = {"five_hour": "5h", "seven_day": "7d", "seven_day_opus": "7d opus",
                 "seven_day_sonnet": "7d sonnet"}
@@ -309,6 +323,7 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         "system": system,
         "graph": graph,
         "proxy": _safe(proxy_fn) if proxy_fn else _safe(_default_proxy, dl),
+        "quality": _safe(quality.collect, now, telemetry),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
     }
 
@@ -387,11 +402,12 @@ def _pressure_lines(p: dict, e: dict) -> list:
         if p.get("retry_after_recent") and p.get("retry_after_s") is not None:
             lines.append(f"retry-after {p['retry_after_s']}s")
         fams = p.get("families") or {}
-        if fams:
+        if any(v != level for v in fams.values()):     # same level as overall: nothing to add
             lines.append("families: " + ", ".join(f"{esc(k)} {v}" for k, v in sorted(fams.items())))
     if isinstance(e, dict) and not e.get("error"):
-        by = ", ".join(f"{esc(k)} {v}" for k, v in (e.get("by_cause") or {}).items())
-        lines.append(f"errors 15m: {e.get('n', 0)}" + (f" ({by})" if by else ""))
+        if e.get("n"):                                 # "errors 15m: 0" is noise
+            by = ", ".join(f"{esc(k)} {v}" for k, v in (e.get("by_cause") or {}).items())
+            lines.append(f"errors 15m: {e['n']}" + (f" ({by})" if by else ""))
     elif isinstance(e, dict):
         lines.append(f"errors 15m: ? ({esc(e['error'])})")
     return lines
@@ -572,19 +588,24 @@ def _agent_row(a: dict, prefix: str = "", now: float | None = None, bin_path=Non
     head = (f"{_col(_agent_label(a, LABEL_W), LABEL_W)} {_col(_status_word(a), 6)} "
             f"{mem.rjust(6)} {cpu.rjust(5)}")
     bits = [f"{tot['requests']} req", f"out {agent_resources._k(tot['tokens_out'])}"]
+    net = agent_resources.net_text(tot)
+    if net:
+        bits.append(net)
     io = agent_resources.io_rate(tree) if alive else None
     if isinstance(io, (int, float)) and io >= IO_ROW_MIN_MBS:
         bits.insert(0, f"io {agent_resources.fmt_rate(io)}")  # only when disk is actually busy
     ctx = agent_resources.ctx_text(res.get("telemetry"))
     if ctx:
         bits.append(ctx)
-    if tot.get("req_5m"):
-        bits.append(agent_resources.fmt_rate_min(tot["req_5m"]))
     last = _last_text(tot.get("last_ts"), now) if tot.get("requests") else ""
     if last:
         bits.append(last)
+    r5 = agent_resources.fmt_rate_min(tot["req_5m"]) if tot.get("req_5m") else ""
     flag = " ⚠" if agent_resources.agent_flagged(a) else ""
-    line = _fit(head + "  " + " · ".join(bits), flag)
+    line = head + "  " + " · ".join(bits)
+    if r5 and len(line) + 3 + len(r5) + len(flag) <= MENU_WIDTH:
+        line += " · " + r5                       # the rate is the first thing to give way
+    line = _fit(line, flag)
     subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
     extra = []
     if subs.get("count"):
@@ -663,20 +684,32 @@ def _agent_submenu(a: dict, level: int = 2, bin_path=None, history=None) -> list
     tot = agent_resources.session_totals(res)
     act = click_action(bin_path, a.get("session_id"), "session")
     out = [f"--Open details ↗ | {act}"] if act else []
-    out.append(_u("--Σ 60m  " + agent_resources.tel_text(tot), mono=True,
-                  tip="main thread + every subagent, last 60 min of proxy traffic", action=act))
+    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
+    # The collector always returns a (zero-filled) "totals" dict: only its requests count.
+    has_subs = bool(subs.get("count") or subs.get("list") or subs.get("more")
+                    or (subs.get("totals") or {}).get("requests"))
+    tel = res.get("telemetry")
+    # Σ = main + subagents. With no subagents it repeats the main line; keep only the split
+    # (input / cached / write) the row lacks, as the main line's tooltip already carries it.
+    if has_subs or level <= 0 or not isinstance(tel, dict):
+        out.append(_u("--Σ 60m  " + agent_resources.tel_text(tot), mono=True,
+                      tip="main thread + every subagent, last 60 min of proxy traffic"))
     if level <= 0:
         return out
     out += ["--" + ln for ln in spark_lines(a, history, compact=level < 2, action=act)]
     cap = _LEVELS[level]
-    tel = res.get("telemetry")
     if isinstance(tel, dict):
         p50 = tel.get("p50_ttft_ms")
-        out.append(_u("--" + _fit("main  " + _brief(tel)
-                                  + (f" · ttft {p50 / 1000:.1f}s"
-                                     if isinstance(p50, (int, float)) else "")),
-                      mono=True, tip=agent_resources.tokens_text(tel), action=act))
-    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
+        ttft = f" · ttft {p50 / 1000:.1f}s" if isinstance(p50, (int, float)) else ""
+        if has_subs:
+            body = "main  " + _brief(tel) + ttft
+        else:                     # req / out / ctx are on the row already: only what it lacks
+            share = agent_resources.cache_share(tel)
+            e = agent_resources.err_text(tel)
+            body = " · ".join(b for b in (
+                f"cache {agent_resources.fmt_pct(share)}" if share is not None else "",
+                e, ttft[3:]) if b) or "main"
+        out.append(_u("--" + _fit(body), mono=True, tip=agent_resources.tokens_text(tel)))
     lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
     if lst:
         n = subs.get("count", len(lst) + (subs.get("more") or 0))
@@ -715,7 +748,10 @@ def _agent_submenu(a: dict, level: int = 2, bin_path=None, history=None) -> list
         u = res["unattributed"]
         out.append(f"--process not attributed ({u.get('ambiguous', '?')} candidates share this cwd)")
     models = Counter(tot.get("models") or {})
-    if models:
+    if len(models) == 1:                             # one model: a line, not a submenu
+        name, n = models.most_common(1)[0]
+        out.append(_u(f"--model  {esc(name)}", mono=True, tip=f"{n} req in 60 min"))
+    elif models:
         out.append("--Models 60m")
         out += [_u(f"----{_col(esc(name), LABEL_W)}  {n} req", mono=True)
                 for name, n in models.most_common(cap["models"])]
@@ -767,7 +803,7 @@ def spark_lines(a: dict, history=None, compact: bool = False, action: str = "") 
                                       fmt_mb(cur), action,
                                       f"physical footprint · {span} · scale {fmt_mb(lo)}..max"))
             io = ser("io_mbs")
-            if any(v for v in io if v is not None):
+            if any(v >= IO_ROW_MIN_MBS for v in io[-SPARK_W:] if v is not None):  # in view
                 cur = next(v for v in reversed(io) if v is not None)
                 out.append(_spark_row("io", widget_history.sparkline(io),
                                       agent_resources.fmt_rate(cur), action,
@@ -797,13 +833,52 @@ def spark_lines(a: dict, history=None, compact: bool = False, action: str = "") 
 
 
 def gpu_spark_line(history, s: dict) -> str:
-    """``gpu ▁▁▃▂  6%`` from the history's system samples (system-wide GPU), or ''."""
+    """``gpu  ▁▁▃▂  6% · mem 29.8GB · load 3.3`` (system-wide); a dash instead of the sparkline
+    before there is history, ``GPU ?`` when this refresh could not read it."""
     vals = [v for _, v in widget_history.system_series(history or [], "gpu_util_pct")]
-    if not any(v is not None for v in vals):
-        return ""
-    cur = s.get("gpu_util_pct") if isinstance(s.get("gpu_util_pct"), (int, float)) else \
-        next(v for v in reversed(vals) if v is not None)
-    return f"{'gpu':<4} {widget_history.sparkline(vals).ljust(SPARK_W)}  {cur:g}% | {MONO}"
+    cur = s.get("gpu_util_pct")
+    spark = widget_history.sparkline(vals) if any(v is not None for v in vals) else ""
+    bits = [f"{cur:g}%" if isinstance(cur, (int, float)) else "?"]
+    if isinstance(s.get("gpu_mem_mb"), (int, float)):
+        bits.append(f"mem {fmt_mb(s['gpu_mem_mb'])}")
+    la = s.get("loadavg")
+    if isinstance(la, list) and la and isinstance(la[0], (int, float)):
+        bits.append(f"load {la[0]:.1f}")
+    tip = ("GPU utilisation and GPU-allocated memory are system-wide (macOS gives no per-process "
+           "GPU figure without root) · load = 1-min load average")
+    if isinstance(la, list):
+        tip += " · load 1/5/15 " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float)))
+    return (f"{'gpu':<4} {(spark or '–').ljust(SPARK_W)}  {' · '.join(bits)} | {MONO} "
+            f"color={INK['violet']} tooltip=\"{_tip(tip)}\"")
+
+
+def net_spark_line(history) -> str:
+    """``net  ▁▃█▂  ↓1.2M/s ↑40K/s · 1h ↓310M ↑52M`` from the interface counters of consecutive
+    history samples (physical en* interfaces: everything this Mac sent or received). The rate is
+    the average since the previous refresh (~1 min), like the Stats app's per-interval reading."""
+    rates = widget_history.net_rates(history or [])
+    if not rates:
+        return (f"{'net':<4} {'–'.ljust(SPARK_W)}  measuring (needs two refreshes) | {MONO} "
+                f"color={INK['muted']}")
+    end_ts, rx, tx, _ = rates[-1]
+    last = max((_epoch_s(h.get("ts")) or 0) for h in history if isinstance(h, dict))
+    if end_ts < last:            # the newest sample gave no rate (reset, gap, interface change)
+        return (f"{'net':<4} {'–'.ljust(SPARK_W)}  measuring (counters restarted) | {MONO} "
+                f"color={INK['muted']}")
+    lo = end_ts - 3600
+    # each interval counts only for its part inside the hour
+    hour = [(r, min(r[3], r[0] - lo)) for r in rates if r[0] > lo]
+    got = sum(w for _, w in hour)                      # seconds actually covered
+    down, up = sum(r[1] * w for r, w in hour), sum(r[2] * w for r, w in hour)
+    span = "1h" if got >= 3300 else f"{max(1, round(got / 60))}m"   # time actually covered
+    fb = agent_resources.fmt_bytes
+    text = f"↓{fb(rx)}/s ↑{fb(tx)}/s · {span} ↓{fb(down)} ↑{fb(up)}"
+    tip = ("all network traffic of this Mac (physical en* interfaces; VPN tunnels ride on them), "
+           "averaged between refreshes · totals over the refreshes of the last hour · "
+           "per-agent ↑↓ = LLM bytes through the proxy")
+    spark = widget_history.sparkline([r[1] + r[2] for r in rates])
+    return (f"{'net':<4} {spark.ljust(SPARK_W)}  {text} | {MONO} "
+            f"color={INK['blue']} tooltip=\"{_tip(tip)}\"")
 
 
 def fmt_mb(mb) -> str:
@@ -830,10 +905,14 @@ def _agents_header(snap: dict, n_active: int, n_idle: int) -> str:
         share = agent_resources.cache_share(tr)
         if share is not None:
             bits.append(f"cache {agent_resources.fmt_pct(share)}")
+        net = agent_resources.net_text(tr)
+        if net:
+            bits.append(net)
     tip = ("memory = physical footprint of every agent process tree · cpu sampled over "
            f"{s.get('rate_window_s', '?')}s · req/out/cache = all proxy traffic, last 60 min · "
-           "cache = cached / (input + cached + cache write)")
-    return f"{' · '.join(bits)} | size=12 color={COLORS['gray']} tooltip=\"{_tip(tip)}\""
+           "cache = cached / (input + cached + cache write) · ↑↓ = bytes the proxy sent upstream "
+           "/ received, last 60 min")
+    return f"{' · '.join(bits)} | size=12 color={INK['accent']} tooltip=\"{_tip(tip)}\""
 
 
 def _agents_body(snap: dict, budget: int, bin_path=None, history=None) -> list:
@@ -873,70 +952,173 @@ def _agents_body(snap: dict, budget: int, bin_path=None, history=None) -> list:
 
 
 def _ollama_lines(s: dict, wres: dict) -> list:
-    lines = []
-    ot = agent_resources.metrics_text(wres.get("ollama_tree") or {})
-    if ot:
-        lines.append(f"ollama server · {ot}")
+    """One line: every loaded model with its memory and keep-alive. The model's weights live in the
+    runner process, so a separate "server" footprint line would count the same GB twice; the
+    server process stays in the tooltip."""
     ol = s.get("ollama")
-    if isinstance(ol, list):
-        if not ol:
-            lines.append("ollama: no model loaded")
-        for m in ol[:5]:
-            if isinstance(m, dict):
-                t = f"ollama {esc(m.get('name', '?'))} · {fmt_mb(m.get('vram_mb'))} VRAM"
-                if isinstance(m.get("unloads_in_s"), (int, float)):
-                    t += f" · unloads {fmt_age(m['unloads_in_s'])}"
-                lines.append(_u(t))
-    else:
-        lines.append("ollama: unavailable")
-    return lines
+    ot = agent_resources.metrics_text(wres.get("ollama_tree") or {})
+    srv = f" · server + runners {ot}" if ot else ""
+    if not isinstance(ol, list):
+        return [_u("ollama ?", tip="ollama /api/ps did not answer this refresh" + srv)]
+    if not ol:
+        return [_u("ollama · no model loaded", tip=("ollama" + srv) if srv else None)]
+    parts = []
+    for m in ol[:3]:
+        if not isinstance(m, dict):
+            continue
+        name = esc(str(m.get("name", "?")).removesuffix(":latest"))
+        t = f"{name} {fmt_mb(m.get('vram_mb'))}"
+        if m.get("pinned"):
+            t += " pinned"
+        elif isinstance(m.get("unloads_in_s"), (int, float)):
+            t += f" {fmt_age(m['unloads_in_s'])}"
+        parts.append(t)
+    if len(ol) > 3:
+        parts.append(f"+{len(ol) - 3}")
+    tip = "memory held per model · pinned = keep_alive -1, else time until it unloads" + srv
+    return [_u("ollama " + " · ".join(parts), tip=tip)]
 
 
 def _system_lines(s: dict, wres: dict | None = None, history=None) -> list:
     if s.get("error"):
         return [_u(f"unavailable · {esc(s['error'])}")]
-    gpu = (f"GPU {s['gpu_util_pct']}%" if isinstance(s.get("gpu_util_pct"), int) else "GPU ?")
-    if isinstance(s.get("gpu_mem_mb"), (int, float)):
-        gpu += f" · {fmt_mb(s['gpu_mem_mb'])} in use"
-    gpu += " (system-wide)"
-    la = s.get("loadavg")
-    if isinstance(la, list) and la:
-        gpu += " · load " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float)))
-    lines = [gpu]
-    g = gpu_spark_line(history, s)
-    if g:
-        lines.append(g)
+    errs = s.get("errors") if isinstance(s.get("errors"), dict) else {}
+    lines = [net_spark_line(history), gpu_spark_line(history, s)]
     lines += _ollama_lines(s, wres or {})
-    errs = s.get("errors")
-    if isinstance(errs, dict) and errs:
-        lines.append(_u("unavailable: " + esc(", ".join(sorted(str(k) for k in errs))),
-                        tip=" · ".join(f"{esc(k)}: {esc(v)}" for k, v in sorted(errs.items()))))
+    if errs:
+        lines.append(_u("not read this refresh: " + esc(", ".join(sorted(str(k) for k in errs))),
+                        tip=" · ".join(f"{esc(k)}: {esc(v)}" for k, v in sorted(errs.items())))
+                     + f" color={INK['amber']}")
     return lines
 
 
 def _worker_line(w: dict) -> str:
+    """``worker up · queue 0`` (``· running N`` only while a job runs; memory/cpu in the tooltip),
+    ``worker not checked`` when the deadline skipped the lookup, else ``worker down (why)``."""
     def n(k):
         return w[k] if isinstance(w.get(k), int) else "?"
-    q = f"inbox {n('inbox')} · running {n('queue_running')}"
+    label = esc(w.get("label", "?"))
     if w.get("pid"):
-        res = w.get("res") if isinstance(w.get("res"), dict) else {}
-        m = agent_resources.metrics_text(res.get("tree") or {})
-        return f"pid {w['pid']} · {q}" + (f" · {m}" if m else "")
-    why = esc(w.get("error") or "not running")
-    return f"not running ({why}) · {q}"
+        q = f"queue {n('inbox')}"
+        if n("queue_running") != 0:
+            q += f" · running {n('queue_running')}"
+        return f"worker up · {q}"
+    err = str(w.get("error") or "")
+    if "DeadlineSkip" in err:                        # not looked at is not "not running"
+        return f"worker not checked (deadline) · {label}"
+    return f"worker down ({esc(err or 'not running')}) · {label} · queue {n('inbox')}"
+
+
+def _pct(a, b) -> str:
+    """Whole percent, but never rounds a shortfall up to 100% (or a hit down to 0%)."""
+    if not b:
+        return "–"
+    x = 100 * a / b
+    if 99 < x < 100 or 0 < x < 1:
+        return f"{x:.1f}%".replace("100.0%", "99.9%").replace("0.0%", "0.1%")
+    return f"{x:.0f}%"
+
+
+def _quality_lines(q: dict) -> list:
+    """Four lines, 24 h: routing (classification + escalations), tier match, reliability
+    (retries / errors), verification (xval verdicts, codeqa citation grounding). Details in the
+    tooltips; a source that is missing says so instead of showing 0."""
+    out = []
+
+    def line(text, ink, tip):
+        out.append(_u(text, tip=tip) + f" color={INK[ink]}")
+
+    c = q.get("classification") or {}
+    if c.get("error") or c.get("missing"):
+        line("routing ?", "muted", c.get("error") or "no route_log.jsonl")
+    else:
+        types = c.get("types") or {}
+        mix = " ".join(f"{esc(k)} {v}" for k, v in list(types.items())[:3])
+        esc_n = c.get("escalated", 0)
+        txt = f"routing {c.get('n', 0)} tasks · {mix}" if types else "routing · no routed tasks"
+        if types:
+            txt += f" · escalated {esc_n} ({_pct(esc_n, c.get('n', 0))})"
+        tip = "task types the router classified, and how many bounced to a bigger tier"
+        if c.get("escalation_causes"):
+            tip += " · escalated because: " + ", ".join(
+                f"{esc(k)} {v}" for k, v in c["escalation_causes"].items())
+        line(txt, "amber" if c.get("n") and esc_n / c["n"] >= 0.10 else "text", tip)
+
+    m = q.get("conformance") or {}
+    if m.get("error") or m.get("missing"):
+        line("tier match ?", "muted", m.get("error") or "no conformance.jsonl")
+    elif m.get("observed"):
+        ok = m["observed"] - m["mismatched"]
+        tip = "resolved model = the tier the router asked for (route-check, 24 h)"
+        if m.get("mismatches"):
+            tip += " · " + ", ".join(f"{esc(k)} ×{v}" for k, v in m["mismatches"].items())
+        line(f"tier match {ok}/{m['observed']} ({_pct(ok, m['observed'])})",
+             "green" if not m["mismatched"] else "amber", tip)
+
+    r = q.get("reliability") or {}
+    if r.get("error") or r.get("missing"):
+        line("requests ?", "muted", r.get("error") or "no telemetry")
+    else:
+        n, f = r.get("requests", 0), r.get("failed", 0)
+        bits = [f"requests {n} · ok {_pct(n - f, n)}", f"retries {r.get('retries', 0)}"]
+        if f:
+            bits.append(f"failed {f}")
+        tip = ("proxy telemetry, 24 h · failed = error or upstream rejection (4xx/5xx) · "
+               f"retried requests {r.get('retried_requests', 0)}, waited "
+               f"{r.get('retry_wait_ms', 0)} ms · broken streams {r.get('midstream', 0)}")
+        if r.get("causes"):
+            tip += " · " + ", ".join(f"{esc(k)} {v}" for k, v in r["causes"].items())
+        unl = f - sum(r.get("causes", {}).values())
+        if unl > 0:
+            tip += f" · no cause recorded {unl}"
+        line(" · ".join(bits), "green" if not f else "amber" if f / max(n, 1) < 0.02 else "red",
+             tip)
+
+    v = q.get("verification") or {}
+    xv, cq = v.get("xval") or {}, v.get("codeqa") or {}
+    bits, tip, ink = [], [], "text"
+    if xv.get("runs"):
+        bits.append(f"xval {xv['ok']}/{xv['runs']} verdict")
+        tip.append(f"cross-validation reviews that finished with a verdict · bad feedback "
+                   f"{xv.get('bad_feedback', 0)} · truncated tool output in {xv.get('truncated', 0)}"
+                   + (f" · median {xv['median_s']:.0f}s" if xv.get("median_s") else ""))
+        if xv["ok"] < xv["runs"] or xv.get("bad_feedback"):
+            ink = "amber"
+    cites = sum(cq.get(k, 0) for k in ("grounded", "stale", "hallucinated"))
+    if cites:
+        bits.append(f"citations {_pct(cq['grounded'], cites)} grounded")
+        tip.append(f"codeqa answers: {cq.get('questions', 0)} · citations grounded "
+                   f"{cq['grounded']}, stale {cq.get('stale', 0)}, hallucinated "
+                   f"{cq.get('hallucinated', 0)}")
+        if cq.get("stale") or cq.get("hallucinated"):
+            ink = "amber"
+    if bits:
+        line("verify " + " · ".join(bits), ink, " · ".join(tip))
+    return out
+
+
+def _worker_tip(w: dict) -> str:
+    res = w.get("res") if isinstance(w.get("res"), dict) else {}
+    bits = [f"launchd {esc(w.get('label', '?'))}"]
+    if w.get("pid"):
+        bits.append(f"pid {w['pid']}")
+    m = agent_resources.metrics_text(res.get("tree") or {})
+    if m:
+        bits.append(m)
+    return " · ".join(bits)
 
 
 def _proxy_line(p: dict) -> str:
     if p.get("up"):
-        bits = ["up"]
+        bits = ["proxy up"]
         if isinstance(p.get("port"), int):  # from the /healthz body: never interpolate raw text
             bits.append(f":{p['port']}")
         if p.get("version"):
             bits.append(f"v{esc(p['version'])}")
         return " ".join(bits)
     if p.get("skipped"):
-        return "not checked (deadline)"
-    return "down"
+        return "proxy not checked (deadline)"
+    return "proxy down"
 
 
 def menubar(snap: dict, history=None, bin_path=None) -> str:
@@ -954,23 +1136,38 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
     sections: list = []
 
     def section(title, body, user_text=False):
-        hdr = f"{title} | size=12 color={COLORS['gray']}" + (f" {UPARAMS}" if user_text else "")
+        hdr = f"{title} | size=12 color={INK['accent']}" + (f" {UPARAMS}" if user_text else "")
         sections.append([hdr] + list(body) + ["---"])
 
     p = snap.get("pressure") if isinstance(snap.get("pressure"), dict) else {"error": "missing"}
-    section("Pressure", [_u(x) if "families" in x or "errors 15m" in x or "UNKNOWN" in x else x
-                         for x in _pressure_lines(p, snap.get("errors15m") or {})])
+    lvl = INK[_LEVEL_INK.get(p.get("level"), "muted")]
+    plines = []
+    for i, x in enumerate(_pressure_lines(p, snap.get("errors15m") or {})):
+        ln = _u(x) if "families" in x or "errors 15m" in x or "UNKNOWN" in x else f"{x} |"
+        ink = lvl if i == 0 else INK["red"] if x.startswith("errors 15m") else INK["text"]
+        plines.append(f"{ln} color={ink}")
+    section("Pressure", plines)
     m = snap.get("measure") if isinstance(snap.get("measure"), dict) else {"error": "missing"}
-    section("Measure", [_u(_measure_line(m))])
+    if m.get("limit_pct") is not None or m.get("error"):   # an age with no meter says nothing
+        section("Limit", [_u(_measure_line(m))])
     agents_at = len(sections)
     sections.append(None)                                   # filled once the budget is known
+    q = snap.get("quality")
+    if isinstance(q, dict) and not q.get("error"):
+        ql = _quality_lines(q)
+        if ql:
+            section("Quality · 24h", ql)
     w = snap.get("worker") if isinstance(snap.get("worker"), dict) else {}
-    section(f"Worker · {esc(w.get('label', '?'))}", [_u(_worker_line(w))], user_text=True)
     wres = w.get("res") if isinstance(w.get("res"), dict) else {}
     sy = snap.get("system") if isinstance(snap.get("system"), dict) else {"error": "missing"}
-    section("System", _system_lines(sy, wres, history))
     px = snap.get("proxy") if isinstance(snap.get("proxy"), dict) else {}
-    section("Proxy", [_u(_proxy_line(px))])
+    svc = []
+    if not px.get("up"):          # an answering proxy is implied by the traffic above: say nothing
+        svc.append(_u(_proxy_line(px)) + f" color={INK['amber' if px.get('skipped') else 'red']}")
+    wl = _worker_line(w)
+    wink = "green" if wl.startswith("worker up") else "amber" if "not checked" in wl else "red"
+    svc.append(_u(wl, tip=_worker_tip(w)) + f" color={INK[wink]}")
+    section("System", svc + _system_lines(sy, wres, history))
     for ad in snap.get("adapters") or []:
         if not isinstance(ad, dict) or ad.get("error"):
             continue
@@ -983,8 +1180,43 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
     n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a))
     sections[agents_at] = ([_agents_header(snap, _active(snap), n_idle)]
                            + _agents_body(snap, budget, bin_path, history) + ["---"])
-    lines = head + [ln for sec in sections for ln in sec] + ["Refresh | refresh=true"]
-    return "\n".join(_cap_width(ln) for ln in lines)
+    lines = head + [ln for sec in sections for ln in sec]
+    if lines and lines[-1] == "---":
+        lines.pop()
+    return "\n".join(_ink(_cap_width(ln)) if i else _cap_width(ln) for i, ln in enumerate(lines))
+
+
+def _ink(line: str) -> str:
+    """Give a line a palette colour unless it has one or an action. SwiftBar makes a line with
+    neither a disabled NSMenuItem, and AppKit greys those out (hard to read in a dark menu)."""
+    if line.lstrip("-") == "" or line.lstrip("-").startswith("---"):
+        return line                                   # separators
+    text, sep, params = line.partition(" | ")
+    if not sep and line.endswith(" |"):
+        text, sep, params = line[:-2], " | ", ""
+    keys = _param_keys(params)
+    if "color" in keys or keys & _ACTION_PARAMS:
+        return line
+    sub = len(text) - len(text.lstrip("-"))
+    ink = INK["muted"] if sub and text.lstrip("-").startswith(("idle", "…")) else INK["text"]
+    return f"{text} | {params} color={ink}".replace(" |  color=", " | color=")
+
+
+_ACTION_PARAMS = {"bash", "href", "stdin"}
+
+
+def _param_keys(params: str) -> set:
+    """The parameter KEYS of a SwiftBar line — a ``color=`` inside a quoted tooltip is not one.
+    ``refresh=true`` counts as an action; ``refresh=false`` does not."""
+    import shlex
+    try:
+        toks = shlex.split(params)
+    except ValueError:
+        return set()
+    keys = {t.split("=", 1)[0] for t in toks if "=" in t}
+    if "refresh=true" in toks:
+        keys.add("bash")
+    return keys
 
 
 def visible(line: str) -> str:
@@ -1004,7 +1236,8 @@ def _cap_width(line: str, width: int = MENU_WIDTH) -> str:
 
 
 def menubar_error(msg: str) -> str:
-    return "\n".join([_bar("gray", "●"), "---", f"snapshot error: {esc(msg)}",
+    return "\n".join([_bar("gray", "●"), "---",
+                      f"snapshot error: {esc(msg)} | {UPARAMS} color={INK['red']}",
                       "---", "Refresh | refresh=true"])
 
 
@@ -1015,6 +1248,45 @@ def _emit(text: str) -> None:
         print(text)
     except (BrokenPipeError, OSError):
         pass
+
+
+HARD_LIMIT_S = 3          # wall clock for one --menubar collect (the shared deadline is 1.2 s)
+
+
+class HardLimit(BaseException):
+    """The whole collect ran past HARD_LIMIT_S. A BaseException on purpose: every source fails open
+    with ``except Exception``, which would swallow it and let the collect run on."""
+
+
+class _hard_limit:
+    """SIGALRM bound on the collect. The shared ``Deadline`` only caps when a source STARTS and
+    each socket read; a peer that trickles bytes (or a stuck filesystem read) could still hold a
+    refresh for minutes. Main thread on POSIX only; elsewhere a no-op."""
+
+    def __init__(self, seconds: int):
+        self.seconds = seconds
+        self.prev = None
+
+    def __enter__(self):
+        import signal
+        import threading
+        if self.seconds <= 0 or not hasattr(signal, "SIGALRM") \
+                or threading.current_thread() is not threading.main_thread():
+            self.seconds = 0
+            return self
+
+        def fire(signum, frame):
+            raise HardLimit(f"collect exceeded {self.seconds}s")
+        self.prev = signal.signal(signal.SIGALRM, fire)
+        signal.alarm(self.seconds)
+        return self
+
+    def __exit__(self, *exc):
+        if self.seconds:
+            import signal
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, self.prev)
+        return False
 
 
 def main(argv=None) -> int:
@@ -1037,8 +1309,9 @@ def main(argv=None) -> int:
         from . import widget_detail
         return widget_detail.main(args.detail, open_page=not args.no_open, emit=_emit)
     try:
-        snap = collect()
-    except Exception as e:  # noqa: BLE001 — the widget must always draw something
+        with _hard_limit(HARD_LIMIT_S if args.menubar else 0):
+            snap = collect()
+    except (Exception, HardLimit) as e:  # noqa: BLE001 — the widget must always draw something
         _emit(menubar_error(_err(e)) if args.menubar
               else f"snapshot error: {_err(e)}" if args.graph
               else json.dumps({"schema": SCHEMA, "error": _err(e)}))

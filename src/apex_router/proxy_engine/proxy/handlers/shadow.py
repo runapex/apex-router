@@ -137,6 +137,9 @@ async def handle(
     # shadow window, blinding per-model attribution). A real x-model still wins, so a future
     # multi-endpoint world isn't masked by the guess.
     event.model_resolved = response.headers.get("x-model") or event.model_requested
+    # v10: the forwarded body (after any opt-in rewrite) — set only once a response exists; on the
+    # raise path above it may never have left (PoolTimeout/ConnectError), so it stays 0 there.
+    event.bytes_up = len(fwd_body)
 
     # (2) Usage capture: tee the streamed body through the scanner. content-encoding drives the
     # decoder; the forwarded chunk is always the original bytes. Record the encoding on the event so
@@ -163,6 +166,7 @@ async def handle(
                     backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
                     event.t_upstream_ttfb_ms = (now - t_send) * 1000.0 - backoff_ms
                     first = False
+                event.bytes_down += len(chunk)  # v10: wire bytes back, as received
                 scanner.feed(chunk)  # copy-scan; never raises (fail-open inside)
                 if err_scanner is not None:
                     err_scanner.feed(chunk)  # copy-scan, bounded; never raises
