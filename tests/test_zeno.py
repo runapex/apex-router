@@ -224,6 +224,87 @@ def test_render_names_the_compounding_population(tmp_path):
     assert "rows with a session id only" in zeno.render(rep)
 
 
+# ---- Markov chain beside p^n (independent signal) -----------------------------------------------
+
+def _bursty_telemetry(path, sessions=12, calls=40):
+    """Every third session has one 3-call failure burst mid-way; the rest are clean."""
+    rows, ts = [], 1.0
+    for s in range(sessions):
+        for i in range(calls):
+            rows.append({"ts": ts, "session_id": f"s{s}",
+                         "is_error": s % 3 == 0 and 20 <= i < 23})
+            ts += 1.0
+    _write(path, rows)
+
+
+def test_report_adds_markov_beside_compounding(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _bursty_telemetry(tel)
+    rep = zeno.report(tel, tmp_path / "none.jsonl")
+    m = rep["markov"]
+    assert m["sessions"] == 12 and m["pairs"] == 12 * 39
+    # 4 bursts: ok->fail 4, fail->fail 8, fail->ok 4; with the 0.5 prior
+    assert m["counts"]["fail_fail"] == 8 and m["counts"]["ok_fail"] == 4
+    assert m["p_fail_fail"] == pytest.approx(8.5 / 13)
+    assert m["mean_fail_run"] == pytest.approx(1 / (1 - 8.5 / 13))
+    assert m["verdict"] == "independence violated" and m["r1"] > 0.1
+    assert [r["steps"] for r in m["table"]] == [r["steps"] for r in rep["reliability"]["table"]]
+    b = m["buckets"][0]
+    assert b["calls"] == "11-50" and b["observed_clean"] == pytest.approx(8 / 12)
+    assert b["iid_clean"] == pytest.approx(rep["compounding"]["buckets"][0]["predicted_clean"], rel=0.05)
+    assert b["markov_clean"] > b["iid_clean"]
+    assert (m["holdout"]["n_train"], m["holdout"]["n_test"]) == (8, 4)
+    # zeno's own numbers are untouched by the new key
+    assert rep["compounding"]["p"] == pytest.approx(1 - 12 / 480)
+
+
+def test_markov_verdict_thresholds():
+    few = zeno.markov_horizon([[0, 1, 1, 0]] * 10)                     # 30 pairs
+    assert few["verdict"] == "insufficient"
+    alternating = zeno.markov_horizon([[0, 1] * 50] * 5)                # r1 = -1, 495 pairs
+    assert alternating["verdict"] == "independence holds"
+    assert zeno.markov_horizon([])["verdict"] == "insufficient"
+    assert zeno.markov_horizon([[0] * 300])["r1"] is None               # no failures: r1 undefined
+
+
+def test_render_shows_markov_section(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _bursty_telemetry(tel)
+    rep = zeno.report(tel, tmp_path / "none.jsonl")
+    text = zeno.render(rep)
+    assert "1b. horizon — Markov (bursty failures; independent of p^n)" in text
+    assert "P(fail|fail)" in text and "mean failure run" in text
+    assert "observed" in text and "markov" in text and "held out" in text
+    assert "heterogeneity is not modeled" in text
+    # the p^n section is still there, ahead of the new one
+    assert text.index("1. horizon — per-call completion compounds") < text.index("1b. horizon")
+    assert "markov" in json.loads(json.dumps(rep, default=str))
+
+
+def test_markov_sequences_follow_ts_not_file_order(tmp_path):
+    # Rows of one session written out of time order: the chain must see ok,fail,fail,ok.
+    tel = tmp_path / "t.jsonl"
+    order = [(4.0, False), (2.0, True), (1.0, False), (3.0, True)]
+    _write(tel, [{"ts": ts, "session_id": "s", "is_error": e} for ts, e in order])
+    c = zeno.report(tel, tmp_path / "none.jsonl")["markov"]["counts"]
+    assert (c["ok_fail"], c["fail_fail"], c["fail_ok"], c["ok_ok"]) == (1, 1, 1, 0)
+
+
+def test_render_holdout_needs_enough_test_sessions(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _bursty_telemetry(tel)                                   # 4 test sessions
+    assert "too few sessions to compare" in zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+    _bursty_telemetry(tel, sessions=72)                      # 22 test sessions
+    assert "clean/not log-lik" in zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+
+
+def test_render_markov_without_session_ids(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _write(tel, [{"ts": 1.0 + i, "is_error": i == 3} for i in range(9)])
+    text = zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+    assert "nothing to chain" in text
+
+
 # ---- the label the report exposed: a stream that breaks mid-way gets a cause --------------------
 
 def _drive(handler_name, status, *, break_stream):

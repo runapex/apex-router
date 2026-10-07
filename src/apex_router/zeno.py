@@ -40,6 +40,7 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from . import markov as mk
 from .core.stats import wilson_ci
 
 LN10 = math.log(10.0)
@@ -210,6 +211,46 @@ def compounding(sessions, buckets=_BUCKETS) -> dict:
     return {"sessions": len(sessions), "calls": calls, "errors": errs, "p": p, "buckets": out}
 
 
+def markov_horizon(seqs, steps=(1, 10, 100, 1000), buckets=_BUCKETS,
+                   min_pairs: int = 200, r1_threshold: float = 0.1) -> dict:
+    """The bursty-failure estimate beside p^n — an independent signal, not a correction to it.
+
+    `seqs`: per-session 0/1 outcome sequences in time order (1 = failed call), sessions in
+    first-appearance order. Fits a 2-state chain (markov.fit_chain) and gives P(clean) at the
+    horizon steps, per length bucket (observed vs iid p^n vs chain, both fitted in-sample on these
+    sessions), and a held-out comparison (first 70% of sessions fit, the rest scored).
+    verdict: "independence violated" when lag-1 autocorrelation r1 >= `r1_threshold` over >=
+    `min_pairs` consecutive pairs, "independence holds" below it, "insufficient" under `min_pairs`.
+    """
+    seqs = [list(s) for s in seqs if s]
+    ch = mk.fit_chain(seqs)
+    r1, pairs = mk.autocorr(seqs)
+    p = mk.iid_p(seqs, ch["prior"])
+    out_b = []
+    for lo, hi in buckets:
+        b = [s for s in seqs if len(s) >= lo and (hi is None or len(s) <= hi)]
+        if not b:
+            continue
+        pcs = [mk.p_clean(ch, len(s)) for s in b]
+        out_b.append({"calls": f"{lo}-{hi}" if hi else f"{lo}+", "sessions": len(b),
+                      "observed_clean": sum(1 for s in b if not any(s)) / len(b),
+                      "iid_clean": sum(p ** len(s) for s in b) / len(b),
+                      "markov_clean": (None if any(x is None for x in pcs)
+                                       else sum(pcs) / len(pcs))})
+    if pairs < min_pairs or r1 is None:
+        verdict = "insufficient"
+    else:
+        verdict = "independence violated" if r1 >= r1_threshold else "independence holds"
+    return {"sessions": ch["sessions"], "r1": r1, "pairs": pairs, "counts": ch["counts"],
+            "p_first_ok": ch["p_first_ok"], "p_ok_ok": ch["p_ok_ok"],
+            "p_fail_fail": ch["p_fail_fail"],
+            "mean_fail_run": mk.mean_fail_run(ch["p_fail_fail"]),
+            "stationary_fail": mk.stationary_fail(ch["p_ok_ok"], ch["p_fail_fail"]),
+            "table": [{"steps": n, "p_success": mk.p_clean(ch, n)} for n in steps],
+            "buckets": out_b, "holdout": mk.holdout(seqs, prior=ch["prior"]),
+            "verdict": verdict}
+
+
 # ---- 3. epistemic Zeno -----------------------------------------------------------------------
 
 def discovery(labels) -> dict:
@@ -353,11 +394,13 @@ def report(telemetry: Path | None = None, xval_runs: Path | None = None,
     p = 1.0 - k / n if n else None
 
     per_session = defaultdict(lambda: [0, 0])
+    seqs = defaultdict(list)  # session -> 0/1 outcomes in ts order; dict order = first appearance
     for r in rows:
         sid = r.get("session_id")
         if sid:
             per_session[sid][0] += 1
             per_session[sid][1] += 1 if r.get("is_error") else 0
+            seqs[sid].append(1 if r.get("is_error") else 0)
 
     strata = defaultdict(lambda: [0, 0])
     clients = defaultdict(lambda: [0, 0])
@@ -380,6 +423,7 @@ def report(telemetry: Path | None = None, xval_runs: Path | None = None,
         "reliability": ({"errors": k, "p": p, "p_ci": wilson_ci(n - k, n), **horizon(p)}
                         if n else None),
         "compounding": compounding(per_session.values()),
+        "markov": markov_horizon(seqs.values()),
         "engineering": _xval_frontier(xv, min_arm_runs, since),
         "discovery": discovery(r.get("error_cause") for r in rows if r.get("is_error")),
         "coverage_stratum": coverage({s: tuple(v) for s, v in strata.items()},
@@ -412,6 +456,7 @@ def render(rep: dict) -> str:
         L.append("  no proxy request rows — nothing to measure")
     else:
         L += _render_horizon(rep)
+        L += _render_markov(rep)
     L += _render_rest(rep)
     return "\n".join(L)
 
@@ -432,6 +477,44 @@ def _render_horizon(rep: dict) -> list:
         for b in comp["buckets"]:
             L.append(f"    {b['calls']:>8} calls  n={b['sessions']:<3} clean {_pct(b['observed_clean'], 0):>5}"
                      f" {_ci(b['observed_ci'], 0):<12} predicted {_pct(b['predicted_clean'], 0):>5}")
+    return L
+
+
+HOLDOUT_MIN_TEST = 20  # scored sessions before the held-out line prints a comparison
+
+
+def _render_markov(rep: dict) -> list:
+    m = rep.get("markov")
+    L = ["", "1b. horizon — Markov (bursty failures; independent of p^n)"]
+    if not m or not m["sessions"]:
+        return L + ["  no rows with a session id — nothing to chain"]
+    r1 = "—" if m["r1"] is None else f"{m['r1']:.3f}"
+    L.append(f"  lag-1 autocorrelation r1 = {r1} over {m['pairs']} consecutive pairs in "
+             f"{m['sessions']} sessions → {m['verdict']}")
+    run = "—" if m["mean_fail_run"] is None else f"{m['mean_fail_run']:.2f} calls"
+    L.append(f"  P(ok|ok) = {_pct(m['p_ok_ok'])}  P(fail|fail) = {_pct(m['p_fail_fail'])}  "
+             f"mean failure run {run}  stationary fail {_pct(m['stationary_fail'])}")
+    for row in m["table"]:
+        L.append(f"  {row['steps']:>5} calls → {_pct(row['p_success'], 1):>7} finish clean (chain)")
+    if m["buckets"]:
+        L.append("  per session length — observed vs iid p^n vs chain (both fitted on these sessions):")
+        for b in m["buckets"]:
+            L.append(f"    {b['calls']:>8} calls  n={b['sessions']:<3} "
+                     f"observed {_pct(b['observed_clean'], 0):>5}  iid {_pct(b['iid_clean'], 0):>5}"
+                     f"  markov {_pct(b['markov_clean'], 0):>5}")
+    h = m["holdout"]
+    if h["n_test"] < HOLDOUT_MIN_TEST:
+        # Too few scored sessions for the comparison to mean anything (the prior can flip it).
+        L.append(f"  held out: too few sessions to compare ({h['n_train']} train / {h['n_test']} test, "
+                 f"need {HOLDOUT_MIN_TEST} test)")
+    elif h["markov_loglik"] is not None and h["iid_loglik"] is not None:
+        L.append(f"  held out (fit first {h['n_train']} sessions, score next {h['n_test']}): "
+                 f"clean/not log-lik iid {h['iid_loglik']:.1f} vs markov {h['markov_loglik']:.1f}; "
+                 f"Brier iid {h['iid_brier']:.3f} vs markov {h['markov_brier']:.3f}")
+    else:
+        L.append(f"  held out: not enough sessions ({h['n_train']} train / {h['n_test']} test)")
+    L.append("  caveat: one chain for every session — between-session and over-time heterogeneity "
+             "is not modeled, so long sessions can still be under-predicted")
     return L
 
 

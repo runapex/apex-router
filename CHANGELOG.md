@@ -15,6 +15,14 @@ next tag will carry.
   overall rate hides. It measures whether calls finished, not whether answers were right.
   `zeno horizon`, `zeno ladder` and `zeno frontier` are the same math on numbers you give it. See
   docs/research/2026-10-06-zeno-frontier.md.
+- `zeno report`: a Markov column beside p^n (section 1b). On this machine a failed call is far
+  more likely right after another failure (lag-1 autocorrelation ≈ 0.45), so p^n badly
+  under-predicts how many long sessions finish clean. The new section fits a two-state chain
+  (P(ok|ok), P(fail|fail), mean failure-burst length) and shows its P(clean) per session length next
+  to the observed rate and the p^n prediction, plus a held-out check (fit on the first 70% of
+  sessions, score the rest). It is a second, independent estimate; zeno's p^n numbers are unchanged.
+  The chain is closer than p^n but still under-predicts long sessions: it treats every session
+  alike and ignores between-session and over-time differences. Also in `--json` as `markov`.
 - `apex-router xval <codex exec args…>`: a drop-in for `codex exec` in cross-validation that
   controls GPT cost per run. It sorts the review into diff / report / files / investigate and
   picks a per-command output cap (2k–10k tokens) plus an optional "evidence budget" hint. Each
