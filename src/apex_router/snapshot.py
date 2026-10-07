@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -79,7 +80,7 @@ def _num(v):
 def _epoch_s(v):
     """Seconds since the epoch from seconds or milliseconds; None if not a number."""
     v = _num(v)
-    if v is None:
+    if v is None or not math.isfinite(v):  # json accepts Infinity/NaN
         return None
     return v / 1000.0 if v > 1e12 else float(v)
 
@@ -260,6 +261,12 @@ def dot(snap) -> str:
     if not isinstance(p, dict) or p.get("error"):
         return "gray"
     level = p.get("level")
+    # A family RED/AMBER by its own rate shows even when the overall level is calm.
+    fams = [v for v in (p.get("families") or {}).values() if v in ("RED", "AMBER")]
+    if "RED" in fams:
+        return "red"
+    if level != "RED" and "AMBER" in fams:
+        return "orange"
     if level == "RED":
         return "red"
     if level == "AMBER":
@@ -278,7 +285,7 @@ def esc(s) -> str:
 
 
 def fmt_age(s) -> str:
-    if s is None:
+    if not isinstance(s, (int, float)) or not math.isfinite(s):
         return "?"
     s = max(0, int(s))
     if s < 60:
@@ -357,7 +364,9 @@ def _agent_line(a: dict) -> str:
 
 
 def _worker_line(w: dict) -> str:
-    q = f"inbox {w.get('inbox', '?')} · running {w.get('queue_running', '?')}"
+    def n(k):
+        return w[k] if isinstance(w.get(k), int) else "?"
+    q = f"inbox {n('inbox')} · running {n('queue_running')}"
     if w.get("pid"):
         return f"pid {w['pid']} · {q}"
     why = esc(w.get("error") or "not running")
@@ -367,7 +376,7 @@ def _worker_line(w: dict) -> str:
 def _proxy_line(p: dict) -> str:
     if p.get("up"):
         bits = ["up"]
-        if p.get("port"):
+        if isinstance(p.get("port"), int):  # from the /healthz body: never interpolate raw text
             bits.append(f":{p['port']}")
         if p.get("version"):
             bits.append(f"v{esc(p['version'])}")
@@ -406,7 +415,7 @@ def menubar(snap: dict) -> str:
     for ad in snap.get("adapters") or []:
         if not isinstance(ad, dict) or ad.get("error"):
             continue
-        body = [esc(r) for r in ad.get("rows") or []]
+        body = [f"{esc(r)} | emojize=false" for r in ad.get("rows") or []]
         age = f"updated {fmt_age(ad.get('age_s'))} ago"
         body.append(f"stale · {age}" if ad.get("stale") else age)
         section(esc(ad.get("title", "?")), body)
@@ -442,7 +451,12 @@ def main(argv=None) -> int:
         _emit(menubar_error(_err(e)) if args.menubar
               else json.dumps({"schema": SCHEMA, "error": _err(e)}))
         return 0
-    _emit(menubar(snap) if args.menubar else json.dumps(snap, indent=2, sort_keys=True))
+    try:
+        out = menubar(snap) if args.menubar else json.dumps(snap, indent=2, sort_keys=True)
+    except Exception as e:  # noqa: BLE001 — a bad field must not blank the widget
+        out = (menubar_error(_err(e)) if args.menubar
+               else json.dumps({"schema": SCHEMA, "error": _err(e)}))
+    _emit(out)
     return 0
 
 

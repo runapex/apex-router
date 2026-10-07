@@ -249,10 +249,11 @@ def test_user_text_is_escaped_in_menu(tmp_path):
     # only our own lines carry a parameter separator
     with_params = [ln for ln in lines if "|" in ln]
     assert all(ln.startswith(("● ", "Refresh |")) or ln.endswith(f"size=12 color={snapshot.COLORS['gray']}")
+               or (ln.endswith(" | emojize=false") and ln.count("|") == 1)
                for ln in with_params), with_params
     assert "evil ¦ bash=/bin/rm" in out
     assert "––T ¦ x | size=12" in out
-    assert "–––" in lines and lines[-1] == "Refresh | refresh=true"
+    assert "––– | emojize=false" in lines and lines[-1] == "Refresh | refresh=true"
 
 
 def test_menubar_sections_and_idle_submenu(tmp_path):
@@ -334,3 +335,48 @@ def test_main_catastrophic_failure_is_gray(monkeypatch, capsys):
     assert capsys.readouterr().out.startswith("● | color=#8E8E93")
     assert snapshot.main(["--json"]) == 0
     assert json.loads(capsys.readouterr().out)["error"] == "RuntimeError: total"
+
+
+# ---- review fixes: non-finite ts, /healthz injection, formatter failure, family dot ---------
+
+def test_non_finite_adapter_ts_does_not_crash(tmp_path):
+    d = tmp_path / "ad"
+    _adapter(d, "inf.json", '{"title": "t", "rows": ["a"], "ts": -Infinity}')
+    out = snapshot.adapters_block(d, NOW)
+    assert out[0]["age_s"] is None and out[0]["stale"] is True
+    assert "updated ? ago" in snapshot.menubar({"pressure": {}, "adapters": out})
+    assert snapshot.fmt_age(float("inf")) == "?" and snapshot.fmt_age(float("nan")) == "?"
+
+
+def test_proxy_port_from_healthz_is_never_interpolated_raw():
+    line = snapshot._proxy_line({"up": True, "port": "1 | bash=/bin/sh terminal=false"})
+    assert line == "up" and "bash=" not in line
+    assert snapshot._proxy_line({"up": True, "port": 8788}) == "up :8788"
+
+
+def test_formatter_failure_falls_back_to_gray(monkeypatch, capsys):
+    monkeypatch.setattr(snapshot, "collect", lambda **k: {"pressure": {}})
+    def boom(snap):
+        raise OverflowError("bad field")
+    monkeypatch.setattr(snapshot, "menubar", boom)
+    assert snapshot.main(["--menubar"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("● | color=#8E8E93") and "OverflowError: bad field" in out
+
+
+def test_family_level_lifts_the_dot():
+    calm = {"level": "GREEN", "insufficient_sample": True}
+    assert snapshot.dot({"pressure": dict(calm, families={"opus": "RED"})}) == "red"
+    assert snapshot.dot({"pressure": dict(calm, families={"opus": "AMBER"})}) == "orange"
+    assert snapshot.dot({"pressure": dict(calm, families={"opus": "GREEN"})}) == "gray"
+
+
+def test_worker_line_unknown_queue_is_question_mark():
+    assert snapshot._worker_line({"pid": 7, "inbox": None}) == "pid 7 · inbox ? · running ?"
+
+
+def test_adapter_rows_disable_emoji(tmp_path):
+    d = tmp_path / "ad"
+    _adapter(d, "a.json", {"title": "T", "rows": [":x: row"], "ts": NOW})
+    text = snapshot.menubar({"pressure": {}, "adapters": snapshot.adapters_block(d, NOW)})
+    assert ":x: row | emojize=false" in text
