@@ -850,10 +850,12 @@ def _last_s(age, tel, now):
 
 def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
               keep: int = SUBAGENTS_MAX, scan: bool = True,
-              deadline: Deadline | None = None) -> dict:
+              deadline: Deadline | None = None, window_s: float = TELEMETRY_WINDOW_S,
+              times: bool = False) -> dict:
     """Subagents seen in the last 60 min (log mtime) or with proxy traffic in the window.
 
-    ``scan=False`` skips the filesystem (traffic only). With a ``deadline`` the log scan stops
+    ``scan=False`` skips the filesystem (traffic only). ``window_s`` widens the log-mtime window
+    (the detail page lists 6 h); ``times`` adds ``spawn_ts`` / ``mtime`` (epoch) to each. With a ``deadline`` the log scan stops
     when it runs out (``partial`` is then True); traffic-only subagents are always included.
 
     Returns ``{"list", "more", "hidden", "totals", "count", "running", "quiet", "flagged"}``:
@@ -895,7 +897,7 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
             scanned += 1
             aid = m.group(1)
             age = max(0.0, now - mtime)
-            if age >= TELEMETRY_WINDOW_S and aid not in tel:
+            if age >= window_s and aid not in tel:
                 continue
             meta, spawn = {}, None
             mp = f.with_name(f"agent-{aid}.meta.json")
@@ -918,6 +920,8 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
                           "depth": depth, "age_s": round(age, 1), "run_s": run_s,
                           "state": state, "flags": flags, "telemetry": tel.get(aid),
                           "last_s": _last_s(age, tel.get(aid), now)}
+            if times:
+                found[aid].update(spawn_ts=spawn, mtime=mtime)
         if partial:
             break
     for aid, st in tel.items():                         # proxy traffic with no log file seen
@@ -1279,6 +1283,11 @@ def graph_text(graph: dict) -> str:
     return "\n".join(lines) if lines else "no agents in the last hour"
 
 
+def _buckets(rows, now):
+    from .widget_history import buckets
+    return buckets(rows, now)
+
+
 # ---- collect --------------------------------------------------------------------------------
 
 def collect(agents: list, *, home=None, telemetry=None, now: float | None = None,
@@ -1352,6 +1361,7 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     rows = guard("telemetry", lambda: list(pressure.tail_rows(path, now - TELEMETRY_WINDOW_S)), [])
     tel = guard("telemetry_split", lambda: telemetry_split(rows, now), {})
     traffic = guard("telemetry_split", lambda: _stats(rows, now), None)
+    series = guard("series", lambda: _buckets(rows, now), {})   # 12 x 5-min, per session
     # subagents: traffic-only for every Claude session; logs for the ones the menu will show
     empty_subs = {"list": [], "more": 0, "count": 0, "flagged": 0}
     subs_by: dict = {}
@@ -1450,6 +1460,8 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
             res["telemetry"] = t["main"]
         if i in subs_by:
             res["subagents"] = subs_by[i]
+        if isinstance(sid, str) and series.get(sid):
+            res["series"] = series[sid]
         if res:
             a["res"] = res
 

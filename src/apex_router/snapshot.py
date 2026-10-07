@@ -25,7 +25,11 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
              menu section. Capped at 5 files x 10 rows x 120 chars; malformed files are skipped.
 
 ``--json`` prints the snapshot; ``--menubar`` prints SwiftBar/xbar plugin output (bar cell, ``---``,
-menu lines); ``--graph`` prints the call graph as an indented text tree. Every sub-collector fails open: an error becomes an ``error`` field, never an
+menu lines); ``--graph`` prints the call graph as an indented text tree; ``--detail ID`` writes a
+self-contained HTML page (``widget_detail``) and opens it. The ONE write of the menu path:
+``--menubar`` appends a bounded sample to ``~/.apex-router/widget/history.jsonl``
+(``widget_history``; ``--no-history`` or ``APEX_WIDGET_NO_HISTORY=1`` turn it off); ``--json`` /
+``--graph`` write nothing. Rows click through to ``--detail`` via ``click_action``. Every sub-collector fails open: an error becomes an ``error`` field, never an
 exception, and the command always exits 0. Stdlib only.
 
 The menu shows no dollar amounts (``measure.cost_usd`` stays in ``--json``). It is bounded: 8
@@ -52,14 +56,15 @@ import argparse
 import json
 import math
 import os
+import re
+import shutil
 import sys
 import time
 from collections import Counter
 from pathlib import Path
 
-from . import agent_resources
+from . import agent_resources, pressure, widget_history
 from . import agents as agents_mod
-from . import pressure
 
 SCHEMA = 1
 ERRORS_WINDOW_S = 15 * 60
@@ -423,13 +428,61 @@ def _tip(s) -> str:
     return _clip(s, 240).replace('"', "'").replace("|", "¦")
 
 
-def _u(text: str, mono: bool = False, tip: str | None = None) -> str:
+def _u(text: str, mono: bool = False, tip: str | None = None, action: str = "") -> str:
     """One menu line that carries user-derived text (already esc()'d): emoji/SF-symbol
-    substitution off, optional monospace columns and tooltip."""
+    substitution off, optional monospace columns, tooltip and click ``action`` (from
+    ``click_action`` only — never user text)."""
     params = ([MONO] if mono else []) + [UPARAMS]
     if tip:
         params.append(f'tooltip="{_tip(tip)}"')
+    if action:
+        params.append(action)
     return f"{text} | {' '.join(params)}"
+
+
+# ---- click actions --------------------------------------------------------------------------
+# A click runs ONLY the apex-router binary with three fixed-shape arguments:
+#   bash=<abs binary> param1=snapshot param2=--detail param3=<id> terminal=false refresh=false
+# <id> is "all", a session id (^[0-9a-f-]{8,36}$) or a subagent id (^a[0-9a-f]{8,32}$); anything
+# else gets no action. No description, name, repo or path ever reaches a bash/param value.
+SESSION_ID_RE = re.compile(r"^[0-9a-f-]{8,36}$")
+AGENT_ID_RE = re.compile(r"^a[0-9a-f]{8,32}$")
+BIN_RE = re.compile(r"^/[A-Za-z0-9._/+-]{1,255}$")
+BIN_ENV = "APEX_ROUTER_BIN"
+
+
+def valid_target(t) -> bool:
+    return isinstance(t, str) and (t == "all" or bool(SESSION_ID_RE.match(t))
+                                   or bool(AGENT_ID_RE.match(t)))
+
+
+def valid_bin(path) -> bool:
+    return isinstance(path, str) and bool(BIN_RE.match(path)) and ".." not in path.split("/")
+
+
+def resolve_bin() -> str | None:
+    """The apex-router binary the SwiftBar script runs: ``$APEX_ROUTER_BIN`` (exported by the
+    script), else ``~/.local/bin/apex-router``, else ``apex-router`` on PATH. Absolute and of a
+    plain shape (``BIN_RE``), else None (rows then carry no action)."""
+    cands = [os.environ.get(BIN_ENV), str(Path.home() / ".local" / "bin" / "apex-router"),
+             shutil.which("apex-router")]
+    for c in cands:
+        if c and valid_bin(c) and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def click_action(bin_path, target, kind: str = "any") -> str:
+    """SwiftBar params that open the detail page for ``target`` — '' unless both are valid.
+    ``kind`` "session" / "agent" narrows the id shape to that row type."""
+    if not valid_bin(bin_path) or not valid_target(target):
+        return ""
+    if kind == "session" and not SESSION_ID_RE.match(target):
+        return ""
+    if kind == "agent" and not AGENT_ID_RE.match(target):
+        return ""
+    return (f"bash={bin_path} param1=snapshot param2=--detail param3={target} "
+            "terminal=false refresh=false")
 
 
 def _col(s: str, w: int) -> str:
@@ -503,7 +556,7 @@ def _last_text(ts, now) -> str:
 IO_ROW_MIN_MBS = 0.5  # disk read+write MB/s worth a column on the active row
 
 
-def _agent_row(a: dict, prefix: str = "", now: float | None = None) -> str:
+def _agent_row(a: dict, prefix: str = "", now: float | None = None, bin_path=None) -> str:
     """Fixed-width monospace row for an active agent: label, status, footprint, cpu now, then
     traffic 60 min (main + all subagents), context of the latest main-thread request, the 5-min
     request rate and the age of the newest request. Disk io and lifetime numbers: tooltip."""
@@ -537,14 +590,15 @@ def _agent_row(a: dict, prefix: str = "", now: float | None = None) -> str:
         extra.append(f"subagents 60m {subs['count']} ({subs.get('running', 0)} running)")
     if res.get("pid_source"):
         extra.append(f"matched by {res['pid_source']}")
-    return _u(prefix + line, mono=True, tip=_tree_tip(tree, extra))
+    return _u(prefix + line, mono=True, tip=_tree_tip(tree, extra),
+              action=click_action(bin_path, a.get("session_id"), "session"))
 
 
 _FLAG_WHY = {"long": "running > 20 min", "errors": "an error in the last 5 min or rate ≥ 5%",
              "ctx": "context ≥ 85% of its window"}
 
 
-def _sub_row(sa: dict, prefix: str) -> str:
+def _sub_row(sa: dict, prefix: str, bin_path=None) -> str:
     """``sym label  N req · out X · cache P% · ctx A[/W P%] · last Ns`` (+ the error count when
     flagged for errors). Input / cached / write tokens and run time are in the tooltip."""
     st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
@@ -573,7 +627,8 @@ def _sub_row(sa: dict, prefix: str) -> str:
         tip.append(f"depth {sa['depth']}")
     if flags:
         tip.append("flagged: " + ", ".join(_FLAG_WHY.get(f, str(f)) for f in flags))
-    return _u(prefix + line, mono=True, tip=" · ".join(tip))
+    return _u(prefix + line, mono=True, tip=" · ".join(tip),
+              action=click_action(bin_path, sa.get("id"), "agent"))
 
 
 def _more_text(n: int, st: dict, what: str = "more") -> str:
@@ -596,16 +651,22 @@ def _brief(st: dict) -> str:
     return " · ".join(bits)
 
 
-def _agent_submenu(a: dict, level: int = 2) -> list:
+def _agent_submenu(a: dict, level: int = 2, bin_path=None, history=None) -> list:
     """SwiftBar ``--`` lines under an active agent at a detail level (2 full, 1 compact, 0 only
     the totals line). Totals are summed over the main thread and ALL subagents before any cut.
-    Every user-derived string goes through esc()."""
+    Every user-derived string goes through esc(). With a binary the first line opens the detail
+    page (a row that has a submenu cannot fire its own action in a macOS menu); the sparkline
+    lines (level 2: cpu/mem/io/ctx from ``history``, req/tok from ``res.series``; level 1:
+    cpu and req) open it too."""
     res = _res(a)
     tot = agent_resources.session_totals(res)
-    out = [_u("--Σ 60m  " + agent_resources.tel_text(tot), mono=True,
-              tip="main thread + every subagent, last 60 min of proxy traffic")]
+    act = click_action(bin_path, a.get("session_id"), "session")
+    out = [f"--Open details ↗ | {act}"] if act else []
+    out.append(_u("--Σ 60m  " + agent_resources.tel_text(tot), mono=True,
+                  tip="main thread + every subagent, last 60 min of proxy traffic", action=act))
     if level <= 0:
         return out
+    out += ["--" + ln for ln in spark_lines(a, history, compact=level < 2, action=act)]
     cap = _LEVELS[level]
     tel = res.get("telemetry")
     if isinstance(tel, dict):
@@ -613,7 +674,7 @@ def _agent_submenu(a: dict, level: int = 2) -> list:
         out.append(_u("--" + _fit("main  " + _brief(tel)
                                   + (f" · ttft {p50 / 1000:.1f}s"
                                      if isinstance(p50, (int, float)) else "")),
-                      mono=True, tip=agent_resources.tokens_text(tel)))
+                      mono=True, tip=agent_resources.tokens_text(tel), action=act))
     subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
     lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
     if lst:
@@ -623,7 +684,7 @@ def _agent_submenu(a: dict, level: int = 2) -> list:
             hdr += f" · {subs['flagged']} ⚠"
         out.append(hdr)
         shown, cut = lst[:cap["subs"]], lst[cap["subs"]:]
-        out += [_sub_row(sa, "--") for sa in shown]
+        out += [_sub_row(sa, "--", bin_path) for sa in shown]
         hidden_n = len(cut) + (subs.get("more") or 0)
         if hidden_n:
             hid = agent_resources.merge_stats(subs.get("hidden"),
@@ -660,14 +721,88 @@ def _agent_submenu(a: dict, level: int = 2) -> list:
     return out
 
 
-def _idle_row(a: dict) -> str:
+def _idle_row(a: dict, bin_path=None) -> str:
     if a.get("error"):
         return _u(f"--{esc(a.get('kind', '?'))} · error · {esc(a['error'])}")
     tree = _res(a).get("tree") or {}
     mem = fmt_mb(tree.get("footprint_mb")) if tree.get("alive") else ""
     line = (f"--{_col(_agent_label(a, LABEL_W), LABEL_W)}  {_status_word(a)} {fmt_age(a.get('age_s'))}"
             f"  {mem.rjust(6)}").rstrip()
-    return _u(line, mono=True, tip=_tree_tip(tree) or None)
+    return _u(line, mono=True, tip=_tree_tip(tree) or None,
+              action=click_action(bin_path, a.get("session_id"), "session"))
+
+
+SPARK_W = widget_history.SPARK_POINTS
+
+
+def _spark_row(name: str, spark: str, value: str, action: str = "", tip: str = "") -> str:
+    return _u(f"{name:<4} {spark.ljust(SPARK_W)}  {value}".rstrip(), mono=True, tip=tip or None,
+              action=action)
+
+
+def spark_lines(a: dict, history=None, compact: bool = False, action: str = "") -> list:
+    """Sparkline rows for one session (without the ``--`` prefix): cpu / mem / io / ctx from the
+    widget history (last ``SPARK_W`` samples), req / tok from the session's 12 x 5-min telemetry
+    buckets. A series with no points is omitted."""
+    out = []
+    sid = a.get("session_id")
+    res = _res(a)
+    if isinstance(sid, str) and history:
+        def ser(key):
+            return [v for _, v in widget_history.agent_series(history, sid, key)]
+        n = len(widget_history.agent_series(history, sid, "cpu_pct"))
+        span = f"last {n} samples (~1/min)"
+        cpu = ser("cpu_pct")
+        if any(v is not None for v in cpu):
+            cur = next((v for v in reversed(cpu) if v is not None), None)
+            out.append(_spark_row("cpu", widget_history.sparkline(cpu), f"{cur:g}%", action,
+                                  f"cpu % sampled each refresh · {span} · scale 0..max"))
+        if not compact:
+            mem = ser("footprint_mb")
+            if any(v is not None for v in mem):
+                cur = next(v for v in reversed(mem) if v is not None)
+                lo = min(v for v in mem if v is not None)
+                out.append(_spark_row("mem", widget_history.sparkline(mem, zero=False),
+                                      fmt_mb(cur), action,
+                                      f"physical footprint · {span} · scale {fmt_mb(lo)}..max"))
+            io = ser("io_mbs")
+            if any(v for v in io if v is not None):
+                cur = next(v for v in reversed(io) if v is not None)
+                out.append(_spark_row("io", widget_history.sparkline(io),
+                                      agent_resources.fmt_rate(cur), action,
+                                      f"disk read+write MB/s · {span}"))
+            ctx = ser("ctx")
+            if any(v is not None for v in ctx):
+                cur = next(v for v in reversed(ctx) if v is not None)
+                st = res.get("telemetry") or {}
+                pct = st.get("ctx_pct")
+                val = (f"{pct:g}%" if isinstance(pct, (int, float)) else "") + \
+                    f" {agent_resources._kc(cur)}"
+                out.append(_spark_row("ctx", widget_history.sparkline(ctx, zero=False),
+                                      val.strip(), action,
+                                      f"context of the latest main-thread request · {span}"))
+    series = res.get("series") if isinstance(res.get("series"), dict) else {}
+    req = series.get("req")
+    if isinstance(req, list) and any(req):
+        out.append(_spark_row("req", widget_history.sparkline(req),
+                              f"{req[-1]} per 5 min · 60 min", action,
+                              "requests per 5-min bucket, main + subagents, last 60 min"))
+    tok = series.get("out")
+    if not compact and isinstance(tok, list) and any(tok):
+        out.append(_spark_row("tok", widget_history.sparkline(tok),
+                              f"out {agent_resources._k(tok[-1])} per 5 min", action,
+                              "output tokens per 5-min bucket, last 60 min"))
+    return out
+
+
+def gpu_spark_line(history, s: dict) -> str:
+    """``gpu ▁▁▃▂  6%`` from the history's system samples (system-wide GPU), or ''."""
+    vals = [v for _, v in widget_history.system_series(history or [], "gpu_util_pct")]
+    if not any(v is not None for v in vals):
+        return ""
+    cur = s.get("gpu_util_pct") if isinstance(s.get("gpu_util_pct"), (int, float)) else \
+        next(v for v in reversed(vals) if v is not None)
+    return f"{'gpu':<4} {widget_history.sparkline(vals).ljust(SPARK_W)}  {cur:g}% | {MONO}"
 
 
 def fmt_mb(mb) -> str:
@@ -700,7 +835,7 @@ def _agents_header(snap: dict, n_active: int, n_idle: int) -> str:
     return f"{' · '.join(bits)} | size=12 color={COLORS['gray']} tooltip=\"{_tip(tip)}\""
 
 
-def _agents_body(snap: dict, budget: int) -> list:
+def _agents_body(snap: dict, budget: int, bin_path=None, history=None) -> list:
     """Agent rows within a line budget: active sessions ranked by output tokens then cpu, at
     most ACTIVE_MAX; each gets the most detail that still fits; idle ones fold into a submenu.
     Active / idle is Claude's own status when known (``agent_resources.agent_active``)."""
@@ -716,9 +851,9 @@ def _agents_body(snap: dict, budget: int) -> list:
     body, used = [], 0
     for i, a in enumerate(shown):
         rest = len(shown) - i - 1
-        row = [_agent_row(a, now=now)]
+        row = [_agent_row(a, now=now, bin_path=bin_path)]
         for level in (2, 1, 0):
-            sub = _agent_submenu(a, level) if not a.get("error") else []
+            sub = _agent_submenu(a, level, bin_path, history) if not a.get("error") else []
             if level == 0 or used + 1 + len(sub) + 2 * rest + reserve_tail <= budget:
                 break
         body += row + sub
@@ -730,7 +865,7 @@ def _agents_body(snap: dict, budget: int) -> list:
         held = [(_res(a).get("tree") or {}).get("footprint_mb") for a in idlers]
         held = [m for m in held if isinstance(m, (int, float))]
         body.append(f"idle ({len(idlers)})" + (f" · {fmt_mb(sum(held))} held" if held else ""))
-        body += [_idle_row(a) for a in idlers[:IDLE_SHOWN_MAX]]
+        body += [_idle_row(a, bin_path) for a in idlers[:IDLE_SHOWN_MAX]]
         if len(idlers) > IDLE_SHOWN_MAX:
             body.append(f"--… {len(idlers) - IDLE_SHOWN_MAX} more")
     return body or ["none in the last hour"]
@@ -756,7 +891,7 @@ def _ollama_lines(s: dict, wres: dict) -> list:
     return lines
 
 
-def _system_lines(s: dict, wres: dict | None = None) -> list:
+def _system_lines(s: dict, wres: dict | None = None, history=None) -> list:
     if s.get("error"):
         return [_u(f"unavailable · {esc(s['error'])}")]
     gpu = (f"GPU {s['gpu_util_pct']}%" if isinstance(s.get("gpu_util_pct"), int) else "GPU ?")
@@ -766,7 +901,11 @@ def _system_lines(s: dict, wres: dict | None = None) -> list:
     la = s.get("loadavg")
     if isinstance(la, list) and la:
         gpu += " · load " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float)))
-    lines = [gpu] + _ollama_lines(s, wres or {})
+    lines = [gpu]
+    g = gpu_spark_line(history, s)
+    if g:
+        lines.append(g)
+    lines += _ollama_lines(s, wres or {})
     errs = s.get("errors")
     if isinstance(errs, dict) and errs:
         lines.append(_u("unavailable: " + esc(", ".join(sorted(str(k) for k in errs))),
@@ -799,13 +938,18 @@ def _proxy_line(p: dict) -> str:
     return "down"
 
 
-def menubar(snap: dict) -> str:
+def menubar(snap: dict, history=None, bin_path=None) -> str:
     """SwiftBar/xbar plugin output for a snapshot. The bar is ``● N`` (active agents) plus
-    `` ⚠`` when any agent is stuck or erroring; the dot colour stays the pressure rule."""
+    `` ⚠`` when any agent is stuck or erroring; the dot colour stays the pressure rule.
+    ``history`` (``widget_history.load`` rows, oldest first) feeds the sparklines; with a valid
+    ``bin_path`` rows open ``snapshot --detail`` on click (``click_action``)."""
     color = dot(snap)
     ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
     flag = " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
     head = [_bar(color, f"● {_active(snap)}{flag}"), "---"]
+    dash = click_action(bin_path, "all")
+    if dash:
+        head += [f"Open dashboard ↗ | {dash}", "---"]
     sections: list = []
 
     def section(title, body, user_text=False):
@@ -823,7 +967,7 @@ def menubar(snap: dict) -> str:
     section(f"Worker · {esc(w.get('label', '?'))}", [_u(_worker_line(w))], user_text=True)
     wres = w.get("res") if isinstance(w.get("res"), dict) else {}
     sy = snap.get("system") if isinstance(snap.get("system"), dict) else {"error": "missing"}
-    section("System", _system_lines(sy, wres))
+    section("System", _system_lines(sy, wres, history))
     px = snap.get("proxy") if isinstance(snap.get("proxy"), dict) else {}
     section("Proxy", [_u(_proxy_line(px))])
     for ad in snap.get("adapters") or []:
@@ -837,7 +981,7 @@ def menubar(snap: dict) -> str:
     budget = max(30, MENU_LINES_MAX - other - 2)
     n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a))
     sections[agents_at] = ([_agents_header(snap, _active(snap), n_idle)]
-                           + _agents_body(snap, budget) + ["---"])
+                           + _agents_body(snap, budget, bin_path, history) + ["---"])
     lines = head + [ln for sec in sections for ln in sec] + ["Refresh | refresh=true"]
     return "\n".join(_cap_width(ln) for ln in lines)
 
@@ -881,7 +1025,16 @@ def main(argv=None) -> int:
     g.add_argument("--menubar", action="store_true", help="print SwiftBar/xbar plugin output")
     g.add_argument("--graph", action="store_true",
                    help="print the agent call graph (session -> subagents/processes/models)")
+    g.add_argument("--detail", metavar="ID",
+                   help="write a self-contained HTML detail page for a session id, a subagent id "
+                        "or 'all' to ~/.apex-router/widget/ and open it")
+    ap.add_argument("--no-open", action="store_true", help="--detail: write the page, do not open it")
+    ap.add_argument("--no-history", action="store_true",
+                    help="--menubar: do not append this run to ~/.apex-router/widget/history.jsonl")
     args = ap.parse_args(argv)
+    if args.detail is not None:
+        from . import widget_detail
+        return widget_detail.main(args.detail, open_page=not args.no_open, emit=_emit)
     try:
         snap = collect()
     except Exception as e:  # noqa: BLE001 — the widget must always draw something
@@ -889,16 +1042,32 @@ def main(argv=None) -> int:
               else f"snapshot error: {_err(e)}" if args.graph
               else json.dumps({"schema": SCHEMA, "error": _err(e)}))
         return 0
+    hist, cur = None, None
+    if args.menubar:
+        write = not args.no_history and not widget_history.disabled()
+        try:
+            cur = widget_history.sample(snap)
+            past = widget_history.load(time.time() - 2 * 3600,
+                                       max_bytes=widget_history.TAIL_BYTES)
+            hist = past + [cur]
+        except Exception:  # noqa: BLE001 — sparklines are optional
+            hist, cur = None, None
+        if not write:
+            cur = None
     try:
         if args.graph:
             out = agent_resources.graph_text(snap.get("graph") or {})
+        elif args.menubar:
+            out = menubar(snap, history=hist, bin_path=resolve_bin())
         else:
-            out = menubar(snap) if args.menubar else json.dumps(snap, indent=2, sort_keys=True)
+            out = json.dumps(snap, indent=2, sort_keys=True)
     except Exception as e:  # noqa: BLE001 — a bad field must not blank the widget
         out = (menubar_error(_err(e)) if args.menubar
                else f"snapshot error: {_err(e)}" if args.graph
                else json.dumps({"schema": SCHEMA, "error": _err(e)}))
     _emit(out)
+    if cur is not None:
+        widget_history.append(cur)                 # only --menubar writes; fail-open
     return 0
 
 

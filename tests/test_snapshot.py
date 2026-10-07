@@ -337,7 +337,7 @@ def _listing(root: Path) -> dict:
     return out
 
 
-def test_snapshot_writes_nothing(tmp_path, monkeypatch, capsys):
+def _writes_home(monkeypatch):
     home = Path(os.environ["HOME"])                             # per-test sandbox (conftest)
     _telemetry(home / ".apex" / "telemetry.jsonl", _ok(40))
     proj = home / ".claude" / "projects" / "-Users-you-src-r"
@@ -347,13 +347,38 @@ def test_snapshot_writes_nothing(tmp_path, monkeypatch, capsys):
     _adapter(home / ".apex-router" / "adapters", "a.json", {"title": "A", "rows": ["x"], "ts": 1})
     monkeypatch.setenv("APEX_PORT", "9")                       # discard port: proxy down fast
     monkeypatch.setattr(snapshot.agents_mod, "_launchd_pid", lambda label: (None, "stub"))
+    return home
+
+
+def test_snapshot_writes_nothing(tmp_path, monkeypatch, capsys):
+    # --json / --graph never write; --menubar writes only its history, and not with
+    # --no-history or APEX_WIDGET_NO_HISTORY=1 (iteration 4 ruling).
+    home = _writes_home(monkeypatch)
     before = _listing(home)
-    for flag in ("--json", "--menubar", "--graph"):
-        assert cli.main(["snapshot", flag]) == 0
+    for args in (["--json"], ["--graph"], ["--menubar", "--no-history"]):
+        assert cli.main(["snapshot", *args]) == 0
+    monkeypatch.setenv("APEX_WIDGET_NO_HISTORY", "1")
+    assert cli.main(["snapshot", "--menubar"]) == 0
     assert _listing(home) == before
     assert not (home / ".apex-router" / "pressure.json").exists()
     out = capsys.readouterr().out
     assert '"schema": 1' in out and "Refresh | refresh=true" in out
+
+
+def test_menubar_writes_only_the_history_file(tmp_path, monkeypatch, capsys):
+    home = _writes_home(monkeypatch)
+    before = _listing(home)
+    assert cli.main(["snapshot", "--menubar"]) == 0
+    after = _listing(home)
+    changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
+    hist = os.path.join(".apex-router", "widget", "history.jsonl")
+    lock = hist + ".lock"
+    assert hist in changed
+    assert changed <= {os.path.join(".apex-router", "widget"), hist, lock, ".apex-router"}, changed
+    rows = [json.loads(x) for x in (home / hist).read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["v"] == 1 and isinstance(rows[0]["agents"], list)
+    assert (home / lock).stat().st_size == 0                    # the lock file holds no data
+    assert "Refresh | refresh=true" in capsys.readouterr().out
 
 
 def test_main_catastrophic_failure_is_gray(monkeypatch, capsys):
@@ -385,7 +410,7 @@ def test_proxy_port_from_healthz_is_never_interpolated_raw():
 
 def test_formatter_failure_falls_back_to_gray(monkeypatch, capsys):
     monkeypatch.setattr(snapshot, "collect", lambda **k: {"pressure": {}})
-    def boom(snap):
+    def boom(snap, **kw):                          # menubar(snap, history=, bin_path=)
         raise OverflowError("bad field")
     monkeypatch.setattr(snapshot, "menubar", boom)
     assert snapshot.main(["--menubar"]) == 0

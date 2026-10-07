@@ -6,8 +6,10 @@ Claude Code / pi / Codex session seen in the last hour with its memory, cpu, dis
 context size, subagents, child processes and models, the local worker, system GPU/load and
 ollama, the proxy.
 
-The plugin only runs `apex-router snapshot --menubar`. It is read-only: it writes no file and
-starts no service. Each refresh runs `ps` once (plus one `ps -o pid=,args=` for at most 40
+The plugin only runs `apex-router snapshot --menubar`. It starts no service and writes one file:
+each refresh appends one small sample to `~/.apex-router/widget/history.jsonl` (see
+[History](#history)); clicking a row writes and opens a detail page (see
+[Clicking: detail pages](#clicking-detail-pages)). Each refresh runs `ps` once (plus one `ps -o pid=,args=` for at most 40
 node/python/… processes inside agent trees), `ioreg` once, `launchctl list` once and — only when a
 pi or Codex session is listed — `lsof` once, and makes two loopback calls: the proxy's `/healthz`
 and ollama's `/api/ps`. All of these, the 0.25 s cpu/io sampling window and the subagent log scan
@@ -148,6 +150,87 @@ Lines longer than 120 characters continue on the next line, indented four more.
 with the rest's summed traffic and model calls) and 5 processes per session. Subagents sit
 directly under their session; `depth` is recorded but a depth-2 subagent's parent is not known
 without reading transcripts, which the widget does not do.
+
+## Graphs in the menu
+
+Each active session's submenu starts with `Open details ↗` and a block of sparklines (Menlo,
+`▁▂▃▄▅▆▇█`):
+
+```
+cpu  ▁▂▃▅▇▆▅▃▂▁▁▂                    0.5%
+mem  ▅▅▆▆▇▇▇▇▇▇▇█                    705MB
+io   ▁▁▁▃▁▁▁▁▁▁▁▁                    0.1MB/s
+ctx  ▂▃▄▅▆▇▇▇▇███                    31% 293k
+req  ▁▁▃▇▂▁▁▁▂▃▅▇                    22 per 5 min · 60 min
+tok  ▁▁▂▅▂▁▁▁▂▂▄▆                    out 9.8k per 5 min
+```
+
+- cpu / mem / io / ctx come from the history file: the last 30 refreshes (about 30 min at one
+  refresh a minute). cpu, io: scale 0..max; memory and context: min..max (the tooltip says
+  which). A missing sample is a gap; a series with no sample yet is left out.
+- req / tok come straight from proxy telemetry: twelve 5-min buckets over the last 60 min (main
+  thread and subagents together), so they work without any history.
+- The System section adds `gpu ▁▁▃▂ 6%` (system-wide GPU from the history).
+- When the menu is short of room a session falls back to cpu and req only, then to none.
+
+## Clicking: detail pages
+
+Every session row, every subagent row, every idle row and the top `Open dashboard ↗` item run
+
+```
+<apex-router binary> snapshot --detail <id>      (terminal=false refresh=false)
+```
+
+`<id>` is a session id, a subagent id or `all`. A row that has a submenu (an active session) opens
+the submenu on hover as usual; macOS does not fire an action for such a row, so use its first item,
+`Open details ↗` (the sparkline lines also click through).
+
+Safety: the click runs only the apex-router binary that the plugin found (`APEX_ROUTER_BIN`, exported
+by `apex.1m.sh`; else `~/.local/bin/apex-router`, else `apex-router` on PATH), and only when it is
+a plain absolute path. The three arguments are fixed except the id, which must match
+`^[0-9a-f-]{8,36}$` (session) or `^a[0-9a-f]{8,32}$` (subagent); anything else gets no action.
+No description, repo, process or model name ever reaches a command parameter.
+
+`apex-router snapshot --detail <id> [--no-open]` writes one self-contained HTML page and opens it
+with `open`:
+
+- `~/.apex-router/widget/detail-<id8>.html` for a session (a subagent click opens its session's
+  page with that subagent first, anchored at `#a…`), `detail-all.html` for the dashboard.
+- Session page: header (repo, session id, status, pid, uptime, models, memory / cpu / disk now,
+  context X/W %, cache share); cpu %, memory, disk MB/s and context tokens over the history;
+  requests, tokens stacked (input / cached read / cache write / output) and output tokens per
+  5 min over the last 6 h with errors marked by cause; context size per request for the main
+  thread and the busiest subagents against the window (1M / 200k); a subagent timeline (spawn →
+  last write, coloured running / quiet / done / flagged); a call graph (session → threads /
+  subagents → models with edge width ~ requests, session → child processes with MB and %cpu);
+  subagent, process and model tables.
+- Dashboard: every session with small multiples (cpu, memory, requests), system GPU %, GPU memory
+  and load history, all proxy requests, ollama models.
+- Charts are inline SVG; hovering a point or bar shows its value (SVG tooltips, no JavaScript).
+  The page loads nothing from anywhere — no scripts, stylesheets, fonts or images, no network —
+  and a Content-Security-Policy says so. Light and dark follow the system setting. No dollar
+  amounts.
+
+## History
+
+`snapshot --menubar` appends one compact JSON line per run to `~/.apex-router/widget/history.jsonl`
+(`$APEX_ROUTER_HOME` moves it): per session its id, kind, status, memory footprint, sampled cpu %,
+disk MB/s, context tokens and 5-min request count, its listed subagents' ids and states, and the
+system GPU %, GPU memory and 1-min load. No descriptions, names, paths or prompt text.
+
+- Bounded: at most 24 h and 2 MB; when either is exceeded the file is rewritten (temp file +
+  rename) to the newest lines within 24 h and 1.5 MB.
+- Concurrent refreshes take a lock (`history.jsonl.lock`); a run that cannot get it within 0.1 s
+  skips its sample. A failure to write never affects the menu.
+- `--json` and `--graph` never write. `apex-router snapshot --menubar --no-history` (or
+  `APEX_WIDGET_NO_HISTORY=1`) turns the history off; the sparklines from history then disappear.
+
+## Privacy
+
+Everything stays on this machine: the history file and the detail pages live in
+`~/.apex-router/widget/` (created private: directory 0700, files 0600) and are never sent
+anywhere. The detail page shows subagent descriptions and process names (HTML-escaped)
+the same way the menu does; delete the directory to remove them.
 
 ## Adapters: your own menu sections
 
