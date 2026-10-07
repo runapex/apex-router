@@ -388,7 +388,8 @@ def test_collect_end_to_end_with_fakes(tmp_path):
     assert s["ollama"] == [{"name": "m", "size_mb": 1.0, "vram_mb": 1.0}] and "errors" not in s
     assert out["worker"]["tree"]["pid"] == 500 and out["worker"]["ollama_tree"]["pid"] == 400
     assert out["worker"]["ollama_tree"]["procs"] == 2
-    assert run.calls.count("ps") == 1 and run.calls.count("lsof") == 1
+    # ps once; lsof once for pi/Codex cwds + once for ollama's clients (a model is loaded)
+    assert run.calls.count("ps") == 1 and run.calls.count("lsof") == 2
     assert {e["kind"] for e in out["graph"]["edges"]} == {"spawned", "runs", "calls"}
 
 
@@ -896,3 +897,20 @@ def test_graph_lines_wrap_at_120_and_keep_every_part():
                  "write 177.1k", "run 9m", "depth 1"):
         assert part in text, part
     assert lines[1].startswith("    ")                                    # continuation indent
+
+
+def test_ollama_clients_names_who_drives_the_gpu():
+    # The labels judge ran from a nohup'd CLI: no session, no worker, so the GPU looked idle-used.
+    lsof = "p2401\ncollama\nf7\np55074\ncpython3.12\nf3\np900\ncnode\nf5\n"
+    ps = ("55074 .venv/bin/python -m apex_router.cli labels build --judge 1000\n"
+          "900 node /opt/x/secret-token-server.js --key=abc\n")
+
+    def run(argv, timeout=1.0):
+        return lsof if argv[0] == "lsof" else ps
+    assert ar.ollama_clients(run) == [{"pid": 55074, "name": "apex-router labels"},
+                                      {"pid": 900, "name": "secret-token-server"}]
+    # nothing past the program / subcommand name is ever kept
+    assert ar.client_label("/u/.local/bin/apex-router xval -m m review --token=x") == "apex-router xval"
+    assert ar.client_label("apex-router mystery-arg") == "apex-router"
+    assert ar.client_label("curl -H 'Authorization: x' http://h") == "curl"
+    assert ar.ollama_clients(lambda argv, timeout=1.0: "p2401\ncollama\n") == []

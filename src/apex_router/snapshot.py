@@ -975,7 +975,16 @@ def _ollama_lines(s: dict, wres: dict) -> list:
         parts.append(t)
     if len(ol) > 3:
         parts.append(f"+{len(ol) - 3}")
+    cl = s.get("ollama_clients")
+    users = ""
+    if isinstance(cl, list) and cl:
+        names = Counter("worker" if c.get("worker") else esc(str(c.get("name", "?"))) for c in cl)
+        users = " ← " + ", ".join(f"{n} ×{k}" if k > 1 else n for n, k in names.most_common(3))
     tip = "memory held per model · pinned = keep_alive -1, else time until it unloads" + srv
+    if users:
+        tip += " · ← processes connected to ollama now: " + ", ".join(
+            f"{esc(str(c.get('name', '?')))} pid {c.get('pid')}" for c in cl)
+        return [_u("ollama " + " · ".join(parts) + users, tip=tip) + f" color={INK['violet']}"]
     return [_u("ollama " + " · ".join(parts), tip=tip)]
 
 

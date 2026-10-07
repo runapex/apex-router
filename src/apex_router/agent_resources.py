@@ -340,6 +340,62 @@ def parse_ps_args(text: str) -> dict:
     return out
 
 
+# apex-router's own subcommands: a fixed vocabulary, so naming one never leaks an argument.
+_APEX_SUBCMDS = {"labels", "xval", "zeno", "snapshot", "serve", "nightly", "rag-nightly",
+                 "chain-bench", "chain-planner", "skill-bench", "review-preread", "route-advise",
+                 "route-join", "pressure", "watch", "ornith-tier", "proxy"}
+
+
+def client_label(args: str) -> str | None:
+    """A process that talks to ollama, by name: ``apex-router labels`` for our own CLI (module
+    or entrypoint form), else the script / program basename. Never other argv text."""
+    toks = (args or "").split()
+    if not toks:
+        return None
+    rest = None
+    if "apex_router.cli" in toks:
+        rest = toks[toks.index("apex_router.cli") + 1:]
+    elif os.path.basename(toks[0]) == "apex-router":
+        rest = toks[1:]
+    elif len(toks) > 1 and os.path.basename(toks[1]) == "apex-router":
+        rest = toks[2:]
+    if rest is not None:
+        sub = next((t for t in rest if not t.startswith("-")), "")
+        return "apex-router" + (f" {sub}" if sub in _APEX_SUBCMDS else "")
+    lab = script_label(args) if is_interpreter(os.path.basename(toks[0])) else None
+    if lab:
+        return lab
+    base = os.path.basename(toks[0])
+    return base if _LABEL_RE.match(base) else None
+
+
+OLLAMA_PORT = 11434
+
+
+def ollama_clients(run=run_cmd, timeout: float = 0.5, port: int = OLLAMA_PORT) -> list:
+    """[{pid, name}] of processes with an open connection to ollama's API — who is driving the
+    GPU when a model is busy. ollama's own processes are left out."""
+    text = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED", "-Fpc"], timeout=timeout)
+    pids, cur, name = set(), None, {}
+    for ln in (text or "").splitlines():
+        if ln.startswith("p") and ln[1:].isdigit():
+            cur = int(ln[1:])
+        elif ln.startswith("c") and cur is not None:
+            name[cur] = ln[1:]
+            if not ln[1:].startswith("ollama"):
+                pids.add(cur)
+    if not pids:
+        return []
+    out = run(["ps", "-o", "pid=,args=", "-p", ",".join(str(p) for p in sorted(pids))],
+              timeout=timeout)
+    rows = []
+    for line in (out or "").splitlines():
+        t = line.strip().split(None, 1)
+        if len(t) == 2 and t[0].isdigit():
+            rows.append({"pid": int(t[0]), "name": client_label(t[1]) or name.get(int(t[0]), "?")})
+    return rows
+
+
 def script_labels(table: dict, pids, run=run_cmd, timeout: float = 1.0) -> dict:
     want = [p for p in pids if p in table and is_interpreter(table[p]["name"])][:ARGS_PIDS_MAX]
     if not want:
@@ -1484,6 +1540,10 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     system.update(guard("ioreg", lambda: parse_ioreg(
         run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], timeout=dl.timeout(0.5))), {}))
     system["ollama"] = guard("ollama", lambda: parse_ollama(fetch(OLLAMA_URL), now), None)
+    if system["ollama"]:                          # a model is loaded: who is using it?
+        cl = guard("ollama_clients", lambda: ollama_clients(run, dl.timeout(0.5)), None)
+        if cl is not None:
+            system["ollama_clients"] = [dict(c, worker=c["pid"] == worker_pid) for c in cl]
     net = guard("netstat", lambda: parse_netstat(run(["netstat", "-ibn"], timeout=dl.timeout(0.5))),
                 None)
     if net:
