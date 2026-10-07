@@ -26,6 +26,8 @@ ln -s "$PWD/integrations/swiftbar/apex.1m.sh" "<your SwiftBar plugin folder>/ape
 | red | RED — no new heavy fan-out |
 | gray | not enough requests to tell, UNKNOWN, or the snapshot failed |
 
+A model family that is RED or AMBER on its own rate colours the dot even when the overall level is calm.
+
 The number is the count of agents whose session log changed in the last 5 minutes.
 
 ## Adapters: your own menu sections
