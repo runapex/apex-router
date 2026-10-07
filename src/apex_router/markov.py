@@ -1,8 +1,9 @@
 """Two-state Markov chain over per-call outcomes — a bursty-failure signal beside zeno's p^n.
 
 zeno's horizon assumes calls fail independently: P(n clean calls) = p^n. On this machine's proxy
-telemetry they do not — a failed call is far more likely right after another failure (a dropped
-upstream, a bad hour). This module fits the simplest model that has memory, a chain over {ok, fail}:
+telemetry they do not — a failed call is far more likely right after another failure (measured:
+fail→fail pairs are seconds apart, the client's immediate retry failing too; slower drift over
+hours is NOT captured). This module fits the simplest model that has memory, a chain over {ok, fail}:
 
     P(ok | ok) = a,   P(fail | fail) = b,   P(first call ok) = q
     P(n-call session clean) = q * a^(n-1)
