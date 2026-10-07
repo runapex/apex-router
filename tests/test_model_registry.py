@@ -145,6 +145,11 @@ class TestModelRegistry(unittest.TestCase):
         self.assertEqual(fams["sonnet"], {"provider": "openai-codex", "id": "gpt-x", "effort": "medium"})
         self.assertEqual(registry["pi_families"]["opus"]["tier"], "opus")  # no source key named → merge
 
+    def test_family_with_both_id_and_tier_resolves_the_id(self):
+        registry = {"pi_families": {"sonnet": {"provider": "openai-codex", "tier": "sonnet", "id": "gpt-x"}}}
+        fams = model_registry.families(registry=registry)
+        self.assertEqual(fams["sonnet"], {"provider": "openai-codex", "id": "gpt-x"})
+
     def test_learn_explicit_ids_override_tiers(self):
         registry = {"learn": {"provider": "foundry", "validate": "v-id", "explain_tier": "opus"}}
         self.assertEqual(model_registry.learn(registry=registry),

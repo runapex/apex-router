@@ -60,10 +60,10 @@ next tag will carry.
 - Registry: an overlay pi family that pins an `id` no longer keeps the default family's `tier`
   (deep merge made the stale tier win, so the Python side kept resolving the Claude id). The
   resolution key (`id`/`tier`/`source`) an overlay names replaces the default's; `provider` and
-  `effort` still merge.
+  `effort` still merge. A family carrying both `id` and `tier` resolves the `id` (Python and pi).
 - pi `>>auto` dispatches a resolved tier id through that tier's family, so a family remap
   (foundry, subscription overlay) applies to it; before, it looked the raw Claude id up under
-  `anthropic` first.
+  `anthropic` first. If that family's switch fails it stays put instead of trying `anthropic`.
 - pi `/learn` now validates with Sonnet 5.5 and explains with Opus 5.5 on `foundry`; it asked for
   `anthropic/claude-sonnet-5`, which your setup has no credentials for.
 

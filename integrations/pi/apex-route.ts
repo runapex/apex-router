@@ -141,13 +141,14 @@ function loadRoutes(): Record<string, Route> {
 			const id = activeOrnithModel();
 			if (!id) continue;
 			entry.id = id;
+		} else if (typeof spec.id === "string" && spec.id) {
+			// A pinned id beats a tier left beside it (e.g. by a deep-merged models.json).
+			entry.id = spec.id;
 		} else if (typeof spec.tier === "string") {
 			const id = tiers[spec.tier];
 			if (typeof id !== "string" || !id) continue;
 			const prefix = prefixes[spec.provider];
 			entry.id = (typeof prefix === "string" ? prefix : "") + id;
-		} else if (typeof spec.id === "string" && spec.id) {
-			entry.id = spec.id;
 		} else {
 			continue;
 		}
@@ -280,7 +281,13 @@ export default function (pi: ExtensionAPI) {
 		const tier = tierOf(id);
 		const famRoute = tier ? routes[tier] : undefined;
 		const famModel = famRoute ? ctx.modelRegistry.find(famRoute.provider, famRoute.id) : undefined;
-		if (famRoute && famModel && (await pi.setModel(famModel))) {
+		if (famRoute && famModel) {
+			// No fall-through to the raw-id scan: it tries `anthropic` first, which a deployment
+			// that remapped this family (subscription OAuth → 400) must never silently reach.
+			if (!(await pi.setModel(famModel))) {
+				ctx.ui.notify(`>>auto: no API key for ${famRoute.provider}/${famRoute.id} (>>${tier}) — staying put`, "error");
+				return false;
+			}
 			if (famRoute.effort) pi.setThinkingLevel(famRoute.effort);
 			resolvedModelId = famRoute.id;
 			ctx.ui.notify(`>>auto → ${famRoute.provider}/${famRoute.id} via >>${tier} (${resolved?.task_type || "unclassified"})`, "info");

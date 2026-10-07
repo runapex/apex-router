@@ -207,13 +207,14 @@ def families(*, registry: dict | None = None) -> dict[str, dict]:
                 entry["id"] = _local_model()
             except Exception:
                 continue
+        elif isinstance(spec.get("id"), str) and spec["id"]:
+            # A pinned id beats a tier left beside it (e.g. by a deep-merged models.json).
+            entry["id"] = spec["id"]
         elif isinstance(spec.get("tier"), str):
             mid = tier_model(spec["tier"], registry=reg)
             if not mid:
                 continue
             entry["id"] = _provider_prefix(provider, reg) + mid
-        elif isinstance(spec.get("id"), str) and spec["id"]:
-            entry["id"] = spec["id"]
         else:
             continue
         if isinstance(spec.get("effort"), str) and spec["effort"]:

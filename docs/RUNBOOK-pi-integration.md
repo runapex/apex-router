@@ -137,8 +137,8 @@ families: Anthropic bills a third-party client's subscription OAuth to extra usa
 rejects the request with `400 … Third-party apps now draw from your extra usage` when none
 is available. Claude stays in Claude Code; pi's Claude-named families move to `openai-codex`.
 Merge `integrations/pi/registry-overlay.subscription.json` into `~/.apex-router/models.json`,
-replacing each family whole (a deep merge such as plain `jq '.[0] * .[1]'` keeps a family's old
-`tier` next to the new `id`, and `tier` wins):
+replacing each family whole (a plain deep merge, `jq '.[0] * .[1]'`, leaves the old `tier` next
+to the new `id`; the `id` wins, but the leftover is misleading):
 
 ```bash
 cd ~/.apex-router && cp models.json models.json.bak
