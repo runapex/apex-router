@@ -30,9 +30,18 @@ exception, and the command always exits 0. Stdlib only.
 
 The menu shows no dollar amounts (``measure.cost_usd`` stays in ``--json``). It is bounded: 8
 active sessions, 8 subagents each, about ``MENU_LINES_MAX`` lines; hidden rows are summed into a
-"… N more" line. All subprocess / network calls share one ``agent_resources.Deadline``.
+"… N more" line; every visible line is at most ``MENU_WIDTH`` characters (SwiftBar parameters and
+``--`` submenu markers not counted), ``--graph`` lines at most 120. All subprocess / network calls
+and the subagent log scan share one ``agent_resources.Deadline``. Control characters (C0, DEL,
+C1) never reach a line.
 
-Bar: ``● N`` plus `` ⚠`` when an agent is stuck or erroring (``agent_resources.agent_flagged``).
+Active / idle for a Claude session is Claude's own status (``busy`` / ``idle`` in
+``~/.claude/sessions/<pid>.json``); the log-mtime state is only the fallback
+(``agent_resources.agent_active``).
+
+Bar: ``● N`` plus `` ⚠`` when an agent is stuck or erroring (``agent_resources.agent_flagged``:
+a subagent running > 20 min, an error in the last 5 min or a 60-min error rate >= 5%, or a
+context >= 85% of a known window).
 Bar dot colour: green = GREEN with a sufficient sample; orange = AMBER; red = RED; gray when the
 sample is insufficient (most 15-min windows), UNKNOWN, or the snapshot itself failed. A RED forced
 by a fresh retry-after stays red even on a small sample (the provider said back off).
@@ -191,7 +200,7 @@ def measure_block(observe_dir=None, now: float | None = None) -> dict:
 
 
 def _clip(s, n: int = ROW_CHARS_MAX) -> str:
-    s = " ".join(str(s).split())
+    s = agent_resources.clean_text(s)                  # one line, no C0 / DEL / C1 controls
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
@@ -248,13 +257,13 @@ def _safe(fn, *a, **kw):
 
 def _default_worker(dl):
     def pid_fn(label):
-        return agents_mod._launchd_pid(label, timeout=dl.timeout(0.5))
+        return agents_mod._launchd_pid(label, timeout=dl.timeout(0.3))
     return agents_mod.worker(pid_fn=pid_fn)
 
 
 def _default_proxy(dl):
     try:
-        t = dl.timeout(0.3)
+        t = dl.timeout(0.2)
     except agent_resources.DeadlineSkip:
         return {"up": False, "skipped": True, "error": "skipped: deadline"}
     return agents_mod.proxy(timeout=t)
@@ -324,7 +333,8 @@ def dot(snap) -> str:
 
 def esc(s) -> str:
     """Make user-derived text safe as one SwiftBar menu line: no '|' (the param separator), no
-    newlines, no leading '-' (submenu / separator markers), at most 120 chars."""
+    newlines or other control characters, no leading '-' (submenu / separator markers), at most
+    120 chars."""
     s = _clip(s).replace("|", "¦")
     stripped = s.lstrip("-")
     return ("–" * (len(s) - len(stripped)) + stripped) if stripped != s else s
@@ -344,8 +354,9 @@ def fmt_age(s) -> str:
 
 
 def _active(snap) -> int:
+    """Active agents: Claude's own busy status, the log-mtime state only without one."""
     return sum(1 for a in snap.get("agents") or []
-               if isinstance(a, dict) and a.get("state") == "active")
+               if isinstance(a, dict) and not a.get("error") and agent_resources.agent_active(a))
 
 
 def _bar(color: str, text: str) -> str:
@@ -395,9 +406,10 @@ def _measure_line(m: dict) -> str:
     return " · ".join(parts)
 
 
-ACTIVE_MAX = 8
+ACTIVE_MAX = agent_resources.SCAN_SESSIONS_MAX      # subagent logs are scanned for exactly these
 IDLE_SHOWN_MAX = 8
 MENU_LINES_MAX = 80
+MENU_WIDTH = 110                                     # visible characters per menu line
 LABEL_W = 22
 UPARAMS = "emojize=false symbolize=false"     # on every line that carries user-derived text
 MONO = "font=Menlo size=12"
@@ -429,11 +441,22 @@ def _res(a) -> dict:
     return a.get("res") if isinstance(a, dict) and isinstance(a.get("res"), dict) else {}
 
 
-def _agent_label(a: dict) -> str:
-    """``repo session`` for Claude Code, ``kind:repo session`` for pi / Codex — esc()'d."""
+def _agent_label(a: dict, width: int | None = None) -> str:
+    """``repo session`` for Claude Code, ``kind:repo session`` for pi / Codex — esc()'d. With a
+    ``width`` the repo part is shortened (``apex-r…/rsi`` keeps a worktree name), never the
+    8-char session id."""
     kind, repo = str(a.get("kind", "?")), a.get("repo")
     head = (repo or "") if kind == "claude" else (f"{kind}:{repo}" if repo else kind)
-    return esc(f"{head} {a.get('session', '')}".strip())
+    head, sess = esc(head), esc(a.get("session", ""))
+    if width is not None and sess and len(head) + 1 + len(sess) > width:
+        room = max(1, width - len(sess) - 1)
+        base, slash, tail = head.rpartition("/")
+        if slash and len(tail) + 3 <= room:
+            keep = room - len(tail) - 2
+            head = base[:keep] + "…/" + tail
+        else:
+            head = head[:room - 1] + "…"
+    return f"{head} {sess}".strip()
 
 
 def _tree_tip(tree: dict, extra=()) -> str:
@@ -464,9 +487,23 @@ def _status_word(a: dict) -> str:
     return esc(a.get("state", "?"))
 
 
-def _agent_row(a: dict, prefix: str = "") -> str:
-    """Fixed-width monospace row for an active agent: label, status, footprint, cpu now, disk
-    io now, traffic 60 min (main + all subagents), context of the latest main-thread request."""
+def _fit(line: str, tail: str = "", width: int = MENU_WIDTH) -> str:
+    """``line + tail`` within ``width`` visible characters; the line is cut, never the tail."""
+    room = width - len(tail)
+    return (line if len(line) <= room else line[:room - 1] + "…") + tail
+
+
+def _last_text(ts, now) -> str:
+    t = _epoch_s(ts)
+    if t is None or not isinstance(now, (int, float)):
+        return ""
+    return f"last {fmt_age(max(0.0, now - t))}"
+
+
+def _agent_row(a: dict, prefix: str = "", now: float | None = None) -> str:
+    """Fixed-width monospace row for an active agent: label, status, footprint, cpu now, then
+    traffic 60 min (main + all subagents), context of the latest main-thread request, the 5-min
+    request rate and the age of the newest request. Disk io and lifetime numbers: tooltip."""
     if a.get("error"):
         return _u(f"{prefix}{esc(a.get('kind', '?'))} · error · {esc(a['error'])}")
     res = _res(a)
@@ -475,14 +512,19 @@ def _agent_row(a: dict, prefix: str = "") -> str:
     alive = tree.get("alive")
     mem = fmt_mb(tree.get("footprint_mb")) if alive else "—"
     cpu = f"{tree.get('cpu_pct') or 0:g}%" if alive else "—"
-    io = agent_resources.io_rate(tree) if alive else None
-    cols = [_col(_agent_label(a), LABEL_W), _col(_status_word(a), 6), mem.rjust(6),
-            cpu.rjust(5), (agent_resources.fmt_rate(io) if io is not None else "").rjust(8)]
-    traffic = f"{tot['requests']} req · out {agent_resources._k(tot['tokens_out'])}"
+    head = (f"{_col(_agent_label(a, LABEL_W), LABEL_W)} {_col(_status_word(a), 6)} "
+            f"{mem.rjust(6)} {cpu.rjust(5)}")
+    bits = [f"{tot['requests']} req", f"out {agent_resources._k(tot['tokens_out'])}"]
     ctx = agent_resources.ctx_text(res.get("telemetry"))
-    line = "  ".join(cols) + "  " + traffic + (f" · {ctx}" if ctx else "")
-    if agent_resources.agent_flagged(a):
-        line += "  ⚠"
+    if ctx:
+        bits.append(ctx)
+    if tot.get("req_5m"):
+        bits.append(agent_resources.fmt_rate_min(tot["req_5m"]))
+    last = _last_text(tot.get("last_ts"), now) if tot.get("requests") else ""
+    if last:
+        bits.append(last)
+    flag = " ⚠" if agent_resources.agent_flagged(a) else ""
+    line = _fit(head + "  " + " · ".join(bits), flag)
     subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
     extra = []
     if subs.get("count"):
@@ -492,26 +534,60 @@ def _agent_row(a: dict, prefix: str = "") -> str:
     return _u(prefix + line, mono=True, tip=_tree_tip(tree, extra))
 
 
+_FLAG_WHY = {"long": "running > 20 min", "errors": "an error in the last 5 min or rate ≥ 5%",
+             "ctx": "context ≥ 85% of its window"}
+
+
 def _sub_row(sa: dict, prefix: str) -> str:
+    """``sym label  N req · out X · cache P% · ctx A[/W P%] · last Ns`` (+ the error count when
+    flagged for errors). Input / cached / write tokens and run time are in the tooltip."""
     st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
-    sym = "⚠" if sa.get("flags") else _SUB_SYM.get(sa.get("state"), "?")
+    flags = sa.get("flags") or []
+    sym = "⚠" if flags else _SUB_SYM.get(sa.get("state"), "?")
     label = esc(sa.get("description") or sa.get("type") or "?")
-    line = (f"{sym} {_col(label, LABEL_W)}  {agent_resources.tel_text(st)}  "
-            f"{agent_resources.lifecycle_text(sa)}")
+    bits = [f"{st.get('requests', 0)} req", f"out {agent_resources._k(st.get('tokens_out', 0))}"]
+    share = agent_resources.cache_share(st)
+    if share is not None:
+        bits.append(f"cache {agent_resources.fmt_pct(share)}")
+    if "errors" in flags and agent_resources.err_text(st):
+        bits.append(agent_resources.err_text(st))
+    ctx = agent_resources.ctx_text(st)
+    if ctx:
+        bits.append(ctx)
+    last = sa.get("last_s", sa.get("age_s"))
+    if isinstance(last, (int, float)):
+        bits.append(f"last {fmt_age(last)}")
+    line = _fit(f"{sym} {_col(label, LABEL_W)}  " + " · ".join(bits))
     tip = [f"type {esc(sa.get('type', '?'))}", f"id {esc(sa.get('id', '?'))}",
-           f"state {sa.get('state')}"]
+           f"state {sa.get('state')}", agent_resources.tokens_text(st)]
+    if st.get("errors"):
+        tip.append(agent_resources.err_text(st))
+    tip.append(agent_resources.lifecycle_text(sa))
     if sa.get("depth"):
         tip.append(f"depth {sa['depth']}")
-    if sa.get("flags"):
-        tip.append("flagged: " + ", ".join({"long": "running > 20 min", "errors": "errors in 60 min",
-                                            "ctx": "context ≥ 85%"}.get(f, f)
-                                           for f in sa["flags"]))
+    if flags:
+        tip.append("flagged: " + ", ".join(_FLAG_WHY.get(f, str(f)) for f in flags))
     return _u(prefix + line, mono=True, tip=" · ".join(tip))
 
 
 def _more_text(n: int, st: dict, what: str = "more") -> str:
     return (f"… {n} {what} ({st.get('requests', 0)} req, "
             f"out {agent_resources._k(st.get('tokens_out', 0))})")
+
+
+def _brief(st: dict) -> str:
+    """``N req · out X · cache P% · E err R% · ctx …`` — input / cached / write go to a tooltip."""
+    bits = [f"{st.get('requests', 0)} req", f"out {agent_resources._k(st.get('tokens_out', 0))}"]
+    share = agent_resources.cache_share(st)
+    if share is not None:
+        bits.append(f"cache {agent_resources.fmt_pct(share)}")
+    e = agent_resources.err_text(st)
+    if e:
+        bits.append(e)
+    c = agent_resources.ctx_text(st)
+    if c:
+        bits.append(c)
+    return " · ".join(bits)
 
 
 def _agent_submenu(a: dict, level: int = 2) -> list:
@@ -528,9 +604,10 @@ def _agent_submenu(a: dict, level: int = 2) -> list:
     tel = res.get("telemetry")
     if isinstance(tel, dict):
         p50 = tel.get("p50_ttft_ms")
-        out.append(_u("--main  " + agent_resources.tel_text(tel)
-                      + (f" · ttft {p50 / 1000:.1f}s" if isinstance(p50, (int, float)) else ""),
-                      mono=True))
+        out.append(_u("--" + _fit("main  " + _brief(tel)
+                                  + (f" · ttft {p50 / 1000:.1f}s"
+                                     if isinstance(p50, (int, float)) else "")),
+                      mono=True, tip=agent_resources.tokens_text(tel)))
     subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
     lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
     if lst:
@@ -549,7 +626,12 @@ def _agent_submenu(a: dict, level: int = 2) -> list:
     tree = res.get("tree") or {}
     procs = [p for p in (tree.get("top") or [])[:cap["procs"]] if isinstance(p, dict)]
     if procs:
-        out.append(f"--Processes · {tree.get('procs', '?')} · {fmt_mb(tree.get('footprint_mb'))}")
+        fps = [p.get("footprint_mb") for p in procs]
+        held = sum(fps) if all(isinstance(x, (int, float)) for x in fps) else None
+        out.append(f"--Processes · {len(procs)} · {fmt_mb(held)} | size=12 tooltip=\""
+                   + _tip(f"the listed child processes; the whole tree incl. the session "
+                          f"process: {tree.get('procs', '?')} procs · "
+                          f"{fmt_mb(tree.get('footprint_mb'))}") + '"')
         for p in procs:
             tip = [f"pid {p.get('pid')}"]
             if p.get("uptime_s") is not None:
@@ -577,7 +659,7 @@ def _idle_row(a: dict) -> str:
         return _u(f"--{esc(a.get('kind', '?'))} · error · {esc(a['error'])}")
     tree = _res(a).get("tree") or {}
     mem = fmt_mb(tree.get("footprint_mb")) if tree.get("alive") else ""
-    line = (f"--{_col(_agent_label(a), LABEL_W)}  {_status_word(a)} {fmt_age(a.get('age_s'))}"
+    line = (f"--{_col(_agent_label(a, LABEL_W), LABEL_W)}  {_status_word(a)} {fmt_age(a.get('age_s'))}"
             f"  {mem.rjust(6)}").rstrip()
     return _u(line, mono=True, tip=_tree_tip(tree) or None)
 
@@ -589,9 +671,7 @@ def fmt_mb(mb) -> str:
 
 
 def _rank(a: dict):
-    tot = agent_resources.session_totals(_res(a))
-    tree = _res(a).get("tree") or {}
-    return (-(tot.get("tokens_out") or 0), -(tree.get("cpu_pct") or 0))
+    return agent_resources.rank_key(a)                 # the same order the subagent scan used
 
 
 def _agents_header(snap: dict, n_active: int, n_idle: int) -> str:
@@ -616,10 +696,13 @@ def _agents_header(snap: dict, n_active: int, n_idle: int) -> str:
 
 def _agents_body(snap: dict, budget: int) -> list:
     """Agent rows within a line budget: active sessions ranked by output tokens then cpu, at
-    most ACTIVE_MAX; each gets the most detail that still fits; idle ones fold into a submenu."""
+    most ACTIVE_MAX; each gets the most detail that still fits; idle ones fold into a submenu.
+    Active / idle is Claude's own status when known (``agent_resources.agent_active``)."""
     ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
-    active = sorted([a for a in ags if a.get("state") != "idle"], key=_rank)
-    idlers = [a for a in ags if a.get("state") == "idle"]
+    now = _epoch_s(snap.get("ts"))
+    active = sorted([a for a in ags if a.get("error") or agent_resources.agent_active(a)],
+                    key=_rank)
+    idlers = [a for a in ags if not a.get("error") and not agent_resources.agent_active(a)]
     shown, hidden = active[:ACTIVE_MAX], active[ACTIVE_MAX:]
     idle_lines = (1 + min(len(idlers), IDLE_SHOWN_MAX) + (len(idlers) > IDLE_SHOWN_MAX)) \
         if idlers else 0
@@ -627,7 +710,7 @@ def _agents_body(snap: dict, budget: int) -> list:
     body, used = [], 0
     for i, a in enumerate(shown):
         rest = len(shown) - i - 1
-        row = [_agent_row(a)]
+        row = [_agent_row(a, now=now)]
         for level in (2, 1, 0):
             sub = _agent_submenu(a, level) if not a.get("error") else []
             if level == 0 or used + 1 + len(sub) + 2 * rest + reserve_tail <= budget:
@@ -746,11 +829,27 @@ def menubar(snap: dict) -> str:
         section(esc(ad.get("title", "?")), body, user_text=True)
     other = len(head) + 1 + sum(len(x) for x in sections if x)
     budget = max(30, MENU_LINES_MAX - other - 2)
-    n_idle = sum(1 for a in ags if a.get("state") == "idle")
+    n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a))
     sections[agents_at] = ([_agents_header(snap, _active(snap), n_idle)]
                            + _agents_body(snap, budget) + ["---"])
     lines = head + [ln for sec in sections for ln in sec] + ["Refresh | refresh=true"]
-    return "\n".join(lines)
+    return "\n".join(_cap_width(ln) for ln in lines)
+
+
+def visible(line: str) -> str:
+    """A menu line's visible text: no SwiftBar parameters, no leading ``--`` submenu markers."""
+    text = line.split(" | ", 1)[0]
+    return text.lstrip("-")
+
+
+def _cap_width(line: str, width: int = MENU_WIDTH) -> str:
+    """Safety net: cut a line's visible text to ``width`` (rows are built to fit already)."""
+    text, sep, params = line.partition(" | ")
+    body = text.lstrip("-")
+    if len(body) <= width:
+        return line
+    marks = text[:len(text) - len(body)]
+    return marks + body[:width - 1] + "…" + sep + params
 
 
 def menubar_error(msg: str) -> str:

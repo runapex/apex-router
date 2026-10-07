@@ -277,7 +277,7 @@ def test_user_text_is_escaped_in_menu(tmp_path):
     # only our own lines carry a parameter separator
     with_params = [ln for ln in lines if "|" in ln]
     assert all(_param_line_ok(ln) for ln in with_params), with_params
-    assert "evil ¦ bash=/bin/rm" in out
+    assert "evil ¦ ba…/rm abcd1234" in out          # repo cut, never the 8-char session id
     assert "––T ¦ x | size=12" in out
     assert "––– | emojize=false symbolize=false" in lines and lines[-1] == "Refresh | refresh=true"
     assert _user_lines_disable_emoji(lines, ["evil", "Bad¦Cause", "––T", "r ¦ refresh"])
@@ -450,19 +450,18 @@ def test_menubar_agent_metrics_submenu_and_system():
     plain = _plain(lines)
     row = next(ln for ln in lines if ln.startswith("r s1 "))
     # footprint (not rss), cpu, Claude's own status; lifetime io only in the tooltip
-    assert row.split(" | ")[0] == ("r s1                    busy     412MB    14%            "
-                                   "6 req · out 2.5k  ⚠")
+    assert row.split(" | ")[0] == ("r s1                   busy    412MB   14%  "
+                                   "6 req · out 2.5k ⚠")
     assert "font=Menlo size=12 emojize=false symbolize=false" in row
     assert 'tooltip="pid 9 · io life 745/569MB · rss 300MB · cpu = ps average"' in row
     i = plain.index(row.split(" | ")[0])
-    sub = plain[i + 1:plain.index("pi:q s2                 active       —      —            "
-                                  "0 req · out 0")]
+    sub = plain[i + 1:plain.index("pi:q s2                active      —     —  0 req · out 0")]
     assert sub == ["--Σ 60m  6 req · out 2.5k · 1 err 17%",
                    "--main  4 req · out 2.5k · 1 err 25% · ttft 1.2s",
                    "--Subagents 60m · 4 · 0 running",
-                   "--▶ find x                  2 req · out 10  no log",
+                   "--▶ find x                  2 req · out 10",
                    "--… 3 more (0 req, out 0)",
-                   "--Processes · ? · 412MB", "----pytest                       ?  20%",
+                   "--Processes · 1 · ?", "----pytest                       ?  20%",
                    "--Models 60m", "----claude-opus-5-5         6 req"]
     assert "--process not attributed (2 candidates share this cwd)" in lines
     assert "pid 42 · inbox 0 · running 0 · ?MB · 0%" in plain     # rss-only tree: no footprint
@@ -483,7 +482,7 @@ def test_menubar_escapes_process_names_and_descriptions():
     assert all(_param_line_ok(ln) for ln in with_params), with_params
     plain = _plain(lines)
     assert "----––evil ¦ bash=/bin/rm        ?  20%" in plain
-    assert "--▶ x ¦ terminal=true nl    2 req · out 10  no log" in plain
+    assert "--▶ x ¦ terminal=true nl    2 req · out 10" in plain
     assert "----m¦href=http://x         6 req" in plain
     assert _user_lines_disable_emoji(lines, ["evil", "terminal=true", "href"])
 
@@ -640,3 +639,205 @@ def test_snapshot_deadline_skips_proxy(tmp_path):
                             worker_fn=_worker, deadline=dl)
     assert snap["proxy"] == {"up": False, "skipped": True, "error": "skipped: deadline"}
     assert "not checked (deadline)" in snapshot.menubar(snap)
+
+
+# ---- iteration 3: Claude status, context table, error rule, width, controls, speed ------------
+
+def _status_agent(i, state, status, out=100):
+    a = _session_agent(i, n_subs=0, state=state, status=status)
+    a["res"]["telemetry"]["tokens_out"] = out
+    return a
+
+
+def test_active_idle_comes_from_claude_status_not_log_mtime():
+    ghost = _status_agent(1, "active", "idle")        # log touched by something else, Claude idle
+    quiet = _status_agent(2, "idle", "busy")          # busy but its log is older than 5 min
+    nostatus = _status_agent(3, "active", None)       # no status: the mtime state decides
+    snap = {"pressure": {}, "agents": [ghost, quiet, nostatus]}
+    out = snapshot.menubar(snap)
+    lines = _plain(out.splitlines())
+    assert lines[0] == "● 2"
+    assert next(ln for ln in lines if ln.startswith("Agents ·")).startswith(
+        "Agents · 2 active · 1 idle")
+    assert any(ln.startswith("idle (1)") for ln in lines)
+    assert any(ln.startswith("--repo1 s0000001") for ln in lines)          # folded as idle
+    assert any(ln.startswith("repo2 s0000002") for ln in lines)            # top level: active
+    assert any(ln.startswith("repo3 s0000003") for ln in lines)
+
+
+def test_error_flag_needs_a_recent_error_or_a_5pct_rate():
+    def agent(errors, requests, errors_5m):
+        a = _session_agent(1, n_subs=0)
+        a["res"]["telemetry"].update(errors=errors, requests=requests, errors_5m=errors_5m)
+        return a
+    p = {"level": "GREEN", "insufficient_sample": False}
+    old_one = snapshot.menubar({"pressure": p, "agents": [agent(1, 100, 0)]})
+    assert old_one.splitlines()[0] == "● 1 | color=#34C759"                # 1% and 40 min old
+    assert "⚠" not in _plain(old_one.splitlines())[12]
+    recent = snapshot.menubar({"pressure": p, "agents": [agent(1, 100, 1)]})
+    assert recent.splitlines()[0] == "● 1 ⚠ | color=#34C759"
+    rate = snapshot.menubar({"pressure": p, "agents": [agent(5, 100, 0)]})
+    assert rate.splitlines()[0] == "● 1 ⚠ | color=#34C759"
+    tiny = snapshot.menubar({"pressure": p, "agents": [agent(1, 200, 0)]})
+    assert "1 err <1%" in tiny and "1 err 0%" not in tiny
+
+
+def test_session_row_label_keeps_the_session_id_and_shows_rate_and_last():
+    a = _session_agent(1, n_subs=0)
+    a["repo"] = "a-very-long-repository-name/worktree"
+    a["res"]["telemetry"].update(req_5m=16, last_ts=NOW - 42, ctx_tokens=283_000,
+                                 ctx_window=1_000_000, ctx_pct=28)
+    lines = _plain(snapshot.menubar({"pressure": {}, "agents": [a], "ts": NOW}).splitlines())
+    row = next(ln for ln in lines if "s0000001" in ln and not ln.startswith("--"))
+    assert row.startswith("a-v…/worktree s0000001 busy")                  # 22 wide, id whole
+    assert "ctx 283k/1M 28% · r5 3.2/min · last 42s" in row
+
+
+def test_processes_header_adds_up_to_the_listed_rows():
+    a = _session_agent(1, n_subs=0, fp=700.0)
+    a["res"]["tree"].update(procs=4, top=[
+        {"pid": 11, "name": "a", "footprint_mb": 292.0, "cpu_pct": 0.0},
+        {"pid": 12, "name": "b", "footprint_mb": 2.0, "cpu_pct": 0.0},
+        {"pid": 13, "name": "c", "footprint_mb": 15.0, "cpu_pct": 0.0}])
+    lines = snapshot.menubar({"pressure": {}, "agents": [a]}).splitlines()
+    hdr = next(ln for ln in lines if ln.startswith("--Processes"))
+    assert hdr.split(" | ")[0] == "--Processes · 3 · 309MB"                   # 292 + 2 + 15
+    assert "4 procs · 700MB" in hdr                                          # whole tree: tooltip
+    assert _param_line_ok(hdr)
+
+
+def test_subagent_row_format_and_tooltip():
+    sa = {"id": "x1", "type": "general-purpose", "description": "RSI iter 3", "depth": 1,
+          "age_s": 2.0, "last_s": 2.0, "run_s": 540.0, "state": "running", "flags": [],
+          "telemetry": {"requests": 36, "tokens_out": 57_800, "tokens_in": 24_600,
+                        "cache_read": 4_700_000, "cache_write": 177_100, "errors": 0,
+                        "ctx_tokens": 184_000, "ctx_window": 1_000_000, "ctx_pct": 18}}
+    row = snapshot._sub_row(sa, "--")
+    text, params = row.split(" | ", 1)
+    assert text == ("--▶ RSI iter 3              36 req · out 57.8k · cache 96% · "
+                    "ctx 184k/1M 18% · last 2s")
+    assert "in 24.6k · cached 4.7M · write 177.1k · out 57.8k" in params
+    assert "run 9m" in params
+
+
+def test_control_characters_never_reach_a_line():
+    assert snapshot.esc("a\x1b[31mb\x7fc\x9bd\x00e") == "a[31mbcde"
+    assert snapshot.esc("x\ty\r\nz") == "x y z"
+    snap = _res_snap(desc="\x1b]0;pwn\x07evil \x1b[2J\x9b31m desc", name="p\x1bq")
+    out = snapshot.menubar(snap)
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in out)
+    assert "]0;pwnevil [2J31m desc" in out
+    from apex_router import agent_resources as ar
+    a = snap["agents"][0]
+    g = ar.graph_text(ar.build_graph([a], now=NOW))
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in g)
+
+
+def _big_home(root: Path, n_proj=30, per_proj=10, n_subs=40, rows_per=12):
+    """300 sessions x 40 subagents, long names, control characters, large token counts."""
+    tel_rows = []
+    k = 0
+    for pi in range(n_proj):
+        proj = root / ".claude" / "projects" / (
+            f"-Users-you-src-a-very-long-repository-name-{pi:03d}--claude-worktrees-wt{pi}")
+        for _ in range(per_proj):
+            sid = f"{k:08x}-0000-4000-8000-000000000000"
+            d = proj / sid / "subagents"
+            d.mkdir(parents=True)
+            f = proj / f"{sid}.jsonl"
+            f.write_text("{}\n")
+            os.utime(f, (NOW - (30 if k % 10 == 0 else 600 + k),) * 2)
+            for j in range(n_subs):
+                aid = f"a{k:04d}{j:03d}"
+                log = d / f"agent-{aid}.jsonl"
+                log.write_text("{}\n")
+                os.utime(log, (NOW - 5 - j * 30,) * 2)
+                if j < 10:
+                    (d / f"agent-{aid}.meta.json").write_text(json.dumps(
+                        {"agentType": "general-purpose", "spawnDepth": 1,
+                         "description": "\x1b[31mRSI \x1b]0;t\x07 a long task description " * 3}))
+            for r in range(rows_per):
+                tel_rows.append(_row(NOW - 10 - r * 20, session_id=sid,
+                                     agent_id=None if r % 3 == 0 else f"a{k:04d}{r:03d}",
+                                     model=("claude-haiku-4-5-20251001" if r % 4 == 2
+                                            else "claude-opus-5-5"),
+                                     is_error=r == 5, cause="ReadError" if r == 5 else None,
+                                     tokens_in=99_999, cache_read_tokens=999_990,
+                                     cache_write_tokens=99_900, tokens_out=99_999))
+            k += 1
+    return _telemetry(root / ".apex" / "telemetry.jsonl", tel_rows)
+
+
+@pytest.fixture(scope="module")
+def big_home(tmp_path_factory):
+    root = tmp_path_factory.mktemp("bighome")
+    _big_home(root)
+    return root
+
+
+def _big_collect(home, monkeypatch=None):
+    return snapshot.collect(home=home, telemetry=home / ".apex" / "telemetry.jsonl",
+                            observe_dir=home / "o", adapters=home / "a", now=NOW,
+                            proxy_fn=_down, worker_fn=_worker)
+
+
+def test_large_home_is_fast_and_scans_only_shown_sessions(big_home, monkeypatch):
+    import time as _time
+    calls = []
+    real = snapshot.agents_mod.decode_slug
+    monkeypatch.setattr(snapshot.agents_mod, "decode_slug",
+                        lambda slug, home=None: calls.append(slug) or real(slug, home))
+    t0 = _time.perf_counter()
+    snap = _big_collect(big_home)
+    out = snapshot.menubar(snap)
+    graph = snapshot.agent_resources.graph_text(snap["graph"])
+    elapsed = _time.perf_counter() - t0
+    assert len([a for a in snap["agents"] if a.get("kind") == "claude"]) == 300
+    assert elapsed < 1.0, elapsed                                   # ~0.15 s measured
+    assert snap["system"]["subagent_scans"] <= snapshot.ACTIVE_MAX
+    assert len(calls) == len(set(calls)) == 30                       # once per project dir
+    assert out and graph
+
+
+def test_large_home_line_widths(big_home):
+    snap = _big_collect(big_home)
+    out = snapshot.menubar(snap)
+    widths = [len(snapshot.visible(ln)) for ln in out.splitlines()]
+    assert max(widths) <= snapshot.MENU_WIDTH, max(widths)
+    g = snapshot.agent_resources.graph_text(snap["graph"])
+    assert max(len(ln) for ln in g.splitlines()) <= 120
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in out + g)
+    # every shown session row keeps its full 8-char id
+    sids = {a["session"] for a in snap["agents"]}
+    rows = [ln for ln in out.splitlines() if "font=Menlo" in ln and not ln.startswith("-")]
+    assert rows and all(any(s in r for s in sids) for r in rows)
+
+
+def test_extreme_values_stay_within_the_width():
+    a = _session_agent(1, n_subs=12, fp=123_456.0)
+    a["repo"] = "x" * 80
+    a["res"]["tree"].update(cpu_pct=1234.5, procs=999)
+    a["res"]["telemetry"].update(requests=99_999, tokens_out=987_654_321, errors=999,
+                                 errors_5m=9, req_5m=9_999, last_ts=NOW - 86_000,
+                                 ctx_tokens=199_999, ctx_window=200_000, ctx_pct=100,
+                                 tokens_in=987_654_321, cache_read=987_654_321,
+                                 cache_write=987_654_321, p50_ttft_ms=123_456)
+    for s in a["res"]["subagents"]["list"]:
+        s["description"] = "d" * 300
+        s["flags"] = ["errors", "ctx", "long"]
+        s["telemetry"].update(requests=99_999, tokens_out=987_654_321, errors=99_999,
+                              ctx_tokens=999_999, ctx_window=200_000, ctx_pct=500)
+    out = snapshot.menubar({"pressure": {}, "agents": [a] * 3, "ts": NOW})
+    assert max(len(snapshot.visible(ln)) for ln in out.splitlines()) <= snapshot.MENU_WIDTH
+    row = next(ln for ln in out.splitlines() if "s0000001" in ln and not ln.startswith("-"))
+    assert snapshot.visible(row).endswith(" ⚠")                         # the flag is never cut
+    from apex_router import agent_resources as ar
+    g = ar.graph_text(ar.build_graph([a], now=NOW))
+    assert max(len(ln) for ln in g.splitlines()) <= 120
+
+
+def test_idle_row_keeps_the_session_id():
+    a = _session_agent(2, n_subs=0, state="idle", status="idle")
+    a["repo"] = "a-really-long-repo-name-without-slash"
+    lines = _plain(snapshot.menubar({"pressure": {}, "agents": [a]}).splitlines())
+    assert any(ln.startswith("--a-really-lon… s0000002  idle") for ln in lines), lines

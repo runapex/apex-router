@@ -29,14 +29,21 @@ next tag will carry.
   a node/python script, e.g. `pyright-langserver`; nothing else from the command line is kept) and
   the models it called. Subagents and sessions past the caps (8 active sessions, 8 subagents per
   session, about 80 menu lines) become one `… N more (x req, out y)` line, so no total is lost.
-  A context percent is shown only when the request names its window (`[1m]`); none is assumed.
-  The bar reads `● N ⚠` when a subagent has run for more than 20 min, any agent had errors in the
-  last 60 min, or a known context window is 85 % full; the dot colour is still the pressure rule.
+  The context is shown against its window from a model-family table (Opus / Sonnet 4.6+ and
+  Fable 1M, Haiku 4.5 200k, `[1m]` 1M): `ctx 283k/1M 28%`; any other model shows the size alone
+  unless a successful request of the same thread and model passed 200k. Active / idle for a
+  Claude session is Claude's own busy / idle status (log mtime only as the fallback), and each
+  row adds `r5 N/min` (requests per minute over 5 min) and the age of its newest request.
+  The bar reads `● N ⚠` when a subagent has run for more than 20 min, an agent had an error in
+  the last 5 min or a 60-min error rate of 5 % or more, or a context is 85 % of a known window;
+  the dot colour is still the pressure rule. Lines stay within 110 characters (`--graph`: 120,
+  wrapped) and control characters are stripped from every line.
   The widget shows no dollar amounts. A refresh run inside a session does not count itself. The
   System section shows GPU load and memory (system-wide: macOS gives no per-process GPU figure
   without root), the load average, and ollama once, with each model's VRAM and when it unloads.
-  All subprocess and network calls share a 1.5 s deadline; a source that would start later is
-  skipped and listed as unavailable. `--graph` prints who-spawned-what / who-runs-what /
+  All subprocess and network calls, the sampling window and the subagent log scan share a
+  0.45 s deadline; a source that would start later is skipped and listed as unavailable. Subagent
+  logs are read only for the (at most 8) active sessions the menu shows. `--graph` prints who-spawned-what / who-runs-what /
   who-calls-which-model as a text tree; `--json` carries the same data under `system`, `graph`
   and each agent's `res`. Subagents run inside their session's process, so memory, cpu and io are
   per session; a subagent's load is its proxy traffic. Still read-only and fail-open. A Claude

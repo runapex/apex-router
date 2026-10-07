@@ -221,7 +221,7 @@ def test_subagents_meta_states_and_cap(tmp_path):
     assert set(by) == {"aa1", "aa2", "oldbusy", "ghost"}
     assert by["aa1"] == {"id": "aa1", "type": "Explore", "description": "find x", "depth": 2,
                          "age_s": 30.0, "run_s": 0.0, "state": "running", "flags": [],
-                         "telemetry": None}
+                         "telemetry": None, "last_s": 30.0}
     assert by["aa2"]["type"] == "?" and by["aa2"]["state"] == "done"
     assert by["ghost"]["state"] == "?" and out["list"][-1]["id"] == "ghost"
     for i in range(25):
@@ -587,20 +587,25 @@ def test_token_split_cache_share_and_wire_aware_input():
     assert "$" not in ar.tel_text(st)
 
 
-def test_context_is_the_latest_request_and_window_only_when_named():
+def test_context_is_the_latest_request_and_window_from_the_family_table():
     rows = [_row("s", ts=NOW - 30, tokens_in=1, cache_read_tokens=240_000, cache_write_tokens=5000),
             _row("s", ts=NOW - 10, tokens_in=3, cache_read_tokens=90_000, cache_write_tokens=0),
             _row("s", ts=NOW - 5, is_error=True, tokens_in=0, cache_read_tokens=0,
                  cache_write_tokens=0, tokens_out=0)]                     # no prompt: ignored
     st = ar._stats(rows)
     assert st["ctx_tokens"] == 90_003 and st["ctx_ts"] == NOW - 10       # latest, not largest
-    assert st["ctx_window"] is None and st["ctx_pct"] is None            # no 200k / 1M guess
-    assert ar.ctx_text(st) == "ctx 90.0k" and not ar.ctx_flag(st)
+    assert st["ctx_window"] == 1_000_000 and st["ctx_pct"] == 9          # opus 5.x: 1M family
+    assert ar.ctx_text(st) == "ctx 90k/1M 9%" and not ar.ctx_flag(st)
     big = ar._stats([_row("s", model="claude-opus-5-5[1m]", tokens_in=1,
                           cache_read_tokens=899_999, cache_write_tokens=0)])
     assert big["ctx_window"] == 1_000_000 and big["ctx_pct"] == 90
-    assert ar.ctx_text(big) == "ctx 900.0k 90%" and ar.ctx_flag(big)
-    assert ar.context_window("claude-opus-5-5") is None
+    assert ar.ctx_text(big) == "ctx 900k/1M 90%" and ar.ctx_flag(big)
+    assert ar.context_window("claude-opus-5-5") == 1_000_000
+    # an unknown id: no window is guessed, the size is shown absolute
+    unk = ar._stats([_row("s", model="kimi-k2.6", tokens_in=1, cache_read_tokens=136_000,
+                          cache_write_tokens=0)])
+    assert unk["ctx_window"] is None and unk["ctx_pct"] is None
+    assert ar.ctx_text(unk) == "ctx 136k" and not ar.ctx_flag(unk)
     merged = ar.merge_stats(st, big)
     assert "ctx_tokens" not in merged                                    # a latest value: no sum
 
@@ -677,3 +682,166 @@ def test_graph_subagent_state_word_not_repeated():
     lines = ar.graph_text(ar.build_graph([a])).splitlines()
     assert "  spawned T · d · 1 req · out 0 · run 10m · done 20m" in lines
     assert "  spawned T · e · 1 req · out 0 · running · run 1m · last 2s" in lines
+
+
+# ---------------------------------------------------------------- iteration 3
+
+@pytest.mark.parametrize("model,window", [
+    ("claude-opus-5-5", 1_000_000), ("claude-opus-5", 1_000_000), ("claude-opus-4-6", 1_000_000),
+    ("claude-opus-4-7-20261001", 1_000_000), ("claude-sonnet-4-6", 1_000_000),
+    ("claude-sonnet-5-1", 1_000_000), ("claude-fable-1", 1_000_000),
+    ("us.anthropic.claude-opus-5-5-v1:0", 1_000_000), ("claude-sonnet-4-5[1m]", 1_000_000),
+    ("claude-haiku-4-5", 200_000), ("claude-haiku-4-5-20251001", 200_000),
+    ("claude-opus-4-5", None), ("claude-sonnet-4-5", None), ("claude-opus-4-20250514", None),
+    ("claude-3-5-sonnet-20241022", None), ("kimi-k2.6", None), ("gpt-5", None), (None, None),
+    ("", None)])
+def test_context_window_family_table(model, window):
+    assert ar.context_window(model) == window
+
+
+def test_unknown_window_proven_1m_only_by_a_successful_request_over_200k():
+    ok = ar._stats([_row("s", model="kimi-k2.6", ts=NOW - 50, tokens_in=1,
+                         cache_read_tokens=210_000),
+                    _row("s", model="kimi-k2.6", ts=NOW - 10, tokens_in=1,
+                         cache_read_tokens=136_000)], now=NOW)
+    assert ok["ctx_window"] == 1_000_000 and ok["ctx_window_src"] == "observed"
+    assert ar.ctx_text(ok) == "ctx 136k/1M 14%"
+    failed = ar._stats([_row("s", model="kimi-k2.6", ts=NOW - 50, tokens_in=1,
+                             cache_read_tokens=210_000, is_error=True),
+                        _row("s", model="kimi-k2.6", ts=NOW - 10, tokens_in=1,
+                             cache_read_tokens=136_000)], now=NOW)
+    assert failed["ctx_window"] is None and ar.ctx_text(failed) == "ctx 136k"
+    other_model = ar._stats([_row("s", model="gpt-5", ts=NOW - 50, tokens_in=1,
+                                  cache_read_tokens=210_000),
+                             _row("s", model="kimi-k2.6", ts=NOW - 10, tokens_in=1,
+                                  cache_read_tokens=136_000)], now=NOW)
+    assert other_model["ctx_window"] is None
+
+
+def test_context_flag_for_a_known_200k_model():
+    st = ar._stats([_row("s", model="claude-haiku-4-5", tokens_in=1, cache_read_tokens=170_000)])
+    assert st["ctx_window"] == 200_000 and ar.ctx_flag(st)
+    assert ar.ctx_text(st) == "ctx 170k/200k 85%"
+    assert ar.ctx_flag({"ctx_tokens": 171_000, "ctx_window": 200_000})           # no pct stored
+    assert not ar.ctx_flag({"ctx_tokens": 169_000, "ctx_window": 200_000, "ctx_pct": 84})
+    assert not ar.ctx_flag({"ctx_tokens": 900_000, "ctx_window": None})          # unknown: never
+
+
+def test_error_flag_recent_or_rate():
+    old = [_row("s", ts=NOW - 2400, is_error=True)] + [_row("s", ts=NOW - 60) for _ in range(99)]
+    st = ar._stats(old, now=NOW)
+    assert st["errors"] == 1 and st["errors_5m"] == 0 and not ar.err_flag(st)
+    assert ar.err_text(st) == "1 err 1%"
+    recent = ar._stats([_row("s", ts=NOW - 60, is_error=True)]
+                       + [_row("s", ts=NOW - 60) for _ in range(99)], now=NOW)
+    assert recent["errors_5m"] == 1 and ar.err_flag(recent)
+    rate = ar._stats([_row("s", ts=NOW - 2400, is_error=True) for _ in range(5)]
+                     + [_row("s", ts=NOW - 2400) for _ in range(95)], now=NOW)
+    assert ar.err_flag(rate)
+    assert ar.err_text({"errors": 1, "requests": 200}) == "1 err <1%"
+    assert ar.err_text({"errors": 1, "requests": 101}) == "1 err <1%"
+    assert ar._lifecycle(400, 60, st) == ("done", [])                 # old 1% error: no flag
+    assert ar._lifecycle(400, 60, recent) == ("done", ["errors"])
+    assert not ar.agent_flagged({"res": {"telemetry": st}})
+    assert ar.agent_flagged({"res": {"telemetry": recent}})
+
+
+def test_stats_rate_and_last_merge():
+    st = ar._stats([_row("s", ts=NOW - 30), _row("s", ts=NOW - 200), _row("s", ts=NOW - 900)],
+                   now=NOW)
+    assert st["req_5m"] == 2 and st["last_ts"] == NOW - 30
+    m = ar.merge_stats(st, {"req_5m": 3, "last_ts": NOW - 5}, {"last_ts": float("nan")})
+    assert m["req_5m"] == 5 and m["last_ts"] == NOW - 5
+    assert ar.fmt_rate_min(16) == "r5 3.2/min" and ar.fmt_rate_min(100) == "r5 20/min"
+    assert ar.fmt_rate_min(0) == "r5 0/min"
+
+
+def test_claude_sessions_unparseable_procstart_is_never_a_match(tmp_path):
+    t = _table((100, 1, 1024, 0.0, "/opt/claude-code/claude"))          # start time known
+    _session(tmp_path, 100, "s", NOW, procStart="not a date")
+    assert ar.claude_sessions(tmp_path, t) == {}
+    _session(tmp_path, 100, "s", NOW, procStart=12345)                  # wrong type: same
+    assert ar.claude_sessions(tmp_path, t) == {}
+
+
+def test_clean_text_strips_c0_del_c1():
+    assert ar.clean_text("a\x1b[1mb\x07\x7f\x85c\x9bd\n\te") == "a[1mb cd e"   # NEL = space
+
+
+def test_collect_scans_subagent_logs_only_for_busy_shown_sessions(tmp_path):
+    start = NOW - 7200
+    ps_text = "\n".join([_ps_line(100, 1, 1024, 1.0, "claude", start),
+                         _ps_line(200, 1, 1024, 1.0, "claude", start)])
+    _session(tmp_path, 100, "busy-1", start, status="busy")
+    _session(tmp_path, 200, "idle-1", start, status="idle")
+    for sid in ("busy-1", "idle-1"):
+        _subagent(tmp_path, sid, f"{sid}-sub", 10, {"agentType": "Explore", "description": "d"})
+    agents = [{"kind": "claude", "repo": "r", "session": s, "session_id": s,
+               "state": "active", "age_s": 5} for s in ("busy-1", "idle-1")]  # both mtime-active
+    out = ar.collect(agents, home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+                     run=_fake_run(ps_text), rusage_fn=lambda p: None, fetch=lambda u: b"{}",
+                     loadavg=lambda: (0, 0, 0))
+    by = {a["session_id"]: a for a in out["agents"]}
+    assert ar.agent_active(by["busy-1"]) and not ar.agent_active(by["idle-1"])
+    assert by["busy-1"]["res"]["subagents"]["count"] == 1
+    assert by["idle-1"]["res"]["subagents"]["count"] == 0                # not scanned
+    assert out["system"]["subagent_scans"] == 1
+
+
+def test_collect_scan_is_capped_and_deadline_bounded(tmp_path):
+    agents = []
+    for i in range(20):
+        sid = f"s{i:02d}"
+        _subagent(tmp_path, sid, f"x{i}", 10, {"agentType": "t"})
+        agents.append({"kind": "claude", "session": sid, "session_id": sid, "state": "active"})
+    out = ar.collect(agents, home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+                     run=_fake_run(""), rusage_fn=lambda p: None, fetch=lambda u: b"{}",
+                     loadavg=lambda: (0, 0, 0))
+    assert out["system"]["subagent_scans"] == ar.SCAN_SESSIONS_MAX
+    t = [0.0]
+    dl = ar.Deadline(1.0, clock=lambda: t[0])
+    t[0] = 5.0                                                           # budget spent
+    sub = ar.subagents(tmp_path, "s00", NOW, {"ghost": {"requests": 1}}, deadline=dl)
+    assert sub["partial"] and [s["id"] for s in sub["list"]] == ["ghost"]  # traffic still shown
+
+
+def test_collect_sample_sleep_never_passes_the_deadline(tmp_path, monkeypatch):
+    slept = []
+    monkeypatch.setattr(ar, "_sleep", lambda s: slept.append(s))
+    t = [0.0]
+    monkeypatch.setattr(ar, "_clock", lambda: t[0])
+    dl = ar.Deadline(0.1, clock=lambda: t[0])
+    ar.collect([{"kind": "claude", "session": "s", "session_id": "s", "state": "active"}],
+               home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+               run=_fake_run(_ps_line(100, 1, 1024, 1.0, "claude")),
+               rusage_fn=lambda p: {"footprint_mb": 1.0, "read_mb": 0.0, "write_mb": 0.0,
+                                    "cpu_s": 0.0},
+               fetch=lambda u: b"{}", loadavg=lambda: (0, 0, 0), worker_pid=100, deadline=dl,
+               sample_s=0.25)
+    assert slept and max(slept) <= 0.1 - ar.DEADLINE_MIN_S + 1e-9
+
+
+def test_graph_lines_wrap_at_120_and_keep_every_part():
+    a = {"kind": "claude", "repo": "r" * 50, "session": "abcd1234", "state": "active",
+         "res": {"status": "busy",
+                 "tree": {"pid": 1, "alive": True, "footprint_mb": 700.0, "cpu_pct": 0.4,
+                          "read_mbs": 0.0, "write_mbs": 0.0},
+                 "telemetry": {"requests": 28, "tokens_out": 22_500, "ctx_tokens": 293_000,
+                               "ctx_window": 1_000_000, "ctx_pct": 29, "req_5m": 22,
+                               "last_ts": NOW - 13, "models": {"m": 28}},
+                 "subagents": {"list": [{"id": "x", "type": "general-purpose",
+                                         "description": "RSI iter 3: fix round-2 findings",
+                                         "state": "running", "age_s": 2.0, "run_s": 540.0,
+                                         "depth": 1, "flags": [],
+                                         "telemetry": {"requests": 36, "tokens_out": 57_800,
+                                                       "tokens_in": 24_600,
+                                                       "cache_read": 4_700_000,
+                                                       "cache_write": 177_100}}]}}}
+    lines = ar.graph_text(ar.build_graph([a], now=NOW)).splitlines()
+    assert max(len(ln) for ln in lines) <= 120
+    text = " · ".join(ln.strip() for ln in lines)
+    assert "abcd1234" in lines[0] and "r" * 31 + "…" in lines[0]        # repo cut, id kept
+    for part in ("ctx 293k/1M 29%", "r5 4.4/min", "last 13s", "in 24.6k", "cached 4.7M",
+                 "write 177.1k", "run 9m", "depth 1"):
+        assert part in text, part
+    assert lines[1].startswith("    ")                                    # continuation indent

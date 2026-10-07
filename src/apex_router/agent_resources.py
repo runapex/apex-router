@@ -31,12 +31,21 @@ makes. What is read, and nothing more:
                  session (main thread, agent_id null) and by subagent (agent_id). Only proxy
                  traffic is seen.
 
-No dollar figures: tokens, cache share and context fill only. A context window (for a percent)
-is known only when the request names it (a ``[1m]`` model suffix); otherwise the size is shown
-absolute — no window is assumed.
+No dollar figures: tokens, cache share and context fill only. The context window comes from a
+family table (``context_window``): Opus / Sonnet >= 4.6 and Fable -> 1M, Haiku 4.5 -> 200k, a
+``[1m]`` suffix -> 1M (VERIFIED 2026-10-06 against the pi 0.99.1 model catalog and a live
+283k-token request on claude-opus-5-5). Any other id has NO assumed window — its size is shown
+absolute — unless a successful request of the same thread and model exceeded 200k in the window,
+which proves 1M.
 
-All subprocess and network calls share one deadline (``DEADLINE_S``); a source that would start
-after it is skipped and recorded in ``system.errors``. The widget's own process, its descendants
+A request error flags an agent only when it is recent (last 5 min) or the 60-min error rate is
+>= 5% (``err_flag``); one old transient error does not.
+
+All subprocess and network calls share one deadline (``DEADLINE_S``, the rate-sample window
+included), and so does the subagent filesystem scan; a source that would start after it is
+skipped and recorded in ``system.errors``. Subagent logs are scanned only for the active sessions
+the menu shows (``SCAN_SESSIONS_MAX``, ranked like the menu); every other session gets its
+subagents from proxy traffic alone. The widget's own process, its descendants
 and its ancestors below the session root are excluded from every tree, so a refresh run inside a
 session does not count itself. Subagents run inside their Claude session's process, so OS
 resources are per session, never per subagent; a subagent's "load" is its proxy traffic. No
@@ -68,6 +77,7 @@ SUBAGENT_QUIET_S = 5 * 60
 SUBAGENT_STUCK_S = 20 * 60
 SUBAGENTS_MAX = 8                 # subagents kept per session (the rest are summed into "hidden")
 SUBAGENT_SCAN_MAX = 500           # log files looked at per session
+SCAN_SESSIONS_MAX = 8             # sessions whose subagent logs are scanned (= the menu's ACTIVE_MAX)
 PROCS_TOP = 3
 GRAPH_PROCS_MAX = 5
 GRAPH_MODELS_MAX = 8
@@ -76,7 +86,7 @@ TREE_PIDS_MAX = 300
 RATE_PIDS_MAX = 40                # pids sampled twice for cpu % / disk MB/s
 ARGS_PIDS_MAX = 40                # interpreter pids whose script name is looked up
 RATE_SAMPLE_S = 0.25
-DEADLINE_S = 1.5                  # all subprocess + network timeouts together
+DEADLINE_S = 0.45                 # all subprocess + network timeouts + the rate sample together
 DEADLINE_MIN_S = 0.05             # a source is skipped when less than this remains
 META_BYTES_MAX = 64 * 1024
 SESSION_BYTES_MAX = 64 * 1024
@@ -102,6 +112,17 @@ def _mb(n_bytes):
 
 def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def clean_text(s) -> str:
+    """One line of display text: whitespace runs (newline, tab, …) -> one space, every other C0/C1
+    control character (ESC, DEL, 0x80-0x9f) removed, so a description cannot drive a terminal or
+    break a menu line."""
+    s = _CTRL_RE.sub(lambda m: " " if m.group().isspace() else "", str(s))
+    return " ".join(s.split())
 
 
 def run_cmd(argv, timeout: float = 2.0) -> str:
@@ -500,9 +521,12 @@ def claude_sessions(home: Path, table: dict) -> dict:
         pid, sid = doc.get("pid"), doc.get("sessionId")
         if not isinstance(pid, int) or not isinstance(sid, str) or pid not in table:
             continue                                   # dead pid: stale file
-        match = _start_matches(doc.get("procStart"), table[pid].get("start"))
+        proc_start, actual = doc.get("procStart"), table[pid].get("start")
+        match = _start_matches(proc_start, actual)
         if match is False:
             continue                                   # pid reused by another process
+        if match is None and proc_start is not None and actual is not None:
+            continue                                   # unverifiable procStart: never a match
         if match is None and "claude" not in table[pid]["name"].lower():
             continue
         out[sid] = {"pid": pid, "status": doc.get("status") if isinstance(doc.get("status"), str)
@@ -601,7 +625,14 @@ def parse_ollama(body, now: float | None = None) -> list:
 # ---- telemetry: tokens, cache share, context size --------------------------------------------
 
 CTX_WARN_PCT = 85
+CTX_200K_WARN = 170_000           # a known 200k window: flag from here (= 85%)
+CTX_OBSERVED_1M = 200_000         # a successful request above this proves a 1M window
+ERR_RECENT_S = 5 * 60
+ERR_RATE_WARN = 0.05
+RATE_WINDOW_S = 5 * 60            # the ``r5`` request rate
 _CTX_1M_RE = re.compile(r"\[1m\]\s*$", re.IGNORECASE)
+_FAMILY_RE = re.compile(r"(?:^|[^a-z0-9])(?:claude-)?(opus|sonnet|haiku|fable)"
+                        r"(?:-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?)?", re.IGNORECASE)
 
 
 def fresh_input(r: dict) -> int:
@@ -626,9 +657,31 @@ def _cache_write(r):
 
 
 def context_window(model) -> int | None:
-    """The model's context window ONLY when the request itself says so: a ``[1m]`` model suffix
-    -> 1,000,000. Nothing else is assumed (no 200k default): unknown -> None."""
-    return 1_000_000 if isinstance(model, str) and _CTX_1M_RE.search(model) else None
+    """Context window by model family (VERIFIED 2026-10-06: pi 0.99.1 catalog + a live 283k-token
+    request on claude-opus-5-5): ``[1m]`` suffix, claude-opus / claude-sonnet >= 4.6 (any 5.x),
+    claude-fable-* -> 1,000,000; claude-haiku-4-5* -> 200,000. Anything else -> None (no guess;
+    ``_stats`` may still prove 1M from an observed > 200k request)."""
+    if not isinstance(model, str) or not model:
+        return None
+    if _CTX_1M_RE.search(model):
+        return 1_000_000
+    m = _FAMILY_RE.search(model)
+    if not m:
+        return None
+    fam = m.group(1).lower()
+    major = int(m.group(2)) if m.group(2) else None
+    minor = int(m.group(3)) if m.group(3) else None
+    if fam == "fable":
+        return 1_000_000 if major is not None or "fable-" in model.lower() else None
+    if major is None:
+        return None
+    if fam in ("opus", "sonnet"):
+        if major >= 5 or (major == 4 and minor is not None and minor >= 6):
+            return 1_000_000
+        return None
+    if fam == "haiku" and major == 4 and minor == 5:
+        return 200_000
+    return None
 
 
 def context_of(r: dict) -> int:
@@ -642,8 +695,17 @@ def cache_share(st: dict):
     return (st.get("cache_read") or 0) / den if den else None
 
 
-def _stats(rows: list) -> dict:
+def _ts(r):
+    v = _num(r.get("ts"))
+    return v if v is not None and math.isfinite(v) else None
+
+
+def _stats(rows: list, now: float | None = None) -> dict:
+    """Traffic of one thread (or any row set). ``now`` anchors the 5-min counts (``req_5m``,
+    ``errors_5m``); default: the clock."""
+    now = time.time() if now is None else now
     ttft = [r["ttft_ms"] for r in rows if isinstance(r.get("ttft_ms"), (int, float))]
+    stamps = [t for t in (_ts(r) for r in rows) if t is not None]
 
     def tot(k):
         return int(sum(r[k] for r in rows if isinstance(r.get(k), (int, float))))
@@ -652,6 +714,10 @@ def _stats(rows: list) -> dict:
            "cache_read": sum(_cache_read(r) for r in rows),
            "cache_write": sum(_cache_write(r) for r in rows),
            "errors": sum(1 for r in rows if r.get("is_error")),
+           "errors_5m": sum(1 for r in rows if r.get("is_error")
+                            and (_ts(r) or 0) >= now - ERR_RECENT_S),
+           "req_5m": sum(1 for t in stamps if t >= now - RATE_WINDOW_S),
+           "last_ts": max(stamps) if stamps else None,
            "p50_ttft_ms": round(statistics.median(ttft)) if ttft else None,
            "models": dict(Counter(str(r.get("model_requested") or "?") for r in rows)
                           .most_common(GRAPH_MODELS_MAX))}
@@ -661,13 +727,20 @@ def _stats(rows: list) -> dict:
         last = max(sized, key=lambda r: _num(r.get("ts")) or 0)
         out["ctx_tokens"] = context_of(last)
         out["ctx_ts"] = _num(last.get("ts"))
-        win = context_window(last.get("model_requested"))
+        model = last.get("model_requested")
+        win = context_window(model)
+        src = "family" if win else None
+        if win is None and any(r.get("model_requested") == model and not r.get("is_error")
+                               and context_of(r) > CTX_OBSERVED_1M for r in rows):
+            win, src = 1_000_000, "observed"           # > 200k succeeded: the window is 1M
         out["ctx_window"] = win
+        out["ctx_window_src"] = src
         out["ctx_pct"] = round(100 * out["ctx_tokens"] / win) if win else None
     return out
 
 
-_SUMMED = ("requests", "tokens_out", "tokens_in", "cache_read", "cache_write", "errors")
+_SUMMED = ("requests", "tokens_out", "tokens_in", "cache_read", "cache_write", "errors",
+           "errors_5m", "req_5m")
 
 
 def merge_stats(*parts) -> dict:
@@ -675,22 +748,49 @@ def merge_stats(*parts) -> dict:
     context size (a latest-request value, not a sum) do not merge and are dropped."""
     out = {k: 0 for k in _SUMMED}
     models = Counter()
+    last = None
     for p in parts:
         if not isinstance(p, dict):
             continue
         for k in _SUMMED:
             if isinstance(p.get(k), (int, float)):
                 out[k] += p[k]
+        t = _num(p.get("last_ts"))
+        if t is not None and math.isfinite(t):
+            last = t if last is None else max(last, t)
         models.update(p.get("models") or {})
     out["models"] = dict(models.most_common())
+    out["last_ts"] = last                              # newest request: a max, not a sum
     return out
 
 
 def ctx_flag(st) -> bool:
-    return isinstance((st or {}).get("ctx_pct"), (int, float)) and st["ctx_pct"] >= CTX_WARN_PCT
+    """Context nearly full: >= CTX_WARN_PCT of a known window, or >= 170k of a known 200k one."""
+    st = st or {}
+    if isinstance(st.get("ctx_pct"), (int, float)) and st["ctx_pct"] >= CTX_WARN_PCT:
+        return True
+    n = st.get("ctx_tokens")
+    return st.get("ctx_window") == 200_000 and isinstance(n, (int, float)) and n >= CTX_200K_WARN
 
 
-def telemetry_split(rows) -> dict:
+def err_rate(st) -> float | None:
+    st = st or {}
+    n, req = st.get("errors") or 0, st.get("requests") or 0
+    return n / req if req else (1.0 if n else None)
+
+
+def err_flag(st) -> bool:
+    """An error worth a ⚠: one in the last 5 min, or a 60-min error rate >= 5%."""
+    st = st or {}
+    if not st.get("errors"):
+        return False
+    if (st.get("errors_5m") or 0) > 0:
+        return True
+    rate = err_rate(st)
+    return rate is not None and rate >= ERR_RATE_WARN
+
+
+def telemetry_split(rows, now: float | None = None) -> dict:
     """session_id -> {"main": stats, "subagents": {agent_id: stats}}; rows without a session_id
     are dropped (they cannot be attributed)."""
     groups: dict = {}
@@ -702,8 +802,8 @@ def telemetry_split(rows) -> dict:
         groups.setdefault(sid, {}).setdefault(aid, []).append(r)
     out = {}
     for sid, by in groups.items():
-        out[sid] = {"main": _stats(by.get(None, [])),
-                    "subagents": {a: _stats(rs) for a, rs in by.items() if a is not None}}
+        out[sid] = {"main": _stats(by.get(None, []), now),
+                    "subagents": {a: _stats(rs, now) for a, rs in by.items() if a is not None}}
     return out
 
 
@@ -721,7 +821,7 @@ def _lifecycle(age, run_s, tel) -> tuple:
     flags = []
     if state == "running" and isinstance(run_s, (int, float)) and run_s > SUBAGENT_STUCK_S:
         flags.append("long")
-    if (tel or {}).get("errors"):
+    if err_flag(tel):
         flags.append("errors")
     if ctx_flag(tel):
         flags.append("ctx")
@@ -730,13 +830,25 @@ def _lifecycle(age, run_s, tel) -> tuple:
 
 def _sub_sort_key(s):
     st = s.get("telemetry") or {}
-    return (s["state"] != "running", not st.get("errors"), -(st.get("tokens_out") or 0),
+    return (s["state"] != "running", "errors" not in s["flags"], -(st.get("tokens_out") or 0),
             s["age_s"] is None, s["age_s"] or 0)
 
 
+def _last_s(age, tel, now):
+    """Seconds since the subagent last did anything: its log write or its newest request."""
+    t = _num((tel or {}).get("last_ts"))
+    cands = [x for x in (age, (max(0.0, now - t) if t is not None and math.isfinite(t) else None))
+             if x is not None]
+    return round(min(cands), 1) if cands else None
+
+
 def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
-              keep: int = SUBAGENTS_MAX) -> dict:
+              keep: int = SUBAGENTS_MAX, scan: bool = True,
+              deadline: Deadline | None = None) -> dict:
     """Subagents seen in the last 60 min (log mtime) or with proxy traffic in the window.
+
+    ``scan=False`` skips the filesystem (traffic only). With a ``deadline`` the log scan stops
+    when it runs out (``partial`` is then True); traffic-only subagents are always included.
 
     Returns ``{"list", "more", "hidden", "totals", "count", "running", "quiet", "flagged"}``:
     ``list`` = the first ``keep`` sorted running -> erroring -> output tokens -> newest; ``hidden`` = the
@@ -744,11 +856,19 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
     cut). Counts use the same 60 min window as the list."""
     tel = tel or {}
     found: dict = {}
+    partial = False
+
+    def out_of_time():
+        return deadline is not None and deadline.remaining() < DEADLINE_MIN_S
     root = Path(home) / ".claude" / "projects"
-    try:
-        dirs = list(root.glob(f"*/{session_id}/subagents"))
-    except OSError:
-        dirs = []
+    dirs = []
+    if scan and not out_of_time():
+        try:
+            dirs = list(root.glob(f"*/{session_id}/subagents"))
+        except OSError:
+            dirs = []
+    elif scan:
+        partial = True
     scanned = 0
     for d in dirs:
         try:
@@ -759,6 +879,9 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
             m = _AGENT_FILE_RE.match(f.name)
             if not m or scanned >= SUBAGENT_SCAN_MAX:
                 continue
+            if scanned % 50 == 0 and out_of_time():
+                partial = True
+                break
             try:
                 mtime = f.stat().st_mtime
             except OSError:
@@ -787,13 +910,16 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
             found[aid] = {"id": aid, "type": str(meta.get("agentType") or "?"),
                           "description": str(meta.get("description") or ""),
                           "depth": depth, "age_s": round(age, 1), "run_s": run_s,
-                          "state": state, "flags": flags, "telemetry": tel.get(aid)}
+                          "state": state, "flags": flags, "telemetry": tel.get(aid),
+                          "last_s": _last_s(age, tel.get(aid), now)}
+        if partial:
+            break
     for aid, st in tel.items():                         # proxy traffic with no log file seen
         if aid not in found:
             state, flags = _lifecycle(None, None, st)
             found[aid] = {"id": aid, "type": "?", "description": "", "depth": None,
                           "age_s": None, "run_s": None, "state": state, "flags": flags,
-                          "telemetry": st}
+                          "telemetry": st, "last_s": _last_s(None, st, now)}
     ordered = sorted(found.values(), key=_sub_sort_key)
     shown, rest = ordered[:keep], ordered[keep:]
     return {"list": shown, "more": len(rest),
@@ -802,7 +928,8 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
             "count": len(ordered),
             "running": sum(1 for s in ordered if s["state"] == "running"),
             "quiet": sum(1 for s in ordered if s["state"] == "quiet"),
-            "flagged": sum(1 for s in ordered if s["flags"])}
+            "flagged": sum(1 for s in ordered if s["flags"]),
+            "scanned": bool(scan) and not partial, "partial": partial}
 
 
 def session_totals(res: dict) -> dict:
@@ -826,16 +953,44 @@ def agent_flagged(a: dict) -> bool:
     if any(isinstance(s, dict) and s.get("flags") for s in subs.get("list") or []):
         return True
     main = res.get("telemetry") or {}
-    return bool(main.get("errors")) or ctx_flag(main)
+    return err_flag(main) or ctx_flag(main)
+
+
+def agent_active(a: dict) -> bool:
+    """Active = Claude's own status says ``busy`` (``idle`` = idle), from
+    ``~/.claude/sessions/<pid>.json``. Log mtime decides only when there is no status: something
+    outside the session can touch an idle session's log."""
+    if not isinstance(a, dict):
+        return False
+    res = a.get("res") if isinstance(a.get("res"), dict) else {}
+    st = res.get("status")
+    if st == "busy":
+        return True
+    if st == "idle":
+        return False
+    return a.get("state") == "active"
+
+
+def rank_key(a: dict):
+    """The menu's order of active sessions: output tokens (main + every subagent), then cpu."""
+    res = a.get("res") if isinstance(a, dict) and isinstance(a.get("res"), dict) else {}
+    tot = session_totals(res)
+    tree = res.get("tree") or {}
+    return (-(tot.get("tokens_out") or 0), -(tree.get("cpu_pct") or 0))
 
 
 # ---- graph ----------------------------------------------------------------------------------
 
+GRAPH_REPO_MAX = 32
+GRAPH_WIDTH = 120
+
+
 def _session_label(a: dict) -> str:
     bits = [str(a.get("kind", "?"))]
     if a.get("repo"):
-        bits.append(str(a["repo"]))
-    bits.append(str(a.get("session", "")))
+        repo = clean_text(a["repo"])
+        bits.append(repo if len(repo) <= GRAPH_REPO_MAX else repo[:GRAPH_REPO_MAX - 1] + "…")
+    bits.append(str(a.get("session", "")))             # the 8-char id is never cut
     return " · ".join(bits)
 
 
@@ -845,7 +1000,14 @@ def display_state(a: dict) -> str:
     return str(res.get("status") or a.get("state") or "?")
 
 
-def build_graph(agents: list) -> dict:
+def _age_since(ts, now):
+    t = _num(ts)
+    if t is None or not math.isfinite(t):
+        return None
+    return round(max(0.0, (time.time() if now is None else now) - t), 1)
+
+
+def build_graph(agents: list, now: float | None = None) -> dict:
     """{nodes, edges} from enriched agents (each may carry ``res``). Bounded by the caps; the
     subagents past the cap are one ``more`` node carrying their summed traffic and model calls."""
     nodes, edges, models = [], [], {}
@@ -873,6 +1035,9 @@ def build_graph(agents: list) -> dict:
                       "requests": main.get("requests"), "requests_total": tot["requests"],
                       "tokens_out_total": tot["tokens_out"], "cache_share": cache_share(tot),
                       "ctx_tokens": main.get("ctx_tokens"), "ctx_pct": main.get("ctx_pct"),
+                      "ctx_window": main.get("ctx_window"),
+                      "req_5m": tot.get("req_5m") if main or tot["requests"] else None,
+                      "last_s": _age_since(tot.get("last_ts"), now),
                       "flagged": agent_flagged(a)})
         subs = res.get("subagents") or {}
         lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
@@ -888,7 +1053,8 @@ def build_graph(agents: list) -> dict:
                           "errors": st.get("errors", 0), "tokens_in": st.get("tokens_in", 0),
                           "cache_read": st.get("cache_read", 0),
                           "cache_write": st.get("cache_write", 0),
-                          "ctx_tokens": st.get("ctx_tokens"), "ctx_pct": st.get("ctx_pct")})
+                          "ctx_tokens": st.get("ctx_tokens"), "ctx_pct": st.get("ctx_pct"),
+                          "ctx_window": st.get("ctx_window"), "errors_5m": st.get("errors_5m", 0)})
             edges.append({"from": sid, "to": aid, "kind": "spawned"})
             model_edge(aid, st.get("models"))
         more = (subs.get("more") or 0) + len(cut)
@@ -935,13 +1101,34 @@ def metrics_text(tree: dict) -> str:
     return " · ".join(bits)
 
 
+def fmt_pct(x) -> str:
+    """A 0..1 share as a whole percent; a nonzero share below 1% is ``<1%``, never ``0%``."""
+    if not isinstance(x, (int, float)) or not math.isfinite(x):
+        return "?"
+    return "<1%" if 0 < x < 0.01 else f"{100 * x:.0f}%"
+
+
 def err_text(st: dict) -> str:
     n, req = st.get("errors") or 0, st.get("requests") or 0
-    return f"{n} err {round(100 * n / req) if req else 0}%" if n else ""
+    return f"{n} err {fmt_pct(n / req) if req else '?'}" if n else ""
 
 
-def fmt_pct(x) -> str:
-    return f"{100 * x:.0f}%" if isinstance(x, (int, float)) else "?"
+def _kc(n) -> str:
+    """Compact token count for context sizes: ``283k``, ``1M``, ``1.2M``, ``950``."""
+    if not isinstance(n, (int, float)) or not math.isfinite(n):
+        return "?"
+    if n >= 999_500:
+        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(int(n))
+
+
+def fmt_rate_min(n5) -> str:
+    """``r5 3.2/min`` from a 5-min request count."""
+    if not isinstance(n5, (int, float)):
+        return ""
+    x = n5 / (RATE_WINDOW_S / 60)
+    v = f"{x:.0f}" if x >= 10 else f"{x:.1f}".rstrip("0").rstrip(".")
+    return f"r5 {v or '0'}/min"
 
 
 def tokens_text(st: dict | None) -> str:
@@ -957,13 +1144,17 @@ def tokens_text(st: dict | None) -> str:
 
 
 def ctx_text(st: dict | None) -> str:
-    """``ctx 245k`` or, with a window the request named, ``ctx 245k 25%``; '' when unknown."""
+    """``ctx 283k/1M 28%`` with a known window, ``ctx 136k`` without (never a guessed window);
+    '' when no request carried a prompt."""
     st = st or {}
     n = st.get("ctx_tokens")
     if not isinstance(n, (int, float)):
         return ""
-    pct = st.get("ctx_pct")
-    return f"ctx {_k(n)}" + (f" {pct:g}%" if isinstance(pct, (int, float)) else "")
+    win, pct = st.get("ctx_window"), st.get("ctx_pct")
+    if isinstance(win, (int, float)) and win > 0:
+        pct = pct if isinstance(pct, (int, float)) else round(100 * n / win)
+        return f"ctx {_kc(n)}/{_kc(win)} {pct:g}%"
+    return f"ctx {_kc(n)}" + (f" {pct:g}%" if isinstance(pct, (int, float)) else "")
 
 
 def tel_text(st: dict | None) -> str:
@@ -1005,50 +1196,79 @@ def graph_text(graph: dict) -> str:
         out_edges.setdefault(e["from"], []).append(e)
     lines = []
 
-    def node_text(n, e=None):
+    def node_bits(n, e=None) -> list:
+        """The node's text as ' · '-joined parts (wrapped at GRAPH_WIDTH by emit)."""
         k = n["kind"]
         if k == "session":
             m = metrics_text({"alive": n.get("pid") is not None, **n})
-            bits = [n["label"], n.get("state") or "?"]
+            bits = [("⚠ " if n.get("flagged") else "") + clean_text(n["label"]),
+                    clean_text(n.get("state") or "?")]
             if n.get("pid"):
                 bits.append(f"pid {n['pid']}")
             if m:
                 bits.append(m)
             if n.get("requests_total"):
-                bits.append(f"{n['requests_total']} req/h · out {_k(n.get('tokens_out_total'))}/h")
+                bits += [f"{n['requests_total']} req/h", f"out {_k(n.get('tokens_out_total'))}/h"]
                 if n.get("cache_share") is not None:
                     bits.append(f"cache {fmt_pct(n['cache_share'])}")
             c = ctx_text(n)
             if c:
                 bits.append(c)
-            return ("⚠ " if n.get("flagged") else "") + " · ".join(bits)
+            if n.get("req_5m"):
+                bits.append(fmt_rate_min(n["req_5m"]))
+            if isinstance(n.get("last_s"), (int, float)) and n.get("requests_total"):
+                bits.append(f"last {fmt_dur(n['last_s'])}")
+            return bits
         if k == "subagent":
-            d = f" · depth {n['depth']}" if n.get("depth") else ""
             flag = "⚠ " if n.get("flags") else ""
             life = lifecycle_text(n)
             st = n.get("state")                        # quiet/done already name themselves
-            st = "" if f"{st} " in life else f"{st} · "
-            return f"spawned {flag}{n['label'][:60]} · {tel_text(n)} · {st}{life}{d}"
+            label = clean_text(n["label"])[:60]
+            bits = [f"spawned {flag}{label}", tel_text(n)]
+            if f"{st} " not in life:
+                bits.append(str(st))
+            bits.append(life)
+            if n.get("depth"):
+                bits.append(f"depth {n['depth']}")
+            return bits
         if k == "more":
-            return (f"… {n.get('count', 0)} more subagents ({n.get('requests', 0)} req, "
-                    f"out {_k(n.get('tokens_out', 0))})")
+            return [f"… {n.get('count', 0)} more subagents ({n.get('requests', 0)} req, "
+                    f"out {_k(n.get('tokens_out', 0))})"]
         if k == "process":
-            return (f"runs {n['label']} (pid {n['pid']}) · {fmt_mem(n.get('footprint_mb'))} · "
-                    f"{n.get('cpu_pct') or 0:g}%")
-        return f"calls {n['label']} ×{e.get('requests', 0) if e else n.get('requests', 0)}"
+            return [f"runs {clean_text(n['label'])} (pid {n['pid']})",
+                    fmt_mem(n.get("footprint_mb")), f"{n.get('cpu_pct') or 0:g}%"]
+        return [f"calls {clean_text(n['label'])} "
+                f"×{e.get('requests', 0) if e else n.get('requests', 0)}"]
+
+    def emit(depth, bits):
+        """Pack the parts into lines of at most GRAPH_WIDTH; continuation lines indent 4 more.
+        A single part longer than a line is cut with '…'."""
+        indent, cont = "  " * depth, "  " * depth + "    "
+        cur = indent
+        for b in (x for x in " · ".join(bits).split(" · ") if x != ""):
+            sep = "" if cur in (indent, cont) else " · "
+            if len(cur) + len(sep) + len(b) <= GRAPH_WIDTH:
+                cur += sep + b
+                continue
+            if cur not in (indent, cont):
+                lines.append(cur)
+            cur = cont
+            room = GRAPH_WIDTH - len(cur)
+            cur += b if len(b) <= room else b[:room - 1] + "…"
+        lines.append(cur)
 
     def walk(nid, depth):
         for e in out_edges.get(nid, []):
             child = by_id.get(e["to"])
             if child is None:
                 continue
-            lines.append("  " * depth + node_text(child, e))
+            emit(depth, node_bits(child, e))
             if child["kind"] in ("subagent", "more"):
                 walk(child["id"], depth + 1)
 
     for n in graph.get("nodes", []):
         if n["kind"] == "session":
-            lines.append(node_text(n))
+            emit(0, node_bits(n))
             walk(n["id"], 1)
     return "\n".join(lines) if lines else "no agents in the last hour"
 
@@ -1063,9 +1283,12 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     ``{"agents", "system", "graph", "worker"}``. The injectables default to the real sources,
     looked up at call time (tests patch the module attributes or pass fakes). Never raises.
 
-    Order: ps -> (lsof) -> first rusage sample of every tree pid -> telemetry, subagents, ioreg,
-    ollama, script names (these fill the gap) -> sleep the rest of ``sample_s`` -> second sample
-    of the ≤ RATE_PIDS_MAX busiest pids -> rates -> trees."""
+    Order: ps -> (lsof) -> first rusage sample of every tree pid -> telemetry, subagent logs of
+    the sessions the menu will show, ioreg, ollama, script names (these fill the gap) -> sleep
+    the rest of ``sample_s`` (never past the deadline) -> second sample of the ≤ RATE_PIDS_MAX
+    busiest pids -> rates -> trees. Subagent logs are read only for the ≤ SCAN_SESSIONS_MAX
+    active Claude sessions ranked first by ``rank_key`` (re-checked once the cpu rates are in);
+    every other session's subagents come from proxy traffic alone."""
     now = time.time() if now is None else now
     run = run or run_cmd
     rusage_fn = rusage_fn or rusage
@@ -1121,8 +1344,52 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     # gap work
     path = Path(telemetry) if telemetry else pressure.default_telemetry_path()
     rows = guard("telemetry", lambda: list(pressure.tail_rows(path, now - TELEMETRY_WINDOW_S)), [])
-    tel = guard("telemetry_split", lambda: telemetry_split(rows), {})
-    traffic = guard("telemetry_split", lambda: _stats(rows), None)
+    tel = guard("telemetry_split", lambda: telemetry_split(rows, now), {})
+    traffic = guard("telemetry_split", lambda: _stats(rows, now), None)
+    # subagents: traffic-only for every Claude session; logs for the ones the menu will show
+    empty_subs = {"list": [], "more": 0, "count": 0, "flagged": 0}
+    subs_by: dict = {}
+    for i, a in enumerate(agents):
+        if isinstance(a, dict) and not a.get("error") and a.get("kind") == "claude" \
+                and isinstance(a.get("session_id"), str):
+            t = tel.get(a["session_id"]) or {}
+            subs_by[i] = guard("subagents", lambda: subagents(
+                home, a["session_id"], now, t.get("subagents"), scan=False), empty_subs)
+
+    def provisional(i, cpu_of):
+        a = agents[i]
+        sid = a["session_id"]
+        st = sessions.get(sid, {}).get("status") if sid in sessions else None
+        pid = roots.get(i)
+        res = {"status": st, "subagents": subs_by.get(i),
+               "telemetry": (tel.get(sid) or {}).get("main"),
+               "tree": {"cpu_pct": cpu_of(pid) if pid is not None else 0}}
+        return dict(a, res=res)
+
+    scanned: set = set()
+
+    def scan_shown(cpu_of):
+        cands = [provisional(i, cpu_of) for i in subs_by]
+        idx = list(subs_by)
+        order = sorted(range(len(cands)), key=lambda k: rank_key(cands[k]))
+        shown = [idx[k] for k in order if agent_active(cands[k])][:SCAN_SESSIONS_MAX]
+        for i in shown:
+            if i in scanned:
+                continue
+            scanned.add(i)
+            sid = agents[i]["session_id"]
+            t = tel.get(sid) or {}
+            r = guard("subagents", lambda: subagents(home, sid, now, t.get("subagents"),
+                                                     deadline=dl), None)
+            if isinstance(r, dict):
+                subs_by[i] = r
+                if r.get("partial"):
+                    errors["subagents"] = "partial: deadline"
+
+    def ps_tree_cpu(pid):
+        return round(sum(table[p]["cpu"] for p in tree_pids.get(pid, []) if p in table), 1)
+    scan_shown(ps_tree_cpu)
+
     system: dict = {"gpu_scope": "system-wide"}
     system.update(guard("ioreg", lambda: parse_ioreg(
         run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], timeout=dl.timeout(0.5))), {}))
@@ -1132,13 +1399,13 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
         table, sorted(agent_pids, key=lambda p: -table[p]["cpu"]), run, dl.timeout(0.5)),
         {}) if agent_pids else {}
 
-    # second sample of the busiest pids (roots first)
+    # second sample of the busiest pids (roots first), inside the shared deadline
     have = [p for p in every if s1.get(p)]
     rates: dict = {}
-    if have and sample_s > 0:
+    if have and sample_s > 0 and dl.remaining() > DEADLINE_MIN_S:
         pri = sorted(have, key=lambda p: (p not in all_roots, -table[p]["cpu"],
                                           -table[p]["rss_kb"]))[:RATE_PIDS_MAX]
-        wait = sample_s - (_clock() - t1)
+        wait = min(sample_s - (_clock() - t1), dl.remaining() - DEADLINE_MIN_S)
         if wait > 0:
             _sleep(wait)
         s2 = {p: _safe_rusage(rusage_fn, p) for p in pri}
@@ -1149,6 +1416,14 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
 
     def tree_of(pid):
         return tree_metrics(table, pid, lambda p: s1.get(p), kids, excl, rates, labels, now)
+
+    def sampled_tree_cpu(pid):
+        ps = tree_pids.get(pid, [])
+        if not any(p in rates for p in ps):
+            return ps_tree_cpu(pid)
+        return round(sum(rates[p]["cpu_pct"] for p in ps if p in rates), 1)
+    if rates:
+        scan_shown(sampled_tree_cpu)                    # the menu ranks by the sampled cpu
 
     for i, a in enumerate(agents):
         if not isinstance(a, dict) or a.get("error"):
@@ -1167,10 +1442,8 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
         t = tel.get(sid) if isinstance(sid, str) else None
         if t:
             res["telemetry"] = t["main"]
-        if a.get("kind") == "claude" and isinstance(sid, str):
-            res["subagents"] = guard("subagents", lambda: subagents(
-                home, sid, now, (t or {}).get("subagents")),
-                {"list": [], "more": 0, "count": 0, "flagged": 0})
+        if i in subs_by:
+            res["subagents"] = subs_by[i]
         if res:
             a["res"] = res
 
@@ -1195,4 +1468,6 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     worker["ollama_models"] = system["ollama"]
     if errors:
         system["errors"] = errors
-    return {"agents": agents, "system": system, "graph": build_graph(agents), "worker": worker}
+    system["subagent_scans"] = len(scanned)
+    return {"agents": agents, "system": system, "graph": build_graph(agents, now),
+            "worker": worker}

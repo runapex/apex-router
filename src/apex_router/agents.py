@@ -162,6 +162,7 @@ def claude_agents(home=None, now: float | None = None) -> list:
         except OSError:
             continue
         shared = None
+        label = None                            # decoded once per project dir, only if needed
         for f in files:
             m = _mtime(f)
             if m is None or now - m >= IDLE_S:
@@ -169,9 +170,11 @@ def claude_agents(home=None, now: float | None = None) -> list:
             sub, sub_m = _recent((proj / f.stem / "subagents").glob("*.jsonl"), now)
             if shared is None:
                 shared = _count_recent((proj / "subagents").glob("*.jsonl"), now)
+            if label is None:
+                label = decode_slug(proj.name, home)
             # A session waiting on its subagents writes nothing itself; a subagent log written
             # in the last 5 min is the session's own activity (age = newest of the two).
-            a = _agent("claude", decode_slug(proj.name, home), f.stem,
+            a = _agent("claude", label, f.stem,
                        max(m, sub_m) if sub_m is not None else m, now, subagents=sub + shared)
             shared = 0                          # a flat subagents/ dir is credited once
             if a:
