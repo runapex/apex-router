@@ -15,6 +15,21 @@ next tag will carry.
   green, orange or red for GREEN/AMBER/RED and gray when the sample is too small to tell, plus the
   count of active agents. `integrations/swiftbar/` has the plugin script. Other programs can add a
   menu section by dropping `{title, rows, ts}` JSON into an `adapters/` directory.
+- `apex-router snapshot`: which agent is using what. Each Claude Code session is tied to its
+  process through `~/.claude/sessions/<pid>.json` (stale files for dead or reused pids are
+  ignored); pi and Codex sessions through the process's working directory, only when that match is
+  unambiguous. Each agent row shows the memory, cpu and disk io of the session process plus
+  everything it started (shell commands, test runs, MCP servers), and opens a submenu with its
+  subagents (type, description, requests / tokens / errors through the proxy in the last 60 min),
+  its busiest child processes and the models it called. A new System section shows GPU load and
+  memory (system-wide: macOS gives no per-process GPU figure without root), the load average, the
+  models ollama has loaded with their VRAM, and the memory of all agents together. `--graph`
+  prints who-spawned-what / who-runs-what / who-calls-which-model as a text tree; `--json` carries
+  the same data under `system`, `graph` and each agent's `res`. Subagents run inside their
+  session's process, so memory, cpu and io are per session; a subagent's load is its proxy
+  traffic. Still read-only and fail-open; one `ps`, at most one `lsof`, one `ioreg` per refresh.
+  A Claude session that is only waiting on a working subagent now counts as active (it used to
+  drop into the idle fold after 5 min).
 - `apex-router zeno`: where the last bit of reliability goes. `zeno report` reads the proxy
   telemetry and xval runs and shows how per-call failures compound over long sessions (p^n against
   the clean-session rate actually seen), whether each extra "nine" costs more than the last (cost

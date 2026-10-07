@@ -12,6 +12,14 @@ from apex_router import cli, snapshot
 NOW = 1_790_000_000.0
 
 
+@pytest.fixture(autouse=True)
+def _no_real_resource_sources(monkeypatch):
+    """No real ps / lsof / ioreg / libproc / ollama in unit tests."""
+    monkeypatch.setattr(snapshot.agent_resources, "run_cmd", lambda argv, timeout=2.0: "")
+    monkeypatch.setattr(snapshot.agent_resources, "http_get", lambda url, timeout=1.0: b"{}")
+    monkeypatch.setattr(snapshot.agent_resources, "rusage", lambda pid: None)
+
+
 def _row(ts, cause=None, is_error=False, model="claude-opus-5-5", **kw):
     r = {"ts": ts, "client": "claude-code", "session_id": "s1", "agent_id": None,
          "model_requested": model, "is_error": is_error, "error_cause": cause,
@@ -319,7 +327,7 @@ def test_snapshot_writes_nothing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("APEX_PORT", "9")                       # discard port: proxy down fast
     monkeypatch.setattr(snapshot.agents_mod, "_launchd_pid", lambda label: (None, "stub"))
     before = _listing(home)
-    for flag in ("--json", "--menubar"):
+    for flag in ("--json", "--menubar", "--graph"):
         assert cli.main(["snapshot", flag]) == 0
     assert _listing(home) == before
     assert not (home / ".apex-router" / "pressure.json").exists()
@@ -380,3 +388,108 @@ def test_adapter_rows_disable_emoji(tmp_path):
     _adapter(d, "a.json", {"title": "T", "rows": [":x: row"], "ts": NOW})
     text = snapshot.menubar({"pressure": {}, "adapters": snapshot.adapters_block(d, NOW)})
     assert ":x: row | emojize=false" in text
+
+
+# ---- agent resources: submenu, System section, --graph ---------------------------------------
+
+def _res_snap(name="pytest", desc="find x", model="claude-opus-5-5"):
+    return {
+        "pressure": {"level": "GREEN", "insufficient_sample": False, "n": 50, "window_min": 15},
+        "agents": [{"kind": "claude", "repo": "r", "session": "s1", "state": "active", "age_s": 5,
+                    "res": {"status": "busy",
+                            "tree": {"pid": 9, "alive": True, "footprint_mb": 412.0, "rss_mb": 300.0,
+                                     "cpu_pct": 14.0, "read_mb": 745.0, "write_mb": 569.0,
+                                     "top": [{"pid": 10, "name": name, "rss_mb": 30.0, "cpu_pct": 20.0}]},
+                            "telemetry": {"requests": 4, "tokens_out": 2500, "errors": 1,
+                                          "p50_ttft_ms": 1200, "models": {model: 4}},
+                            "subagents": {"list": [{"id": "a1", "type": "Explore", "description": desc,
+                                                    "state": "active",
+                                                    "telemetry": {"requests": 2, "tokens_out": 10,
+                                                                  "errors": 0, "models": {model: 2}}}],
+                                          "more": 3}}},
+                   {"kind": "pi", "repo": "q", "session": "s2", "state": "active", "age_s": 9,
+                    "res": {"unattributed": {"ambiguous": 2, "sessions": 1}}}],
+        "worker": {"label": "w", "pid": 42, "inbox": 0, "queue_running": 0,
+                   "res": {"tree": {"alive": True, "rss_mb": 8.0, "cpu_pct": 0.0},
+                           "ollama_tree": {"alive": True, "footprint_mb": 16.0, "cpu_pct": 1.0},
+                           "ollama_models": [{"name": "qwen3:8b", "vram_mb": 5120.0}]}},
+        "system": {"gpu_util_pct": 37, "gpu_mem_mb": 1510.0, "loadavg": [3.29, 3.11, 2.69],
+                   "agents_rss_mb": 1300.0, "agents_procs": 10, "ollama": [],
+                   "errors": {"lsof": "TimeoutExpired"}},
+    }
+
+
+def test_menubar_agent_metrics_submenu_and_system():
+    lines = snapshot.menubar(_res_snap()).splitlines()
+    assert "claude · r · active · 5s · s1 · busy · 412MB · 14% · io 745/569MB" in lines
+    i = lines.index("claude · r · active · 5s · s1 · busy · 412MB · 14% · io 745/569MB")
+    sub = lines[i + 1:lines.index("pi · q · active · 9s · s2")]
+    assert sub == ["--main thread 60m · 4 req · 2.5k out · 1 err · p50 ttft 1.2s",
+                   "--subagents (1 +3)",
+                   "--Explore · find x · 2 req · 10 out · 0 err · active",
+                   "--processes", "--pytest · 30MB · 20% · pid 10",
+                   "--models 60m", "--claude-opus-5-5 · 6 req"]
+    assert "--process not attributed (2 candidates share this cwd)" in lines
+    assert "pid 42 · inbox 0 · running 0 · 8MB · 0%" in lines
+    assert "ollama server · 16MB · 1%" in lines and "ollama · qwen3:8b · 5.0GB VRAM" in lines
+    s = lines.index("System | size=12 color=#8E8E93")
+    assert lines[s + 1:s + 7] == ["GPU 37% (system-wide) · 1.5GB in use", "load 3.29 3.11 2.69",
+                                  "agents 1.3GB in 10 processes", "ollama: no model loaded",
+                                  "unavailable: lsof", "---"]
+
+
+def test_menubar_escapes_process_names_and_descriptions():
+    out = snapshot.menubar(_res_snap(name="--evil | bash=/bin/rm", desc="x | terminal=true\nnl",
+                                     model="m|href=http://x"))
+    lines = out.splitlines()
+    with_params = [ln for ln in lines if "|" in ln]
+    assert all(ln.startswith(("● ", "Refresh |")) or ln.endswith(f"size=12 color={snapshot.COLORS['gray']}")
+               for ln in with_params), with_params
+    assert "--––evil ¦ bash=/bin/rm · 30MB · 20% · pid 10" in lines
+    assert "--Explore · x ¦ terminal=true nl · 2 req · 10 out · 0 err · active" in lines
+    assert "--m¦href=http://x · 6 req" in lines
+
+
+def test_menubar_system_missing_or_error():
+    out = snapshot.menubar({"pressure": {}, "system": {"error": "RuntimeError: a|b"}})
+    assert "unavailable · RuntimeError: a¦b" in out
+    assert "System | size=12" in snapshot.menubar({"pressure": {}})
+
+
+def test_collect_resources_failure_is_contained(tmp_path):
+    def boom(*a, **k):
+        raise RuntimeError("res down")
+    snap = _collect(tmp_path, resources_fn=boom)
+    assert snap["system"] == {"error": "RuntimeError: res down"}
+    assert snap["graph"] == {"nodes": [], "edges": []}
+    assert "unavailable · RuntimeError: res down" in snapshot.menubar(snap)
+
+
+def test_collect_attaches_resources(tmp_path):
+    seen = {}
+
+    def fake(agents, **kw):
+        seen.update(kw)
+        return {"agents": [dict(a, res={"status": "busy"}) for a in agents],
+                "system": {"gpu_util_pct": 1}, "graph": {"nodes": [1], "edges": []},
+                "worker": {"tree": {}}}
+    proj = tmp_path / ".claude" / "projects" / "-Users-you-src-r"
+    proj.mkdir(parents=True)
+    (proj / "s.jsonl").write_text("{}\n")
+    os.utime(proj / "s.jsonl", (NOW - 5, NOW - 5))
+    snap = _collect(tmp_path, resources_fn=fake)
+    assert snap["agents"][0]["res"] == {"status": "busy"}
+    assert snap["system"] == {"gpu_util_pct": 1} and snap["graph"]["nodes"] == [1]
+    assert snap["worker"]["res"] == {"tree": {}} and seen["worker_pid"] is None
+    assert seen["now"] == NOW
+
+
+def test_main_graph_prints_tree(monkeypatch, capsys):
+    monkeypatch.setattr(snapshot, "collect", lambda **k: {"graph": {
+        "nodes": [{"id": "s", "kind": "session", "label": "claude · r · s1", "state": "active"}],
+        "edges": []}})
+    assert snapshot.main(["--graph"]) == 0
+    assert capsys.readouterr().out.strip() == "claude · r · s1 · active"
+    monkeypatch.setattr(snapshot, "collect", lambda **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert snapshot.main(["--graph"]) == 0
+    assert "snapshot error: RuntimeError: x" in capsys.readouterr().out

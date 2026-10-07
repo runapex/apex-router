@@ -8,7 +8,13 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
   measure    the newest plugin ``measure`` event in ``~/.apex-router/observe/*.jsonl`` (5h/7d limit
              meter, cost) with its age — only as fresh as the last open plugin session
   agents     ``agents.discover()`` — Claude Code / pi / Codex sessions by log mtime
-  worker     local worker launchd pid + queue counts
+  worker     local worker launchd pid + queue counts (``res``: its process tree, the ollama
+             server's tree and loaded models with VRAM)
+  system     ``agent_resources`` — system-wide GPU utilisation / in-use memory, load average,
+             ollama models, total memory of all agent process trees; each agent gains ``res``
+             (pid, memory, cpu, disk io, top child processes, subagents, proxy traffic 60 min)
+  graph      ``{nodes, edges}``: session -spawned-> subagent, session -runs-> process,
+             session/subagent -calls-> model
   proxy      ``/healthz`` on the loopback proxy
   adapters   ``$DATAPCE_HOME/adapters/*.json`` (default ``~/.datapce``) and
              ``~/.apex-router/adapters/*.json``, de-duplicated by file name (the datapce home
@@ -17,7 +23,7 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
              menu section. Capped at 5 files x 10 rows x 120 chars; malformed files are skipped.
 
 ``--json`` prints the snapshot; ``--menubar`` prints SwiftBar/xbar plugin output (bar cell, ``---``,
-menu lines). Every sub-collector fails open: an error becomes an ``error`` field, never an
+menu lines); ``--graph`` prints the call graph as an indented text tree. Every sub-collector fails open: an error becomes an ``error`` field, never an
 exception, and the command always exits 0. Stdlib only.
 
 Bar dot colour: green = GREEN with a sufficient sample; orange = AMBER; red = RED; gray when the
@@ -35,6 +41,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from . import agent_resources
 from . import agents as agents_mod
 from . import pressure
 
@@ -234,20 +241,35 @@ def _safe(fn, *a, **kw):
 
 
 def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
-            now: float | None = None, proxy_fn=None, worker_fn=None) -> dict:
+            now: float | None = None, proxy_fn=None, worker_fn=None, resources_fn=None) -> dict:
     """The snapshot dict. ``home`` overrides ``~`` for agent discovery; the injectable
-    ``proxy_fn``/``worker_fn`` exist for tests. Never raises; never writes."""
+    ``proxy_fn``/``worker_fn``/``resources_fn`` exist for tests. Never raises; never writes."""
     now = time.time() if now is None else now
     found = _safe(agents_mod.discover, home, now)
+    found = found if isinstance(found, list) else [found]
     adapters_out = _safe(adapters_block, adapters, now)
+    w = _safe(worker_fn or agents_mod.worker)
+    wpid = w.get("pid") if isinstance(w, dict) else None
+    res = _safe(resources_fn or agent_resources.collect, found, home=home, telemetry=telemetry,
+                now=now, worker_pid=wpid if isinstance(wpid, int) else None)
+    if isinstance(res, dict) and not res.get("error") and isinstance(res.get("agents"), list):
+        found, system = res["agents"], res.get("system") or {}
+        graph = res.get("graph") or {"nodes": [], "edges": []}
+        if isinstance(w, dict) and res.get("worker"):
+            w = dict(w, res=res["worker"])
+    else:
+        system = res if isinstance(res, dict) else {"error": "resources unavailable"}
+        graph = {"nodes": [], "edges": []}
     return {
         "schema": SCHEMA,
         "ts": now,
         "pressure": _safe(pressure_block, telemetry, now),
         "errors15m": _safe(errors_block, telemetry, now),
         "measure": _safe(measure_block, observe_dir, now),
-        "agents": found if isinstance(found, list) else [found],
-        "worker": _safe(worker_fn or agents_mod.worker),
+        "agents": found,
+        "worker": w,
+        "system": system,
+        "graph": graph,
         "proxy": _safe(proxy_fn or agents_mod.proxy),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
     }
@@ -360,7 +382,85 @@ def _agent_line(a: dict) -> str:
     parts += [esc(a.get("state", "?")), fmt_age(a.get("age_s")), esc(a.get("session", ""))]
     if a.get("subagents"):
         parts.append(f"{a['subagents']} subagents")
+    res = a.get("res") if isinstance(a.get("res"), dict) else {}
+    if res.get("status") and res["status"] != a.get("state"):  # Claude's own busy/idle
+        parts.append(esc(res["status"]))
+    m = agent_resources.metrics_text(res.get("tree") or {})
+    if m:
+        parts.append(m)
     return " · ".join(parts)
+
+
+def fmt_mb(mb) -> str:
+    if not isinstance(mb, (int, float)) or not math.isfinite(mb):
+        return "?"
+    return f"{mb / 1024:.1f}GB" if mb >= 1024 else f"{mb:.0f}MB"
+
+
+def _agent_submenu(a: dict) -> list:
+    """SwiftBar ``--`` lines under an active agent: main-thread traffic, subagents, child
+    processes, models called. Every user-derived string goes through esc()."""
+    res = a.get("res") if isinstance(a.get("res"), dict) else {}
+    out = []
+    tel = res.get("telemetry")
+    if isinstance(tel, dict):
+        p50 = tel.get("p50_ttft_ms")
+        out.append("--main thread 60m · " + agent_resources.tel_text(tel)
+                   + (f" · p50 ttft {p50 / 1000:.1f}s" if isinstance(p50, (int, float)) else ""))
+    subs = res.get("subagents") if isinstance(res.get("subagents"), dict) else {}
+    lst = [s for s in subs.get("list") or [] if isinstance(s, dict)]
+    models: Counter = Counter((tel or {}).get("models") or {})
+    if lst:
+        more = subs.get("more") or 0
+        out.append(f"--subagents ({len(lst)}{f' +{more}' if more else ''})")
+        for sa in lst:
+            st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
+            models.update(st.get("models") or {})
+            desc = str(sa.get("description") or "")[:40]
+            out.append("--" + esc(f"{sa.get('type', '?')} · {desc} · "
+                                  f"{agent_resources.tel_text(st)} · {sa.get('state', '?')}"))
+    procs = [p for p in ((res.get("tree") or {}).get("top") or [])[:agent_resources.PROCS_TOP]
+             if isinstance(p, dict)]
+    if procs:
+        out.append("--processes")
+        out += ["--" + esc(f"{p.get('name', '?')} · {fmt_mb(p.get('rss_mb'))} · "
+                           f"{p.get('cpu_pct', 0):g}% · pid {p.get('pid')}") for p in procs]
+    if isinstance(res.get("unattributed"), dict):
+        u = res["unattributed"]
+        out.append(f"--process not attributed ({u.get('ambiguous', '?')} candidates share this cwd)")
+    if models:
+        out.append("--models 60m")
+        out += ["--" + esc(f"{name} · {n} req") for name, n in models.most_common(
+            agent_resources.GRAPH_MODELS_MAX)]
+    return out
+
+
+def _system_lines(s: dict) -> list:
+    if s.get("error"):
+        return [f"unavailable · {esc(s['error'])}"]
+    gpu = (f"GPU {s['gpu_util_pct']}% (system-wide)" if isinstance(s.get("gpu_util_pct"), int)
+           else "GPU ? (system-wide)")
+    if isinstance(s.get("gpu_mem_mb"), (int, float)):
+        gpu += f" · {fmt_mb(s['gpu_mem_mb'])} in use"
+    lines = [gpu]
+    la = s.get("loadavg")
+    if isinstance(la, list) and la:
+        lines.append("load " + " ".join(f"{x:.2f}" for x in la if isinstance(x, (int, float))))
+    if isinstance(s.get("agents_rss_mb"), (int, float)):
+        lines.append(f"agents {fmt_mb(s['agents_rss_mb'])} in {s.get('agents_procs', '?')} processes")
+    ol = s.get("ollama")
+    if isinstance(ol, list):
+        if not ol:
+            lines.append("ollama: no model loaded")
+        for m in ol[:5]:
+            if isinstance(m, dict):
+                lines.append("ollama: " + esc(f"{m.get('name', '?')} · {fmt_mb(m.get('vram_mb'))} VRAM"))
+    else:
+        lines.append("ollama: unavailable")
+    errs = s.get("errors")
+    if isinstance(errs, dict) and errs:
+        lines.append("unavailable: " + esc(", ".join(sorted(str(k) for k in errs))))
+    return lines
 
 
 def _worker_line(w: dict) -> str:
@@ -368,7 +468,9 @@ def _worker_line(w: dict) -> str:
         return w[k] if isinstance(w.get(k), int) else "?"
     q = f"inbox {n('inbox')} · running {n('queue_running')}"
     if w.get("pid"):
-        return f"pid {w['pid']} · {q}"
+        res = w.get("res") if isinstance(w.get("res"), dict) else {}
+        m = agent_resources.metrics_text(res.get("tree") or {})
+        return f"pid {w['pid']} · {q}" + (f" · {m}" if m else "")
     why = esc(w.get("error") or "not running")
     return f"not running ({why}) · {q}"
 
@@ -400,7 +502,11 @@ def menubar(snap: dict) -> str:
     section("Measure", [_measure_line(m)])
     ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
     idle = sum(1 for a in ags if a.get("state") == "idle")
-    body = [_agent_line(a) for a in ags if a.get("state") != "idle"]
+    body = []
+    for a in ags:
+        if a.get("state") != "idle":
+            body.append(_agent_line(a))
+            body += _agent_submenu(a)
     idlers = [a for a in ags if a.get("state") == "idle"]
     if idlers:                                          # idle sessions fold into a submenu
         body.append(f"idle ({len(idlers)})")
@@ -409,7 +515,17 @@ def menubar(snap: dict) -> str:
             body.append(f"--… {len(idlers) - AGENTS_IDLE_MAX} more")
     section(f"Agents ({_active(snap)} active, {idle} idle)", body or ["none in the last hour"])
     w = snap.get("worker") if isinstance(snap.get("worker"), dict) else {}
-    section(f"Worker · {esc(w.get('label', '?'))}", [_worker_line(w)])
+    wbody = [_worker_line(w)]
+    wres = w.get("res") if isinstance(w.get("res"), dict) else {}
+    ot = agent_resources.metrics_text(wres.get("ollama_tree") or {})
+    if ot:
+        wbody.append(f"ollama server · {ot}")
+    for mdl in (wres.get("ollama_models") or [])[:5]:
+        if isinstance(mdl, dict):
+            wbody.append("ollama · " + esc(f"{mdl.get('name', '?')} · {fmt_mb(mdl.get('vram_mb'))} VRAM"))
+    section(f"Worker · {esc(w.get('label', '?'))}", wbody)
+    sy = snap.get("system") if isinstance(snap.get("system"), dict) else {"error": "missing"}
+    section("System", _system_lines(sy))
     px = snap.get("proxy") if isinstance(snap.get("proxy"), dict) else {}
     section("Proxy", [_proxy_line(px)])
     for ad in snap.get("adapters") or []:
@@ -444,17 +560,24 @@ def main(argv=None) -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--json", action="store_true", help="print the snapshot as JSON (default)")
     g.add_argument("--menubar", action="store_true", help="print SwiftBar/xbar plugin output")
+    g.add_argument("--graph", action="store_true",
+                   help="print the agent call graph (session -> subagents/processes/models)")
     args = ap.parse_args(argv)
     try:
         snap = collect()
     except Exception as e:  # noqa: BLE001 — the widget must always draw something
         _emit(menubar_error(_err(e)) if args.menubar
+              else f"snapshot error: {_err(e)}" if args.graph
               else json.dumps({"schema": SCHEMA, "error": _err(e)}))
         return 0
     try:
-        out = menubar(snap) if args.menubar else json.dumps(snap, indent=2, sort_keys=True)
+        if args.graph:
+            out = agent_resources.graph_text(snap.get("graph") or {})
+        else:
+            out = menubar(snap) if args.menubar else json.dumps(snap, indent=2, sort_keys=True)
     except Exception as e:  # noqa: BLE001 — a bad field must not blank the widget
         out = (menubar_error(_err(e)) if args.menubar
+               else f"snapshot error: {_err(e)}" if args.graph
                else json.dumps({"schema": SCHEMA, "error": _err(e)}))
     _emit(out)
     return 0
