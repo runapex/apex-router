@@ -6,9 +6,11 @@ and mtime also covers headless ``claude -p`` loops. Thresholds: modified < 5 min
 
   Claude Code  ``~/.claude/projects/<slug>/*.jsonl`` (top level) — names and mtimes only; repo
                label decoded from the slug; subagents = ``<slug>/<session>/subagents/*.jsonl`` (or
-               ``<slug>/subagents/*.jsonl``) modified < 5 min.
+               ``<slug>/subagents/*.jsonl``) modified < 5 min. A session whose own subagent wrote
+               in the last 5 min is active even if its own log is older.
   pi           ``~/.pi/agent/sessions/**/*.jsonl`` — mtimes, plus the FIRST line only, for ``cwd``.
-  Codex        ``~/.codex/sessions/YYYY/MM/DD/*.jsonl`` for today and yesterday — mtimes only.
+  Codex        ``~/.codex/sessions/YYYY/MM/DD/*.jsonl`` for today and yesterday — mtimes, plus the
+               FIRST line only, for ``payload.cwd`` (the rest of that line is discarded).
   local worker ``launchctl list <label>`` (pid) + ``queue/jobs/{inbox,running}`` file counts.
   proxy        ``GET http://127.0.0.1:<port>/healthz`` (loopback, 1 s timeout).
 
@@ -33,6 +35,7 @@ IDLE_S = 60 * 60
 DEFAULT_WORKER_LABEL = "com.ornith.worker"
 DEFAULT_PROXY_PORT = 8788
 FIRST_LINE_MAX = 64 * 1024
+CODEX_FIRST_LINE_MAX = 512 * 1024      # session_meta carries the base instructions before cwd
 _PID_RE = re.compile(r'"PID"\s*=\s*(\d+)\s*;')
 _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 SLUG_LIST_MAX = 5000
@@ -64,8 +67,8 @@ def _agent(kind: str, repo, session: str, mtime: float, now: float, **extra) -> 
     st = _state(age)
     if st is None:
         return None
-    return {"kind": kind, "repo": repo, "session": short_id(session), "state": st,
-            "age_s": round(age, 1), **extra}
+    return {"kind": kind, "repo": repo, "session": short_id(session), "session_id": session,
+            "state": st, "age_s": round(age, 1), **extra}
 
 
 def short_id(session: str) -> str:
@@ -131,12 +134,18 @@ def decode_slug(slug: str, home=None) -> str:
 
 
 def _count_recent(paths, now: float) -> int:
-    n = 0
+    return _recent(paths, now)[0]
+
+
+def _recent(paths, now: float):
+    """(count modified < ACTIVE_S, newest such mtime or None)."""
+    n, newest = 0, None
     for p in paths:
         m = _mtime(p)
         if m is not None and now - m < ACTIVE_S:
             n += 1
-    return n
+            newest = m if newest is None else max(newest, m)
+    return n, newest
 
 
 def claude_agents(home=None, now: float | None = None) -> list:
@@ -153,15 +162,20 @@ def claude_agents(home=None, now: float | None = None) -> list:
         except OSError:
             continue
         shared = None
+        label = None                            # decoded once per project dir, only if needed
         for f in files:
             m = _mtime(f)
             if m is None or now - m >= IDLE_S:
                 continue
-            sub = _count_recent((proj / f.stem / "subagents").glob("*.jsonl"), now)
+            sub, sub_m = _recent((proj / f.stem / "subagents").glob("*.jsonl"), now)
             if shared is None:
                 shared = _count_recent((proj / "subagents").glob("*.jsonl"), now)
-            a = _agent("claude", decode_slug(proj.name, home), f.stem, m, now,
-                       subagents=sub + shared)
+            if label is None:
+                label = decode_slug(proj.name, home)
+            # A session waiting on its subagents writes nothing itself; a subagent log written
+            # in the last 5 min is the session's own activity (age = newest of the two).
+            a = _agent("claude", label, f.stem,
+                       max(m, sub_m) if sub_m is not None else m, now, subagents=sub + shared)
             shared = 0                          # a flat subagents/ dir is credited once
             if a:
                 out.append(a)
@@ -170,14 +184,20 @@ def claude_agents(home=None, now: float | None = None) -> list:
 
 # ---- pi -------------------------------------------------------------------------------------
 
-def _first_line_cwd(path: Path):
+def _first_line_cwd(path: Path, max_bytes: int = FIRST_LINE_MAX):
+    """``cwd`` from a session log's first line: top level (pi) or ``payload.cwd`` (Codex
+    ``session_meta``). Only that field is kept."""
     try:
         with open(path, "rb") as fh:
-            line = fh.readline(FIRST_LINE_MAX)
+            line = fh.readline(max_bytes)
         row = json.loads(line)
     except (OSError, ValueError, UnicodeDecodeError):
         return None
-    cwd = row.get("cwd") if isinstance(row, dict) else None
+    if not isinstance(row, dict):
+        return None
+    cwd = row.get("cwd")
+    if cwd is None and isinstance(row.get("payload"), dict):
+        cwd = row["payload"].get("cwd")
     return cwd if isinstance(cwd, str) and cwd else None
 
 
@@ -196,7 +216,7 @@ def pi_agents(home=None, now: float | None = None) -> list:
         cwd = _first_line_cwd(f)
         repo = Path(cwd).name if cwd else None
         session = f.stem.rpartition("_")[2] or f.stem
-        a = _agent("pi", repo, session, m, now)
+        a = _agent("pi", repo, session, m, now, cwd=cwd)
         if a:
             out.append(a)
     return out
@@ -223,7 +243,8 @@ def codex_agents(home=None, now: float | None = None) -> list:
                 continue
             session = f.stem.rsplit("-", 5)
             sid = "-".join(session[-5:]) if len(session) == 6 else f.stem
-            a = _agent("codex", None, sid, m, now)
+            cwd = _first_line_cwd(f, CODEX_FIRST_LINE_MAX)
+            a = _agent("codex", Path(cwd).name if cwd else None, sid, m, now, cwd=cwd)
             if a:
                 out.append(a)
     return out

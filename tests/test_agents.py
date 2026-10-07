@@ -160,3 +160,32 @@ def test_proxy_port_env(monkeypatch):
     assert agents.proxy_port() == 9999
     monkeypatch.setenv("APEX_PORT", "junk")
     assert agents.proxy_port() == agents.DEFAULT_PROXY_PORT
+
+
+def test_codex_cwd_from_session_meta_and_full_session_id(tmp_path):
+    import datetime as dt
+    d = dt.datetime.fromtimestamp(NOW)
+    day = tmp_path / ".codex" / "sessions" / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}"
+    sid = "01a1141d-aaaa-7bbb-8ccc-0123456789ab"
+    meta = {"type": "session_meta", "payload": {"base_instructions": "x" * 100_000,
+                                                "cwd": "/Users/you/src/proj-c"}}
+    _touch(day / f"rollout-2026-10-06T00-00-00-{sid}.jsonl", 10, json.dumps(meta) + "\n{}\n")
+    (a,) = agents.codex_agents(tmp_path, NOW)
+    assert a["cwd"] == "/Users/you/src/proj-c" and a["repo"] == "proj-c"
+    assert a["session_id"] == sid and a["session"] == "456789ab"
+
+
+def test_pi_agent_carries_cwd(tmp_path):
+    _touch(tmp_path / ".pi" / "agent" / "sessions" / "--x--" / "2026_abc.jsonl", 10,
+           json.dumps({"cwd": "/Users/you/src/p"}) + "\n")
+    (a,) = agents.pi_agents(tmp_path, NOW)
+    assert a["cwd"] == "/Users/you/src/p" and a["session_id"] == "abc"
+
+
+def test_claude_session_waiting_on_subagent_is_active(tmp_path):
+    proj = tmp_path / ".claude" / "projects" / "-Users-you-src-myrepo"
+    sid = "aaaaaaaa-1111-4111-8111-111111111111"
+    _touch(proj / f"{sid}.jsonl", 20 * 60)                     # parent quiet for 20 min
+    _touch(proj / sid / "subagents" / "agent-x.jsonl", 40)     # its subagent is working
+    (a,) = agents.claude_agents(tmp_path, NOW)
+    assert a["state"] == "active" and a["age_s"] == 40.0 and a["subagents"] == 1

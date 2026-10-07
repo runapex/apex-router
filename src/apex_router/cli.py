@@ -275,7 +275,7 @@ def main(argv=None) -> int:
     # Menu-bar widget readout: pressure + errors + meters + running agents + worker/proxy +
     # adapter sections, read-only (never writes pressure.json). Args forwarded to snapshot.main.
     sub.add_parser("snapshot", help="read-only snapshot for the menu-bar widget "
-                                    "(--json | --menubar for SwiftBar)", add_help=False)
+                                    "(--json | --menubar for SwiftBar | --graph)", add_help=False)
     sub.add_parser("xval", help="adaptive `codex exec` for cross-validation (per-category P2C over "
                                 "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
                    add_help=False)
