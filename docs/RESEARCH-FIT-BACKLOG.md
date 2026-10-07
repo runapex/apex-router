@@ -103,18 +103,51 @@ image-vs-text JEPA instability paper); not independently re-read.
 - **H-JEPA split:** perceptual code (request, tool output) vs control state (workflow, phase,
   budget, pressure); the planner reads only the control state.
 
+**Zeno = goal progress, not call reliability; Markov = the tool inside the world model (added
+2026-10-07).** Today's `zeno report` measures how per-call failures compound (p^n): a reliability
+horizon. The Zeno case that matters for agents is different: the agent *is* making progress, but
+each step closes a shrinking share of the remaining distance, so the step count needed to reach the
+goal goes to infinity while the goal is never reached. P6 adds that detector, with a Markov layer
+over the JEPA latents as the tool that makes it measurable:
+- **Progress signal.** v_t = the value head's P(success | z_t) (or, before JEPA, a proxy: failing
+  tests, open errors). Progress Δ_t = v_{t+1} − v_t.
+- **Zeno test (sliding window).** Fit geometric decay Δ_{t+1} ≈ r·Δ_t. With 0 < r < 1 the reachable
+  limit is v_∞ = v_t + Δ_t·r/(1−r). If v_∞ stays below the success threshold with a CI that
+  excludes it, steps-to-goal = ∞: flag *converging short*.
+- **Markov as the tool.** Discretize latents into k states (k-means on z), fit an absorbing chain with
+  SUCCESS / FAIL / ESCALATE absorbing, transient block Q. Expected steps to absorption N·1 with
+  N = (I−Q)⁻¹ diverges as the spectral radius ρ(Q) → 1: the same "becomes infinity" in closed form.
+  Watch ρ(Q) and P(absorb in SUCCESS) per sliding window; a near-closed transient class (the
+  agent cycling, e.g. search ⇄ read or fix-one-test-break-another) shows as ρ(Q) → 1 with P(success)
+  flat. The Markov layer is interpretable and cheap; JEPA supplies the state it runs on, Markov
+  supplies expected steps, absorption odds and the divergence test the planner acts on.
+- **Planner action.** Converging short or ρ(Q) above a set bound → switch workflow, escalate tier,
+  or stop and ask, instead of spending more steps.
+- **Day-0 evidence (proxy, not proof).** Failing-test counts across repeated test runs in one task
+  (25 tasks with ≥ 3 parsed runs): 21 reached 0 failing, 3 flat or rising, 1 decreasing but stuck
+  above 0; several hover at a residual of 1 after a large drop (e.g. 38 → 1 → 1 → 1 → 0 → … → 1).
+  The shape exists; it is rare at today's volume.
+- **`zeno.py` today** stays as the call-reliability report (p^n vs the burst chain); the progress
+  detector is new code under P6 (E3/E4), not a change to that report.
+
 **Work (12-16 dev-days):** E0 prerequisites (>= 100 gold labels from `apex-router labels review`,
 300-call action-classifier validation; in flight) · E1 step dataset, session/time-split, local only
 (2-3 d) · E2 baselines: Markov order 1-2 + logistic / GBM on hand features (2 d) · E3 MLX model
 (4-6 d) · E4 evaluation + ablations + collapse diagnostics (2-3 d) · E5 shadow in the planner only
 after G1 (2 d). E0-E2 are needed by the workflow plan anyway.
+Within those days: E2 adds the proxy Zeno detector (failing tests, open errors) as a baseline;
+E3 adds the Markov layer (latent k-means → absorbing chain, ρ(Q), N·1) and the latent Zeno test;
+E4 evaluates both; E5 wires "converging short" / ρ(Q) as a switch-or-stop trigger in shadow.
 
 **Pre-registered gate G1** (held-out sessions, later in time than training):
 1. next-state cross-entropy >= 5% below the best baseline;
 2. outcome-probe Brier score below the baseline's, 95% CI of the difference excluding 0, on gold;
 3. workflow-ranking accuracy >= the Markov chain's;
 4. no collapse: effective rank and the SIGReg normality statistic within preset bounds on every
-   evaluation checkpoint.
+   evaluation checkpoint;
+5. Zeno detector: among tasks that end fail / escalate / abandon, flags them before the step at
+   which a step-count or wall-time cutoff (the baseline) would, at a false-positive rate on
+   successful tasks ≤ 10%, on gold labels.
 
 **Schedule and kill criterion:** first G1 attempt on the current ~13k steps (~1-2 weeks of work;
 expected to FAIL — a useful negative that validates the baselines). Second attempt at 50k

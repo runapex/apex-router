@@ -94,6 +94,7 @@ budget). Initial set, all already runnable here:
 | Max-flow / min-cut | G2 with capacities | the bottleneck that caps parallel fan-out | sets W2's N |
 | Markov order test (BIC: order 1 vs 2 vs variable) | G1 | is first-order enough? | failures are bursty → maybe not |
 | Retry modelling: 2-state burst chain (`markov.py`) on edges | G1/G2 | P(retry succeeds \| previous failed) | gates "retry vs switch model vs stop" |
+| Zeno progress test: geometric decay of per-step progress, limit v_∞; spectral radius ρ(Q) of the transient block | G1 per running task | is the agent converging *short* of the goal (steps-to-goal → ∞)? | switch / escalate / stop trigger; spec in RESEARCH-FIT-BACKLOG P6 |
 | Frequent sub-sequence mining (PrefixSpan) on successful runs | G1 | recurring macro-steps → new templates | options/macro-actions |
 | Contextual bandit (Thompson on Beta success × cost) | G3 | which template to fire; exploration | reuse `xval` P2C pattern + `route_advise` significance gate |
 | Off-policy evaluation (IPS / doubly robust) | logged decisions | would the policy have beaten W0? | needs logged propensity (P3) |
