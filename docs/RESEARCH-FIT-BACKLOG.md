@@ -5,6 +5,9 @@ proposal* per `DESIGN-whitepaper-research-loop.md` — it may only ever become a
 falsifiable experiment scored on an EXISTING metric**, never an instruction to implement. Nothing
 here is built, gated, or promoted.
 
+**Index:** `RESEARCH-MAP.md` places every experiment here (and outside this file) on a layer with
+its evidence level, and covers what shared open-weight serving changes for P1/P2/P4.
+
 ## Why this file exists
 A 5-paper KV-caching / LLM-serving digest was assessed against apex-router and cross-validated with
 `it-entra-gpt-6-astra` (verdict: OVER-CLAIMS-FIT — the papers describe **self-hosted serving-engine
@@ -112,7 +115,8 @@ over the JEPA latents as the tool that makes it measurable:
 - **Progress signal.** v_t = the value head's P(success | z_t) (or, before JEPA, a proxy: failing
   tests, open errors). Progress Δ_t = v_{t+1} − v_t.
 - **Zeno test (sliding window).** Fit geometric decay Δ_{t+1} ≈ r·Δ_t. With 0 < r < 1 the reachable
-  limit is v_∞ = v_t + Δ_t·r/(1−r). If v_∞ stays below the success threshold with a CI that
+  limit is v_∞ = v_t + Δ_t/(1−r) (Δ_t = v_{t+1} − v_t is itself the next step; corrected 2026-10-07 — the
+  earlier Δ_t·r/(1−r) dropped one increment and would have flagged "converging short" too early). If v_∞ stays below the success threshold with a CI that
   excludes it, steps-to-goal = ∞: flag *converging short*.
 - **Markov as the tool.** Discretize latents into k states (k-means on z), fit an absorbing chain with
   SUCCESS / FAIL / ESCALATE absorbing, transient block Q. Expected steps to absorption N·1 with
