@@ -58,13 +58,13 @@ function learnModels(): { provider: string; validate: string; explain: string } 
 		const prefixes = reg?.provider_id_prefix && typeof reg.provider_id_prefix === "object"
 			? reg.provider_id_prefix : { foundry: "it-entra-" };
 		const prefix = typeof prefixes[provider] === "string" ? prefixes[provider] : "";
-		const v = tiers[spec.validate_tier || "sonnet"];
-		const e = tiers[spec.explain_tier || "opus"];
-		return {
-			provider,
-			validate: typeof v === "string" && v ? prefix + v : fallback.validate,
-			explain: typeof e === "string" && e ? prefix + e : fallback.explain,
+		// An explicit `validate`/`explain` id wins over its tier and is used verbatim.
+		const stage = (name: "validate" | "explain", tier: string): string => {
+			if (typeof spec[name] === "string" && spec[name]) return spec[name];
+			const id = tiers[spec[`${name}_tier`] || tier];
+			return typeof id === "string" && id ? prefix + id : fallback[name];
 		};
+		return { provider, validate: stage("validate", "sonnet"), explain: stage("explain", "opus") };
 	} catch {
 		return fallback;
 	}

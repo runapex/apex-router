@@ -86,6 +86,21 @@ const DEFAULT_ROUTES: Record<string, Route> = {
 // foundry names Azure deployments `it-entra-<claude id>`.
 const DEFAULT_PROVIDER_ID_PREFIX: Record<string, string> = { foundry: "it-entra-" };
 
+// Frontier tier ids (mirrors model_registry.DEFAULTS["tiers"]); overlay `tiers` win.
+const DEFAULT_TIERS: Record<string, string> = {
+	haiku: "claude-haiku-4-5",
+	sonnet: "claude-sonnet-5-5",
+	opus: "claude-opus-5-5",
+	fable: "claude-fable-5-1",
+};
+
+/** The tier name whose id is `id` (e.g. claude-sonnet-5-5 -> "sonnet"), else undefined. */
+function tierOf(id: string): string | undefined {
+	const reg = readJson(join(APEX_HOME, "models.json"));
+	const tiers = { ...DEFAULT_TIERS, ...(reg?.tiers && typeof reg.tiers === "object" ? reg.tiers : {}) };
+	return Object.keys(tiers).find((t) => tiers[t] === id);
+}
+
 function readJson(path: string): any | undefined {
 	try {
 		return JSON.parse(readFileSync(path, "utf8"));
@@ -258,6 +273,18 @@ export default function (pi: ExtensionAPI) {
 		if (!id) {
 			ctx.ui.notify("apex-route >>auto: resolve failed — staying on current model", "warning");
 			return false;
+		}
+		// resolve() answers in frontier tier ids. When that tier has a family, dispatch through
+		// it so the family table decides provider/id/effort — a deployment that remaps the
+		// Claude families (foundry, or off Claude on a subscription setup) applies to >>auto too.
+		const tier = tierOf(id);
+		const famRoute = tier ? routes[tier] : undefined;
+		const famModel = famRoute ? ctx.modelRegistry.find(famRoute.provider, famRoute.id) : undefined;
+		if (famRoute && famModel && (await pi.setModel(famModel))) {
+			if (famRoute.effort) pi.setThinkingLevel(famRoute.effort);
+			resolvedModelId = famRoute.id;
+			ctx.ui.notify(`>>auto → ${famRoute.provider}/${famRoute.id} via >>${tier} (${resolved?.task_type || "unclassified"})`, "info");
+			return true;
 		}
 		// Find the model across providers we actually have registered. Keep Codex before
 		// direct OpenAI so an authenticated ChatGPT/Codex subscription is preferred.

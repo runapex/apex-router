@@ -35,6 +35,13 @@ next tag will carry.
   `foundry-gpt` provider in `~/.pi/agent/models.json` and an `api-version` pin in `auth.json`; see
   RUNBOOK-pi-integration.md.
 
+- pi on a subscription setup (Claude Pro/Max OAuth, ChatGPT/Codex subscription, no Foundry):
+  `integrations/pi/registry-overlay.subscription.json` moves pi's Claude-named families,
+  `>>review` and `/learn` to `openai-codex`. Anthropic now bills third-party clients on
+  subscription OAuth to extra usage (`400 … Third-party apps now draw from your extra usage`), so
+  Claude stays in Claude Code. The `learn` spec accepts explicit `validate`/`explain` ids. See
+  RUNBOOK-pi-integration.md.
+
 ### Fixed
 - Proxy: a response stream that breaks after it started now records why
   (`error_cause = midstream_<error>`, e.g. `midstream_ReadError`). Before, these rows were marked as
@@ -50,6 +57,13 @@ next tag will carry.
   the Claude shortcuts (and `>>haiku`) now go through the `foundry` provider (`it-entra-claude-*`, via
   the proxy), and `>>gpt-sol` is back on `gpt-5.6-sol`. `>>fable` is unchanged. New registry key
   `provider_id_prefix` maps a provider to the prefix its model ids carry (`foundry` → `it-entra-`).
+- Registry: an overlay pi family that pins an `id` no longer keeps the default family's `tier`
+  (deep merge made the stale tier win, so the Python side kept resolving the Claude id). The
+  resolution key (`id`/`tier`/`source`) an overlay names replaces the default's; `provider` and
+  `effort` still merge.
+- pi `>>auto` dispatches a resolved tier id through that tier's family, so a family remap
+  (foundry, subscription overlay) applies to it; before, it looked the raw Claude id up under
+  `anthropic` first.
 - pi `/learn` now validates with Sonnet 5.5 and explains with Opus 5.5 on `foundry`; it asked for
   `anthropic/claude-sonnet-5`, which your setup has no credentials for.
 
