@@ -136,7 +136,20 @@ subscription (OAuth) and GPT on a ChatGPT/Codex subscription, pi cannot use the 
 families: Anthropic bills a third-party client's subscription OAuth to extra usage and
 rejects the request with `400 … Third-party apps now draw from your extra usage` when none
 is available. Claude stays in Claude Code; pi's Claude-named families move to `openai-codex`.
-Merge `integrations/pi/registry-overlay.subscription.json` into `~/.apex-router/models.json`:
+Merge `integrations/pi/registry-overlay.subscription.json` into `~/.apex-router/models.json`,
+replacing each family whole (a deep merge such as plain `jq '.[0] * .[1]'` keeps a family's old
+`tier` next to the new `id`, and `tier` wins):
+
+```bash
+cd ~/.apex-router && cp models.json models.json.bak
+jq -s '.[0] as $b | (.[1] | del(._comment)) as $o | ($b * $o)
+       | .pi_families = (($b.pi_families // {}) + $o.pi_families) | .learn = $o.learn' \
+  models.json.bak integrations/pi/registry-overlay.subscription.json > models.json
+```
+
+A legacy `~/.apex-router/pi-routes.json` still wins per family — move it aside if it pins
+`anthropic`.
+
 
 | family | model (openai-codex) | effort |
 |---|---|---|
