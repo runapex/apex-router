@@ -185,6 +185,7 @@ def append(snap_or_sample: dict, path: Path | None = None, now: float | None = N
             if not _lock(lk):
                 return False
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.fchmod(fd, 0o600)  # an older 0644 file is tightened on the next append
             with os.fdopen(fd, "ab") as fh:
                 fh.write(line)
                 fh.flush()

@@ -425,7 +425,8 @@ _LEVELS = {2: {"subs": 8, "procs": 3, "models": 3}, 1: {"subs": 3, "procs": 1, "
 
 def _tip(s) -> str:
     """A tooltip value: our own numbers plus esc()'d text; no quotes, no '|', one line."""
-    return _clip(s, 240).replace('"', "'").replace("|", "¦")
+    # SwiftBar treats "\" inside a quoted value as an escape: a trailing one would swallow the action.
+    return _clip(s, 240).replace('"', "'").replace("|", "¦").replace("\\", "/")
 
 
 def _u(text: str, mono: bool = False, tip: str | None = None, action: str = "") -> str:
@@ -443,21 +444,21 @@ def _u(text: str, mono: bool = False, tip: str | None = None, action: str = "") 
 # ---- click actions --------------------------------------------------------------------------
 # A click runs ONLY the apex-router binary with three fixed-shape arguments:
 #   bash=<abs binary> param1=snapshot param2=--detail param3=<id> terminal=false refresh=false
-# <id> is "all", a session id (^[0-9a-f-]{8,36}$) or a subagent id (^a[0-9a-f]{8,32}$); anything
+# <id> is "all", a session id (hex first, [0-9a-f-]{8,36}) or a subagent id (a[0-9a-f]{8,32}), fullmatch; anything
 # else gets no action. No description, name, repo or path ever reaches a bash/param value.
-SESSION_ID_RE = re.compile(r"^[0-9a-f-]{8,36}$")
-AGENT_ID_RE = re.compile(r"^a[0-9a-f]{8,32}$")
-BIN_RE = re.compile(r"^/[A-Za-z0-9._/+-]{1,255}$")
+SESSION_ID_RE = re.compile(r"[0-9a-f][0-9a-f-]{7,35}")   # always .fullmatch(): "$" admits "\n"
+AGENT_ID_RE = re.compile(r"a[0-9a-f]{8,32}")
+BIN_RE = re.compile(r"/[A-Za-z0-9._/+-]{1,255}")
 BIN_ENV = "APEX_ROUTER_BIN"
 
 
 def valid_target(t) -> bool:
-    return isinstance(t, str) and (t == "all" or bool(SESSION_ID_RE.match(t))
-                                   or bool(AGENT_ID_RE.match(t)))
+    return isinstance(t, str) and (t == "all" or bool(SESSION_ID_RE.fullmatch(t))
+                                   or bool(AGENT_ID_RE.fullmatch(t)))
 
 
 def valid_bin(path) -> bool:
-    return isinstance(path, str) and bool(BIN_RE.match(path)) and ".." not in path.split("/")
+    return isinstance(path, str) and bool(BIN_RE.fullmatch(path)) and ".." not in path.split("/")
 
 
 def resolve_bin() -> str | None:
@@ -477,9 +478,9 @@ def click_action(bin_path, target, kind: str = "any") -> str:
     ``kind`` "session" / "agent" narrows the id shape to that row type."""
     if not valid_bin(bin_path) or not valid_target(target):
         return ""
-    if kind == "session" and not SESSION_ID_RE.match(target):
+    if kind == "session" and not SESSION_ID_RE.fullmatch(target):
         return ""
-    if kind == "agent" and not AGENT_ID_RE.match(target):
+    if kind == "agent" and not AGENT_ID_RE.fullmatch(target):
         return ""
     return (f"bash={bin_path} param1=snapshot param2=--detail param3={target} "
             "terminal=false refresh=false")

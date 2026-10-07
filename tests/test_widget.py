@@ -294,7 +294,7 @@ def test_click_action_rejects_unsafe_binaries(bin_path):
     ("all", True), (SID, True), ("d5443384", True), (AID, True), ("a12345678", True),
     ("D5443384", False), ("d544338", False), ("x" * 40, False), ("a123456", False),
     ("all ", False), ("d5443384 param4=x", False), ('d5443384"', False), ("a1;b", False),
-    ("../../etc", False), ("", False), (None, False), ("-" * 8, True)])
+    ("../../etc", False), ("", False), (None, False), ("-" * 8, False), ("d5443384\n", False)])
 def test_valid_target(target, ok):
     assert snapshot.valid_target(target) is ok
 
@@ -544,3 +544,31 @@ def test_charts_handle_nan_and_single_points():
     assert "no samples yet" in widget_detail.line_chart("x", [("a", "r", [])], 0, 1, str)
     assert widget_detail.mini_spark([None, 3]).count("<circle") == 1
     assert not math.isnan(widget_detail._nice(0))
+
+
+# ---- review fixes: trailing newline ids, tooltip backslash, time gaps, mini spark floor ---------
+
+def test_ids_with_a_trailing_newline_or_dash_start_are_rejected():
+    for bad in ("abcdef12\n", "aabcdef0123\n", "--------", "/usr/bin/x\n"):
+        assert not snapshot.valid_target(bad), repr(bad)
+    assert not snapshot.valid_bin("/usr/bin/x\n")
+    assert snapshot.valid_target("d5443384-0a68-4edf-82e8-1d130c562c8e")
+    assert snapshot.valid_target("a1cacfc99af4755f9")
+
+
+def test_tooltip_never_ends_in_a_backslash_escape():
+    assert "\\" not in snapshot._tip("path C:\\dir\\")
+
+
+def test_line_chart_breaks_across_time_gaps():
+    from apex_router import widget_detail as wd
+    svg = wd.line_chart("cpu", [("cpu", "red", [(0, 1.0), (60, 2.0), (60 + 10 * 60, 3.0), (60 + 11 * 60, 4.0)])],
+                        t0=0, t1=1000, fmt=str)
+    assert svg.count("<polyline") == 2
+
+
+def test_mini_spark_small_wobble_is_not_full_height():
+    from apex_router import widget_detail as wd
+    svg = wd.mini_spark([342.3, 342.4, 342.3], zero=False)
+    ys = [float(p.split(",")[1]) for p in svg.split('points="')[1].split('"')[0].split()]
+    assert max(ys) - min(ys) < 5

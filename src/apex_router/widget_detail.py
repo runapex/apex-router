@@ -167,7 +167,13 @@ def line_chart(title: str, series: list, t0: float, t1: float, fmt, ymax=None, h
                     f'{esc(label)}</text>')
     for name, color, s in series:
         seg, segs = [], []
+        prev_t = None
         for t, v in s:
+            # a hole in time (no widget refresh for > GAP_S) breaks the line like a missing value
+            if seg and prev_t is not None and t - prev_t > GAP_S:
+                segs.append(seg)
+                seg = []
+            prev_t = t
             if _num(v) is None or t < t0:
                 if seg:
                     segs.append(seg)
@@ -223,6 +229,9 @@ def bar_chart(title: str, starts: list, stacks: list, fmt, size_s=BUCKET_S, mark
     return _figure(title, _svg(body, label=title), leg, note)
 
 
+GAP_S = 180  # seconds without a history sample that break a line chart
+
+
 def mini_spark(values, color="var(--s1)", w=150, h=30, zero=True) -> str:
     """A tiny inline SVG polyline for small multiples; '' when nothing to draw."""
     vals = [_num(v) for v in values or []]
@@ -231,6 +240,8 @@ def mini_spark(values, color="var(--s1)", w=150, h=30, zero=True) -> str:
         return '<span class="muted">—</span>'
     lo = 0.0 if zero else min(have)
     hi = max(have)
+    if not zero:  # same floor as the menu sparklines: a few MB of wobble is not a full-height step
+        lo = min(lo, hi - widget_history.SPARK_MIN_SPAN * abs(hi))
     span = (hi - lo) or 1.0
     n = len(vals)
     pts = []
@@ -844,7 +855,7 @@ def build(target: str, *, now: float | None = None, home=None, telemetry=None,
         return path, None
     focus = None
     sid = target
-    if snapshot.AGENT_ID_RE.match(target):
+    if snapshot.AGENT_ID_RE.fullmatch(target):
         focus = target
         sid = find_session_of_agent(target, snap, rows, home)
         if not sid:
@@ -857,7 +868,7 @@ def build(target: str, *, now: float | None = None, home=None, telemetry=None,
     else:
         sid = agent.get("session_id") or sid
     key = agents_mod.short_id(sid)
-    if not snapshot.SESSION_ID_RE.match(key):
+    if not snapshot.SESSION_ID_RE.fullmatch(key):
         key = "session"
     path = page_path(key)
     write_atomic(path, session_page(sid, snap, rows, hist, home, now, focus))
