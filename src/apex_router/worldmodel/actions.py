@@ -661,29 +661,28 @@ def size_bucket(n: int) -> int:
     return 0 if n < 1_000 else 1 if n < 10_000 else 2 if n < 100_000 else 3
 
 
+def phase_of(act: str, edited: bool) -> str:
+    """Phase of one step given only whether an edit/write happened earlier in its stream."""
+    if act in ("edit", "write"):
+        return "edit"
+    if act in ("search", "read"):
+        return "other" if edited else "explore"
+    if act in ("test", "build", "run"):
+        return "verify" if edited else "other"
+    if act in ("vcs", "ask"):
+        return "deliver"
+    return "other"
+
+
 def phases(acts: list[str]) -> list[str]:
     """Phase of each step of one stream (a task's main thread, or one subagent's steps).
 
-    explore: search/read before the stream's first edit/write · edit: edit/write · verify:
-    test/build/run after the first edit · deliver: vcs/ask after the last edit (or, in a stream
-    with no edit, in its trailing run of vcs/ask steps) · other: the rest."""
-    edits = [i for i, a in enumerate(acts) if a in ("edit", "write")]
-    first = edits[0] if edits else None
-    last = edits[-1] if edits else None
-    tail = len(acts)
-    while tail > 0 and acts[tail - 1] in ("vcs", "ask"):
-        tail -= 1
-    out = []
-    for i, a in enumerate(acts):
-        if a in ("edit", "write"):
-            out.append("edit")
-        elif a in ("search", "read") and (first is None or i < first):
-            out.append("explore")
-        elif a in ("test", "build", "run") and first is not None and i > first:
-            out.append("verify")
-        elif a in ("vcs", "ask") and ((last is not None and i > last) or
-                                     (last is None and i >= tail)):
-            out.append("deliver")
-        else:
-            out.append("other")
+    CAUSAL (DESIGN-worldmodel-P6.md §2 as amended): a step's phase depends only on itself and the
+    steps before it, never on what comes later — appending steps never changes an earlier phase.
+    explore: search/read with no edit so far · edit: edit/write · verify: test/build/run after an
+    edit so far · deliver: vcs/ask · other: the rest."""
+    out, edited = [], False
+    for a in acts:
+        out.append(phase_of(a, edited))
+        edited = edited or a in ("edit", "write")
     return out

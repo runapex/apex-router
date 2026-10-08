@@ -154,8 +154,19 @@ def test_phases():
     acts = ["read", "search", "edit", "read", "test", "run", "write", "build", "vcs", "ask"]
     assert A.phases(acts) == ["explore", "explore", "edit", "other", "verify", "verify", "edit",
                               "verify", "deliver", "deliver"]
-    # no edit: tests are not "verify", only the trailing vcs/ask run is "deliver"
+    # no edit so far: tests are not "verify"; vcs/ask is "deliver" wherever it occurs (causal)
     assert A.phases(["vcs", "read", "test", "vcs", "ask"]) == \
-        ["other", "explore", "other", "deliver", "deliver"]
+        ["deliver", "explore", "other", "deliver", "deliver"]
     assert A.phases([]) == []
     assert set(A.phases(["delegate", "plan", "remote"])) == {"other"}
+
+
+def test_phases_are_causal():
+    """Appending later steps never changes an earlier step's phase (no lookahead)."""
+    import random
+    rng = random.Random(0)
+    for _ in range(500):
+        acts = [rng.choice(A.CLASSES) for _ in range(rng.randint(1, 30))]
+        full = A.phases(acts)
+        for k in range(1, len(acts) + 1):
+            assert A.phases(acts[:k]) == full[:k], acts

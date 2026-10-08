@@ -389,3 +389,18 @@ def test_task_type_and_workflow(tmp_path):
     man2 = S.build(home=home, user_home=uh, telemetry=tel, embed_fn=None)
     assert man2["task_types"]["null"] == man2["counts"]["tasks"]
     assert man2["workflows"] == man["workflows"]
+
+
+def test_phase_causal_in_dataset(tmp_path):
+    """Cutting a transcript after any record leaves the earlier steps' phases unchanged."""
+    man, steps, tasks, d, uh = _build(tmp_path)
+    full = [(s["task"], s["i"], s["phase"]) for s in steps if s["src"] == "pi"]
+    p = next((uh / ".pi").glob("**/*.jsonl"))
+    lines = p.read_text().splitlines(keepends=True)
+    for k in range(4, len(lines)):
+        p.write_text("".join(lines[:k]))
+        S.build(home=tmp_path / "cut", user_home=uh, telemetry=tmp_path / "none.jsonl",
+                embed_fn=None)
+        cut = [(s["task"], s["i"], s["phase"]) for s in
+               _read(tmp_path / "cut" / "worldmodel" / "steps.jsonl") if s["src"] == "pi"]
+        assert cut == full[:len(cut)]
