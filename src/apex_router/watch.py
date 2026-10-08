@@ -8,6 +8,10 @@ One command manages both on either OS:
   - macOS  -> launchd user agents in ~/Library/LaunchAgents (launchctl bootstrap)
   - Linux  -> systemd --user units in ~/.config/systemd/user (systemctl --user)
 
+Two more units are SEPARATE opt-ins: `install-serve` (the measuring proxy, a live data plane) and
+`install-snapshot` (com.apex-router.snapshot: `worldmodel snapshot` daily at 03:17, mirroring
+the agent transcripts into ~/.apex-router/transcripts before the tools prune them).
+
 Everything is idempotent and reversible (`apex-router watch uninstall`). Pure stdlib; no deps.
 The unit files invoke `python -m apex_router.ornith.ornith_worker` and `-m apex_router.watch --run-daily`
 via the SAME interpreter that installed them, so a venv install stays self-contained.
@@ -23,6 +27,8 @@ from pathlib import Path
 LABEL_DRAIN = "com.apex-router.drain"
 LABEL_DAILY = "com.apex-router.daily"
 LABEL_SERVE = "com.apex-router.serve"   # the measuring proxy — a LIVE data plane, opt-in only
+LABEL_SNAPSHOT = "com.apex-router.snapshot"   # daily transcript mirror (opt-in; holds prompt text)
+SNAPSHOT_AT = (3, 17)                          # local time, daily
 
 # Server-side proxy config the serve unit must carry (env doesn't propagate to launchd/systemd).
 # Read from the environment at install time and baked into the unit so the gateway is reproducible.
@@ -228,6 +234,37 @@ def _launchd_uninstall_serve() -> list[str]:
     return []
 
 
+def _snapshot_args() -> list[str]:
+    return [_py(), "-m", "apex_router.cli", "worldmodel", "snapshot"]
+
+
+def _launchd_install_snapshot() -> list[str]:
+    """Install ONLY the daily transcript-snapshot agent (opt-in: the mirror holds prompt text)."""
+    agents = Path.home() / "Library/LaunchAgents"
+    logs = Path.home() / ".apex-router/logs"
+    agents.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=True)
+    uid = os.getuid()
+    plist = agents / f"{LABEL_SNAPSHOT}.plist"
+    plist.write_text(_launchd_plist(LABEL_SNAPSHOT, _snapshot_args(), keepalive=False,
+                                    calendar=SNAPSHOT_AT))
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SNAPSHOT}"], capture_output=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+    return [LABEL_SNAPSHOT]
+
+
+def _launchd_uninstall_snapshot() -> list[str]:
+    """Remove the agent; the mirror itself (~/.apex-router/transcripts) is left in place."""
+    agents = Path.home() / "Library/LaunchAgents"
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SNAPSHOT}"], capture_output=True)
+    plist = agents / f"{LABEL_SNAPSHOT}.plist"
+    if plist.exists():
+        plist.unlink()
+        return [LABEL_SNAPSHOT]
+    return []
+
+
 # --------------------------------------------------------------------------- Linux (systemd --user)
 
 def _systemd_dir() -> Path:
@@ -345,6 +382,49 @@ def _systemd_uninstall_serve() -> list[str]:
     return done
 
 
+def _systemd_snapshot_units() -> dict[str, str]:
+    h, m = SNAPSHOT_AT
+    return {
+        "apex-router-snapshot.service": f"""[Unit]
+Description=apex-router transcript snapshot (mirror pruned agent transcripts)
+[Service]
+Type=oneshot
+ExecStart={' '.join(_snapshot_args())}
+""",
+        "apex-router-snapshot.timer": f"""[Unit]
+Description=apex-router transcript snapshot timer
+[Timer]
+OnCalendar=*-*-* {h:02d}:{m:02d}:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+""",
+    }
+
+
+def _systemd_install_snapshot() -> list[str]:
+    d = _systemd_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for name, body in _systemd_snapshot_units().items():
+        (d / name).write_text(body)
+    _systemctl("daemon-reload")
+    _systemctl("enable", "--now", "apex-router-snapshot.timer")
+    return ["apex-router-snapshot.timer"]
+
+
+def _systemd_uninstall_snapshot() -> list[str]:
+    d = _systemd_dir()
+    _systemctl("disable", "--now", "apex-router-snapshot.timer")
+    done = []
+    for name in _systemd_snapshot_units():
+        f = d / name
+        if f.exists():
+            f.unlink()
+            done.append(name)
+    _systemctl("daemon-reload")
+    return done
+
+
 # --------------------------------------------------------------------------- public API
 
 def install(no_drain: bool = False) -> list[str]:
@@ -383,6 +463,24 @@ def uninstall_serve() -> list[str]:
         return _launchd_uninstall_serve()
     if _is_linux():
         return _systemd_uninstall_serve()
+    raise SystemExit(f"unsupported OS: {platform.system()}")
+
+
+def install_snapshot() -> list[str]:
+    """Install the daily transcript-snapshot job (03:17 local; `worldmodel snapshot`), so the
+    P6 dataset stops shrinking when pi / Claude Code / Codex prune old sessions."""
+    if _is_macos():
+        return _launchd_install_snapshot()
+    if _is_linux():
+        return _systemd_install_snapshot()
+    raise SystemExit(f"unsupported OS for snapshot: {platform.system()}")
+
+
+def uninstall_snapshot() -> list[str]:
+    if _is_macos():
+        return _launchd_uninstall_snapshot()
+    if _is_linux():
+        return _systemd_uninstall_snapshot()
     raise SystemExit(f"unsupported OS: {platform.system()}")
 
 
@@ -457,7 +555,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="apex-router watch",
                                  description="Install/manage apex-router background watchers.")
     ap.add_argument("action", nargs="?", default="status",
-                    choices=["install", "uninstall", "status", "install-serve", "uninstall-serve"])
+                    choices=["install", "uninstall", "status", "install-serve", "uninstall-serve",
+                             "install-snapshot", "uninstall-snapshot"])
     ap.add_argument("--run-daily", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--no-drain", action="store_true",
                     help="skip the always-on drain worker (the Ornith stack drains the queue instead)")
@@ -474,6 +573,13 @@ def main(argv=None) -> int:
               "(APEX_ANTHROPIC_UPSTREAM / APEX_PORT). Point Claude Code at it with 'apex-router setup-proxy'.")
     elif a.action == "uninstall-serve":
         print("removed proxy service:", ", ".join(uninstall_serve()) or "(none)")
+    elif a.action == "install-snapshot":
+        print("installed transcript snapshot:", ", ".join(install_snapshot()))
+        print(f"  runs `apex-router worldmodel snapshot` daily at {SNAPSHOT_AT[0]:02d}:{SNAPSHOT_AT[1]:02d}; "
+              "mirror at ~/.apex-router/transcripts (0700, your own transcripts only).")
+    elif a.action == "uninstall-snapshot":
+        print("removed transcript snapshot:", ", ".join(uninstall_snapshot()) or "(none)",
+              "(the mirror itself is kept)")
     else:
         print(status())
     return 0

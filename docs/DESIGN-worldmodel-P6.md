@@ -17,6 +17,13 @@ can be built in parallel and meet at E4 (evaluation). Nothing here changes a shi
   Embeddings (if used) are stored as float16 arrays keyed by step id, never the text they came
   from. Same rule as `labels.py` and the widget.
 - Read-only over transcripts; every reader fails open on a malformed line.
+- Transcripts are the live pi / Claude Code dirs UNION the mirror `~/.apex-router/transcripts/`
+  that `apex-router worldmodel snapshot` (daily via `watch install-snapshot`,
+  `com.apex-router.snapshot`, 03:17) keeps, deduplicated per (source, session id) and per
+  (session, agent, workflow run) for subagents, larger file wins. Without it the tools' own
+  retention pruned main-session steps from ~13k to ~7k. The mirror holds prompt text (the
+  owner's own, 0700 in their home); the proxy and the widget never read it, and this builder
+  still stores no text.
 
 ## 1. Step record (E1 output, consumed by E2/E3/E4)
 

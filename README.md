@@ -328,6 +328,33 @@ Install is idempotent, reversible, and pins the installing interpreter (a venv i
 stays self-contained). The installer can do this at first run with `--watch`; it never
 auto-starts a daemon without that consent.
 
+### Transcript snapshot (opt-in)
+
+pi, Claude Code and Codex prune old session logs, which shrank the P6 step dataset
+(`worldmodel build`) and the `labels` task set with every retention pass. A separate opt-in
+job keeps a mirror:
+
+```bash
+apex-router worldmodel snapshot [--dry-run] [--json]   # once, by hand
+apex-router watch install-snapshot                      # daily at 03:17 (com.apex-router.snapshot)
+apex-router watch uninstall-snapshot                    # removes the job; keeps the mirror
+```
+
+The snapshot copies every transcript file (pi `~/.pi/agent/sessions/**/*.jsonl`, Claude Code
+`~/.claude/projects/<slug>/*.jsonl` plus each session's `subagents/**` logs, meta and workflow
+dirs, Codex `~/.codex/sessions/**/*.jsonl`) into `~/.apex-router/transcripts/<source>/<path>`
+when the mirror copy is missing, smaller or older. It never deletes and never truncates a
+mirror copy, writes through a tmp file + rename, skips files over 512 MB, and fails open per
+file. `labels` and `worldmodel build` read the union of the live dirs and the mirror, one file
+per session (the larger wins), so a pruned session keeps counting and none is counted twice.
+The launchd agent runs with `RunAtLoad` false and logs to
+`~/.apex-router/logs/com.apex-router.snapshot.{log,err}` (systemd: `apex-router-snapshot.timer`).
+
+**Privacy.** The mirror holds your own transcripts, prompt text included, in your home under
+a 0700 dir (files 0600). Nothing leaves the machine. The proxy and the widget never read it.
+The P6 builder and `labels` read it exactly like the live dirs and still store no text.
+Delete `~/.apex-router/transcripts` to drop it.
+
 ---
 
 ## The measuring proxy (optional `[proxy]` extra)
@@ -686,6 +713,7 @@ Logs to check: `~/.apex-router/logs/com.apex-router.{drain,daily}.{log,err}` (ma
 
 ```bash
 apex-router watch uninstall            # remove the launchd/systemd units first
+apex-router watch uninstall-snapshot   # and the transcript snapshot job, if installed
 rm -rf "$HOME/.apex-router"            # package, venv, logs, route tables, telemetry
 claude plugin uninstall datapce@datapce   # the datapce plugin
 claude plugin marketplace remove datapce  # and its marketplace

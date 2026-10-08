@@ -1,6 +1,7 @@
 """E1 step dataset (DESIGN-worldmodel-P6.md §1): one record per tool call, one per task.
 
-Reads pi sessions, Claude Code main sessions and Claude Code subagent logs (read-only), and writes
+Reads pi sessions, Claude Code main sessions and Claude Code subagent logs (read-only; the live
+dirs UNION the ``transcripts/`` mirror kept by ``worldmodel snapshot``), and writes
 ``steps.jsonl`` / ``tasks.jsonl`` / ``manifest.json`` under ``~/.apex-router/worldmodel/``
 (``APEX_ROUTER_HOME`` honoured; dir 0700, files 0600). A rebuild rewrites all three from the
 transcripts, so it is idempotent.
@@ -50,6 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import labels as L
+from .. import transcript_mirror as TM
 from ..classify import TASK_TYPES
 from ..telemetry_path import telemetry_path
 from . import actions as A
@@ -240,26 +242,17 @@ def _meta(path: Path) -> dict:
 
 # ---- discovery ------------------------------------------------------------------------------
 
-def main_transcripts(user_home: Path) -> list:
-    """Same globs as ``labels.transcripts`` (pi sessions + Claude Code main sessions)."""
-    return sorted(list((user_home / ".pi" / "agent" / "sessions").glob("**/*.jsonl"))
-                  + list((user_home / ".claude" / "projects").glob("*/*.jsonl")))
+def main_transcripts(user_home: Path, home=None) -> list:
+    """Same set as ``labels.transcripts``: pi sessions + Claude Code main sessions, live dirs
+    UNION the transcript mirror, one per (source, session id) — the larger file wins."""
+    return TM.main_transcripts(user_home, home)
 
 
-def sub_transcripts(user_home: Path) -> list:
+def sub_transcripts(user_home: Path, home=None) -> list:
     """Claude Code subagent logs: ``<slug>/<session>/subagents/[workflows/<wf>/]agent-<id>.jsonl``
-    -> [(session id, agent id, path, workflow run id | None)]."""
-    root = user_home / ".claude" / "projects"
-    out = []
-    for p in root.glob("*/*/subagents/**/agent-*.jsonl"):
-        try:
-            parts = p.relative_to(root).parts
-            sid = parts[1]
-        except (ValueError, IndexError):
-            continue
-        wf = parts[-2] if len(parts) >= 6 and parts[3] == "workflows" else None
-        out.append((sid, p.name[len("agent-"):-len(".jsonl")], p, wf))
-    return sorted(out, key=lambda x: (x[0], str(x[2])))
+    -> [(session id, agent id, path, workflow run id | None)], live UNION mirror, deduplicated
+    per (session, agent, workflow run), larger file wins."""
+    return TM.sub_transcripts(user_home, home)
 
 
 # ---- telemetry + outcomes -------------------------------------------------------------------
@@ -454,10 +447,10 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto",
 
     # 1. main sessions -> tasks
     sessions: dict = {}                 # sid -> {src, start, path, tasks: [task]}
-    for p in main_transcripts(uh):
+    for p in main_transcripts(uh, base):
         w = walk_main(p, st)
         sid = p.stem[-36:]
-        src = "pi" if "/.pi/" in str(p) else "claude"
+        src = TM.source_of(p)
         tasks = []
         for t in w["turns"]:
             if not t["calls"]:
@@ -487,7 +480,7 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto",
             register(t["calls"], t)
     pending = []
     orphans = 0
-    for sid, aid, p, wf in sub_transcripts(uh):
+    for sid, aid, p, wf in sub_transcripts(uh, base):
         if sid not in sessions:         # parent main log gone or ran no tool
             orphans += 1
             continue
