@@ -127,6 +127,7 @@ async def handle(
         event.apex_added_ms = pre_forward_ms + backoff_ms
         event.upstream_error_wait_ms = (time.perf_counter() - t_send) * 1000.0 - backoff_ms
         event.connect_retries = send_stats.get("connect_retries", 0)  # v6
+        event.record_retry_arm(send_stats)  # v11: retry-action A/B arm, if it retried
         event.connect_backoff_ms = backoff_ms
         telemetry.emit(event)
         return Response(b'{"error":"apex upstream unreachable"}', status_code=502,
@@ -179,6 +180,7 @@ async def handle(
             # apex's own request-path cost = pre-forward compute + any connect-retry backoff slept
             event.apex_added_ms = pre_forward_ms + send_stats.get("connect_backoff_s", 0.0) * 1000.0
             event.connect_retries = send_stats.get("connect_retries", 0)  # v6
+            event.record_retry_arm(send_stats)  # v11: retry-action A/B arm, if it retried
             event.connect_backoff_ms = send_stats.get("connect_backoff_s", 0.0) * 1000.0
             event.is_error = event.is_error or response.status_code >= 500
             event.upstream_rejected = response.status_code >= 400  # v8: any 4xx/5xx, is_error unchanged

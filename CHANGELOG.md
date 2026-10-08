@@ -7,6 +7,26 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `zeno report` section **1c**, a regime model (`regime.py`, stdlib). It fits a 2-state hidden
+  Markov model (normal/degraded) by Baum–Welch to the time-ordered proxy call stream, in two
+  forms: plain, and with a burst chain per state. Viterbi decoding lists the degraded days and
+  hours, and the stationary degraded share is reported. An EM-free day mixture serves as the
+  baseline. Held-out scoring uses the 1b protocol (log-lik and Brier of P(clean), paired
+  session-bootstrap CIs against iid and the chain); the filtered variant is labelled as using
+  more information. Verdicts: `insufficient` (< 200 pairs), `bursts only`, `regimes found`.
+  Sections 1 and 1b are unchanged. On live data, the one slow regime it finds (08-24 → 10-02)
+  is the v8 transport-retry deploy, not an upstream outage. After v8 the stream is bursts only
+  (`docs/research/2026-10-08-l1-regime-and-retry-ab.md`).
+- Retry-action A/B instrument. Default behaviour is unchanged. `APEX_RETRY_POLICY` takes
+  `immediate` (default, today's backoff), `wait` (sleep at least `APEX_RETRY_WAIT_MS`, default
+  1000, capped at 2000 ms) or `switch` (logs the arm only; there is one upstream per wire).
+  `APEX_RETRY_AB=1` draws the arm once per request, at its first retry, over
+  `APEX_RETRY_AB_ARMS` (default `immediate,wait`). Telemetry **v11** adds `retry_policy`,
+  `retry_arm` and `retry_propensity` on rows that retried. The doctor accepts v11.
+  `apex-router retry-ab report` gives per-arm P(retry recovers) with Wilson CIs and the arm −
+  immediate difference with a Newcombe CI. It reports `INCONCLUSIVE` below 30 randomised rows
+  per arm, and shows planning numbers (retries/day, days to the floor, minimum detectable
+  difference).
 - `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
   `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
   steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time

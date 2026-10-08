@@ -41,6 +41,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import markov as mk
+from . import regime as rg
 from .core.stats import wilson_ci
 
 LN10 = math.log(10.0)
@@ -395,9 +396,11 @@ def report(telemetry: Path | None = None, xval_runs: Path | None = None,
 
     per_session = defaultdict(lambda: [0, 0])
     seqs = defaultdict(list)  # session -> 0/1 outcomes in ts order; dict order = first appearance
+    first_ts = {}             # session -> ts of its first call (regime held-out split, 1c)
     for r in rows:
         sid = r.get("session_id")
         if sid:
+            first_ts.setdefault(sid, r["ts"])
             per_session[sid][0] += 1
             per_session[sid][1] += 1 if r.get("is_error") else 0
             seqs[sid].append(1 if r.get("is_error") else 0)
@@ -424,6 +427,8 @@ def report(telemetry: Path | None = None, xval_runs: Path | None = None,
                         if n else None),
         "compounding": compounding(per_session.values()),
         "markov": markov_horizon(seqs.values()),
+        "regime": rg.regime_report([(r["ts"], 1 if r.get("is_error") else 0) for r in rows],
+                                   [(first_ts[sid], sq) for sid, sq in seqs.items()]),
         "engineering": _xval_frontier(xv, min_arm_runs, since),
         "discovery": discovery(r.get("error_cause") for r in rows if r.get("is_error")),
         "coverage_stratum": coverage({s: tuple(v) for s, v in strata.items()},
@@ -457,6 +462,7 @@ def render(rep: dict) -> str:
     else:
         L += _render_horizon(rep)
         L += _render_markov(rep)
+        L += _render_regime(rep)
     L += _render_rest(rep)
     return "\n".join(L)
 
@@ -515,6 +521,80 @@ def _render_markov(rep: dict) -> list:
         L.append(f"  held out: not enough sessions ({h['n_train']} train / {h['n_test']} test)")
     L.append("  caveat: one chain for every session — between-session and over-time heterogeneity "
              "is not modeled, so long sessions can still be under-predicted")
+    return L
+
+
+def _render_regime(rep: dict) -> list:
+    g = rep.get("regime")
+    L = ["", "1c. horizon — regime model (hidden normal/degraded upstream state; 2-state HMM)"]
+    if not g or not g["calls"]:
+        return L + ["  no proxy request rows — nothing to fit"]
+    if g["models"]["hmm_burst"]["fit"] is None:
+        why = (f"{g['pairs']} consecutive call pairs, need {g['min_pairs']}" if g["pairs"] < g["min_pairs"]
+               else "no failed calls to separate")
+        return L + [f"  insufficient: {why}"]
+    labels = {"hmm": "plain HMM (one fail rate per state)",
+              "hmm_burst": "HMM + per-state burst chain (fail rate | state, previous call)"}
+    for name in ("hmm", "hmm_burst"):
+        m = g["models"][name]
+        f = m["fit"]
+        if f is None:
+            continue
+        L.append(f"  {labels[name]} — {f['n']} calls in time order, {f['iters']} EM iterations"
+                 f"{'' if f['converged'] else ' (NOT converged)'}; ΔBIC vs memoryless "
+                 f"{f['delta_bic']:.0f} → {m['verdict']}")
+        burst = (f"; after a failure {_pct(f['fail_after_fail'][0])} / "
+                 f"{_pct(f['fail_after_fail'][1])}") if f["burst"] else ""
+        L.append(f"    fail rate normal {_pct(f['fail'][0])} vs degraded {_pct(f['fail'][1])}"
+                 f"{' (after an ok call)' if f['burst'] else ''}{burst}")
+        dn, dd = m["dwell"]
+        d = m["decode"]
+        L.append(f"    stationary share degraded {_pct(f['stationary_degraded'], 1)}; mean dwell "
+                 f"{dn:,.0f} calls normal / {dd:,.1f} calls degraded; Viterbi: "
+                 f"{d['degraded_calls']}/{d['calls']} calls degraded in {d['n_episodes']} episodes")
+        L.append(f"    Viterbi-decoded fail rate normal {_pct(d['fail_normal'])} {_ci(d['fail_normal_ci'])}"
+                 f" vs degraded {_pct(d['fail_degraded'])} {_ci(d['fail_degraded_ci'])} "
+                 "(conditional on the fit)")
+        if name == "hmm_burst":
+            L.append("    days decoded degraded (≥ 50% of the day's calls): "
+                     + (", ".join(d["degraded_days"]) or "none"))
+            mixed = [x for x in d["days"] if 0.05 <= x["degraded_share"] < 0.5]
+            if mixed:
+                L.append("    partly degraded (5–50%): " + ", ".join(
+                    f"{x['day']} {_pct(x['degraded_share'], 0)}" for x in mixed))
+            L.append(f"    degraded hours: {len(d['degraded_hours'])}")
+    dm = g.get("day_mixture")
+    if dm:
+        L.append(f"  day mixture (no EM; day degraded when its Wilson lower bound > pooled "
+                 f"{_pct(dm['pooled'])}): {len(dm['degraded_days'])}/{dm['days']} days degraded, "
+                 f"{_pct(dm['w'], 0)} of calls; fail {_pct(dm['fail_normal'])} vs "
+                 f"{_pct(dm['fail_degraded'])}")
+    h = g["holdout"]
+    if h["n_test"] < HOLDOUT_MIN_TEST:
+        L.append(f"  held out: too few sessions to compare ({h['n_train']} train / {h['n_test']} test, "
+                 f"need {HOLDOUT_MIN_TEST} test)")
+    elif h["models"]:
+        L.append(f"  held out (fit on the {h['train_calls']} calls before the first test session; "
+                 f"iid/markov on the {h['n_train']} train sessions; score {h['n_test']} sessions): "
+                 "P(clean) log-lik / Brier")
+        for name in ("iid", "markov", "day_mixture", "hmm", "hmm_filtered", "hmm_burst",
+                     "hmm_burst_filtered"):
+            v = h["models"].get(name)
+            if v is None:
+                continue
+            row = f"    {name:<19} {v['loglik']:>8.1f}  {v['brier']:.3f}"
+            for base in ("iid", "markov"):
+                dd = h.get(f"brier_diff_vs_{base}", {}).get(name)
+                if dd:
+                    lo, hi = dd["ci"]
+                    row += f"   vs {base} {dd['diff']:+.3f} [{lo:+.3f}, {hi:+.3f}]"
+            L.append(row)
+        L.append("    (Brier diff > 0 = better than the base; paired per session, session bootstrap "
+                 "95% CI; *_filtered also sees every call before the session starts)")
+    else:
+        L.append(f"  held out: not enough sessions ({h['n_train']} train / {h['n_test']} test)")
+    L.append("  caveat: a decoded regime is a change in the measured outcome stream — an upstream "
+             "outage and a proxy change (e.g. a new retry rule) look the same here")
     return L
 
 

@@ -305,6 +305,42 @@ def test_render_markov_without_session_ids(tmp_path):
     assert "nothing to chain" in text
 
 
+# ---- 1c: regime model beside the chain (additive) ----------------------------------------------
+
+def test_report_adds_regime_section(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _bursty_telemetry(tel, sessions=72)                      # 2880 calls, 22 test sessions
+    rep = zeno.report(tel, tmp_path / "none.jsonl")
+    g = rep["regime"]
+    assert g["calls"] == 72 * 40 and g["pairs"] == 72 * 40 - 1
+    assert set(g["models"]) == {"hmm", "hmm_burst"}
+    assert g["models"]["hmm"]["fit"]["n"] == 72 * 40
+    # iid/markov in the regime held-out are the 1b numbers (same protocol, same split)
+    h, m = g["holdout"], rep["markov"]["holdout"]
+    assert (h["n_train"], h["n_test"]) == (m["n_train"], m["n_test"])
+    assert h["models"]["iid"]["brier"] == pytest.approx(m["iid_brier"])
+    assert h["models"]["markov"]["brier"] == pytest.approx(m["markov_brier"])
+    text = zeno.render(rep)
+    assert "1c. horizon — regime model" in text
+    assert text.index("1b. horizon") < text.index("1c. horizon") < text.index("2. engineering")
+    assert "stationary share degraded" in text and "days decoded degraded" in text
+    assert "hmm_burst_filtered" in text and "session bootstrap" in text
+    assert "proxy change" in text
+    assert "regime" in json.loads(json.dumps(rep, default=str))
+
+
+def test_render_regime_insufficient_and_thin_holdout(tmp_path):
+    tel = tmp_path / "t.jsonl"
+    _write(tel, [{"ts": 1.0 + i, "session_id": "s", "is_error": i == 3} for i in range(50)])
+    rep = zeno.report(tel, tmp_path / "none.jsonl")
+    assert rep["regime"]["verdict"] == "insufficient"
+    assert "insufficient: 49 consecutive call pairs, need 200" in zeno.render(rep)
+    _bursty_telemetry(tel)                                   # 480 calls, 4 test sessions
+    text = zeno.render(zeno.report(tel, tmp_path / "none.jsonl"))
+    tail = text[text.index("1c. horizon"):]
+    assert "held out: too few sessions to compare" in tail
+
+
 # ---- the label the report exposed: a stream that breaks mid-way gets a cause --------------------
 
 def _drive(handler_name, status, *, break_stream):
