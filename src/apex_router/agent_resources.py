@@ -75,6 +75,7 @@ TELEMETRY_WINDOW_S = 60 * 60
 SUBAGENT_RUNNING_S = 60
 SUBAGENT_QUIET_S = 5 * 60
 SUBAGENT_STUCK_S = 20 * 60
+SUBAGENT_WAITING_FLAG_S = 10 * 60  # a ``waiting?`` subagent joins the session's ⚠ reasons after this
 SUBAGENTS_MAX = 8                 # subagents kept per session (the rest are summed into "hidden")
 SUBAGENT_SCAN_MAX = 500           # log files looked at per session
 SCAN_SESSIONS_MAX = 8             # sessions whose subagent logs are scanned (= the menu's ACTIVE_MAX)
@@ -84,6 +85,8 @@ GRAPH_MODELS_MAX = 8
 GRAPH_SESSIONS_MAX = 30
 TREE_PIDS_MAX = 300
 RATE_PIDS_MAX = 40                # pids sampled twice for cpu % / disk MB/s
+LSOF_PIDS_MAX = 40                # pi / codex pids whose cwd one lsof call looks up
+QUIET_PROCS_MAX = 8               # live pi / codex processes with no recent session log, listed
 ARGS_PIDS_MAX = 40                # interpreter pids whose script name is looked up
 RATE_SAMPLE_S = 0.25
 # All subprocess + network timeouts + the rate sample together. A full refresh measures
@@ -650,6 +653,43 @@ def match_by_cwd(agents: list, table: dict, cwds: dict) -> dict:
     return out
 
 
+def quiet_procs(agents: list, table: dict, cwds: dict, matched, kinds=("pi", "codex"),
+                cap: int = QUIET_PROCS_MAX) -> list:
+    """Live pi / Codex processes that no listed session accounts for: their session log has not
+    been written in the last hour (``agents.discover`` lists only those), yet they still hold
+    memory. A process is left out when it was matched to a session (``matched``), when a listed
+    session of its kind shares its cwd (it may be that one), when its cwd is unknown and any
+    session of its kind is listed, or when its parent is a process of the same kind (counted in
+    that tree). ``[{pid, kind, cwd_name}]`` newest first, at most ``cap``; ``cwd_name`` is the
+    cwd's basename (None when lsof did not give one) — never the full path."""
+    listed: dict = {}
+    for a in agents:
+        if isinstance(a, dict) and a.get("kind") in kinds:
+            cwd = a.get("cwd")
+            listed.setdefault(a["kind"], set()).add(os.path.realpath(cwd) if cwd else None)
+    matched = set(matched)
+    out = []
+    for pid, p in table.items():
+        kind = p.get("name")
+        if kind not in kinds or pid in matched:
+            continue
+        parent = table.get(p.get("ppid"))
+        if parent is not None and parent.get("name") == kind:
+            continue
+        cwd = cwds.get(pid)
+        if cwd is None and listed.get(kind):
+            continue
+        if cwd is not None and os.path.realpath(cwd) in listed.get(kind, set()):
+            continue
+        out.append({"pid": pid, "kind": kind,
+                    "cwd_name": (os.path.basename(cwd.rstrip("/")) or "/") if cwd else None,
+                    "_start": p.get("start")})
+    out.sort(key=lambda q: (-(q["_start"] or 0), q["pid"]))
+    for q in out:
+        q.pop("_start")
+    return out[:cap]
+
+
 # ---- GPU / ollama ---------------------------------------------------------------------------
 
 _NETSTAT_IF_RE = re.compile(r"^(en\d+)\s")
@@ -960,15 +1000,45 @@ def _last_s(age, tel, now):
     return round(min(cands), 1) if cands else None
 
 
+def mark_waiting(found: dict, status, main_age) -> None:
+    """Flag the subagent the busy session is probably still waiting on — a HEURISTIC.
+
+    A finished subagent and a hung one look the same from outside: both stopped writing. The one a
+    ``busy`` session is still waiting on is the stream that went quiet LAST: its log has been quiet
+    for more than ``SUBAGENT_RUNNING_S`` and nothing in the session — the main log nor any other
+    subagent — has written since. Such a subagent gains ``waiting: True`` and ``waiting_s`` (its
+    quiet time); past ``SUBAGENT_WAITING_FLAG_S`` it also gets the ``waiting`` flag (a ⚠ reason).
+    Needs the main log's age (``main_age``): without it nothing is marked. A long tool call inside
+    the subagent (a test run, a build) also writes nothing, so a ``waiting?`` subagent can be
+    healthy; the question mark stays on purpose."""
+    if status != "busy" or not isinstance(main_age, (int, float)):
+        return
+    for aid, s in found.items():
+        last = s.get("last_s")
+        if s.get("age_s") is None or not isinstance(last, (int, float)) \
+                or last <= SUBAGENT_RUNNING_S or main_age < last:
+            continue
+        if any(isinstance(o.get("last_s"), (int, float)) and o["last_s"] < last
+               for oid, o in found.items() if oid != aid):
+            continue                                   # a newer write elsewhere: not this one
+        s["waiting"] = True
+        s["waiting_s"] = last
+        if last > SUBAGENT_WAITING_FLAG_S and "waiting" not in s["flags"]:
+            s["flags"].append("waiting")
+
+
 def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
               keep: int = SUBAGENTS_MAX, scan: bool = True,
               deadline: Deadline | None = None, window_s: float = TELEMETRY_WINDOW_S,
-              times: bool = False) -> dict:
+              times: bool = False, status: str | None = None) -> dict:
     """Subagents seen in the last 60 min (log mtime) or with proxy traffic in the window.
 
     ``scan=False`` skips the filesystem (traffic only). ``window_s`` widens the log-mtime window
     (the detail page lists 6 h); ``times`` adds ``spawn_ts`` / ``mtime`` (epoch) to each. With a ``deadline`` the log scan stops
     when it runs out (``partial`` is then True); traffic-only subagents are always included.
+    With the session's ``status`` (Claude's busy/idle) a scan also reads the main log's mtime
+    (``main_age_s``) and marks the subagent a busy session is probably waiting on
+    (``mark_waiting``, a heuristic).
 
     Returns ``{"list", "more", "hidden", "totals", "count", "running", "quiet", "flagged"}``:
     ``list`` = the first ``keep`` sorted running -> erroring -> output tokens -> newest; ``hidden`` = the
@@ -990,7 +1060,14 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
     elif scan:
         partial = True
     scanned = 0
+    main_age = None
     for d in dirs:
+        if status is not None and main_age is None:
+            try:
+                main_age = round(max(0.0, now - (d.parent.parent / f"{session_id}.jsonl")
+                                     .stat().st_mtime), 1)
+            except OSError:
+                main_age = None
         try:
             entries = list(d.iterdir())
         except OSError:
@@ -1042,15 +1119,19 @@ def subagents(home: Path, session_id: str, now: float, tel: dict | None = None,
             found[aid] = {"id": aid, "type": "?", "description": "", "depth": None,
                           "age_s": None, "run_s": None, "state": state, "flags": flags,
                           "telemetry": st, "last_s": _last_s(None, st, now)}
+    if status is not None and not partial:
+        mark_waiting(found, status, main_age)
     ordered = sorted(found.values(), key=_sub_sort_key)
     shown, rest = ordered[:keep], ordered[keep:]
-    return {"list": shown, "more": len(rest),
+    extra = {"main_age_s": main_age} if main_age is not None else {}
+    return {**extra, "list": shown, "more": len(rest),
             "hidden": merge_stats(*[s.get("telemetry") for s in rest]),
             "totals": merge_stats(*[s.get("telemetry") for s in ordered]),
             "count": len(ordered),
             "running": sum(1 for s in ordered if s["state"] == "running"),
             "quiet": sum(1 for s in ordered if s["state"] == "quiet"),
             "flagged": sum(1 for s in ordered if s["flags"]),
+            "waiting": sum(1 for s in ordered if s.get("waiting")),
             "scanned": bool(scan) and not partial, "partial": partial}
 
 
@@ -1177,6 +1258,8 @@ def build_graph(agents: list, now: float | None = None) -> dict:
                           "cache_write": st.get("cache_write", 0),
                           "ctx_tokens": st.get("ctx_tokens"), "ctx_pct": st.get("ctx_pct"),
                           "ctx_window": st.get("ctx_window"), "errors_5m": st.get("errors_5m", 0)})
+            if s.get("waiting"):
+                nodes[-1]["waiting"] = True
             edges.append({"from": sid, "to": aid, "kind": "spawned"})
             model_edge(aid, st.get("models"))
         more = (subs.get("more") or 0) + len(cut)
@@ -1320,7 +1403,8 @@ def tel_text(st: dict | None) -> str:
 
 
 def lifecycle_text(s: dict) -> str:
-    """``run 14m · last 2s`` / ``run 12m · quiet 3m`` / ``run 40m · done 20m``."""
+    """``run 14m · last 2s`` / ``run 12m · quiet 3m`` / ``run 40m · done 20m`` /
+    ``run 9m · waiting? 12m`` (``mark_waiting``)."""
     bits = []
     if isinstance(s.get("run_s"), (int, float)):
         bits.append(f"run {fmt_dur(s['run_s'])}")
@@ -1329,6 +1413,8 @@ def lifecycle_text(s: dict) -> str:
         word = {"running": "last", "quiet": "quiet", "done": "done"}.get(state, "last")
         if "errors" in (s.get("flags") or []) and state != "running":
             word = "last"
+        elif s.get("waiting"):
+            word = "waiting?"
         bits.append(f"{word} {fmt_dur(age)}")
     return " · ".join(bits) if bits else "no log"
 
@@ -1370,7 +1456,7 @@ def graph_text(graph: dict) -> str:
             st = n.get("state")                        # quiet/done already name themselves
             label = clean_text(n["label"])[:60]
             bits = [f"spawned {flag}{label}", tel_text(n)]
-            if f"{st} " not in life:
+            if f"{st} " not in life and not n.get("waiting"):
                 bits.append(str(st))
             bits.append(life)
             if n.get("depth"):
@@ -1428,7 +1514,7 @@ def _buckets(rows, now):
 def collect(agents: list, *, home=None, telemetry=None, now: float | None = None,
             run=None, rusage_fn=None, fetch=None, loadavg=None, worker_pid=None,
             deadline: Deadline | None = None, self_pid: int | None = None,
-            sample_s: float = RATE_SAMPLE_S) -> dict:
+            sample_s: float = RATE_SAMPLE_S, quiet: bool = False) -> dict:
     """Enrich ``agents`` (a new list; each matched agent gains ``res``) and return
     ``{"agents", "system", "graph", "worker"}``. The injectables default to the real sources,
     looked up at call time (tests patch the module attributes or pass fakes). Never raises.
@@ -1438,7 +1524,12 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     the rest of ``sample_s`` (never past the deadline) -> second sample of the ≤ RATE_PIDS_MAX
     busiest pids -> rates -> trees. Subagent logs are read only for the ≤ SCAN_SESSIONS_MAX
     active Claude sessions ranked first by ``rank_key`` (re-checked once the cpu rates are in);
-    every other session's subagents come from proxy traffic alone."""
+    every other session's subagents come from proxy traffic alone.
+
+    ``quiet=True`` (the menu) also looks up the cwd of live pi / Codex processes when no such
+    session is listed, and returns the ones no listed session accounts for
+    (``system["quiet_procs"]``, ``quiet_procs``) with their tree; their memory is counted in
+    ``agents_footprint_mb``."""
     now = time.time() if now is None else now
     run = run or run_cmd
     rusage_fn = rusage_fn or rusage
@@ -1461,7 +1552,9 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     table = guard("ps", lambda: ps_table(run, dl.timeout(1.0)), {})
     kids = children_map(table)
     sessions = guard("claude_sessions", lambda: claude_sessions(home, table), {})
-    need_lsof = {p for p, r in table.items() if r["name"] in ("pi", "codex")} if any(
+    kind_pids = sorted((p for p, r in table.items() if r["name"] in ("pi", "codex")),
+                       key=lambda p: -(table[p].get("start") or 0))[:LSOF_PIDS_MAX]
+    need_lsof = set(kind_pids) if quiet or any(
         isinstance(a, dict) and a.get("kind") in ("pi", "codex") for a in agents) else set()
     cwds = guard("lsof", lambda: lsof_cwds(need_lsof, run, dl.timeout(0.5)), {}) if need_lsof else {}
     by_cwd = match_by_cwd([a if isinstance(a, dict) else {} for a in agents], table, cwds)
@@ -1480,7 +1573,10 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     ol_roots = [p for p in ol.values() if p["ppid"] not in ol]   # the server, not its runners
     ol_pid = min(ol_roots, key=lambda p: p["pid"])["pid"] if ol_roots else None
     extra_roots = [p for p in (worker_pid, ol_pid) if isinstance(p, int)]
-    all_roots = set(roots.values()) | set(extra_roots)
+    quiet_list = quiet_procs([a for a in agents if isinstance(a, dict)], table, cwds,
+                             roots.values()) if quiet and kind_pids else []
+    quiet_roots = [q["pid"] for q in quiet_list]
+    all_roots = set(roots.values()) | set(extra_roots) | set(quiet_roots)
     excl = self_exclusion(table, all_roots, self_pid, kids) if table else set()
 
     tree_pids: dict = {}
@@ -1530,8 +1626,9 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
             scanned.add(i)
             sid = agents[i]["session_id"]
             t = tel.get(sid) or {}
+            st = sessions[sid].get("status") if sid in sessions else None
             r = guard("subagents", lambda: subagents(home, sid, now, t.get("subagents"),
-                                                     deadline=dl), None)
+                                                     deadline=dl, status=st), None)
             if isinstance(r, dict):
                 subs_by[i] = r
                 if r.get("partial"):
@@ -1553,7 +1650,7 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
                 None)
     if net:
         system["net"] = net
-    agent_pids = {p for r in roots.values() for p in tree_pids.get(r, [])}
+    agent_pids = {p for r in [*roots.values(), *quiet_roots] for p in tree_pids.get(r, [])}
     labels = guard("ps_args", lambda: script_labels(
         table, sorted(agent_pids, key=lambda p: -table[p]["cpu"]), run, dl.timeout(0.5)),
         {}) if agent_pids else {}
@@ -1618,6 +1715,13 @@ def collect(agents: list, *, home=None, telemetry=None, now: float | None = None
     system["agents_cpu_pct"] = round(sum(rates[p]["cpu_pct"] for p in agent_pids if p in rates),
                                      1) if rates else None
     system["agents_procs"] = len(agent_pids)
+    if quiet:
+        system["quiet_procs"] = []
+        for q in quiet_list:
+            tr = guard("rusage", lambda: tree_of(q["pid"]), {})
+            system["quiet_procs"].append(dict(q, uptime_s=tr.get("uptime_s"),
+                                              footprint_mb=tr.get("footprint_mb"),
+                                              rss_mb=tr.get("rss_mb"), procs=tr.get("procs")))
     system["excluded_self_pids"] = len(excl)
     if traffic:
         system["traffic_60m"] = traffic

@@ -1040,3 +1040,74 @@ def test_ollama_line_names_its_clients():
     assert "pid 55074" in line and snapshot.INK["violet"] in line
     idle = dict(s, ollama_clients=[])
     assert "←" not in snapshot._ollama_lines(idle, {})[0]
+
+
+# ---------------------------------------------------------------- 0.4.2: waiting? + quiet pi
+
+def _waiting_snap(waiting_s, flags):
+    snap = _res_snap()
+    a = snap["agents"][0]
+    a["res"]["telemetry"]["errors"] = 0
+    a["res"]["subagents"] = {"count": 1, "flagged": 1 if flags else 0, "list": [
+        {"id": "a1234abcd", "type": "Explore", "description": "find x", "state": "done",
+         "age_s": waiting_s, "last_s": waiting_s, "run_s": 60.0, "waiting": True,
+         "waiting_s": waiting_s, "flags": flags, "telemetry": {"requests": 2, "tokens_out": 10}}]}
+    return snap
+
+
+def test_menubar_waiting_subagent_has_its_own_symbol_and_flags_after_ten_minutes():
+    lines = snapshot.menubar(_waiting_snap(180.0, [])).splitlines()
+    sub = next(ln for ln in lines if "find x" in ln)
+    assert sub.startswith(f"--{snapshot.WAITING_SYM} find x") and "waiting? its session" in sub
+    assert "run 1m · waiting? 3m" in sub
+    row = next(ln for ln in lines if ln.startswith("r s1 "))
+    assert not row.split(" | ")[0].endswith("⚠")                # < 10 min: not a ⚠ reason
+    lines = snapshot.menubar(_waiting_snap(900.0, ["waiting"])).splitlines()
+    sub = next(ln for ln in lines if "find x" in ln)
+    assert sub.startswith(f"--{snapshot.WAITING_SYM} find x")    # still its own symbol
+    assert "flagged: quiet > 10 min while its session is busy" in sub and "heuristic" in sub
+    row = next(ln for ln in lines if ln.startswith("r s1 "))
+    assert row.split(" | ")[0].endswith("⚠") and lines[0].startswith("● 2 ⚠")
+    both = _waiting_snap(900.0, ["errors", "waiting"])
+    sub = next(ln for ln in snapshot.menubar(both).splitlines() if "find x" in ln)
+    assert sub.startswith("--⚠ find x")                         # another flag: the plain ⚠
+
+
+def test_menubar_lists_quiet_pi_processes_under_idle_and_counts_them():
+    snap = _res_snap()
+    snap["system"]["agents_footprint_mb"] = 2048.0
+    snap["system"]["quiet_procs"] = [
+        {"pid": 300, "kind": "pi", "cwd_name": "graphs|x", "uptime_s": 3 * 86400,
+         "footprint_mb": 159.0, "rss_mb": 5.0, "procs": 1},
+        {"pid": 301, "kind": "codex", "cwd_name": None, "uptime_s": 120,
+         "footprint_mb": None, "rss_mb": 3.0}]
+    lines = snapshot.menubar(snap).splitlines()
+    plain = _plain(lines)
+    hdr = next(ln for ln in plain if ln.startswith("Agents ·"))
+    assert "· 2 idle ·" in hdr and "2.0GB" in hdr                 # quiet procs count as idle
+    assert "idle (2) · 162MB held" in plain
+    assert "--pi · graphs¦x · quiet · up 3d · 159MB" in plain      # esc()'d cwd name
+    assert "--codex · ? · quiet · up 2m · 3MB" in plain           # no cwd, rss fallback
+    row = next(ln for ln in lines if ln.startswith("--pi · "))
+    assert "emojize=false symbolize=false" in row and "bash=" not in row
+    assert "pid 300" in row
+
+
+def test_menubar_quiet_procs_share_the_idle_cap():
+    snap = _res_snap()
+    snap["system"]["quiet_procs"] = [{"pid": 300 + i, "kind": "pi", "cwd_name": f"p{i}",
+                                      "uptime_s": 60, "footprint_mb": 1.0}
+                                     for i in range(snapshot.IDLE_SHOWN_MAX + 3)]
+    plain = _plain(snapshot.menubar(snap).splitlines())
+    assert sum(1 for ln in plain if ln.startswith("--pi · ")) == snapshot.IDLE_SHOWN_MAX
+    assert "--… 3 more" in plain
+
+
+def test_collect_enables_the_quiet_process_lookup(tmp_path):
+    seen = {}
+
+    def fake(agents, **kw):
+        seen.update(kw)
+        return {"agents": agents, "system": {}, "graph": {"nodes": [], "edges": []}}
+    _collect(tmp_path, resources_fn=fake)
+    assert seen["quiet"] is True

@@ -926,3 +926,133 @@ def test_ollama_clients_lsof_no_match_is_empty_not_an_error():
         raise RuntimeError("lsof exit 2")
     with pytest.raises(RuntimeError):
         ar.ollama_clients(run=run2)
+
+
+# ---------------------------------------------------------------- 0.4.2: waiting? heuristic
+
+def _main_log(home, sid, age, slug="-Users-you-src-r"):
+    f = home / ".claude" / "projects" / slug / f"{sid}.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("{}\n")
+    os.utime(f, (NOW - age, NOW - age))
+
+
+def test_waiting_is_the_last_quiet_stream_of_a_busy_session(tmp_path):
+    _main_log(tmp_path, "s", 15 * 60)                          # main quiet since before
+    _sub_at(tmp_path, "s", "early", 30 * 60, 20 * 60)          # finished first
+    _sub_at(tmp_path, "s", "last", 25 * 60, 12 * 60)           # quiet last: the one waited on
+    out = ar.subagents(tmp_path, "s", NOW, status="busy")
+    by = {s["id"]: s for s in out["list"]}
+    assert by["last"]["waiting"] is True and by["last"]["waiting_s"] == 12 * 60
+    assert by["last"]["flags"] == ["waiting"]                  # > 10 min: a ⚠ reason
+    assert "waiting" not in by["early"] and by["early"]["flags"] == []
+    assert out["waiting"] == 1 and out["flagged"] == 1 and out["main_age_s"] == 15 * 60
+    assert ar.lifecycle_text(by["last"]) == "run 13m · waiting? 12m"
+    assert ar.agent_flagged({"res": {"subagents": out}})
+
+
+def test_waiting_under_ten_minutes_is_shown_but_not_flagged(tmp_path):
+    _main_log(tmp_path, "s", 9 * 60)
+    _sub_at(tmp_path, "s", "w", 10 * 60, 3 * 60)
+    out = ar.subagents(tmp_path, "s", NOW, status="busy")
+    s = out["list"][0]
+    assert s["waiting"] and s["waiting_s"] == 180 and s["flags"] == [] and out["flagged"] == 0
+
+
+@pytest.mark.parametrize("case", ["idle", "no-status", "main-newer", "sibling-newer",
+                                  "still-writing", "no-main-log", "request-newer"])
+def test_waiting_needs_busy_parent_and_no_newer_write(tmp_path, case):
+    status = {"idle": "idle", "no-status": None}.get(case, "busy")
+    if case != "no-main-log":
+        _main_log(tmp_path, "s", 5 if case == "main-newer" else 30 * 60)
+    _sub_at(tmp_path, "s", "w", 25 * 60, 30 if case == "still-writing" else 12 * 60)
+    if case == "sibling-newer":
+        _sub_at(tmp_path, "s", "sib", 20 * 60, 8 * 60)
+    tel = {"w": {"requests": 1, "last_ts": NOW - 20}} if case == "request-newer" else None
+    out = ar.subagents(tmp_path, "s", NOW, tel, status=status)
+    w = next(s for s in out["list"] if s["id"] == "w")
+    assert "waiting" not in w and "waiting" not in w["flags"]
+    if case == "sibling-newer":                                # the sibling is the last one
+        assert next(s for s in out["list"] if s["id"] == "sib")["waiting"]
+
+
+def test_waiting_not_marked_from_a_partial_scan_or_without_status(tmp_path):
+    _main_log(tmp_path, "s", 30 * 60)
+    _sub_at(tmp_path, "s", "w", 25 * 60, 12 * 60)
+    plain = ar.subagents(tmp_path, "s", NOW)                   # the old call: unchanged shape
+    assert "main_age_s" not in plain and "waiting" not in plain["list"][0]
+    t = [0.0]
+    dl = ar.Deadline(1.0, clock=lambda: t[0])
+    t[0] = 5.0
+    part = ar.subagents(tmp_path, "s", NOW, {"w": {"requests": 1}}, deadline=dl, status="busy")
+    assert part["partial"] and not part["waiting"]
+
+
+def test_collect_passes_the_claude_status_to_the_waiting_heuristic(tmp_path):
+    start = NOW - 7200
+    _session(tmp_path, 100, "busy-1", start, status="busy")
+    _main_log(tmp_path, "busy-1", 20 * 60)
+    _sub_at(tmp_path, "busy-1", "hung", 30 * 60, 15 * 60, desc="stuck")
+    agents = [{"kind": "claude", "repo": "r", "session": "busy-1", "session_id": "busy-1",
+               "state": "idle", "age_s": 15 * 60}]
+    out = ar.collect(agents, home=tmp_path, telemetry=tmp_path / "none", now=NOW,
+                     run=_fake_run(_ps_line(100, 1, 1024, 1.0, "claude", start)),
+                     rusage_fn=lambda p: None, fetch=lambda u: b"{}", loadavg=lambda: (0, 0, 0))
+    a = out["agents"][0]
+    sub = a["res"]["subagents"]["list"][0]
+    assert sub["waiting"] and sub["flags"] == ["waiting"] and ar.agent_flagged(a)
+    node = next(n for n in out["graph"]["nodes"] if n["kind"] == "subagent")
+    assert node["waiting"] is True
+    text = ar.graph_text(out["graph"])
+    assert "waiting? 15m" in text and " · done · " not in text
+
+
+# ---------------------------------------------------------------- 0.4.2: quiet pi / codex processes
+
+def test_quiet_procs_lists_unaccounted_pi_and_codex_only():
+    t = _table((300, 1, 10240, 0.0, "pi", NOW - 86400), (301, 300, 1024, 0.0, "pi"),
+               (310, 1, 2048, 0.0, "pi", NOW - 3600), (320, 1, 4096, 0.0, "codex", NOW - 60),
+               (330, 1, 4096, 0.0, "pi"), (100, 1, 1024, 0.0, "claude"))
+    cwds = {300: "/w/alpha/", 301: "/w/alpha", 310: "/w/listed", 320: "/w/beta", 330: "/w/gamma"}
+    agents = [{"kind": "pi", "cwd": "/w/listed", "session_id": "p"}]
+    out = ar.quiet_procs(agents, t, cwds, matched=[330])
+    # 301: child of a pi; 310: a listed pi session shares its cwd; 330: matched to a session
+    assert out == [{"pid": 320, "kind": "codex", "cwd_name": "beta"},
+                   {"pid": 300, "kind": "pi", "cwd_name": "alpha"}]       # newest first
+    no_cwd = ar.quiet_procs([], t, {}, matched=[], cap=1)
+    assert no_cwd == [{"pid": 320, "kind": "codex", "cwd_name": None}]   # cap + unknown cwd
+    assert ar.quiet_procs(agents, t, {}, matched=[]) == \
+        [{"pid": 320, "kind": "codex", "cwd_name": None}]                # unknown cwd, pi listed
+
+
+def test_collect_quiet_lists_pi_processes_and_counts_their_memory(tmp_path):
+    start = NOW - 3 * 86400
+    ps_text = "\n".join([_ps_line(300, 1, 10240, 0.0, "pi", start),
+                         _ps_line(301, 300, 2048, 0.0, "node", start),
+                         _ps_line(100, 1, 1024, 1.0, "claude", NOW - 60)])
+    run = _fake_run(ps_text, lsof_text=f"p300\nn{tmp_path}/proj\n")
+    agents = [{"kind": "claude", "session": "s", "session_id": "s", "state": "active"}]
+    kw = dict(home=tmp_path, telemetry=tmp_path / "none", now=NOW, run=run,
+              rusage_fn=lambda p: {"footprint_mb": 10.0, "read_mb": 0.0, "write_mb": 0.0,
+                                   "cpu_s": 0.0},
+              fetch=lambda u: b"{}", loadavg=lambda: (0, 0, 0))
+    out = ar.collect(agents, quiet=True, **kw)
+    q = out["system"]["quiet_procs"]
+    assert q == [{"pid": 300, "kind": "pi", "cwd_name": "proj", "uptime_s": 3 * 86400,
+                  "footprint_mb": 20.0, "rss_mb": 12.0, "procs": 2}]
+    assert out["system"]["agents_footprint_mb"] == 20.0 and out["system"]["agents_procs"] == 2
+    assert run.calls.count("lsof") == 1
+    plain = ar.collect(agents, **kw)                            # default: no lookup, no list
+    assert "quiet_procs" not in plain["system"] and plain["system"]["agents_procs"] == 0
+
+
+def test_collect_quiet_lsof_failure_still_lists_with_unknown_cwd(tmp_path):
+    def run(argv, timeout=2.0):
+        if argv[0] == "lsof":
+            raise RuntimeError("lsof exit 2")
+        return {"ps": _ps_line(300, 1, 1024, 0.0, "codex"), "ioreg": "", "netstat": ""}[argv[0]]
+    out = ar.collect([], home=tmp_path, telemetry=tmp_path / "none", now=NOW, run=run,
+                     rusage_fn=lambda p: None, fetch=lambda u: b"{}", loadavg=lambda: (0, 0, 0),
+                     quiet=True)
+    assert out["system"]["quiet_procs"][0]["cwd_name"] is None
+    assert "lsof" in out["system"]["errors"]
