@@ -10,17 +10,29 @@ transcripts, so it is idempotent.
   ``<session id>:<turn ordinal>`` with the same ordinal ``labels`` hashes into its own task id, so
   outcomes join 1:1.
 - **Subagent** steps carry the parent session id and ``agent``; they belong to the task whose
-  ``Agent`` tool call spawned them (``meta.json`` ``toolUseId``, resolved through nested
-  subagents), else (workflow agents have no ``toolUseId``) to the latest task of the parent
-  session that started before the subagent's first step. Their ``i`` / ``dt`` / ``phase`` are
-  computed within their own stream (task, agent).
-- **model** comes from proxy telemetry (same session_id / agent_id, the latest request at or
-  before the step, within 15 min), else from the transcript's own assistant record, else null.
+  tool call spawned them, joined exactly: an ``Agent`` call through ``meta.json`` ``toolUseId``,
+  a workflow agent (``subagents/workflows/<run id>/``) through the run id that the ``Workflow``
+  call's tool_result names; nested agents resolve through their parent's calls. Only an agent
+  with neither key falls back to the latest task of the parent session that started before its
+  first step (counted as ``subagents_by_time``); its calls still link its own nested agents.
+- **Streams.** ``i``, ``dt`` and ``phase`` are per (task, agent) stream: the main thread of a
+  task is one stream, each subagent's steps another. ``phase`` is causal (only steps <= t); for
+  the main stream an edit by a linked subagent that finished before step t counts as an edit so
+  far, so a main-thread test after a subagent's edit is ``verify``.
+- **model** is the transcript's own ``message.model`` when present; else proxy telemetry for the
+  same session_id / agent_id (the latest request at or before the step, within 60 s); else null.
+  ``manifest.model_source`` counts each.
 - **outcome** from ``labels/labels.jsonl`` + ``labels/gold.jsonl``: gold > weak > none.
-- **split** by session start time: first 70% of sessions train, next 10% val, last 20% test.
+- **split** by session start time: first 70% of sessions train, next 10% val, last 20% test. The
+  boundaries (start times of the first val / first test session) are FROZEN in manifest.json on
+  the first build and reused on every rebuild, so a session never moves between splits and the
+  test set is scored once; new sessions land by their start time (later ones in test).
+  ``build --resplit`` recomputes them (and says so loudly).
 - **task_type** (tasks.jsonl): ``classify.classify`` on the task's request text (embedding
   refinement via local ollama; the text is never stored), null when it cannot classify;
-  **workflow**: ``W2`` when the task spawned a subagent (Agent / Task / Workflow), else ``W0``.
+  **workflow**: a recorded ``workflow`` field for the task wins (``labels/*.jsonl`` or
+  ``outcomes.jsonl`` rows, by task id); else ``W2`` when the task spawned a subagent (Agent /
+  Task / Workflow), else ``W0``.
 
 Never stores text: classes, counts, buckets, flags, ids. Every reader fails open per line.
 """
@@ -29,6 +41,8 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import re
+import sys
 import subprocess
 import time
 from collections import Counter
@@ -41,7 +55,7 @@ from ..telemetry_path import telemetry_path
 from . import actions as A
 
 SCHEMA = 1
-MODEL_WINDOW_S = 900.0
+MODEL_WINDOW_S = 60.0
 SPLITS = (("train", 0.70), ("val", 0.80), ("test", 1.00))
 TEST_TAIL = 8000                   # chars of a test step's output kept (in memory) to parse counts
 TEXT_CLIP = 2000                   # chars of the request the task-type classifier embeds
@@ -123,11 +137,16 @@ def _new_call(b: dict, ts, model) -> dict:
             "out": 0, "err": 0, "text": None, "model": model}
 
 
+_WF_ID = re.compile(r"wf_[0-9A-Za-z][0-9A-Za-z_-]*")
+
+
 def _set_result(call: dict, text: str, err) -> None:
     call["out"] = len(text)
     call["err"] = int(err in (True, "True", "true"))
     if call["act"] == "test":
         call["text"] = text[-TEST_TAIL:]
+    if call["tool"] == "Workflow":     # the run id names subagents/workflows/<run id>/
+        call["wf"] = sorted(set(_WF_ID.findall(text)))
 
 
 def _model_of(m: dict):
@@ -228,15 +247,18 @@ def main_transcripts(user_home: Path) -> list:
 
 
 def sub_transcripts(user_home: Path) -> list:
-    """Claude Code subagent logs: ``<slug>/<session>/subagents/[workflows/<wf>/]agent-<id>.jsonl``."""
+    """Claude Code subagent logs: ``<slug>/<session>/subagents/[workflows/<wf>/]agent-<id>.jsonl``
+    -> [(session id, agent id, path, workflow run id | None)]."""
     root = user_home / ".claude" / "projects"
     out = []
     for p in root.glob("*/*/subagents/**/agent-*.jsonl"):
         try:
-            sid = p.relative_to(root).parts[1]
+            parts = p.relative_to(root).parts
+            sid = parts[1]
         except (ValueError, IndexError):
             continue
-        out.append((sid, p.name[len("agent-"):-len(".jsonl")], p))
+        wf = parts[-2] if len(parts) >= 6 and parts[3] == "workflows" else None
+        out.append((sid, p.name[len("agent-"):-len(".jsonl")], p, wf))
     return sorted(out, key=lambda x: (x[0], str(x[2])))
 
 
@@ -305,6 +327,44 @@ def load_outcomes(base: Path) -> dict:
     return out
 
 
+def load_recorded_workflows(base: Path) -> dict:
+    """task id (``sid:i`` or the labels id) -> a recorded ``workflow`` field, where one exists:
+    ``labels/tasks.jsonl``, ``labels/labels.jsonl``, ``outcomes.jsonl`` (PLAN P0 outcome log)."""
+    out: dict = {}
+    for p in (base / "labels" / "tasks.jsonl", base / "labels" / "labels.jsonl",
+              base / "outcomes.jsonl"):
+        for r in L._read(p):
+            if not isinstance(r, dict):
+                continue
+            w = r.get("workflow")
+            if not isinstance(w, str) or not w:
+                continue
+            for k in ("id", "task_id", "task"):
+                if isinstance(r.get(k), str):
+                    out[r[k]] = w
+    return out
+
+
+def _bounds(order: list, sessions: dict) -> dict:
+    """Split boundaries from the session order: start time of the first val / first test
+    session (None when that split is empty)."""
+    n = len(order)
+    out = {}
+    for name, lo in (("val_from", 0.70), ("test_from", 0.80)):
+        r = round(lo * n)
+        out[name] = (sessions[order[r]]["start"] or 0.0) if r < n else None
+    return out
+
+
+def _split_by_bounds(start, b: dict) -> str:
+    t = start or 0.0
+    if b.get("test_from") is not None and t >= b["test_from"]:
+        return "test"
+    if b.get("val_from") is not None and t >= b["val_from"]:
+        return "val"
+    return "train"
+
+
 # ---- build ----------------------------------------------------------------------------------
 
 def _git_sha() -> str | None:
@@ -321,19 +381,23 @@ def _iso(t) -> str | None:
         if t is not None else None
 
 
-def _stream(calls: list, base: dict, tel: dict, sid: str, agent, mstat: Counter) -> list:
+def _stream(calls: list, base: dict, tel: dict, sid: str, agent, mstat: Counter,
+            ext_edit_done: list | None = None) -> list:
+    """One (task, agent) stream. ``ext_edit_done``: finish times of linked subagent streams that
+    edited — a main-thread step after one of them has an edit so far (causal)."""
     acts = [c["act"] for c in calls]
-    ph = A.phases(acts)
+    ext = None
+    if ext_edit_done:
+        ext = [c["ts"] is not None and any(f <= c["ts"] for f in ext_edit_done) for c in calls]
+    ph = A.phases(acts, ext)
     out, prev = [], None
     for i, c in enumerate(calls):
-        model = tel_model(tel, sid, agent, c["ts"])
+        model = c["model"]
         if model:
-            mstat["telemetry"] += 1
-        elif c["model"]:
-            model = c["model"]
             mstat["transcript"] += 1
         else:
-            mstat["none"] += 1
+            model = tel_model(tel, sid, agent, c["ts"])
+            mstat["telemetry" if model else "none"] += 1
         dt = round(c["ts"] - prev, 3) if (c["ts"] is not None and prev is not None) else None
         prev = c["ts"] if c["ts"] is not None else prev
         out.append({**base, "agent": agent, "i": i,
@@ -377,9 +441,11 @@ def task_typer(embed_fn):
     return f
 
 
-def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto") -> dict:
+def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto",
+          resplit: bool = False) -> dict:
     """Rebuild steps/tasks/manifest from the transcripts. Returns the manifest.
-    ``embed_fn``: "auto" (local ollama, None if down), None (no task types) or a callable."""
+    ``embed_fn``: "auto" (local ollama, None if down), None (no task types) or a callable.
+    ``resplit``: recompute the frozen split boundaries instead of reusing them."""
     t_start = time.time()
     base = base_home(home)
     out_dir = data_home(home)
@@ -406,49 +472,75 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto") 
         sessions[sid] = {"src": src, "start": w["start"] if w["start"] is not None
                          else tasks[0]["ts"], "tasks": tasks}
 
-    # 2. subagents -> parent task
+    # 2. subagents -> parent task (exact joins first; time only for agents with no key)
     by_use: dict = {}                   # tool_use id -> task dict
-    for s in sessions.values():
-        for t in s["tasks"]:
-            for c in t["calls"]:
-                if c["id"]:
-                    by_use[c["id"]] = t
+    by_wf: dict = {}                    # workflow run id -> task dict
+
+    def register(calls, t):
+        for c in calls:
+            if c["id"]:
+                by_use[c["id"]] = t
+            for w in c.get("wf") or ():
+                by_wf.setdefault(w, t)
+    for s_ in sessions.values():
+        for t in s_["tasks"]:
+            register(t["calls"], t)
     pending = []
     orphans = 0
-    for sid, aid, p in sub_transcripts(uh):
+    for sid, aid, p, wf in sub_transcripts(uh):
         if sid not in sessions:         # parent main log gone or ran no tool
             orphans += 1
             continue
         calls = walk_sub(p, st)
         if not calls:
             continue
-        pending.append({"sid": sid, "agent": aid, "calls": calls,
-                        "use": _meta(p).get("toolUseId")})
+        pending.append({"sid": sid, "agent": aid, "calls": calls, "wf": wf,
+                        "use": _meta(p).get("toolUseId"),
+                        "first": next((c["ts"] for c in calls if c["ts"] is not None), None)})
+
+    def exact(a):
+        if a["use"] and a["use"] in by_use:
+            return by_use[a["use"]]
+        if a["wf"]:
+            if a["wf"] in by_wf:
+                return by_wf[a["wf"]]
+            for w, t in by_wf.items():  # a run id quoted with a suffix
+                if w.startswith(a["wf"]):
+                    return t
+        return None
+
     linked = []
-    progress = True
-    while pending and progress:         # nested subagents resolve once their parent has
-        progress = False
-        rest = []
-        for a in pending:
-            t = by_use.get(a["use"]) if a["use"] else None
-            if t is None:
-                rest.append(a)
-                continue
-            progress = True
-            linked.append((t, a))
-            for c in a["calls"]:
-                if c["id"]:
-                    by_use[c["id"]] = t
-        pending = rest
+    by_time = 0
     unlinked = 0
-    for a in pending:                   # no toolUseId (workflow agents) or parent unseen: by time
-        first = next((c["ts"] for c in a["calls"] if c["ts"] is not None), None)
+    while pending:
+        progress = True
+        while pending and progress:     # nested agents resolve once their parent has
+            progress = False
+            rest = []
+            for a in pending:
+                t = exact(a)
+                if t is None:
+                    rest.append(a)
+                    continue
+                progress = True
+                linked.append((t, a))
+                register(a["calls"], t)
+            pending = rest
+        if not pending:
+            break
+        # no exact key left: the earliest unresolved agent joins by time, its calls are
+        # registered (so ITS nested agents join exactly), then exact resolution runs again
+        pending.sort(key=lambda a: (a["first"] is None, a["first"] or 0.0, a["agent"]))
+        a = pending.pop(0)
         cands = [t for t in sessions[a["sid"]]["tasks"]
-                 if t["ts"] is not None and first is not None and t["ts"] <= first]
+                 if t["ts"] is not None and a["first"] is not None and t["ts"] <= a["first"]]
         if not cands:
             unlinked += 1
             continue
-        linked.append((max(cands, key=lambda t: t["ts"]), a))
+        t = max(cands, key=lambda t: t["ts"])
+        by_time += 1
+        linked.append((t, a))
+        register(a["calls"], t)
     for t, a in linked:
         t["subs"].append(a)
 
@@ -463,14 +555,22 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto") 
     # 3. telemetry, outcomes, splits
     tel = load_telemetry(Path(telemetry) if telemetry else telemetry_path(), set(sessions), st)
     outcomes = load_outcomes(base)
+    recorded_wf = load_recorded_workflows(base)
     order = sorted(sessions, key=lambda s: (sessions[s]["start"] or 0.0, s))
-    split_of = {}
-    n = len(order)
-    for r, sid in enumerate(order):
-        for name, hi in SPLITS:
-            if r < round(hi * n):
-                split_of[sid] = name
-                break
+    prev = read_manifest(home) or {}
+    frozen = prev.get("split_bounds") if isinstance(prev.get("split_bounds"), dict) else None
+    if frozen and not resplit and {"val_from", "test_from"} <= set(frozen):
+        bounds = {"val_from": frozen["val_from"], "test_from": frozen["test_from"],
+                  "frozen_at": frozen.get("frozen_at"),
+                  "frozen_git_sha": frozen.get("frozen_git_sha")}
+    else:
+        if resplit and frozen:
+            print("WARNING: --resplit recomputes the train/val/test boundaries; sessions may move "
+                  "between splits and a test set already scored is no longer held out",
+                  file=sys.stderr)
+        bounds = {**_bounds(order, sessions), "frozen_at": _iso(time.time()),
+                  "frozen_git_sha": _git_sha()}
+    split_of = {sid: _split_by_bounds(sessions[sid]["start"], bounds) for sid in order}
 
     # 4. emit
     steps, task_rows = [], []
@@ -479,28 +579,37 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto") 
         s = sessions[sid]
         for t in s["tasks"]:
             base_rec = {"sid": sid, "src": s["src"], "task": t["task"]}
-            main = _stream(t["calls"], base_rec, tel, sid, None, mstat)
+            ext_done = []                # finish time of each linked stream that edited
+            for a in t["subs"]:
+                tss_a = [c["ts"] for c in a["calls"] if c["ts"] is not None]
+                if tss_a and any(c["act"] in ("edit", "write") for c in a["calls"]):
+                    ext_done.append(max(tss_a))
+            main = _stream(t["calls"], base_rec, tel, sid, None, mstat, ext_done)
             subs = []
-            for a in sorted(t["subs"], key=lambda a: (next((c["ts"] for c in a["calls"]
-                                                          if c["ts"] is not None), 0.0), a["agent"])):
+            for a in sorted(t["subs"], key=lambda a: (a["first"] or 0.0, a["agent"])):
                 subs.extend(_stream(a["calls"], base_rec, tel, sid, a["agent"], mstat))
             steps.extend(main)
             steps.extend(subs)
             tss = [x["ts"] for x in main + subs if x["ts"] is not None]
             oc, osrc = outcomes.get(t["lid"], ("unknown", "none"))
             spawned = bool(t["subs"]) or any(x["spawn"] for x in main)
+            wf = recorded_wf.get(t["task"]) or recorded_wf.get(t["lid"]) or \
+                ("W2" if spawned else "W0")
             task_rows.append({"task": t["task"], "sid": sid, "src": s["src"],
                               "t0": round(t["ts"], 3) if t["ts"] is not None else
                               (min(tss) if tss else None),
                               "t1": max(tss) if tss else None, "steps": len(main),
                               "sub_steps": len(subs), "agents": len(t["subs"]),
                               "outcome": oc, "outcome_src": osrc, "split": split_of[sid],
-                              "task_type": t["task_type"], "workflow": "W2" if spawned else "W0"})
+                              "task_type": t["task_type"], "workflow": wf})
 
     L._write(out_dir / "steps.jsonl", steps)
     L._write(out_dir / "tasks.jsonl", task_rows)
     man = manifest(steps, task_rows, sessions, linked, unlinked, mstat, st, split_of)
     man["counts"]["subagents_orphan"] = orphans
+    man["counts"]["subagents_by_time"] = by_time
+    man["split_bounds"] = {**bounds, "val_from_iso": _iso(bounds["val_from"]),
+                           "test_from_iso": _iso(bounds["test_from"])}
     man["task_type_source"] = dict(sorted(ttsrc.items()))
     man["build_s"] = round(time.time() - t_start, 1)
     _write_json(out_dir / "manifest.json", man)
@@ -548,7 +657,8 @@ def manifest(steps, task_rows, sessions, linked, unlinked, mstat, st, split_of) 
             "outcomes": {"gold": oc.get("gold", 0), "weak": oc.get("weak", 0),
                          "none": oc.get("none", 0)},
             "task_types": {**{k: tt.get(k, 0) for k in TASK_TYPES}, "null": tt.get(None, 0)},
-            "workflows": {"W0": wf.get("W0", 0), "W2": wf.get("W2", 0)},
+            "workflows": {"W0": wf.get("W0", 0), "W2": wf.get("W2", 0),
+                          **{k: v for k, v in sorted(wf.items()) if k not in ("W0", "W2")}},
             "model_source": {k: mstat.get(k, 0) for k in ("telemetry", "transcript", "none")},
             "read_errors": {"malformed_lines": st.malformed, "unreadable_files": st.unreadable}}
 

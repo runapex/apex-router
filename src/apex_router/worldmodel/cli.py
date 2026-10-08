@@ -10,7 +10,7 @@ def _summary(m: dict) -> str:
     c = m.get("counts", {})
     lines = [f"steps {c.get('steps')} · tasks {c.get('tasks')} · sessions {c.get('sessions')} · "
              f"subagents {c.get('subagents')} (unlinked {c.get('subagents_unlinked')}, "
-             f"orphan {c.get('subagents_orphan')})"]
+             f"orphan {c.get('subagents_orphan')}, by time {c.get('subagents_by_time')})"]
     for src, v in (m.get("per_source") or {}).items():
         lines.append(f"  {src:7} " + " · ".join(f"{k} {n}" for k, n in v.items()))
     cls = m.get("classes") or {}
@@ -25,6 +25,9 @@ def _summary(m: dict) -> str:
     lines.append("splits: " + " · ".join(
         f"{k} {v.get('sessions')}s/{v.get('tasks')}t/{v.get('steps')}st"
         for k, v in (m.get("splits") or {}).items()))
+    sb = m.get("split_bounds") or {}
+    lines.append(f"split frozen {sb.get('frozen_at')}: val from {sb.get('val_from_iso')}, "
+                 f"test from {sb.get('test_from_iso')}")
     o = m.get("outcomes") or {}
     lines.append(f"outcomes: gold {o.get('gold')} · weak {o.get('weak')} · none {o.get('none')}")
     tt = ", ".join(f"{k} {v}" for k, v in (m.get("task_types") or {}).items())
@@ -53,12 +56,15 @@ def main(argv=None) -> int:
                        help="apex-router home (default $APEX_ROUTER_HOME, else ~/.apex-router); "
                             "data goes to <home>/worldmodel, outcomes come from <home>/labels")
         p.add_argument("--json", action="store_true", help="print the manifest as JSON")
+    b.add_argument("--resplit", action="store_true",
+                   help="recompute the frozen train/val/test boundaries (sessions may change "
+                        "split; a test set already scored stops being held out)")
     b.add_argument("--no-embed", action="store_true",
                    help="skip the task-type classifier's local embedding (task_type stays null)")
     a = ap.parse_args(argv)
     from . import steps as S
     if a.cmd == "build":
-        m = S.build(home=a.home, embed_fn=None if a.no_embed else "auto")
+        m = S.build(home=a.home, embed_fn=None if a.no_embed else "auto", resplit=a.resplit)
     else:
         m = S.read_manifest(a.home)
         if m is None:

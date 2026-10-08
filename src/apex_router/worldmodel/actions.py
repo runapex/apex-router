@@ -42,7 +42,7 @@ TOOL_CLASS = {
     "Agent": "delegate", "Task": "delegate", "Workflow": "delegate", "SendMessage": "delegate",
     "TaskStop": "delegate", "TaskOutput": "delegate", "ListAgents": "delegate",
     "KillShell": "run",
-    "AskUserQuestion": "ask", "SubagentHandback": "ask",
+    "AskUserQuestion": "ask", "SubagentHandback": "ask", "StructuredOutput": "ask",
     "TodoWrite": "plan", "ExitPlanMode": "plan", "EnterPlanMode": "plan", "Skill": "plan",
     "TaskCreate": "plan", "TaskUpdate": "plan", "TaskList": "plan", "CronCreate": "plan",
     "CronDelete": "plan", "CronList": "plan",
@@ -125,20 +125,29 @@ def _best(classes) -> str | None:
 
 # ---- splitting ------------------------------------------------------------------------------
 
+_SHELL_HEREDOC = re.compile(r"(?:^|[;&|(]\s*|\s)(?:\S*/)?(?:bash|sh|zsh|dash|ksh)(?:\s+-[A-Za-z]+)*"
+                            r"\s*<<")
+
+
 def _strip_heredocs(cmd: str) -> str:
     """Drop heredoc bodies (they are data — a python script, a commit message), keep the line
-    that opens them. Line continuations are joined first."""
+    that opens them. A body fed to a shell (``bash <<EOF``) IS commands: it is kept as lines of
+    the command. Line continuations are joined first."""
     cmd = cmd.replace("\\\n", " ")
-    out, pending = [], []
+    out, pending, keep = [], [], False
     for line in cmd.split("\n"):
         if pending:
             if line.strip() == pending[0]:
                 pending.pop(0)
+                keep = False
+            elif keep:
+                out.append(line)
             continue
         out.append(line)
         # markers in quoted strings are rare enough to accept; a commit message saying "<<EOF"
         # would only drop the rest of that command (fail toward fewer segments, not wrong ones)
         pending = [m.group(2) for m in _HEREDOC.finditer(line)]
+        keep = bool(pending) and bool(_SHELL_HEREDOC.search(line))
     return "\n".join(out)
 
 
@@ -157,6 +166,13 @@ def _split(cmd: str) -> tuple[list[str], list[str]]:
                 continue
             if ch == q:
                 q = None
+            elif q == '"' and ch == "`":
+                j = cmd.find("`", i + 1)
+                j = n - 1 if j < 0 else j
+                subs.append(cmd[i + 1:j])
+                cur.append(cmd[i:j + 1])
+                i = j + 1
+                continue
             elif q == '"' and cmd.startswith("$(", i):
                 j = _match_paren(cmd, i + 1)
                 subs.append(cmd[i + 2:j])
@@ -170,7 +186,14 @@ def _split(cmd: str) -> tuple[list[str], list[str]]:
             cur.append(cmd[i:i + 2])
             i += 2
             continue
-        if ch in "'\"`":
+        if ch == "`":
+            j = cmd.find("`", i + 1)
+            j = n - 1 if j < 0 else j
+            subs.append(cmd[i + 1:j])
+            cur.append(" __SUBST__ ")
+            i = j + 1
+            continue
+        if ch in "'\"":
             q = ch
             cur.append(ch)
             i += 1
@@ -271,6 +294,8 @@ def _strip_prefixes(toks: list[str]) -> list[str]:
             if _ASSIGN.match(w):
                 i += 1
                 continue
+        if "/" in w and os.path.basename(w) in _SKIP_WORDS:
+            w = os.path.basename(w)                 # /usr/bin/env, /usr/bin/time
         if w in _SKIP_WORDS:
             argflags = _SKIP_ARGFLAGS.get(w, set())
             i += 1
@@ -592,6 +617,8 @@ _MOCHA_PASS = re.compile(r"^\s*(\d+) passing\b", re.MULTILINE)
 _MOCHA_FAIL = re.compile(r"^\s*(\d+) failing\b", re.MULTILINE)
 _GO_PASS = re.compile(r"^\s*--- PASS:", re.MULTILINE)
 _GO_FAIL = re.compile(r"^\s*--- FAIL:", re.MULTILINE)
+_VERBOSE_PASS = re.compile(r"::\S+ PASSED\b|^\s*\(pass\) ", re.MULTILINE)
+_VERBOSE_FAIL = re.compile(r"::\S+ (?:FAILED|ERROR)\b|^\s*\(fail\) ", re.MULTILINE)
 _GO_OK = re.compile(r"^ok\s+\S+\s", re.MULTILINE)
 _GO_FAILPKG = re.compile(r"^FAIL\s+\S+\s+[\d.]+s|^FAIL\s+\S+\s+\[", re.MULTILINE)
 
@@ -644,6 +671,10 @@ def parse_tests(text) -> tuple[int, int | None] | None:
     ok, fp = len(_GO_OK.findall(text)), len(_GO_FAILPKG.findall(text))
     if ok or fp:
         return fp, ok
+    # summary cut off by tail/grep: count per-test lines (pytest -v, bun) if any survived
+    vp, vf = len(_VERBOSE_PASS.findall(text)), len(_VERBOSE_FAIL.findall(text))
+    if vp or vf:
+        return vf, vp
     return None
 
 
@@ -674,15 +705,17 @@ def phase_of(act: str, edited: bool) -> str:
     return "other"
 
 
-def phases(acts: list[str]) -> list[str]:
+def phases(acts: list[str], ext_edited: list[bool] | None = None) -> list[str]:
     """Phase of each step of one stream (a task's main thread, or one subagent's steps).
 
     CAUSAL (DESIGN-worldmodel-P6.md §2 as amended): a step's phase depends only on itself and the
     steps before it, never on what comes later — appending steps never changes an earlier phase.
     explore: search/read with no edit so far · edit: edit/write · verify: test/build/run after an
-    edit so far · deliver: vcs/ask · other: the rest."""
+    edit so far · deliver: vcs/ask · other: the rest. ``ext_edited[i]`` says an edit happened
+    before step i OUTSIDE this stream (the main thread passes: a linked subagent that edited and
+    finished before step i), so a main-thread test after a subagent's edit is ``verify``."""
     out, edited = [], False
-    for a in acts:
-        out.append(phase_of(a, edited))
+    for i, a in enumerate(acts):
+        out.append(phase_of(a, edited or bool(ext_edited and ext_edited[i])))
         edited = edited or a in ("edit", "write")
     return out

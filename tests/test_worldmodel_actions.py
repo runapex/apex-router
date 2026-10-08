@@ -24,7 +24,7 @@ def _predict(r):
 def test_validation_set_agreement():
     """Implementer-labeled (owner sign-off still owed, DESIGN-worldmodel-P6.md §2): >= 95%."""
     rows = _rows()
-    assert len(rows) == 300
+    assert len(rows) == 306                 # 300 + the six review additions (2026-10-07)
     assert all(r["cls"] in A.CLASSES for r in rows)
     wrong = [(r["cls"], _predict(r), r["cmd"][:120]) for r in rows if _predict(r) != r["cls"]]
     agree = 1 - len(wrong) / len(rows)
@@ -42,7 +42,8 @@ def test_validation_set_holds_shapes_not_text():
     cover = " ".join(r["cmd"] for r in _rows())
     for trap in (".venv/bin/pytest", "python -m pytest", "uv run pytest", "python -m unittest",
                  "claude plugin test", "npm test", "make test", "go test", "cargo test", "jest",
-                 "rspec", "timeout 60", "echo", "cd <path>", "<VAR>=<arg>", "| tail", "$P"):
+                 "rspec", "timeout 60", "echo", "cd <path>", "<VAR>=<arg>", "| tail", "$P",
+                 "/usr/bin/env", "/usr/bin/time", "bash <<EOF", "`git"):
         assert trap in cover, trap
 
 
@@ -68,6 +69,16 @@ def test_validation_set_holds_shapes_not_text():
     ("time (A=1 uv run python -m unittest discover -s tests 2>&1 | tail -5)", "test"),
     ("t(){ .venv/bin/pytest -q \"$@\"; }; t tests/a.py", "test"),
     ("for i in $(seq 1 3); do pytest -q; done", "test"),
+    # review 761c4e3: absolute-path prefixes, heredocs fed to a shell, backticks
+    ("/usr/bin/env python -m pytest -q", "test"),
+    ("/usr/bin/time pytest -x", "test"),
+    ("/usr/bin/env FOO=1 /usr/bin/time -p .venv/bin/pytest", "test"),
+    ("bash <<'EOF'\ncd x && .venv/bin/pytest -q\nEOF", "test"),
+    ("ssh host bash -s <<EOF\ngo test ./...\nEOF", "test"),
+    ("cat <<'EOF'\npytest is great\nEOF", "other"),
+    ("echo \"built at `git rev-parse HEAD`\"", "vcs"),
+    ("X=`date +%s`; ls", "read"),
+    ("echo 'not `git status` in single quotes'", "other"),
     # not tests even though "pytest" appears
     ("ls .venv/bin/pytest", "read"),
     ("grep -rn pytest pyproject.toml", "search"),
@@ -107,6 +118,7 @@ def test_tool_names():
         assert A.classify(t) == "delegate" and A.is_spawn(t) == 1
     assert A.is_spawn("Bash") == 0 and A.is_spawn("SendMessage") == 0
     assert A.classify("AskUserQuestion") == "ask"
+    assert A.classify("StructuredOutput") == "ask" and A.classify("SubagentHandback") == "ask"
     assert A.classify("Skill") == "plan" and A.classify("TodoWrite") == "plan"
     assert A.classify("WebFetch") == "remote" and A.classify("WebSearch") == "search"
     assert A.classify("mcp__claude-in-chrome__navigate") == "remote"
@@ -133,6 +145,9 @@ def test_tool_names():
     ("Ran 257 tests across 17 files. [2.14s]\n 255 pass\n 2 fail", (2, 255)),
     ("  3 passing (20ms)\n  1 failing", (1, 3)),
     ("collected 0 items / grep filtered everything", None),
+    # summary cut by tail/grep: per-test lines (pytest -v, bun) still count
+    ("tests/a.py::test_x PASSED  [ 50%]\ntests/a.py::test_y FAILED  [100%]", (1, 1)),
+    ("(pass) adds > two\n(pass) adds > three\n(fail) subtracts", (1, 2)),
     ("", None), (None, None),
 ])
 def test_parse_tests(text, want):

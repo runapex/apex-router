@@ -298,3 +298,9 @@
 {"cmd": "", "tool": "AskUserQuestion", "cls": "ask", "src": "transcript"}
 {"cmd": "", "tool": "WebFetch", "cls": "remote", "src": "transcript"}
 {"cmd": "", "tool": "Skill", "cls": "plan", "src": "transcript"}
+{"cmd": "/usr/bin/env python3 -m pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "constructed"}
+{"cmd": "cd <path> && /usr/bin/time -p .venv/bin/pytest -q 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "constructed"}
+{"cmd": "bash <<EOF\ncd <path> && .venv/bin/pytest -q <path> 2>&1 | tail <arg>\nEOF", "tool": "Bash", "cls": "test", "src": "constructed"}
+{"cmd": "sh -s <<EOF\nmake test\nEOF", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "echo \"<msg> `git rev-parse --short HEAD`\"", "tool": "Bash", "cls": "vcs", "src": "constructed"}
+{"cmd": "", "tool": "StructuredOutput", "cls": "ask", "src": "transcript"}
