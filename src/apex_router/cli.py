@@ -130,6 +130,10 @@ def main(argv=None) -> int:
         # discovery). Own subcommands, so it parses its own args like xval.
         from .zeno import main as _zeno
         return _zeno(raw[1:])
+    if raw[:1] == ["worldmodel"]:
+        # P6 world model (train / probe / …). Own subcommands; mlx loads lazily inside them.
+        from .worldmodel.cli import main as _worldmodel
+        return _worldmodel(raw[1:])
     ap = argparse.ArgumentParser(prog="apex-router", description="Adaptive model routing.")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("status", help="report which components are live")
@@ -288,6 +292,9 @@ def main(argv=None) -> int:
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
+    sub.add_parser("worldmodel", help="P6 latent world model: `worldmodel train [--synthetic N] "
+                                      "[--config JSON] [--epochs E]|probe <run_id>` (needs [worldmodel])",
+                   add_help=False)
     args, extra = ap.parse_known_args(argv)
 
     if args.cmd == "watch":
