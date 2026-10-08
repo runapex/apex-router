@@ -188,11 +188,15 @@ function logOutcome(
 	note = "",
 	sessionId?: string,
 	contextSize?: number,
+	family?: string,
 ): void {
+	// startTier is the RESOLVED model id (it decides the tier: gpt-5.6-terra -> gpt-terra);
+	// family is the cued family name (e.g. "sonnet", remapped to GPT on a subscription overlay).
 	const args = [
 		"route-log", "--task-type", taskType, "--start-tier", startTier,
 		"--outcome", outcome, "--note", note,
 	];
+	if (family) args.push("--family", family);
 	if (sessionId) args.push("--session-id", sessionId);
 	if (typeof contextSize === "number" && Number.isFinite(contextSize) && contextSize >= 0) {
 		args.push("--context-size", String(Math.floor(contextSize)));
@@ -411,12 +415,13 @@ export default function (pi: ExtensionAPI) {
 		}
 		const note = failed ? "auto: provider error/empty" : "auto";
 		if (cue.taskType) {
-			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok", note, sessionId, contextSize);
+			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok", note, sessionId, contextSize,
+				cue.family);
 		} else {
 			// classify once, then log — both fail-safe CLI calls.
 			resolveTask(cue.task).then((r) =>
 				logOutcome(r?.task_type || "adhoc", startTier, failed ? "escalated" : "ok",
-					note, sessionId, contextSize));
+					note, sessionId, contextSize, cue.family));
 		}
 	});
 
@@ -459,7 +464,7 @@ export default function (pi: ExtensionAPI) {
 		// Classify the task type in the background (fire-and-forget, fail-safe), then log the outcome.
 		resolveTask(task).then((r) =>
 			logOutcome(r?.task_type || "adhoc", tier, failed ? "escalated" : "ok",
-				note, sessionId, contextSize));
+				note, sessionId, contextSize, family));
 	});
 
 	// Session identity: attribute pi traffic per-session through the proxy (B1).

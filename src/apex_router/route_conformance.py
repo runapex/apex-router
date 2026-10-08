@@ -93,16 +93,28 @@ def log_conformance(surface, task_type, requested_tier, resolved_model=None,
         return False
 
 
-def expected_models(tier, *, registry=None) -> set:
+def expected_models(tier, *, registry=None, surface=None) -> set:
     """Allowed model id(s) for a frontier tier name, from model_registry. Unknown tier → empty set
     (the emitter then logs matched=None rather than a false mismatch).
 
     When no registry is supplied, load the ACTIVE registry (DEFAULTS + the user's models.json
     overlay) — the same registry resolve_text routes with. Using the hardcoded DEFAULTS instead
-    would falsely flag an overlay-overridden tier id as drift (P1-a)."""
+    would falsely flag an overlay-overridden tier id as drift (P1-a).
+
+    surface="pi": the requested tier is a pi FAMILY name, so the expected model is that family's
+    resolved id from the active registry's pi_families (on the subscription overlay `sonnet` →
+    gpt-5.6-terra), not the Claude tier id — a remapped family is not drift. A family the
+    registry does not define falls back to the tier id."""
     try:
         from . import model_registry
         reg = model_registry.load() if registry is None else registry
+        if surface == "pi" and isinstance(tier, str):
+            spec = (reg.get("pi_families") or {}).get(tier)
+            if isinstance(spec, dict):
+                fam = model_registry.families(registry={**reg, "pi_families": {tier: spec}})
+                mid = (fam.get(tier) or {}).get("id")
+                if isinstance(mid, str) and mid:
+                    return {mid}
         m = model_registry.tier_model(tier, registry=reg)
         return {m} if isinstance(m, str) and m else set()
     except Exception:
@@ -190,8 +202,14 @@ def main(argv=None) -> int:
         try:
             d = json.loads(a.record)
             if isinstance(d, dict):
+                matched = d.get("matched")
+                if matched is None and d.get("surface") == "pi" \
+                        and isinstance(d.get("resolved_model"), str):
+                    # pi left the verdict to us: judge against the family's ACTIVE-registry model.
+                    exp = expected_models(d.get("requested_tier"), surface="pi")
+                    matched = (d["resolved_model"] in exp) if exp else None
                 log_conformance(d.get("surface"), d.get("task_type"), d.get("requested_tier"),
-                                resolved_model=d.get("resolved_model"), matched=d.get("matched"),
+                                resolved_model=d.get("resolved_model"), matched=matched,
                                 note=d.get("note", ""), context_size=d.get("context_size"),
                                 session_id=d.get("session_id"),
                                 reusable_tokens=d.get("reusable_tokens"),
