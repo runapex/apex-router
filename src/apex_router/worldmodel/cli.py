@@ -55,8 +55,19 @@ def cmd_train(argv: list[str]) -> int:
     ap.add_argument("--view", choices=("streams", "task"), default="streams",
                     help="sequence unit: one per (task, agent) stream (default; contract §1 counts "
                          "i/dt/phase per stream) or the raw per-task order (escape hatch)")
+    ap.add_argument("--features", choices=("a1", "a2f"),
+                    help="inputs: a1 (attempt 1, default) or a2f (A2-F: + cross-step task state)")
+    ap.add_argument("--regime", action="store_true",
+                    help="A2-D: + the day-regime feature (errors in the session's last 15 min, "
+                         "session-day error rate so far)")
+    ap.add_argument("--sweep-every-epoch", action="store_true",
+                    help="A2-W: with --sweep-w-reg, reject a w_reg whose ANY epoch is outside "
+                         "the collapse bounds (how G1 C4 reads a run)")
     ap.add_argument("--json", action="store_true", help="print the summary as JSON")
     a = ap.parse_args(argv)
+    if a.sweep_every_epoch and not a.sweep_w_reg:
+        print("--sweep-every-epoch needs --sweep-w-reg", file=sys.stderr)
+        return 2
     from .jepa import mlx_available
     if not mlx_available():
         print("mlx is not installed: `pip install 'apex-router[worldmodel]'` (Apple Silicon only)",
@@ -73,6 +84,10 @@ def cmd_train(argv: list[str]) -> int:
         cfgd["seed"] = a.seed
     if a.device:
         cfgd["device"] = a.device
+    if a.features:
+        cfgd["features"] = a.features
+    if a.regime:
+        cfgd["regime"] = True
     cfg = TrainConfig.from_dict(cfgd)
     ds = synthetic_dataset(a.synthetic, cfg.seed) if a.synthetic else load_view(a.view)
     st = ds.stats()
@@ -80,7 +95,8 @@ def cmd_train(argv: list[str]) -> int:
           f"(train {st['tasks_train']}, val {st['tasks_val']}, test {st['tasks_test']} held out)")
     if a.sweep_w_reg:
         from .train import sweep_w_reg
-        sw = sweep_w_reg(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print)
+        sw = sweep_w_reg(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print,
+                         every_epoch=a.sweep_every_epoch)
         if a.json:
             print(json.dumps(sw, indent=1, default=float))
             return 0
@@ -88,6 +104,7 @@ def cmd_train(argv: list[str]) -> int:
             print(f"  w_reg {r['w_reg']:g}: val CE {_fmt(r['val_next_ce'])} (epoch {r['best_epoch']}), "
                   f"erank {_fmt(r['effective_rank'], 1)}, SIGReg {_fmt(r['sigreg'])}, "
                   f"{'within' if r['within_bounds'] else 'OUTSIDE'} bounds"
+                  + (f" (epochs outside: {r['epochs_outside']})" if r.get("epochs_outside") else "")
                   + ("  <- chosen" if r["chosen"] else ""))
         print(f"chosen w_reg: {sw['chosen_w_reg']}  ({sw['rule']})")
         return 0 if sw["chosen_w_reg"] is not None else 1
@@ -97,7 +114,8 @@ def cmd_train(argv: list[str]) -> int:
         return 0
     b = s["best"]
     t = s["throughput"]
-    print(f"run {s['run_id']}: {s['params']:,} params, {s['n_features']} features, "
+    print(f"run {s['run_id']}: {s['params']:,} params, {s['n_features']} features "
+          f"(set {s['features']}{', + regime' if s['regime'] else ''}), "
           f"windows train {s['windows']['train']} / val {s['windows']['val']}")
     print(f"  throughput {t['windows_per_s']:.0f} windows/s ({t['steps_per_s']:.0f} steps/s), "
           f"{t['train_seconds']:.1f} s training")

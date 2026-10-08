@@ -96,12 +96,13 @@ class Markov:
     BETAS = (1.0, 4.0, 16.0, 64.0)
 
     def __init__(self, order: int = 1, alpha: float = 0.5, beta=None, backoff: bool = True,
-                 by_type: bool = True):
+                 by_type: bool = True, err_states: bool = False):
         if order < 1:
             raise ValueError("order must be >= 1")
         self.order, self.alpha, self.beta, self.backoff, self.by_type = (
             order, alpha, beta, backoff, by_type)
         self.name = f"markov order {order}"
+        self.err_states = bool(err_states)  # A2-E: the outcome chain has <class>!err states
 
     def fit(self, ds, train_ids, val_ids=None):
         k = self.order
@@ -117,7 +118,7 @@ class Markov:
                 for ctx, a in _contexts(acts, k):
                     self.tcounts[ty][ctx][a] += 1
         self._cache = {}
-        self.chain = chains.fit_tasks(ds, train_ids)
+        self.chain = chains.fit_tasks(ds, train_ids, err_states=self.err_states)
         self.base = _base_rate(ds, train_ids)
         if self.beta is None:
             self.beta = 8.0
@@ -171,7 +172,8 @@ class Markov:
     def outcome_proba(self, steps, task=None):
         if not steps:
             return self.base
-        p = chains.p_success_from(self.chain, steps[-1].get("act"))
+        p = chains.p_success_from(self.chain, chains.state_of(steps[-1], self.chain.err_states)
+                                  if self.chain is not None else None)
         return self.base if p is None else p
 
 
@@ -209,18 +211,31 @@ def _dt_bucket(dt) -> int:
 
 
 N_FEAT = V + 1 + 2 + 2 * (V + 1) + len(PHASES) + 4 + 4 + 5 + 4 + 1
+N_REGIME = 2                         # A2-D columns appended with regime=True
 
 
-def prefix_features(steps) -> np.ndarray:
-    """(len(steps)+1, N_FEAT): row i describes the task after its first i steps.
+def n_features(regime: bool = False) -> int:
+    return N_FEAT + (N_REGIME if regime else 0)
+
+
+def prefix_features(steps, regime: bool = False) -> np.ndarray:
+    """(len(steps)+1, n_features(regime)): row i describes the task after its first i steps.
 
     task-so-far class shares (V), log1p(i), error share, last step errored, last and second-last
     action one-hot (V+1 each, START included), last phase (5), last out/in size bucket (4+4), last
     dt bucket (5), tests: any run so far / last run failing / progress 1 − failing/initial /
     progress defined, any subagent spawned so far.
+
+    ``regime=True`` (attempt 2, A2-D) appends the day regime of the last step seen
+    (``features.regime_values`` of its ``_regime`` annotation — log1p(session errors in the last
+    15 min), session-day error rate so far; 0, 0 in row 0), the same two numbers the JEPA reads.
     """
     L = len(steps)
-    X = np.zeros((L + 1, N_FEAT))
+    X = np.zeros((L + 1, n_features(regime)))
+    if regime:
+        from .features import regime_values
+        for i in range(1, L + 1):
+            X[i, N_FEAT:] = regime_values(steps[i - 1])
     counts = np.zeros(V)
     errs = 0
     ran = failing_last = 0
@@ -324,21 +339,24 @@ class Logistic:
     name = "logistic (hand features)"
     LAMS = (1e-3, 1e-2, 1e-1, 1.0)
 
-    def __init__(self, lam=None, lam_outcome=None, select_prefix=None):
+    def __init__(self, lam=None, lam_outcome=None, select_prefix=None, regime: bool = False):
         from .protocol import OUTCOME_PREFIX
         self.lam, self.lam_outcome = lam, lam_outcome
+        self.regime = bool(regime)          # A2-D: + day-regime columns (steps must be annotated)
+        if self.regime:
+            self.name = "logistic (hand features + regime)"
         self.select_prefix = OUTCOME_PREFIX if select_prefix is None else select_prefix
 
     def _xy(self, ds, ids):
         Xs, ys = [], []
         for tid in ids:
             st = ds.steps[tid]
-            Xs.append(prefix_features(st)[:-1])
+            Xs.append(prefix_features(st, self.regime)[:-1])
             ys.extend(act_id(s) for s in st)
-        return (np.vstack(Xs) if Xs else np.zeros((0, N_FEAT))), np.array(ys, dtype=int)
+        return (np.vstack(Xs) if Xs else np.zeros((0, n_features(self.regime)))), np.array(ys, dtype=int)
 
     def _task_x(self, steps):
-        return prefix_features(steps)[-1]
+        return prefix_features(steps, self.regime)[-1]
 
     def _outcome_xy(self, ds, ids):
         """Every prefix of every labeled task is a sample of P(success | state so far) — the value
@@ -348,18 +366,22 @@ class Logistic:
             y = label(ds.tasks[t])
             if y is None:
                 continue
-            X = prefix_features(ds.steps[t])
+            X = prefix_features(ds.steps[t], self.regime)
             Xs.append(X)
             ys.extend([y] * len(X))
             ws.extend([1.0 / len(X)] * len(X))
         if not Xs:
-            return np.zeros((0, N_FEAT)), np.zeros(0), np.zeros(0)
+            return np.zeros((0, n_features(self.regime))), np.zeros(0), np.zeros(0)
         return np.vstack(Xs), np.array(ys, dtype=float), np.array(ws)
 
     def fit(self, ds, train_ids, val_ids=None):
+        if self.regime:
+            from .features import has_regime
+            if not any(has_regime(s) for t in train_ids for s in ds.steps[t]):
+                raise ValueError("regime=True needs steps annotated by features.annotate_regime")
         X, y = self._xy(ds, train_ids)
-        self.mu = X.mean(axis=0) if len(X) else np.zeros(N_FEAT)
-        sd = X.std(axis=0) if len(X) else np.ones(N_FEAT)
+        self.mu = X.mean(axis=0) if len(X) else np.zeros(n_features(self.regime))
+        sd = X.std(axis=0) if len(X) else np.ones(n_features(self.regime))
         self.sd = np.where(sd > 0, sd, 1.0)
         Z = (X - self.mu) / self.sd
         lams = (self.lam,) if self.lam is not None else (self.LAMS if val_ids else (1e-2,))
@@ -408,12 +430,12 @@ class Logistic:
         return Z - np.log(np.exp(Z).sum(axis=1, keepdims=True))
 
     def predict_proba(self, history, task=None):
-        return np.exp(self._logsoftmax(prefix_features(history)[-1:])[0])
+        return np.exp(self._logsoftmax(prefix_features(history, self.regime)[-1:])[0])
 
     def task_logprobs(self, steps, task=None):
         if not steps:
             return np.zeros(0)
-        lp = self._logsoftmax(prefix_features(steps)[:-1])
+        lp = self._logsoftmax(prefix_features(steps, self.regime)[:-1])
         return lp[np.arange(len(steps)), [act_id(s) for s in steps]]
 
     def outcome_proba(self, steps, task=None):
@@ -423,8 +445,12 @@ class Logistic:
         return 1.0 / (1.0 + math.exp(-max(min(z, 50.0), -50.0)))
 
 
-def all_baselines(orders=(1, 2)) -> list:
-    return [Unigram()] + [Markov(order=k) for k in orders] + [Logistic()]
+def all_baselines(orders=(1, 2), regime: bool = False, err_states: bool = False) -> list:
+    """G1's baseline set. Attempt 2: ``regime`` (A2-D) gives the logistic model the day-regime
+    columns, ``err_states`` (A2-E) gives the Markov outcome readout the error-conditioned chain;
+    the next-action Markov chains are unchanged."""
+    return ([Unigram()] + [Markov(order=k, err_states=err_states) for k in orders]
+            + [Logistic(regime=regime)])
 
 
 __all__ = ["ACTIONS", "A_INDEX", "Unigram", "Markov", "Logistic", "bic_order", "prefix_features",
