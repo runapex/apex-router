@@ -3,7 +3,7 @@
 **Date:** 2026-10-08 (after loop-2 iterations 1–2). **Status:** declared; one scoring follows.
 
 ## What changed since attempt 2 (evidence)
-- Labels: judge `ornith:35b · export · v2` (held out 0.95 [0.83, 0.99]), min confidence **0.8**
+- Labels: judge `ornith:35b · export · v2` (held out 0.95 [0.83, 0.99] at threshold 0.9), min confidence **0.8** (ruling on pooled gold; in-sample precision 0.93 at 0.8)
   (pooled gold 28/35 in the [0.8, 0.9) bin), judge + rule votes combined as one voter when the
   judge saw the rule facts; gold 182 (all model-made, 82 held-out-tagged), weak 286, unknown 65.
   Gold covers the whole test split: 41 scorable, **3 bad** — any fail metric rests on 3 tasks.
@@ -36,6 +36,6 @@ No re-runs; a second scoring needs a new pre-declaration.
 - H5: C3 still INCONCLUSIVE (no workflow pair with different realized success among ≥ 5
   labelled test tasks each — realized success is ≈ 1.0 for both W0 and W2).
 
-## Kill criterion (unchanged)
+## Kill criterion (amended here: the stop rule below is new; the 50k clause is unchanged)
 Drop P6 if G1 fails at 50k main-session steps. Stop iterating P6 earlier if, with corrected
 labels, the raw-input linear probe beats the JEPA head twice in a row (attempt 2: 1.712 vs 1.742).

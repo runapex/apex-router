@@ -3,7 +3,7 @@
 Loop-2 iteration 2a. Iteration 1 adopted `ornith:35b · export · v2` at min confidence 0.9 (see
 `2026-10-08-label-judge-bench.md`). One gold set did three jobs there: it picked the variant,
 set the threshold and supplied the v2 rules, so the 0.90 was in-sample. This iteration labels
-new gold and uses it only for measurement. **Defaults are unchanged.** The numbers below go to
+new gold and uses it only for measurement. **Defaults were unchanged at the time of measurement; see the ruling note at the end.** The numbers below go to
 the coordinator for a ruling.
 
 ## Holdout
@@ -264,3 +264,17 @@ emitted-label precision on gold (leave-one-out): 93/95 = 0.98 [0.93, 0.99]; succ
   - random 12/13.
 - **Batch B was drawn after batch A was scored.** It is all remaining test-split tasks, so the
   draw had no freedom, but the decision to draw it was made after seeing batch A.
+
+
+## Ruling note (2026-10-08, after this measurement)
+
+The coordinator moved `JUDGE_MIN_CONF` from 0.9 to **0.8** for every class, on pooled gold (the
+[0.8, 0.9) bin: in-sample 8/14, held out 20/21, pooled 28/35 = 0.80 ≥ the 0.75 calibration rule).
+That decision used this holdout as a tuning set, so **the 0.95 [0.83, 0.99] above is the
+accuracy at 0.9 and does not vouch for 0.8**. Measured cost at 0.8 (in-sample, `labels report`):
+emitted-label precision 0.93 (112/120) vs 0.98 (93/95) at 0.9; partial 2/6; judge accuracy on
+stored votes 0.90 [0.83, 0.94] (n 134); decided coverage 82% (439/533). Gain: bad-task recall
+2/11 → 7/11 on this holdout. Reversal: `APEX_LABEL_JUDGE_MIN_CONF=0.9`. Owed: a fresh gold batch
+labelled with the verdict hidden, scored once at 0.8, before the 0.8 numbers are quoted as
+out-of-sample. A clean protocol would have pre-declared the calibration rule before labelling
+the holdout, or split the holdout into tune/confirm halves.

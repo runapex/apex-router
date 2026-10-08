@@ -70,7 +70,7 @@ next tag will carry.
 
   On 82 held-out gold labels (`holdout-2026-10-08`), the adopted judge scores 0.95 [0.83, 0.99]
   (38/40 votes). That matches the in-sample 0.90. Always-success scores 37/40 on the same tasks.
-  Fail recall is 1/3, and bad (fail or partial) recall at 0.9 is 2/11. Defaults are unchanged
+  Fail recall is 1/3, and bad (fail or partial) recall at 0.9 is 2/11. The judge's minimum confidence was then moved 0.9 → 0.8 by a coordinator ruling on pooled gold (28/35 in the [0.8, 0.9) bin) — this consumed the holdout as a tuning set: the 0.95 [0.83, 0.99] figure is at 0.9, there is no out-of-sample estimate at 0.8 yet (in-sample emitted-label precision at 0.8 is 0.93 vs 0.98 at 0.9), and a fresh gold batch is owed to measure it
   (`docs/research/2026-10-08-label-judge-holdout.md`).
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`

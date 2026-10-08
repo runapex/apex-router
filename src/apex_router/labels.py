@@ -678,7 +678,7 @@ def build(judge_limit: int = 0, judge_fn=judge, log=print, rejudge: bool = False
     return relabel(rows)
 
 
-def relabel(rows=None) -> dict:
+def relabel(rows=None, write: bool = True) -> dict:
     h = home()
     rows = rows if rows is not None else _read(h / "tasks.jsonl")
     live = {r["id"] for r in rows}
@@ -693,7 +693,8 @@ def relabel(rows=None) -> dict:
         labels.append({"id": r["id"], "source": r["source"], "session": r["session"],
                        "label": lab if p >= EMIT_MIN or src == "gold" else "unknown",
                        "p": round(p, 3), "from": src, "voters": sorted(_all_votes(r))})
-    _write(h / "labels.jsonl", labels)
+    if write:
+        _write(h / "labels.jsonl", labels)
     return {"tasks": len(rows), "labels": labels, "acc": acc, "gold": gold}
 
 
@@ -1073,7 +1074,7 @@ def class_prior_line(labels: list, gold: dict, rows: list) -> str:
 def report(res: dict | None = None) -> str:
     h = home()
     if res is None:
-        res = relabel()
+        res = relabel(write=False)  # report is read-only: no relabel on disk
     labels, acc, gold = res["labels"], res["acc"], res["gold"]
     n = len(labels)
     emitted = [x for x in labels if x["label"] != "unknown"]

@@ -214,7 +214,7 @@ All of these are **hypotheses to test**, not established benefits.
 | JEPA | L4 (fit) → L3 (act) | E2 (G1 attempts 1–3 FAIL; **paused** — stop rule fired) | next-action structure beyond order 2 exists and the hand features carry it | the latent loses to its own inputs twice; outcome forecast at the base rate; C4 reachable only by centring (−7 pts C1); wait for 50k steps |
 | xval bandit | L4 (fit) → L2 (pick arm) | E4 code, data insufficient | the only live learning loop | runs per arm |
 | Zeno p^n | L1 (readout) | E4 | honest horizon readout | not a decision tool |
-| Outcome labels | L5 | E4 / data **E3** (held-out judge 0.95; gold 182 model-made, 82 held out; coverage 88%) | judge + rule voters with measured accuracies; test split fully gold | fail/partial recall (1/3); gold is Opus-made, not the owner's; the test split has 3 bad tasks |
+| Outcome labels | L5 | E4 / data **E3** (held-out judge 0.95 at threshold 0.9 — pipeline runs at 0.8, not yet validated out of sample; gold 182 model-made, 82 held out; decided coverage 82%) | judge + rule voters with measured accuracies; test split fully gold | fail/partial recall (1/3); gold is Opus-made, not the owner's; the test split has 3 bad tasks |
 | Shared open weights | L0 → all | E1 | observable KV, model internals, cheap open-model runs (hypotheses) | quality gate per lane; isolation review |
 
 **Order that unblocks the most:** gold labels → one task table + shared eval protocol → Stage B
