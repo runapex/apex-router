@@ -17,9 +17,18 @@ next tag will carry.
   value head P(success | control latent) on labelled tasks. ~1.75M parameters by default (ceiling
   12M). Every epoch logs collapse diagnostics (effective rank, SIGReg statistic, mean cosine)
   against preset bounds; the best checkpoint gets numpy linear probes (next action, outcome,
-  phase, failing-tests bucket). `WorldModel.load(run).predict(steps)` returns the latents,
-  next-action probabilities and P(success) for E2/E4. Optional macro-step merge and a cached,
-  fail-open nomic-embed request embedding (off by default). Runs go to
+  phase, failing-tests bucket; phase and bucket are inputs, so those two are near-tautological
+  and shown beside a raw-feature reference). `WorldModel.load(run).predict(steps)` returns the
+  latents, next-action probabilities and P(success) for E2/E4; it skips malformed step records.
+  Windows overlap (stride L/2) and each step is scored from the window where it has at least
+  L/2 steps of context: on synthetic data the next-action CE on steps right after a former hard
+  cut went from 1.765 to 1.634 nats (n = 151). Step 0 is scored from a start prior fitted on
+  train first actions. The SIGReg weight is picked by `--sweep-w-reg` (1, 3 or 10; a setting
+  outside the collapse bounds is rejected): 1 won on synthetic data. `--device cpu` gives
+  bit-exact reruns for a seed; the GPU default does not (val CE differs by up to ~0.01).
+  Optional macro-step merge (plain run-length, offline evaluation only, since a macro-step
+  closes one step late) and a cached, fail-open nomic-embed request embedding (off by
+  default). Runs go to
   `~/.apex-router/worldmodel/runs/<run_id>/` (0700/0600). No mlx import outside the training and
   inference functions, so nothing else in apex-router needs it.
 - Optional extra `worldmodel` (`mlx>=0.32.3` on Apple Silicon only, plus numpy). mlx 0.32.3 and

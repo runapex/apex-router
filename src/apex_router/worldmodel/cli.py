@@ -19,6 +19,8 @@ def _fmt(x, nd: int = 4) -> str:
 
 
 def _print_probes(probes: dict) -> None:
+    print("  (phase and fail_bucket are model inputs: those probes are near-tautological and only "
+          "check that z keeps the state)")
     for target, by_input in probes.items():
         for inp, r in by_input.items():
             if r.get("skipped"):
@@ -44,6 +46,12 @@ def cmd_train(argv: list[str]) -> int:
     ap.add_argument("--epochs", type=int)
     ap.add_argument("--seed", type=int)
     ap.add_argument("--run-id")
+    ap.add_argument("--device", choices=("gpu", "cpu"),
+                    help="cpu = bit-exact replay for a fixed seed; gpu (default) is faster but "
+                         "not bit-exact across runs")
+    ap.add_argument("--sweep-w-reg", action="store_true",
+                    help="train w_reg in {1, 3, 10}; pick min val CE among runs within the "
+                         "collapse bounds (recorded as w_reg_sweep in the winner's summary.json)")
     ap.add_argument("--json", action="store_true", help="print the summary as JSON")
     a = ap.parse_args(argv)
     from .jepa import mlx_available
@@ -60,11 +68,26 @@ def cmd_train(argv: list[str]) -> int:
         cfgd["epochs"] = a.epochs
     if a.seed is not None:
         cfgd["seed"] = a.seed
+    if a.device:
+        cfgd["device"] = a.device
     cfg = TrainConfig.from_dict(cfgd)
     ds = synthetic_dataset(a.synthetic, cfg.seed) if a.synthetic else load_dataset()
     st = ds.stats()
     print(f"data: {st['source']} — {st['tasks']} tasks, {st['steps']} steps "
           f"(train {st['tasks_train']}, val {st['tasks_val']}, test {st['tasks_test']} held out)")
+    if a.sweep_w_reg:
+        from .train import sweep_w_reg
+        sw = sweep_w_reg(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print)
+        if a.json:
+            print(json.dumps(sw, indent=1, default=float))
+            return 0
+        for r in sw["candidates"]:
+            print(f"  w_reg {r['w_reg']:g}: val CE {_fmt(r['val_next_ce'])} (epoch {r['best_epoch']}), "
+                  f"erank {_fmt(r['effective_rank'], 1)}, SIGReg {_fmt(r['sigreg'])}, "
+                  f"{'within' if r['within_bounds'] else 'OUTSIDE'} bounds"
+                  + ("  <- chosen" if r["chosen"] else ""))
+        print(f"chosen w_reg: {sw['chosen_w_reg']}  ({sw['rule']})")
+        return 0 if sw["chosen_w_reg"] is not None else 1
     s = train(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print)
     if a.json:
         print(json.dumps(s, indent=1, default=float))
@@ -80,6 +103,8 @@ def cmd_train(argv: list[str]) -> int:
           f"value BCE {_fmt(b['val_value_bce'])}, task Brier {_fmt(b['val_brier_task'])} "
           f"(base rate {_fmt(b['val_brier_task_baserate'])}, n={b['val_tasks_labelled']}), "
           f"latent pred {_fmt(b['val_pred'])}")
+    print(f"  CE on steps just after a former hard window cut: {_fmt(b['val_next_ce_cut'])} "
+          f"(n={b['val_steps_cut']})")
     _print_collapse(s["final_val"]["collapse"])
     if s["collapse_outside_bounds_epochs"]:
         print(f"  epochs outside collapse bounds: {s['collapse_outside_bounds_epochs']}")

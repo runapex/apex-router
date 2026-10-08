@@ -25,7 +25,7 @@ run length             4      one-hot bucket of steps merged into this one: 1, 2
 The prediction target of position t is the action class of step t + 1 (``-1`` on the last step
 of a task: there is no successor, and the position is masked out of the next-action loss). The
 first action of a task is therefore never predicted from the model; E4 scores it with the
-unigram prior for every model alike (see ``train.WorldModel.action_logprobs``).
+START prior (train first actions, ``start_prior``) for every model alike (``train.WorldModel.action_logprobs``).
 """
 from __future__ import annotations
 
@@ -144,6 +144,27 @@ def _failing_share(failed: int | None, passed: int | None) -> float:
     return 1.0 if failed > 0 else 0.0
 
 
+def causal_phases(acts: list[str]) -> list[str]:
+    """Contract §2 phase, CAUSAL (steps <= t only; appending steps never changes earlier ones):
+    ``edit`` this step is edit/write; ``explore`` search/read before the first edit so far;
+    ``verify`` test/build/run after an edit so far; ``deliver`` this step is vcs/ask; else
+    ``other``. A reference for the synthetic generator — E1's ``actions.py`` owns the real one."""
+    out, edited = [], False
+    for a in acts:
+        if a in ("edit", "write"):
+            out.append("edit")
+            edited = True
+        elif a in ("search", "read") and not edited:
+            out.append("explore")
+        elif a in ("test", "build", "run") and edited:
+            out.append("verify")
+        elif a in ("vcs", "ask"):
+            out.append("deliver")
+        else:
+            out.append("other")
+    return out
+
+
 # ---- per-step features ---------------------------------------------------------------------------
 
 def task_features(steps: list[dict]) -> np.ndarray:
@@ -187,7 +208,7 @@ def next_action_targets(steps: list[dict]) -> np.ndarray:
 # ---- macro-steps ---------------------------------------------------------------------------------
 
 def _merge(group: list[dict]) -> dict:
-    """One macro-step from consecutive steps of a single class (or a forced merge)."""
+    """One macro-step from a run of consecutive steps of a single class."""
     by_act: dict[int, int] = {}
     for r in group:
         by_act[act_index(r)] = by_act.get(act_index(r), 0) + _int(r.get("_run", 1), 1)
@@ -217,15 +238,17 @@ def _merge(group: list[dict]) -> dict:
     }
 
 
-def macro_steps(steps: list[dict], max_macro: int | None = 6) -> list[dict]:
-    """Run-length merge of consecutive same-class steps into macro-steps.
+def macro_steps(steps: list[dict]) -> list[dict]:
+    """Run-length merge of consecutive same-class steps into macro-steps (no global cap).
 
     A run of k steps of one action class becomes one macro-step (``_run = k``; err/spawn = any,
     buckets = max, dt = sum, tests = the run's last parsed test result, phase = majority).
-    If ``max_macro`` is set and the sequence is still longer, the adjacent pair with the fewest
-    underlying steps is merged repeatedly (its class becomes the majority by step count) until
-    at most ``max_macro`` remain — this is what bounds a task to the 3–6 macro-steps the plan
-    asks for; ``max_macro=None`` keeps the pure run-length merge.
+
+    Causality: appending steps can only extend or follow the *last* run, so every macro-step but
+    the last is final — but a macro-step is only finalised when its run ends, i.e. one step of
+    look-ahead. Macro mode is therefore for OFFLINE evaluation only (whole tasks), never for an
+    online per-step readout. (An earlier global cap that merged the minimum adjacent pair was
+    removed: it let later steps rewrite macro-step 0.)
     """
     if not steps:
         return []
@@ -235,12 +258,7 @@ def macro_steps(steps: list[dict], max_macro: int | None = 6) -> list[dict]:
             runs[-1].append(r)
         else:
             runs.append([r])
-    out = [_merge(g) for g in runs]
-    if max_macro is not None and max_macro >= 1:
-        while len(out) > max_macro:
-            j = min(range(len(out) - 1), key=lambda k: (out[k]["_run"] + out[k + 1]["_run"], k))
-            out[j:j + 2] = [_merge([out[j], out[j + 1]])]
-    return out
+    return [_merge(g) for g in runs]
 
 
 # ---- windows -------------------------------------------------------------------------------------
@@ -253,6 +271,10 @@ class Windows:
     target (-1 = none); ``phase``/``fail_b (W, L)`` probe targets; ``outcome (W,)`` 1 success /
     0 not, with ``has_label (W,)``; ``task_idx (W,)`` index into ``task_ids``; ``start (W,)`` the
     position in the task's (possibly macro-merged) sequence of window slot 0.
+
+    Windows overlap (stride ``L // 2``). Training uses every real position (``mask``); scoring
+    uses ``own``: each step is owned by exactly one window, the one where it has at least
+    ``L // 2`` steps of context (the task's first ``L // 2`` steps are owned by the first window).
     """
     X: np.ndarray
     mask: np.ndarray
@@ -265,6 +287,7 @@ class Windows:
     task_idx: np.ndarray
     start: np.ndarray
     task_ids: list[str]
+    own: np.ndarray | None = None
 
     def __len__(self) -> int:
         return int(self.X.shape[0])
@@ -273,7 +296,8 @@ class Windows:
         idx = np.asarray(idx)
         return Windows(self.X[idx], self.mask[idx], self.act[idx], self.y_next[idx],
                        self.phase[idx], self.fail_b[idx], self.outcome[idx], self.has_label[idx],
-                       self.task_idx[idx], self.start[idx], self.task_ids)
+                       self.task_idx[idx], self.start[idx], self.task_ids,
+                       None if self.own is None else self.own[idx])
 
 
 def outcome_target(outcome) -> tuple[float, bool]:
@@ -285,17 +309,37 @@ def outcome_target(outcome) -> tuple[float, bool]:
     return 0.0, False
 
 
-def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None = None,
-                  L: int = 32, macro: bool = False, max_macro: int | None = 6,
-                  extra: dict[str, np.ndarray] | None = None) -> Windows:
-    """Cut every task into consecutive, non-overlapping windows of ``L`` positions.
+def window_starts(n: int, L: int, stride: int) -> list[int]:
+    """Start positions of the windows over a sequence of ``n`` steps: 0, stride, 2·stride, … as
+    long as the window adds steps the previous one did not cover."""
+    starts = [0]
+    while starts[-1] + L < n:
+        starts.append(starts[-1] + stride)
+    return starts
 
-    ``tasks`` maps task id -> its step records (sorted here by ``i``). A task longer than ``L``
-    yields several windows; long-range context survives the cut through the task-so-far counts
-    and the step-index bucket. ``extra`` optionally maps task id -> a per-task vector (e.g. the
-    frozen request embedding) appended to every position of that task.
+
+def owner_start(p: int, L: int, stride: int) -> int:
+    """Start of the window that owns step ``p`` for scoring: the latest start with
+    ``p - start >= L - stride`` (context), or 0 for the first ``L - stride`` steps."""
+    return max(0, (p - (L - stride)) // stride * stride)
+
+
+def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None = None,
+                  L: int = 32, macro: bool = False, extra: dict[str, np.ndarray] | None = None,
+                  stride: int | None = None) -> Windows:
+    """Cut every task into overlapping windows of ``L`` positions (default stride ``L // 2``).
+
+    ``tasks`` maps task id -> its step records (sorted here by ``i``; non-dict records are
+    skipped). A step at position p >= L/2 is scored from a window where it has >= L/2 steps of
+    in-window context (``Windows.own``), so no prediction sits right after a hard cut; longer
+    range survives through the task-so-far counts and the step-index bucket. ``stride = L``
+    reproduces non-overlapping cuts. ``extra`` optionally maps task id -> a per-task vector (e.g.
+    the frozen request embedding) appended to every position of that task.
     """
     outcomes = outcomes or {}
+    stride = stride or max(1, L // 2)
+    if L % stride:
+        raise ValueError("L must be a multiple of stride")
     ids = sorted(tasks)
     extra_dim = 0
     if extra:
@@ -303,34 +347,39 @@ def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None 
     F = N_FEAT + extra_dim
     rows = []
     for ti, tid in enumerate(ids):
-        steps = sorted((s for s in tasks[tid] if isinstance(s, dict)), key=lambda s: _int(s.get("i")))
+        steps = sorted((s for s in (tasks[tid] or []) if isinstance(s, dict)),
+                       key=lambda s: _int(s.get("i")))
         if not steps:
             continue
         if macro:
-            steps = macro_steps(steps, max_macro=max_macro)
+            steps = macro_steps(steps)
+        n = len(steps)
         X = task_features(steps)
         if extra_dim:
             ev = np.asarray(extra.get(tid, np.zeros(extra_dim)), dtype=np.float32).reshape(1, -1)
-            X = np.concatenate([X, np.repeat(ev, len(steps), axis=0)], axis=1)
+            X = np.concatenate([X, np.repeat(ev, n, axis=0)], axis=1)
         acts = np.array([act_index(s) for s in steps], dtype=np.int64)
         y = next_action_targets(steps)
         ph = np.array([phase_index(s) for s in steps], dtype=np.int64)
         fb = np.array([fail_bucket(s) for s in steps], dtype=np.int64)
+        owner = np.array([owner_start(p, L, stride) for p in range(n)])
         v, lab = outcome_target(outcomes.get(tid))
-        for s0 in range(0, len(steps), L):
-            rows.append((ti, s0, X[s0:s0 + L], acts[s0:s0 + L], y[s0:s0 + L], ph[s0:s0 + L],
-                         fb[s0:s0 + L], v, lab))
+        for s0 in window_starts(n, L, stride):
+            sl = slice(s0, s0 + L)
+            rows.append((ti, s0, X[sl], acts[sl], y[sl], ph[sl], fb[sl], owner[sl] == s0, v, lab))
     W = len(rows)
     out = Windows(
         X=np.zeros((W, L, F), np.float32), mask=np.zeros((W, L), np.float32),
         act=np.zeros((W, L), np.int64), y_next=np.full((W, L), -1, np.int64),
         phase=np.zeros((W, L), np.int64), fail_b=np.zeros((W, L), np.int64),
         outcome=np.zeros(W, np.float32), has_label=np.zeros(W, np.float32),
-        task_idx=np.zeros(W, np.int64), start=np.zeros(W, np.int64), task_ids=ids)
-    for w, (ti, s0, X, a, y, ph, fb, v, lab) in enumerate(rows):
+        task_idx=np.zeros(W, np.int64), start=np.zeros(W, np.int64), task_ids=ids,
+        own=np.zeros((W, L), np.float32))
+    for w, (ti, s0, X, a, y, ph, fb, own, v, lab) in enumerate(rows):
         n = len(a)
         out.X[w, :n] = X
         out.mask[w, :n] = 1.0
+        out.own[w, :n] = own
         out.act[w, :n] = a
         out.y_next[w, :n] = y
         out.phase[w, :n] = ph
@@ -340,6 +389,17 @@ def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None 
         out.task_idx[w] = ti
         out.start[w] = s0
     return out
+
+
+def start_prior(tasks: dict[str, list[dict]], alpha: float = 0.5, macro: bool = False) -> np.ndarray:
+    """Add-alpha distribution of each task's FIRST action (step 0 is scored from this, for every
+    model alike — E2's Markov chains score step 0 from their START context)."""
+    c = np.zeros(N_ACT)
+    for steps in tasks.values():
+        st = sorted((s for s in (steps or []) if isinstance(s, dict)), key=lambda s: _int(s.get("i")))
+        if st:
+            c[act_index(st[0])] += 1
+    return (c + alpha) / (c.sum() + alpha * N_ACT)
 
 
 def group_steps(records) -> dict[str, list[dict]]:

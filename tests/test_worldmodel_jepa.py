@@ -65,24 +65,40 @@ def test_features_fail_open_on_malformed_fields():
     assert [F.fail_bucket({"tests": {"ran": 1, "failed": f}}) for f in (0, 1, 4, 9)] == [1, 2, 3, 4]
 
 
-def test_windows_cut_pad_and_mask():
+def test_windows_overlap_pad_mask_and_ownership():
     steps = [_step(i, F.ACTIONS[i % 5]) for i in range(70)]
     W = F.build_windows({"t1": steps[::-1], "t2": steps[:3]}, {"t1": "success", "t2": "unknown"}, L=32)
-    assert len(W) == 4 and W.X.shape == (4, 32, F.N_FEAT)
-    by_task = {}
-    for w in range(len(W)):
-        by_task.setdefault(W.task_ids[W.task_idx[w]], []).append(int(W.mask[w].sum()))
-    assert by_task == {"t1": [32, 32, 6], "t2": [3]}
-    w_last = [w for w in range(len(W)) if W.task_ids[W.task_idx[w]] == "t1" and W.start[w] == 64][0]
-    # sorted by i despite reversed input; last real step has no target; padding is -1
-    assert W.act[w_last, 0] == F.ACT_INDEX[F.ACTIONS[64 % 5]]
-    assert W.y_next[w_last, 5] == -1 and (W.y_next[w_last, 6:] == -1).all()
-    assert W.y_next[0, 31] >= 0          # a window boundary is not a task end
+    # stride L/2: t1 windows start at 0, 16, 32, 48; t2 has one
     t1 = [w for w in range(len(W)) if W.task_ids[W.task_idx[w]] == "t1"]
     t2 = [w for w in range(len(W)) if W.task_ids[W.task_idx[w]] == "t2"]
+    assert [int(W.start[w]) for w in t1] == [0, 16, 32, 48] and len(t2) == 1
+    assert [int(W.mask[w].sum()) for w in t1] == [32, 32, 32, 22]
+    w_last = t1[-1]
+    # sorted by i despite reversed input; last real step has no target; padding is -1
+    assert W.act[w_last, 0] == F.ACT_INDEX[F.ACTIONS[48 % 5]]
+    assert W.y_next[w_last, 21] == -1 and (W.y_next[w_last, 22:] == -1).all()
+    assert W.y_next[t1[0], 31] >= 0          # a window boundary is not a task end
+    # every real step is owned (scored) exactly once, with >= L/2 context unless p < L/2
+    owned = {}
+    for w in range(len(W)):
+        for p in np.flatnonzero(W.own[w]):
+            key = (W.task_ids[W.task_idx[w]], int(W.start[w]) + int(p))
+            owned[key] = owned.get(key, 0) + 1
+            assert int(p) >= 16 or int(W.start[w]) == 0
+    assert sorted(k[1] for k in owned if k[0] == "t1") == list(range(70))
+    assert set(owned.values()) == {1} and len(owned) == 73
+    assert (W.own <= W.mask).all()
     assert all(W.has_label[w] == 1 and W.outcome[w] == 1 for w in t1)
     assert all(W.has_label[w] == 0 for w in t2)
     assert (W.X[W.mask == 0] == 0).all()
+    # stride = L reproduces the old non-overlapping cuts, where every real position is owned
+    W1 = F.build_windows({"t1": steps}, L=32, stride=32)
+    assert [int(m.sum()) for m in W1.mask] == [32, 32, 6] and (W1.own == W1.mask).all()
+    for n in range(1, 80):                       # owner window always exists and contains p
+        starts = F.window_starts(n, 32, 16)
+        for p in range(n):
+            o = F.owner_start(p, 32, 16)
+            assert o in starts and o <= p < o + 32
 
 
 def test_windows_extra_vector_appended():
@@ -91,23 +107,54 @@ def test_windows_extra_vector_appended():
     assert np.allclose(W.X[0, :2, -3:], [[0, 1, 2], [0, 1, 2]]) and (W.X[0, 2:] == 0).all()
 
 
-def test_macro_steps_run_length_and_cap():
+def test_build_windows_skips_malformed_records():
+    W = F.build_windows({"t1": ["junk", None, _step(0), 3], "t2": [None, "x"]}, L=4)
+    assert len(W) == 1 and int(W.mask.sum()) == 1
+
+
+def test_macro_steps_run_length():
     acts = ["read", "read", "search", "edit", "edit", "edit", "test", "edit", "test", "vcs"]
     steps = [_step(i, a, err=int(i == 4), dt=1.0) for i, a in enumerate(acts)]
-    raw = F.macro_steps(steps, max_macro=None)
+    raw = F.macro_steps(steps)
     assert [m["act"] for m in raw] == ["read", "search", "edit", "test", "edit", "test", "vcs"]
     assert [m["_run"] for m in raw] == [2, 1, 3, 1, 1, 1, 1]
     assert raw[2]["err"] == 1 and raw[2]["dt"] == pytest.approx(3.0)
-    capped = F.macro_steps(steps, max_macro=4)
-    assert 3 <= len(capped) <= 4
-    assert sum(m["_run"] for m in capped) == len(steps)
-    # consecutive same-class steps never survive an uncapped merge
+    assert sum(m["_run"] for m in raw) == len(steps)
+    # consecutive same-class steps never survive the merge
     assert all(a["act"] != b["act"] for a, b in zip(raw, raw[1:]))
     # run-length feature reflects the merge
     X = F.task_features(raw)
     assert X[2, F.FEATURE_NAMES.index("run<5")] == 1 and X[1, F.FEATURE_NAMES.index("run=1")] == 1
-    W = F.build_windows({"t1": steps}, L=8, macro=True, max_macro=6)
-    assert int(W.mask.sum()) <= 6
+    W = F.build_windows({"t1": steps}, L=8, macro=True)
+    assert int(W.own.sum()) == 7
+
+
+def test_macro_steps_appending_never_changes_earlier_rows():
+    rng = np.random.default_rng(0)
+    acts = [F.ACTIONS[int(a)] for a in rng.integers(0, 4, 60)]
+    steps = [_step(i, a, err=int(rng.uniform() < 0.2), dt=float(rng.uniform(0, 9)))
+             for i, a in enumerate(acts)]
+    full = F.macro_steps(steps)
+    for n in range(1, len(steps)):
+        pre = F.macro_steps(steps[:n])
+        # all but the last macro-step of the prefix are final (the last may still extend)
+        assert pre[:-1] == full[:len(pre) - 1], n
+        assert pre[-1]["act"] == full[len(pre) - 1]["act"]
+
+
+def test_causal_phases_never_look_ahead():
+    acts = ["read", "search", "test", "edit", "read", "test", "vcs", "ask", "run", "plan"]
+    ph = F.causal_phases(acts)
+    assert ph == ["explore", "explore", "other", "edit", "other", "verify", "deliver", "deliver",
+                  "verify", "other"]
+    for n in range(1, len(acts)):
+        assert F.causal_phases(acts[:n]) == ph[:n]
+
+
+def test_start_prior():
+    tasks = {"a": [_step(1, "edit"), _step(0, "read")], "b": [_step(0, "read")], "c": ["junk"]}
+    p = F.start_prior(tasks, alpha=0.0)
+    assert p[F.ACT_INDEX["read"]] == pytest.approx(1.0) and p.sum() == pytest.approx(1.0)
 
 
 def test_unigram_ce():
@@ -346,6 +393,10 @@ def test_training_smoke_learns_without_collapse(smoke_run):
     assert oct(d.stat().st_mode & 0o777) == "0o700"
     assert s["params"] > 0 and s["throughput"]["windows_per_s"] > 0
     assert {"next_action", "phase", "fail_bucket", "outcome"} <= set(s["probes"])
+    assert "raw" in s["probes"]["phase"] and "raw" in s["probes"]["fail_bucket"]
+    assert len(s["start_prior"]) == len(s["unigram_prior"]) == F.N_ACT
+    assert sum(s["start_prior"]) == pytest.approx(1.0)
+    assert "val_next_ce_cut" in s["best"] and "val_steps_cut" in s["best"]
 
 
 @needs_mlx
@@ -362,28 +413,63 @@ def test_predict_api(smoke_run, smoke_ds):
     assert p["p_success"].shape == (n,) and ((p["p_success"] > 0) & (p["p_success"] < 1)).all()
     lp = wm.action_logprobs(steps)
     assert lp.shape == (n,) and (lp <= 0).all()
+    # step 0 is scored from the START prior (train first actions), not the unigram prior
+    first = sorted(steps, key=lambda r: r["i"])[0]
+    assert lp[0] == pytest.approx(np.log(s["start_prior"][F.act_index(first)]))
+    assert p["offline_only"] is False
     # a long task (> L) is stitched from several windows in step order
     long = [dict(_step(i, F.ACTIONS[i % 3]), task="long") for i in range(wm.cfg.L + 7)]
     assert wm.predict(long)["z"].shape[0] == wm.cfg.L + 7
-    # causal: the latent of step t does not depend on later steps
-    short = wm.predict(long[:10])
-    assert np.allclose(short["z"], wm.predict(long)["z"][:10], atol=1e-5)
+    # causal, also across the overlapping windows: a step's outputs never depend on later steps
+    full = wm.predict(long)
+    for n_pre in (10, 20, 30):
+        pre = wm.predict(long[:n_pre])
+        assert np.allclose(pre["z"], full["z"][:n_pre], atol=1e-5)
+        assert np.allclose(pre["next_action_probs"], full["next_action_probs"][:n_pre], atol=1e-5)
+    # fail-open on junk records
+    junk = wm.predict(["junk", None])
+    assert junk["z"].shape == (0, wm.cfg.d) and junk["steps"] == []
+    mixed = wm.predict(["junk", None] + long[:5])
+    assert mixed["z"].shape[0] == 5
+    assert wm.score({"a": ["junk", None], "b": None}) == {}
+    assert wm.action_logprobs(["junk", None]).shape == (0,)
     many = wm.score({t: smoke_ds.tasks[t] for t in sorted(smoke_ds.tasks)[:3]})
     assert len(many) == 3
     pr = T.probe_run(d, ds=smoke_ds)
     assert pr["val"]["collapse"]["n"] > 0 and "next_action" in pr["probes"]
 
 
+_KEYS = ("train_total", "train_next_ce", "val_next_ce", "val_value_bce")
+
+
+def _rows(d):
+    return [json.loads(x) for x in (d / "metrics.jsonl").read_text().splitlines()]
+
+
 @needs_mlx
-def test_training_is_deterministic(smoke_ds, smoke_run, tmp_path):
+def test_training_is_bit_exact_on_cpu(smoke_ds, tmp_path):
+    cfg = T.TrainConfig(**{**_SMOKE, "device": "cpu"})
+    T.train(cfg, smoke_ds, run_dir=tmp_path / "c1", run_id="c1", log=lambda m: None)
+    T.train(cfg, smoke_ds, run_dir=tmp_path / "c2", run_id="c2", log=lambda m: None)
+    r1, r2 = _rows(tmp_path / "c1"), _rows(tmp_path / "c2")
+    assert len(r1) == len(r2) == 2
+    for a, b in zip(r1, r2):
+        for k in _KEYS:
+            assert a[k] == b[k], k                       # exact, not approx
+    assert (tmp_path / "c1" / "weights.safetensors").read_bytes() == \
+        (tmp_path / "c2" / "weights.safetensors").read_bytes()
+
+
+@needs_mlx
+def test_training_is_reproducible_within_tolerance_on_gpu(smoke_ds, smoke_run, tmp_path):
+    # Metal kernels are not bit-exact (~1e-8 per reduction, compounding over updates): the GPU
+    # contract is closeness, and E4 reports variance over 2 seeds.
     d, s, _ = smoke_run
     s2 = T.train(T.TrainConfig(**_SMOKE), smoke_ds, run_dir=tmp_path / "run-b", run_id="run-b",
                  log=lambda m: None)
-    r1 = [json.loads(x) for x in (d / "metrics.jsonl").read_text().splitlines()]
-    r2 = [json.loads(x) for x in (tmp_path / "run-b" / "metrics.jsonl").read_text().splitlines()]
-    for a, b in zip(r1, r2):
-        for k in ("train_total", "train_next_ce", "val_next_ce", "val_value_bce"):
-            assert a[k] == pytest.approx(b[k], rel=1e-5, abs=1e-6), k
+    for a, b in zip(_rows(d), _rows(tmp_path / "run-b")):
+        for k in _KEYS:
+            assert a[k] == pytest.approx(b[k], abs=2e-2), k
     assert s2["params"] == s["params"]
 
 
@@ -393,8 +479,10 @@ def test_vicreg_ablation_and_macro_flag_train(smoke_ds, tmp_path):
     s = T.train(cfg, smoke_ds, run_dir=tmp_path / "r", run_id="r", log=lambda m: None)
     assert np.isfinite(s["best"]["val_next_ce"])
     wm = T.WorldModel.load(tmp_path / "r")
-    p = wm.predict(smoke_ds.tasks[sorted(smoke_ds.tasks)[0]])
-    assert len(p["steps"]) <= 6 and p["z"].shape[0] == len(p["steps"])
+    steps = smoke_ds.tasks[sorted(smoke_ds.tasks)[0]]
+    p = wm.predict(steps)
+    assert p["z"].shape[0] == len(p["steps"]) == len(F.macro_steps(sorted(steps, key=lambda r: r["i"])))
+    assert p["offline_only"] is True
 
 
 @needs_mlx
@@ -410,3 +498,22 @@ def test_cli_train_and_probe(tmp_path, monkeypatch, capsys):
     assert main(["worldmodel", "probe", "cli-run"]) == 0
     assert "collapse" in capsys.readouterr().out
     assert main(["worldmodel", "nope"]) == 2
+
+
+@needs_mlx
+def test_sweep_w_reg_rejects_out_of_bounds_and_records(smoke_ds, tmp_path, monkeypatch):
+    monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
+    cfg = T.TrainConfig(**{**_SMOKE, "epochs": 1})
+    out = T.sweep_w_reg(cfg, smoke_ds, values=(1.0, 10.0), run_id="sw", log=lambda m: None)
+    assert [c["w_reg"] for c in out["candidates"]] == [1.0, 10.0]
+    chosen = [c for c in out["candidates"] if c["chosen"]]
+    if out["chosen_w_reg"] is None:
+        assert not chosen and not any(c["within_bounds"] for c in out["candidates"])
+    else:
+        assert len(chosen) == 1 and chosen[0]["within_bounds"]
+        ok = [c for c in out["candidates"] if c["within_bounds"]]
+        assert chosen[0]["val_next_ce"] == min(c["val_next_ce"] for c in ok)
+        summ = json.loads((tmp_path / "worldmodel" / "runs" / chosen[0]["run_id"] / "summary.json").read_text())
+        assert summ["w_reg_sweep"]["chosen_w_reg"] == out["chosen_w_reg"]
+    # an out-of-bounds candidate can never be chosen, whatever its CE
+    assert not any(c["chosen"] and not c["within_bounds"] for c in out["candidates"])

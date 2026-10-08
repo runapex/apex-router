@@ -46,10 +46,14 @@ class TrainConfig:
     sigreg_knots: int = 17
     sigreg_tmax: float = 3.0
     w_pred: float = 1.0
-    # SIGReg here is the per-sample statistic (see jepa.py); LeJEPA's λ≈0.05 on the N-scaled
-    # statistic is ~λ·N per sample, so the weight is O(10). w_reg=1 collapsed on synthetic data
-    # (effective rank 2); 10 kept the rank at ~30 of 64.
-    w_reg: float = 10.0
+    # SIGReg weight, chosen by `sweep_w_reg` (`worldmodel train --sweep-w-reg`): min val
+    # next-action CE over {1, 3, 10}, any setting outside the collapse bounds at its best epoch
+    # rejected. Synthetic 3000, seed 0, 2026-10-07: w_reg 1 -> val CE 1.846 (erank 23.3, SIGReg
+    # 0.033), 3 -> 1.874 (28.8, 0.020), 10 -> 1.932 (33.5, 0.013); all within bounds; 1 chosen.
+    # Re-run the sweep on real data before G1 — synthetic is not the target distribution.
+    # (The first commit claimed w_reg=1 collapses to effective rank 2; that was seen at lr 1e-3
+    # without warm-up or the lookback stem, not at these settings. Retracted.)
+    w_reg: float = 1.0
     w_next: float = 1.0
     w_value: float = 0.5
     # optimisation
@@ -62,12 +66,17 @@ class TrainConfig:
     patience: int = 3
     # data
     macro: bool = False
-    max_macro: int | None = 6
+    stride: int | None = None            # window stride; None = L // 2 (overlapping windows)
     embed: bool = False
     value_gold_only: bool = False
     # preset collapse bounds (G1 criterion 4)
     erank_min: float = 8.0
     sigreg_max: float = 0.10
+    # "gpu" (default, fast) or "cpu". Determinism: with a fixed seed, CPU runs are bit-exact;
+    # Metal GPU kernels are not (reductions differ at ~1e-8, which compounds to ~1e-2 in val CE
+    # over a few epochs). Use device="cpu" (`--device cpu`) when exact replay matters; E4 reports
+    # the spread over 2 seeds rather than relying on GPU bit-exactness.
+    device: str = "gpu"
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrainConfig":
@@ -168,19 +177,6 @@ def load_dataset(home: Path | None = None) -> Dataset:
     return Dataset(tasks=tasks, meta=meta, source=str(home / "steps.jsonl"))
 
 
-def _phase_for(acts: list[str], t: int, first_edit: int | None) -> str:
-    a = acts[t]
-    if a in ("edit", "write"):
-        return "edit"
-    if a in ("search", "read") and (first_edit is None or t < first_edit):
-        return "explore"
-    if a in ("test", "build", "run") and first_edit is not None and t > first_edit:
-        return "verify"
-    if a in ("vcs", "ask") and t >= len(acts) - 2:
-        return "deliver"
-    return "other"
-
-
 def synthetic_dataset(n_tasks: int = 300, seed: int = 0) -> Dataset:
     """Contract-schema synthetic tasks with learnable structure (for smoke tests and the CLI).
 
@@ -191,6 +187,7 @@ def synthetic_dataset(n_tasks: int = 300, seed: int = 0) -> Dataset:
     - The outcome is tied to the trajectory: with tests, success iff the last test run had 0
       failing and the error share is < 0.3; without tests, a Bernoulli on errors and h. 15% of
       tasks are ``unknown`` (unlabelled) to exercise the value-head mask.
+    - ``phase`` is the contract's causal phase (``features.causal_phases``: steps <= t only).
     - Sessions hold 1–4 tasks; split by session order 70/10/20 (train/val/test), as the contract.
     """
     rng = np.random.default_rng(seed)
@@ -249,10 +246,8 @@ def synthetic_dataset(n_tasks: int = 300, seed: int = 0) -> Dataset:
                              "out_b": int(min(3, max(0, typical_out[a] + rng.integers(-1, 2)))),
                              "in_b": int(rng.integers(0, 2)), "dt": None if i == 0 else dt,
                              "model": None, "spawn": int(name == "delegate")})
-            first_edit = next((i for i, a in enumerate(acts) if F.ACTIONS[a] in ("edit", "write")), None)
-            names = [F.ACTIONS[a] for a in acts]
-            for i, r in enumerate(recs):
-                r["phase"] = _phase_for(names, i, first_edit)
+            for r, ph in zip(recs, F.causal_phases([F.ACTIONS[a] for a in acts])):
+                r["phase"] = ph
             steps_out.extend(recs)
             if failing is not None:
                 ok = failing == 0 and errs / n < 0.3
@@ -282,8 +277,8 @@ def _windows(ds: Dataset, split: str, cfg: TrainConfig) -> F.Windows:
     if cfg.embed:
         from .embed import task_embeddings
         extra = task_embeddings(sorted(tasks))
-    return F.build_windows(tasks, outcomes, L=cfg.L, macro=cfg.macro, max_macro=cfg.max_macro,
-                           extra=extra)
+    return F.build_windows(tasks, outcomes, L=cfg.L, macro=cfg.macro, extra=extra,
+                           stride=cfg.stride)
 
 
 def n_features(cfg: TrainConfig) -> int:
@@ -314,18 +309,25 @@ def _forward_all(model, W: F.Windows, batch: int = 256):
     return np.concatenate(zs), np.concatenate(lps), np.concatenate(vs)
 
 
+def _own(W: F.Windows) -> np.ndarray:
+    """Scoring mask: each real step once, from the window where it has >= L/2 context."""
+    return (W.own if W.own is not None else W.mask).astype(bool)
+
+
 def _last_positions(W: F.Windows) -> dict[int, tuple[int, int]]:
-    """task_idx -> (window, position) of the task's last real step."""
-    last: dict[int, tuple[int, int]] = {}
+    """task_idx -> (window, position) of the task's last real step, in its owning window."""
+    own = _own(W)
+    last: dict[int, tuple[int, int, int]] = {}
     for w in range(len(W)):
-        n = int(W.mask[w].sum())
-        if n == 0:
+        ps = np.flatnonzero(own[w])
+        if ps.size == 0:
             continue
+        p = int(ps[-1])
         ti = int(W.task_idx[w])
-        cur = last.get(ti)
-        if cur is None or W.start[w] > W.start[cur[0]]:
-            last[ti] = (w, n - 1)
-    return last
+        step = int(W.start[w]) + p
+        if ti not in last or step > last[ti][2]:
+            last[ti] = (w, p, step)
+    return {ti: (w, p) for ti, (w, p, _) in last.items()}
 
 
 def evaluate(model, W: F.Windows, cfg: TrainConfig, y_train: np.ndarray) -> tuple[dict, dict]:
@@ -334,7 +336,7 @@ def evaluate(model, W: F.Windows, cfg: TrainConfig, y_train: np.ndarray) -> tupl
     import mlx.core as mx
     from .jepa import jepa_losses
     z, lp, v = _forward_all(model, W)
-    m = W.mask.astype(bool)
+    m = _own(W)
     yv = W.y_next
     ym = (yv >= 0) & m
     ce = float(-np.take_along_axis(lp, np.maximum(yv, 0)[..., None], -1)[..., 0][ym].mean()) \
@@ -362,11 +364,18 @@ def evaluate(model, W: F.Windows, cfg: TrainConfig, y_train: np.ndarray) -> tupl
         nb = float(W.mask[sl].sum())
         preds.append(float(parts["pred"]) * nb)
         n += nb
+    # CE on the steps right after a former hard cut (step index >= L, index % L < 4): what the
+    # overlapping windows fix. Reported so non-overlapping (stride = L) runs can be compared.
+    step_idx = W.start[:, None] + np.arange(W.X.shape[1])[None, :]
+    cut = ym & (step_idx >= cfg.L) & (step_idx % cfg.L < 4)
+    ce_cut = (float(-np.take_along_axis(lp, np.maximum(yv, 0)[..., None], -1)[..., 0][cut].mean())
+              if cut.any() else float("nan"))
     zf = z[m]
     diag = collapse_diagnostics(zf, erank_min=cfg.erank_min, sigreg_max=cfg.sigreg_max, seed=cfg.seed)
     metrics = {
         "val_next_ce": ce, "val_next_ppl": math.exp(ce) if math.isfinite(ce) else float("nan"),
         "val_unigram_ce": F.unigram_ce(y_train, yv[ym]),
+        "val_next_ce_cut": ce_cut, "val_steps_cut": int(cut.sum()),
         "val_next_acc": float((lp.argmax(-1)[ym] == yv[ym]).mean()) if ym.any() else float("nan"),
         "val_value_bce": bce, "val_brier_task": brier_task, "val_brier_task_baserate":
             (float(np.mean([(base_rate - b) ** 2 for _, b in tb])) if tb else float("nan")),
@@ -449,8 +458,12 @@ def linear_probes(tr: dict, va: dict, d_control: int, max_rows: int = 20_000, se
     k_tr, k_va = ytr >= 0, yva >= 0
     out["next_action"] = {"z": _probe(ztr[k_tr], ytr[k_tr], zva[k_va], yva[k_va], F.N_ACT),
                           "raw": _probe(xtr[k_tr], ytr[k_tr], xva[k_va], yva[k_va], F.N_ACT)}
-    out["phase"] = {"z": _probe(ztr, ptr, zva, pva, F.N_PHASE)}
-    out["fail_bucket"] = {"z": _probe(ztr, ftr, zva, fva, F.N_FAIL_B)}
+    # phase and failing-tests bucket are themselves inputs, so these probes are near-tautological
+    # (the raw reference should be ~perfect); they check that z retains the state, nothing more.
+    out["phase"] = {"z": _probe(ztr, ptr, zva, pva, F.N_PHASE),
+                    "raw": _probe(xtr, ptr, xva, pva, F.N_PHASE)}
+    out["fail_bucket"] = {"z": _probe(ztr, ftr, zva, fva, F.N_FAIL_B),
+                          "raw": _probe(xtr, ftr, xva, fva, F.N_FAIL_B)}
     if len(tr["z_last"]) and len(va["z_last"]):
         zc = slice(tr["z_last"].shape[1] - d_control, None)
         out["outcome"] = {
@@ -470,6 +483,19 @@ def _run_id(source: str, seed: int) -> str:
     return f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-{tag}-s{seed}"
 
 
+def set_device(name: str) -> None:
+    """Point MLX at ``"cpu"`` (bit-exact replay) or ``"gpu"`` (Metal, default, faster)."""
+    import mlx.core as mx
+    if name not in ("cpu", "gpu"):
+        raise ValueError(f"device must be 'cpu' or 'gpu', not {name!r}")
+    mx.set_default_device(mx.cpu if name == "cpu" else mx.gpu)
+
+
+def _y_scored(W: F.Windows) -> np.ndarray:
+    """Next-action targets counted once per step (owning window), for priors and CE baselines."""
+    return W.y_next[(W.y_next >= 0) & _own(W)]
+
+
 def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: str | None = None,
           log=print) -> dict:
     """Train one model; returns the summary dict (also written to ``summary.json``)."""
@@ -478,12 +504,13 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     import mlx.optimizers as optim
     from .jepa import build_model, count_params, jepa_losses
 
+    set_device(cfg.device)
     mx.random.seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     Wtr, Wva = _windows(ds, "train", cfg), _windows(ds, "val", cfg)
     if len(Wtr) == 0 or len(Wva) == 0:
         raise ValueError(f"need train and val windows (train={len(Wtr)}, val={len(Wva)})")
-    y_train = Wtr.y_next[(Wtr.y_next >= 0) & (Wtr.mask > 0)]
+    y_train = _y_scored(Wtr)
 
     model = build_model(n_features(cfg), cfg)
     mx.eval(model.parameters())
@@ -562,6 +589,8 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     ev_va, arr_va = evaluate(model, Wva, cfg, y_train)
     probes = linear_probes(arr_tr, arr_va, cfg.d_control, seed=cfg.seed)
     prior = (np.bincount(y_train, minlength=F.N_ACT) + 0.5) / (y_train.size + 0.5 * F.N_ACT)
+    train_tasks, _ = ds.split("train")
+    start = F.start_prior(train_tasks, macro=cfg.macro)
     summary = {
         "run_id": run_id, "config": asdict(cfg), "data": ds.stats(), "params": n_params,
         "n_features": n_features(cfg),
@@ -570,7 +599,10 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
                        "windows_per_s": train_windows / max(train_time, 1e-9),
                        "steps_per_s": train_steps / max(train_time, 1e-9)},
         "best_epoch": best_epoch, "best": best_metrics, "final_val": ev_va,
-        "probes": probes, "unigram_prior": prior.tolist(),
+        "probes": probes,
+        # unigram_prior: next-action targets (steps >= 1) on train; start_prior: train FIRST
+        # actions — step 0 is scored from start_prior (E2's Markov START context, same rule).
+        "unigram_prior": prior.tolist(), "start_prior": start.tolist(),
         "train_unigram_ce": F.unigram_ce(y_train, y_train),
         "collapse_outside_bounds_epochs": [
             r["epoch"] for r in read_jsonl(metrics_path) if not r["collapse"]["within_bounds"]],
@@ -588,8 +620,15 @@ class WorldModel:
       one row per (macro-)step; row t of ``next_action_probs`` is P(act_{t+1} | steps <= t);
       ``p_success[t]`` is the value head P(success | z_control_t) — the progress signal v_t.
     - ``action_logprobs(steps)`` -> ``(n,)`` log P(act_t | steps < t); t = 0 uses the run's
-      unigram prior (fit on train), so a per-step CE is ``-mean(...)`` over every step.
+      START prior (train first actions), so a per-step CE is ``-mean(...)`` over every step.
     - ``score(tasks)`` -> per-task dict of the above for a ``{task: steps}`` mapping.
+
+    Each step's outputs come from the overlapping window where it has >= L/2 steps of context
+    (``features.Windows.own``), exactly as in validation. Non-dict / malformed step records are
+    skipped (fail-open); a task with no usable step is absent from ``score`` and gives empty
+    arrays from ``predict``. With ``cfg.macro`` every output is per macro-step and each result
+    carries ``"offline_only": True``: a macro-step is final only when its run ends (1-step
+    look-ahead), so macro outputs must not drive an online per-step decision.
     """
 
     def __init__(self, run_dir: Path):
@@ -599,6 +638,8 @@ class WorldModel:
         summ = self.run_dir / "summary.json"
         self.summary = json.loads(summ.read_text()) if summ.exists() else {}
         self.prior = np.asarray(self.summary.get("unigram_prior") or np.full(F.N_ACT, 1 / F.N_ACT))
+        self.start_prior = np.asarray(self.summary.get("start_prior") or self.prior)
+        set_device(self.cfg.device)
         self.model = build_model(n_features(self.cfg), self.cfg)
         self.model.load_weights(str(self.run_dir / "weights.safetensors"))
 
@@ -614,42 +655,55 @@ class WorldModel:
         if self.cfg.embed:
             from .embed import task_embeddings
             extra = task_embeddings(sorted(tasks))
-        return F.build_windows(tasks, None, L=self.cfg.L, macro=self.cfg.macro,
-                               max_macro=self.cfg.max_macro, extra=extra)
+        return F.build_windows(tasks, None, L=self.cfg.L, macro=self.cfg.macro, extra=extra,
+                               stride=self.cfg.stride)
 
     def score(self, tasks: dict[str, list[dict]]) -> dict[str, dict]:
-        W = self._windows(tasks)
+        clean = {}
+        for tid, steps in (tasks or {}).items():
+            good = sorted((s for s in (steps or []) if isinstance(s, dict)),
+                          key=lambda s: F._int(s.get("i")))
+            if good:
+                clean[tid] = good
+        if not clean:
+            return {}
+        W = self._windows(clean)
         z, lp, v = _forward_all(self.model, W)
-        out: dict[str, dict] = {}
-        order = np.lexsort((W.start, W.task_idx))
-        for w in order:
+        own = _own(W)
+        rows: dict[str, list] = {}
+        for w in range(len(W)):
             tid = W.task_ids[int(W.task_idx[w])]
-            n = int(W.mask[w].sum())
-            o = out.setdefault(tid, {"z": [], "next_action_logprobs": [], "p_success": []})
-            o["z"].append(z[w, :n])
-            o["next_action_logprobs"].append(lp[w, :n])
-            o["p_success"].append(v[w, :n])
+            for p in np.flatnonzero(own[w]):
+                rows.setdefault(tid, []).append((int(W.start[w]) + int(p), z[w, p], lp[w, p], v[w, p]))
         dc = self.cfg.d_control
-        for tid, o in out.items():
-            zz = np.concatenate(o["z"])
-            lpp = np.concatenate(o["next_action_logprobs"])
-            o.update(z=zz, z_control=zz[:, -dc:], next_action_probs=np.exp(lpp),
-                     p_success=np.concatenate(o["p_success"]))
-            del o["next_action_logprobs"]
-            steps = sorted(tasks[tid], key=lambda s: F._int(s.get("i")))
-            o["steps"] = F.macro_steps(steps, self.cfg.max_macro) if self.cfg.macro else steps
+        out: dict[str, dict] = {}
+        for tid, r in rows.items():
+            r.sort(key=lambda t: t[0])
+            zz = np.stack([t[1] for t in r])
+            out[tid] = {"z": zz, "z_control": zz[:, -dc:],
+                        "next_action_probs": np.exp(np.stack([t[2] for t in r])),
+                        "p_success": np.array([t[3] for t in r]),
+                        "steps": F.macro_steps(clean[tid]) if self.cfg.macro else clean[tid],
+                        "offline_only": bool(self.cfg.macro)}
         return out
 
     def predict(self, steps: list[dict]) -> dict:
-        tid = next((s.get("task") for s in steps if isinstance(s.get("task"), str)), "_task")
-        return self.score({tid: [dict(s, task=tid) for s in steps]})[tid]
+        good = [s for s in (steps or []) if isinstance(s, dict)]
+        tid = next((s.get("task") for s in good if isinstance(s.get("task"), str)), "_task")
+        res = self.score({tid: [dict(s, task=tid) for s in good]}).get(tid)
+        if res is None:
+            return {"z": np.zeros((0, self.cfg.d), np.float32),
+                    "z_control": np.zeros((0, self.cfg.d_control), np.float32),
+                    "next_action_probs": np.zeros((0, F.N_ACT)), "p_success": np.zeros(0),
+                    "steps": [], "offline_only": bool(self.cfg.macro)}
+        return res
 
     def action_logprobs(self, steps: list[dict]) -> np.ndarray:
         p = self.predict(steps)
         acts = np.array([F.act_index(s) for s in p["steps"]], dtype=np.int64)
         out = np.empty(len(acts))
         if len(acts):
-            out[0] = math.log(self.prior[acts[0]])
+            out[0] = math.log(self.start_prior[acts[0]])
             out[1:] = np.log(np.clip(p["next_action_probs"][np.arange(len(acts) - 1), acts[1:]],
                                      1e-12, 1.0))
         return out
@@ -667,8 +721,43 @@ def probe_run(run: str | Path, ds: Dataset | None = None) -> dict:
         else:
             ds = load_dataset()
     Wtr, Wva = _windows(ds, "train", cfg), _windows(ds, "val", cfg)
-    y_train = Wtr.y_next[(Wtr.y_next >= 0) & (Wtr.mask > 0)]
+    y_train = _y_scored(Wtr)
     _, arr_tr = evaluate(wm.model, Wtr, cfg, y_train)
     ev, arr_va = evaluate(wm.model, Wva, cfg, y_train)
     return {"run": str(wm.run_dir.name), "val": ev,
             "probes": linear_probes(arr_tr, arr_va, cfg.d_control, seed=cfg.seed)}
+
+
+# ---- regulariser-weight sweep --------------------------------------------------------------------
+
+def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: str | None = None,
+                log=print) -> dict:
+    """Train one run per SIGReg weight and pick the best by val next-action CE at the best
+    epoch, REJECTING any setting whose best epoch is outside the preset collapse bounds (a hard
+    constraint, not a tie-breaker). The winner's ``summary.json`` gets a ``w_reg_sweep`` table
+    (every candidate: val CE, effective rank, SIGReg, within_bounds, chosen)."""
+    base = run_id or _run_id(ds.source, cfg.seed)
+    rows, results = [], {}
+    for w in values:
+        c = TrainConfig.from_dict({**asdict(cfg), "w_reg": float(w)})
+        rid = f"{base}-wreg{w:g}"
+        s = train(c, ds, run_id=rid, log=log)
+        col = s["best"].get("collapse", {})
+        rows.append({"w_reg": float(w), "run_id": rid, "best_epoch": s["best_epoch"],
+                     "val_next_ce": s["best"].get("val_next_ce"),
+                     "val_brier_task": s["best"].get("val_brier_task"),
+                     "effective_rank": col.get("effective_rank"), "sigreg": col.get("sigreg"),
+                     "within_bounds": bool(col.get("within_bounds"))})
+        results[rid] = s
+    ok = [r for r in rows if r["within_bounds"] and r["val_next_ce"] is not None
+          and math.isfinite(r["val_next_ce"])]
+    win = min(ok, key=lambda r: r["val_next_ce"]) if ok else None
+    for r in rows:
+        r["chosen"] = win is not None and r is win
+    out = {"candidates": rows, "chosen_w_reg": win["w_reg"] if win else None,
+           "rule": "min val next-action CE among settings within collapse bounds at the best epoch"}
+    if win:
+        summ = results[win["run_id"]]
+        summ["w_reg_sweep"] = out
+        _write_private(data_home() / "runs" / win["run_id"] / "summary.json", _dumps(summ))
+    return out

@@ -5,6 +5,10 @@ float16 ``.npy`` (768-d) under ``<data home>/embed/`` keyed by a hash of the tas
 never stored — only the vector. The ollama call is loopback-only (127.0.0.1), has a 2 s timeout
 and fails open: on any error the caller gets zeros and ``ok=False``, which the feature builder
 turns into a "missing embedding" flag column.
+
+Who calls the network: E1 (dataset build, which has the request text) and E4 populate the cache
+via ``task_embedding(task_id, text)``. E3 never calls the network during training or scoring:
+``task_embeddings`` reads the cache only, and a task without a cached vector gets zeros + flag.
 """
 from __future__ import annotations
 
