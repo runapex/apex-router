@@ -187,6 +187,20 @@ next tag will carry.
   `worldmodel.readout.COMMANDS` for the `worldmodel` dispatcher.
 
 ### Fixed
+- `labels`: task boundaries skip what the harness injects as a user record. Claude Code records
+  flagged `isMeta` (skill bodies such as Claude in Chrome and `/update-config`, image metadata
+  written after a screenshot tool result) or `isCompactSummary` are no longer requests, and
+  known prefixes catch the same bodies in transcripts without the flags. A pasted image's own
+  record (`[Image #N] …`) now counts as a request. `worldmodel steps` cuts tasks the same way.
+  `lf_repeated` drops `[Image …]` placeholders before comparing, so two screenshots in a row are
+  not a repeat. `lf_next_negative` (and the negative check inside `lf_commit`) no longer fires
+  on a "no" that turns down something the agent offered at the end of its message ("no more
+  pushes" after "say push when you want them there"). "no, still broken" still counts. Task ids
+  are positional, so `labels build` now matches earlier rows by session and request timestamp.
+  Gold labels follow their request to its new id (`id_was` keeps the old one). Gold on a record
+  that is no longer a task becomes `orphan:<id>` and is shown in `labels report`. A judge vote is
+  kept only if the votes and call count it saw are unchanged. On the live data this went from
+  536 to 527 tasks; 85 gold rows kept their id, 11 moved and 4 were orphaned.
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh
   deadline is 1.2 s (was 0.45 s); with endpoint security slowing every spawn, the old budget
   skipped launchctl / ioreg / ollama / `/healthz` on about half the refreshes, and a skipped

@@ -70,9 +70,17 @@ def _text(content) -> str:
 # Injected into the user role by the harness, not typed by the user: a skill's body, slash-command
 # echoes, local-command output, notifications, a message relayed from another session. Counting
 # them as requests splits real tasks and hands the judge a fake "next message".
+# Claude Code marks these records ``isMeta`` (skill bodies loaded by a slash command or the Skill
+# tool, image metadata after a screenshot tool result or a pasted image) or ``isCompactSummary``
+# (the summary that opens a compacted session); the prefixes below catch the same bodies in
+# transcripts that lack the flags. A pasted image's own record ("[Image #N] ...") is typed by the
+# user and IS a request; its "[Image: source: ...]" / "[Image: original ...]" companion is not.
 _SKIP_USER = ("<command-", "<local-command", "Caveat:", "<system", "<task-notification",
               "Base directory for this skill:", "Another Claude session sent a message",
-              "[Image #", "<bash-")
+              "<bash-", "# Claude in Chrome browser automation", "# Update Config Skill",
+              "# Workflow authoring reference", "[Image: source: ", "[Image: original ",
+              "This session is being continued from a previous conversation")
+_META_FLAGS = ("isMeta", "isCompactSummary")
 
 
 def is_tool_result(content) -> bool:
@@ -81,9 +89,12 @@ def is_tool_result(content) -> bool:
                                              for b in content)
 
 
-def request_text(content) -> str | None:
+def request_text(content, record: dict | None = None) -> str | None:
     """The request text of a user record, or None when it is not a task boundary (empty, or
-    injected by the harness). Shared with ``worldmodel.steps`` so both cut tasks identically."""
+    injected by the harness: a meta-flagged ``record`` or a known injected prefix). Shared with
+    ``worldmodel.steps`` so both cut tasks identically."""
+    if isinstance(record, dict) and any(record.get(f) is True for f in _META_FLAGS):
+        return None
     t = _text(content).strip()
     if not t or t.startswith(_SKIP_USER):
         return None
@@ -117,7 +128,7 @@ def _extract_line(line, tasks, by_call) -> None:
                         call[3] = _text(b.get("content"))[-2000:] if not isinstance(
                             b.get("content"), str) else b["content"][-2000:]
             return
-        t = request_text(c)
+        t = request_text(c, d)
         if t is None:
             return
         cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
@@ -196,6 +207,7 @@ POS = re.compile(r"^\s*(thanks|thank you|great|perfect|nice|lgtm|awesome|works\b
                  r"(yes|ok|okay)[,.!]?\s*(push|commit|go ahead|do it|apply|proceed)|"
                  r"push( changes)?\b|commit( and push)?\b)", re.IGNORECASE)
 INTERRUPT = re.compile(r"^\[Request interrupted", re.IGNORECASE)
+_IMAGE = re.compile(r"\[Image[ :#][^\]]*\]")
 
 
 def _tokens(s: str) -> set:
@@ -216,13 +228,35 @@ def lf_tests(t):
     return None
 
 
+# "no" that declines something the agent OFFERED at the end ("say the word and I'll push" ->
+# "no more pushes") is not a verdict on the work. Both halves must hold: the final message ends
+# on an offer, and the "no" is followed by a declining phrase or a bare action word. "no, still
+# broken" / "no, that's wrong" keep counting as negative.
+OFFER = re.compile(r"\?\s*$|say the word|want me to|should i\b|shall i\b|if you want|do you want|"
+                   r"would you like|say \W?\w+\W? (when|and)|tell me (to|if|and)|"
+                   r"(i can|i'?ll) .{0,60}if you", re.IGNORECASE)
+DECLINE = re.compile(r"^\s*(no|nope|nah)\b[\s,.!-]*(thanks?\b|thank you|need\b|more\b|don'?t\b|"
+                     r"do not\b|not (now|yet|needed)\b|later\b|skip\b|leave it\b|keep\b|just\b|"
+                     r"that'?s (fine|ok)\b|(push|pushes|pr|merge|deploy|commit|commits)\b)",
+                     re.IGNORECASE)
+
+
+def _declines_offer(t) -> bool:
+    return bool(DECLINE.search(t.get("next") or "")
+                and OFFER.search((t.get("last") or "")[-400:]))
+
+
+def _next_negative(t) -> bool:
+    return bool(NEG.search(t.get("next") or "")) and not _declines_offer(t)
+
+
 def lf_commit(t):
     cmds = "\n".join(c[1] or "" for c in t["calls"])
-    return "success" if COMMIT.search(cmds) and not NEG.search(t.get("next") or "") else None
+    return "success" if COMMIT.search(cmds) and not _next_negative(t) else None
 
 
 def lf_next_negative(t):
-    return "fail" if NEG.search(t.get("next") or "") else None
+    return "fail" if _next_negative(t) else None
 
 
 def lf_next_positive(t):
@@ -234,8 +268,11 @@ def lf_interrupted(t):
 
 
 def lf_repeated(t):
-    """The next request restates this one (Jaccard >= 0.6 on content words): it did not land."""
-    a, b = _tokens(t["request"]), _tokens(t.get("next") or "")
+    """The next request restates this one (Jaccard >= 0.6 on content words): it did not land.
+    Image placeholders ("[Image #3]", "[Image: original 3550x1990 ...]") are removed first, so
+    two screenshots in a row, or an image-only request, are not a repeat."""
+    a = _tokens(_IMAGE.sub(" ", t["request"] or ""))
+    b = _tokens(_IMAGE.sub(" ", t.get("next") or ""))
     if len(a) < 4 or len(b) < 4:
         return None
     return "fail" if len(a & b) / len(a | b) >= 0.6 else None
@@ -409,21 +446,87 @@ def _row(t) -> dict:
             "votes": votes(t)}
 
 
+def _fp(r) -> tuple:
+    """A text-free identity for one request: its session and its record timestamp."""
+    return (r.get("session"), r.get("ts"))
+
+
+def _migrate_gold(h: Path, rows: list, old: dict, remap: dict, log=print) -> dict:
+    """Keep gold attached to the same REQUEST when task ids shift. A row whose task moved gets
+    the new id (``id_was`` keeps the old one); a row whose request is no longer a task (it was a
+    harness-injected record, or merged into another task) becomes ``orphan:<id>`` so it can never
+    label a different task that now has its old id. Outcomes, authors and reasons are untouched."""
+    gold_rows = _read(h / "gold.jsonl")
+    if not gold_rows:
+        return {}
+    live = {r["id"]: r for r in rows}
+    dest = []                       # where each row goes; None = orphan, "" = leave as is
+    for g in gold_rows:
+        gid = g.get("id")
+        if not isinstance(gid, str) or gid.startswith("orphan:"):
+            dest.append("")
+        elif gid in remap:
+            dest.append(remap[gid])
+        elif gid in live and (gid not in old or _fp(old[gid]) == _fp(live[gid])):
+            dest.append(gid)
+        else:
+            dest.append(None)
+    claimed = Counter(d for d in dest if d)
+    n = Counter()
+    out = []
+    for g, d in zip(gold_rows, dest):
+        if d == "":
+            out.append(g)
+            continue
+        gid = g["id"]
+        if d is None or claimed[d] > 1:          # two gold rows for one task: keep neither
+            g = {**g, "id": f"orphan:{gid}", "orphaned": time.time()}
+            n["orphaned"] += 1
+        elif d != gid:
+            g = {**g, "id": d, "id_was": gid}
+            n["moved"] += 1
+        else:
+            n["kept"] += 1
+        out.append(g)
+    if n["moved"] or n["orphaned"]:
+        _write(h / "gold.jsonl", out)
+        if log:
+            log(f"  gold ids: kept {n['kept']}, moved {n['moved']} (task id shifted), "
+                f"orphaned {n['orphaned']} (request is no longer a task)")
+    return dict(n)
+
+
 def build(judge_limit: int = 0, judge_fn=judge, log=print) -> dict:
     """Extract every task, apply the LFs, run the judge on up to ``judge_limit`` tasks not judged
     yet (newest first), combine with gold accuracies, write tasks/labels. Idempotent."""
     h = home()
-    old = {r["id"]: r for r in _read(h / "tasks.jsonl")}
+    old_rows = _read(h / "tasks.jsonl")
+    old = {r["id"]: r for r in old_rows}
+    by_fp = {_fp(r): r for r in old_rows if r.get("ts")}
     tasks = all_tasks()
     rows = []
     todo = []
+    remap: dict = {}
     for t in tasks:
         r = _row(t)
-        if old.get(t["id"], {}).get("judge"):
-            r["judge"] = old[t["id"]]["judge"]
+        # Task ids are positional (transcript name + request ordinal), so a change to what counts
+        # as a request shifts them. Match the previous row by (session, request timestamp) — never
+        # by id alone, which may now name a different request.
+        prev = old.get(r["id"])
+        if prev is not None and _fp(prev) != _fp(r):
+            prev = None
+        if prev is None and r.get("ts"):
+            prev = by_fp.get(_fp(r))
+        if prev is not None and prev["id"] != r["id"]:
+            remap[prev["id"]] = r["id"]
+        # a judge vote carries over only when the evidence it saw is unchanged
+        if (prev is not None and prev.get("judge") and prev.get("n_calls") == r["n_calls"]
+                and prev.get("has_next") == r["has_next"] and prev.get("votes") == r["votes"]):
+            r["judge"] = prev["judge"]
         elif judge_limit:
             todo.append((t, r))
         rows.append(r)
+    _migrate_gold(h, rows, old, remap, log)
     todo.sort(key=lambda x: str(x[0].get("ts") or ""), reverse=True)
     t0 = time.time()
     for i, (t, r) in enumerate(todo[:judge_limit]):
@@ -440,7 +543,8 @@ def build(judge_limit: int = 0, judge_fn=judge, log=print) -> dict:
 def relabel(rows=None) -> dict:
     h = home()
     rows = rows if rows is not None else _read(h / "tasks.jsonl")
-    gold = {g["id"]: g["outcome"] for g in _read(h / "gold.jsonl")}
+    live = {r["id"] for r in rows}
+    gold = {g["id"]: g["outcome"] for g in _read(h / "gold.jsonl") if g.get("id") in live}
     acc = voter_accuracy(rows, gold)
     labels = []
     for r in rows:
@@ -564,7 +668,8 @@ def signals(t) -> dict:
             "committed": bool(COMMIT.search("\n".join(c[1] or "" for c in calls))),
             "tail_errors": lf_tail_errors(t) == "fail",
             "next_interrupt": bool(INTERRUPT.search(nxt or "")),
-            "next_negative": bool(NEG.search(nxt or "")),
+            "next_negative": _next_negative(t),
+            "next_declines_offer": _declines_offer(t),
             "next_positive": bool(POS.search(nxt or "")),
             "next_repeats_request": lf_repeated(t) == "fail",
             "session_ended": nxt is None}
@@ -660,8 +765,10 @@ def import_gold(path, by: str) -> dict:
 
 
 def gold_by() -> Counter:
-    """Gold labels per author (``by``); rows written before ``by`` existed count as unmarked."""
-    return Counter(g.get("by") or "unmarked" for g in _read(home() / "gold.jsonl"))
+    """Gold labels per author (``by``); rows written before ``by`` existed count as unmarked.
+    Orphaned rows (request no longer a task) are counted under ``orphaned``, not an author."""
+    return Counter("orphaned" if str(g.get("id", "")).startswith("orphan:")
+                   else (g.get("by") or "unmarked") for g in _read(home() / "gold.jsonl"))
 
 
 # ---- report ---------------------------------------------------------------------------------
@@ -678,10 +785,12 @@ def report(res: dict | None = None) -> str:
               f"weak-emitted {weak}, from gold {len(emitted) - weak}) · "
               f"gold {len(gold)} / target {gold_target(n)}")]
     gb = gold_by()
+    orphaned = gb.pop("orphaned", 0)
     if gb:
         users = gb.get("user", 0)
         lines.append(f"gold by: user {users} · model/other {sum(gb.values()) - users} ("
-                     + ", ".join(f"{k} {v}" for k, v in sorted(gb.items())) + ")")
+                     + ", ".join(f"{k} {v}" for k, v in sorted(gb.items())) + ")"
+                     + (f" · orphaned {orphaned} (request no longer a task)" if orphaned else ""))
     by = Counter(x["label"] for x in labels)
     lines.append("labels: " + ", ".join(f"{k} {by[k]}" for k in OUTCOMES + ("unknown",)))
     cov = Counter(v for x in labels for v in x["voters"])

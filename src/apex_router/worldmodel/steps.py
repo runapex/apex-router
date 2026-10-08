@@ -179,7 +179,7 @@ def walk_main(path: Path, st: _Stats) -> dict:
                             if call is not None:
                                 _set_result(call, _result_text(b.get("content")), b.get("is_error"))
                     continue
-                req = L.request_text(c)
+                req = L.request_text(c, d)
                 if req is None:
                     continue
                 # the request text lives only in memory, for the task-type classifier
