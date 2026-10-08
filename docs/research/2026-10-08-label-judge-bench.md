@@ -156,3 +156,19 @@ gold 100 · weak 19.
 - **Untested:** ornith:35b on clip or v1, and gpt-oss at a calibrated threshold. The judging
   budget was 90 min, and about 87 min were used: 74 gpt-oss bench, 2 ornith bench, 11 build.
 - `worldmodel evaluate` was not run, so there is no test-split scoring in this iteration.
+
+
+## Amendment (2026-10-08, cross-check): what the 0.90 actually beats
+
+The always-success base rate on the 71 tasks the winner voted on is 61/71 = 0.86 (not 0.79, which
+is over all 85 decided gold); the judge's 64/71 = 0.90 differs from it by 3 tasks (McNemar p ≈ 0.5).
+At the adopted 0.9 threshold the judge scores 55/56 = 0.98 against always-success 52/56 = 0.93:
+net +4 fails caught, −1 false fail. A concurrent held-out check (60 new gold, 47 decided) gave
+0.94 vs 0.88 on the 17 tasks it voted on at ≥ 0.9; fail recall at any confidence 1/3; "partial" is
+never emitted (its confidence tops out at 0.8). The gain is real but small: the old judge was
+pessimistic (29/67 gold successes called partial/fail); the new one mostly stops being wrong
+about successes. It does not supply the fails the downstream criteria need — the 273 weak labels
+are 96% success against an independent-signal expectation of 88–93%, because the judge abstains
+on hard tasks and failures pool in `unknown`. The judge's context also contains the rule voters'
+facts (SIGNALS), so judge and rule votes are correlated; `posterior()` treated them as independent
+— being fixed.
