@@ -375,7 +375,12 @@ OLLAMA_PORT = 11434
 def ollama_clients(run=run_cmd, timeout: float = 0.5, port: int = OLLAMA_PORT) -> list:
     """[{pid, name}] of processes with an open connection to ollama's API — who is driving the
     GPU when a model is busy. ollama's own processes are left out."""
-    text = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED", "-Fpc"], timeout=timeout)
+    try:
+        text = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED", "-Fpc"], timeout=timeout)
+    except RuntimeError as e:
+        if str(e).endswith("exit 1"):   # lsof: exit 1 + no output = nothing matched, not a failure
+            return []
+        raise
     pids, cur, name = set(), None, {}
     for ln in (text or "").splitlines():
         if ln.startswith("p") and ln[1:].isdigit():

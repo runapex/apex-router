@@ -914,3 +914,15 @@ def test_ollama_clients_names_who_drives_the_gpu():
     assert ar.client_label("apex-router mystery-arg") == "apex-router"
     assert ar.client_label("curl -H 'Authorization: x' http://h") == "curl"
     assert ar.ollama_clients(lambda argv, timeout=1.0: "p2401\ncollama\n") == []
+
+
+def test_ollama_clients_lsof_no_match_is_empty_not_an_error():
+    def run(argv, timeout=None):
+        if argv[0] == "lsof":
+            raise RuntimeError("lsof exit 1")
+        raise AssertionError("ps must not run")
+    assert ar.ollama_clients(run=run) == []
+    def run2(argv, timeout=None):
+        raise RuntimeError("lsof exit 2")
+    with pytest.raises(RuntimeError):
+        ar.ollama_clients(run=run2)
