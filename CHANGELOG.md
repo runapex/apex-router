@@ -22,6 +22,21 @@ next tag will carry.
   val next-action CE, and its SIGReg reads z after the train-estimated centring. Nothing
   without `z_norm` passes. The attempt-3 paragraph is proposed, not declared
   (`docs/research/2026-10-08-p6-c4-warmup-recipe.md`).
+- `worldmodel evaluate` carries the collapse recipe. `--train` takes `--config JSON|PATH`
+  (merged before the sweep and seeds, like `train --config`; `seed`/`device` are refused there)
+  and `--z-norm`, `--w-reg-schedule`, `--w-reg-start`, `--w-reg-anneal-epochs`,
+  `--lr-warmup-epochs`, `--rank-floor-init`; an explicit flag beats `--config`, which beats the
+  default. With `--run` the same flags declare the recipe, and a run trained under a different
+  one is refused before any test pass, like the view and input guards. The card and every
+  ledger line record the full recipe. The card prints a recipe section, the per-epoch w_reg,
+  and the schedule in the sweep table. Its C4 lines say which z SIGReg was measured on
+  ("centred z" under `center`). With a z_norm they print the post-map z (what C4 reads) beside
+  the pre-map raw encoder output, best-epoch val and scored test, informational only. With no
+  recipe flags, scoring is unchanged.
+- `worldmodel evaluate` now applies the attempt-2 pre-declaration's n-floor, which had never
+  been coded. C2 is INCONCLUSIVE below 10 gold test tasks, and C5 below 10 gold or 3 bad gold
+  test tasks, whatever the numbers. The reason reads "below declared floor: …". The card
+  prints each floor under its rule and lists a blocker when one applies.
 - `apex-router labels judge-bench [--models] [--contexts clip,export] [--prompts v1,v2] [--out]`
   scores outcome-judge variants (model × context × prompt) on every gold task. It reports vote
   accuracy with a Wilson CI, 4-class accuracy, a confusion matrix, abstain / unknown / error
