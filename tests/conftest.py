@@ -51,8 +51,9 @@ _AR, _AX, _CL = _REAL_HOME / ".apex-router", _REAL_HOME / ".apex", _REAL_HOME / 
 # Exact paths the live proxy / route logger append to while a suite runs.
 _APPEND_ONLY = [_AR / "route_log.jsonl", _AX / "telemetry.jsonl",
                 _AX / "state.db", _AX / "state.db-wal", _AX / "state.db-shm"]
-# Root-level dirs the live system writes constantly.
-_IGNORE_ROOT_DIRS = {_AR / "observe", _AR / "queue", _AR / "logs"}
+# Root-level dirs the live system writes constantly (widget/: the SwiftBar plugin appends a
+# history sample and rewrites detail pages every minute while the menu bar is up).
+_IGNORE_ROOT_DIRS = {_AR / "observe", _AR / "queue", _AR / "logs", _AR / "widget"}
 _IGNORE_ANY_DIRS = {".git", ".venv", ".pytest_cache", "__pycache__"}
 # Files the daily agent / ornith overnight legitimately regenerate.
 _DAEMON_REGENERATED = {_AR / n for n in (
