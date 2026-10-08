@@ -108,14 +108,14 @@ def _verdict(a: dict, b: dict, lo, hi, min_n: int) -> str:
 def mde(p0: float, n: int, z_a: float = 1.96, z_b: float = 0.84) -> float | None:
     """Minimum detectable difference (two-sided 5%, 80% power) for two arms of n each around a base
     rate p0, by the normal approximation — a planning number, not a test."""
-    if n <= 0 or p0 is None:
-        return None
+    if n <= 0 or p0 is None or not 0.0 < p0 < 1.0:
+        return None  # variance p0(1-p0) is 0 at 0%/100%: "detects 0.0 pts" would be nonsense
     return (z_a + z_b) * math.sqrt(2 * p0 * (1 - p0) / n)
 
 
 def n_for_diff(p0: float, diff: float, z_a: float = 1.96, z_b: float = 0.84) -> int | None:
     """Rows per arm to detect `diff` around base rate p0 (two-sided 5%, 80% power), normal approx."""
-    if p0 is None or diff <= 0:
+    if p0 is None or diff <= 0 or not 0.0 < p0 < 1.0:
         return None
     return math.ceil((z_a + z_b) ** 2 * 2 * p0 * (1 - p0) / diff ** 2)
 
@@ -230,6 +230,9 @@ def render(rep: dict) -> str:
         L.append(f"  at {rep['min_n']}/arm the detectable recovery difference is ≈ "
                  f"{100 * rep['mde_at_min_n']:.1f} pts (80% power, base = pre-v11 rate); a 10-pt "
                  f"difference needs ≈ {rep['n_per_arm_for_10pts']}/arm")
+    elif rep.get("pre_v11_retried"):
+        L.append("  no planning numbers: the pre-v11 recovery rate is 0% or 100%, so there is no "
+                 "variance to size an A/B from")
     return "\n".join(L)
 
 

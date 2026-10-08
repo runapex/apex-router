@@ -471,7 +471,17 @@ def voter_accuracy(rows: list, gold: dict) -> dict:
 
 
 # calibrated on gold: the lowest confidence bin from which every bin up is >= 0.75 accurate
-JUDGE_MIN_CONF = float(os.environ.get("APEX_LABEL_JUDGE_MIN_CONF") or 0.8)  # pooled gold: the [0.8, 0.9) bin is 28/35 (in-sample 8/14, held out 20/21) — see docs/research/2026-10-08-label-judge-holdout.md
+def _env_float(name: str, default: float) -> float:
+    """A float from the environment; unset, empty, garbage or non-finite -> `default` (a bad knob
+    must not make `import labels` — and everything importing it — raise)."""
+    try:
+        v = float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return v if math.isfinite(v) else default
+
+
+JUDGE_MIN_CONF = _env_float("APEX_LABEL_JUDGE_MIN_CONF", 0.8)  # pooled gold: the [0.8, 0.9) bin is 28/35 (in-sample 8/14, held out 20/21) — see docs/research/2026-10-08-label-judge-holdout.md
 
 
 def _all_votes(r) -> dict:

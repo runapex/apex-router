@@ -123,6 +123,18 @@ def tier_family(tier) -> str | None:
     return TIER_FAMILY.get(tier) if isinstance(tier, str) else None
 
 
+_GPT_WORD_RE = re.compile(r"(?<![a-z0-9])gpt(?![a-z])")
+
+
+def is_gpt_family(*names) -> bool:
+    """True when any name carries `gpt` as its own token (`gpt-5.6-terra`, `gpt5`,
+    `it-entra-gpt-6-astra`, `openai/gpt-oss`), even if it maps to no known tier. Family is a fact
+    about the id; no tier rank is invented for it. Bounded (no letter/digit before, no letter
+    after) so `...-GPTQ-Int4` and `chatgpt` do not match but `gpt5` / `gpt_4o` do. Used only to
+    keep such rows OUT of the Claude-priced headline rate (they stay in by_tier as `other`)."""
+    return any(isinstance(n, str) and _GPT_WORD_RE.search(n.lower()) for n in names)
+
+
 def is_cross_family(a, b) -> bool:
     """True when tiers `a` and `b` are both known and in different families (Claude <-> GPT)."""
     fa, fb = tier_family(a), tier_family(b)
@@ -214,8 +226,10 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
     sub["n"] += 1
     sub["escalated"] += 1 if escalated else 0
     sub["rate"] = sub["escalated"] / sub["n"]
-    if tier_family(tier) == GPT_FAMILY:
-        return  # GPT outcomes live in by_tier only — never in the Claude-priced headline rate
+    if tier_family(tier) == GPT_FAMILY or (tier is None and is_gpt_family(
+            rec.get("start_tier"), rec.get("model"), rec.get("effective_tier"),
+            rec.get("requested_tier"))):
+        return  # GPT outcomes (known tier or not) live in by_tier only — never in the Claude-priced headline rate
     cell["n"] += 1
     cell["escalated"] += 1 if escalated else 0
     if bad_ts:

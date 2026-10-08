@@ -50,7 +50,7 @@ class TestClaudeCodeJoin(unittest.TestCase):
         _w(self.conf, [])
         _w(self.log, [
             # classic pi row (no conformance partner) — must be unaffected
-            {"ts": 50.0, "task_type": "debug", "model": "gpt", "passed": True,
+            {"ts": 50.0, "task_type": "debug", "model": "kimi-k2.6", "passed": True,
              "escalated": False, "note": "turn"},
             _dispatch(100.0, "haiku", "Fix the flaky test!", "a1", "t1", tt="generate"),
             _dispatch(200.0, "sonnet", "fix the  flaky test", "a2", "t2", tt="generate"),

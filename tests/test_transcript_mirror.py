@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import shutil
 import stat
 from pathlib import Path
@@ -208,7 +209,8 @@ def test_snapshot_plist_and_systemd_units():
 def test_install_snapshot_launchd(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr(watch.subprocess, "run", lambda a, **k: calls.append(a))
+    monkeypatch.setattr(watch.subprocess, "run", lambda a, **k: (
+        calls.append(a), subprocess.CompletedProcess(a, 0, "", ""))[1])
     assert watch._launchd_install_snapshot() == [watch.LABEL_SNAPSHOT]
     plist = tmp_path / "Library" / "LaunchAgents" / "com.apex-router.snapshot.plist"
     assert plist.exists() and (tmp_path / ".apex-router" / "logs").is_dir()
