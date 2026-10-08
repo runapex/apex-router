@@ -805,7 +805,43 @@ RULE_EVERY_EPOCH = ("min val next-action CE among settings within collapse bound
                     "(each epoch's val z, as G1 C4 reads them; A2-W)")
 
 
-def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: str | None = None,
+W_REG_GRID = (1.0, 3.0, 10.0)          # attempt 1's grid (the default, so attempt 1 replays)
+NO_WREG_MSG = "C4 fails by construction: no w_reg within bounds on every epoch (grid {grid})"
+
+
+def parse_grid(text: str) -> tuple[float, ...]:
+    """``"1,3,10,30,100"`` -> (1.0, 3.0, 10.0, 30.0, 100.0); positive, finite, de-duplicated."""
+    vals = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        v = float(part)
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError(f"w_reg grid values must be positive and finite, not {part!r}")
+        if v not in vals:
+            vals.append(v)
+    if not vals:
+        raise ValueError("empty w_reg grid")
+    return tuple(vals)
+
+
+def grid_text(values) -> str:
+    return ",".join(f"{float(v):g}" for v in values)
+
+
+def record_sweep(run_id: str, sweep: dict) -> None:
+    """Write the sweep table (grid, candidates, rule, choice) into a run's summary.json."""
+    p = data_home() / "runs" / run_id / "summary.json"
+    try:
+        summ = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return
+    summ["w_reg_sweep"] = sweep
+    _write_private(p, _dumps(summ))
+
+
+def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=W_REG_GRID, run_id: str | None = None,
                 log=print, every_epoch: bool = False) -> dict:
     """Train one run per SIGReg weight and pick the best by val next-action CE at the best
     epoch, REJECTING any setting outside the preset collapse bounds (a hard constraint, not a
@@ -816,7 +852,12 @@ def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: 
     only; ``every_epoch=True`` (attempt 2, A2-W) — every epoch the candidate trained, i.e. every
     row of its ``metrics.jsonl`` (epochs after the best one included), which is how G1 C4 reads
     a run; a candidate with ANY epoch outside is rejected. (C4 also checks the scored
-    checkpoint's test z; the sweep never reads test, so that one stays C4's alone.)"""
+    checkpoint's test z; the sweep never reads test, so that one stays C4's alone.)
+
+    ``values`` is the grid (``--w-reg-grid``; default ``W_REG_GRID``), recorded as ``grid``. With
+    no qualifying candidate, ``chosen_w_reg`` is None, ``note`` says so (``NO_WREG_MSG``) and the
+    table is written into every candidate's summary.json (the winner's only, otherwise)."""
+    values = tuple(float(v) for v in values)
     base = run_id or _run_id(ds.source, cfg.seed)
     rows, results = [], {}
     for w in values:
@@ -839,10 +880,13 @@ def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: 
     for r in rows:
         r["chosen"] = win is not None and r is win
     out = {"candidates": rows, "chosen_w_reg": win["w_reg"] if win else None,
-           "every_epoch": bool(every_epoch),
+           "every_epoch": bool(every_epoch), "grid": list(values),
+           "note": (None if win else NO_WREG_MSG.format(grid=grid_text(values)) if every_epoch
+                    else f"no w_reg within bounds at the best epoch (grid {grid_text(values)})"),
            "rule": RULE_EVERY_EPOCH if every_epoch else RULE_BEST_EPOCH}
-    if win:
-        summ = results[win["run_id"]]
-        summ["w_reg_sweep"] = out
-        _write_private(data_home() / "runs" / win["run_id"] / "summary.json", _dumps(summ))
+    for r in rows:
+        if win is None or r is win:
+            summ = results[r["run_id"]]
+            summ["w_reg_sweep"] = out
+            _write_private(data_home() / "runs" / r["run_id"] / "summary.json", _dumps(summ))
     return out

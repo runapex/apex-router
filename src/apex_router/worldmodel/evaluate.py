@@ -648,10 +648,12 @@ def _base_rate(ds, ids) -> float:
 
 def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, cpu: bool = True,
                base_seed: int = 0, overrides: dict | None = None, tag: str = "steps",
-               log=print, sweep_every_epoch: bool = False) -> dict:
+               log=print, sweep_every_epoch: bool = False, w_reg_grid=None) -> dict:
     """Train k GPU seeds (seed 0 = the sweep winner when --sweep) + one CPU replay run.
     ``overrides`` may set the A2-F/A2-D inputs (``features``, ``regime``); ``sweep_every_epoch``
-    is A2-W."""
+    is A2-W; ``w_reg_grid`` the sweep grid (default ``train.W_REG_GRID``). With no qualifying
+    w_reg the seeds train the default w_reg and carry the sweep table (its ``note`` says C4 fails
+    by construction)."""
     from dataclasses import asdict
     from . import train as T
     tds = to_train_dataset(ds, source)
@@ -662,7 +664,8 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
     reuse = None
     if sweep:
         t0 = time.perf_counter()
-        sw = T.sweep_w_reg(cfg, tds, run_id=f"{prefix}-sweep-s{base_seed}", log=log,
+        sw = T.sweep_w_reg(cfg, tds, values=tuple(w_reg_grid or T.W_REG_GRID),
+                           run_id=f"{prefix}-sweep-s{base_seed}", log=log,
                            every_epoch=sweep_every_epoch)
         out["timings"]["sweep_s"] = time.perf_counter() - t0
         out["sweep"] = sw
@@ -670,7 +673,8 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
             cfg = T.TrainConfig.from_dict({**asdict(cfg), "w_reg": sw["chosen_w_reg"]})
             reuse = next(r["run_id"] for r in sw["candidates"] if r["chosen"])
         else:
-            log("sweep: no w_reg within the collapse bounds — training with the default w_reg")
+            log(f"sweep: {sw.get('note') or 'no w_reg within the collapse bounds'} — training "
+                f"with the default w_reg {cfg.w_reg:g}")
     for k in range(seeds):
         s = base_seed + k
         if k == 0 and reuse:
@@ -680,6 +684,8 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
         c = T.TrainConfig.from_dict({**asdict(cfg), "seed": s, "device": "gpu"})
         rid = f"{prefix}-s{s}-gpu"
         T.train(c, tds, run_id=rid, log=log)
+        if sweep:
+            T.record_sweep(rid, out["sweep"])
         out["timings"][rid] = time.perf_counter() - t0
         out["runs"].append(rid)
     if cpu:
@@ -891,6 +897,9 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
         "ablations": ablations_of(features, regime, err_states,
                                   (training or {}).get("sweep_every_epoch")),
         "chain_steps": None,
+        "w_reg_grid": ((training or {}).get("sweep") or {}).get("grid"),
+        "c4_by_construction": (((training or {}).get("sweep") or {}).get("note")
+                               if ((training or {}).get("sweep") or {}).get("every_epoch") else None),
         "verdicts": verdicts, "g1": overall(verdicts), "blockers": blockers, "rules": RULES,
         "seed_rule": "a criterion PASSes only if it PASSes on every seed; any FAIL → FAIL",
         "expected": "first G1 attempt on today's data is expected to FAIL on at least one "
@@ -1010,6 +1019,8 @@ def render(card: dict) -> str:
                     + (" …" if len(bad) > 6 else "") if bad else ""))
     if len(per) > 1:
         L.append(f"C4 {v[4]:<12} (across seeds)")
+    if card.get("c4_by_construction"):
+        L.append(f"   {card['c4_by_construction']}; the seeds trained the default w_reg")
     L.append(f"   rule: {card['rules'][4]}")
     alone = ", ".join(f"{p['run_id']} {'within' if p['collapse'][-1]['within_bounds'] else 'OUTSIDE'}"
                       for p in per)
@@ -1085,7 +1096,8 @@ def render(card: dict) -> str:
                      + (" [singular]" if r["singular"] else ""))
     tr = card.get("training") or {}
     if tr.get("sweep"):
-        L += ["", "w_reg sweep (val only): " + "; ".join(
+        L += ["", f"w_reg sweep (val only; grid {tr['sweep'].get('grid')}, rule: "
+                  f"{tr['sweep'].get('rule')}): " + "; ".join(
             f"{r['w_reg']:g}: val CE {_f(r['val_next_ce'])}, erank {_f(r['effective_rank'], 1)}, SIGReg "
             f"{_f(r['sigreg'])}{' within' if r['within_bounds'] else ' OUTSIDE'}{' <- chosen' if r['chosen'] else ''}"
             for r in tr["sweep"]["candidates"])]
@@ -1119,15 +1131,25 @@ def cmd_evaluate(argv=None) -> int:
                     help="A2-E: error-conditioned <class>!err states in the absorbing chain")
     ap.add_argument("--sweep-every-epoch", action="store_true",
                     help="A2-W: with --sweep, reject a w_reg whose ANY epoch is outside the bounds")
+    ap.add_argument("--w-reg-grid", default=None, metavar="LIST",
+                    help="with --sweep: comma-separated w_reg values (default 1,3,10 = attempt 1)")
     ap.add_argument("--no-save", action="store_true", help="do not write the scorecard JSON")
     ap.add_argument("--json", action="store_true")
     g.add_argument("--backfill-ledger", action="store_true",
                    help="only seed eval/ledger.jsonl from the saved scorecards (scores nothing)")
     a = ap.parse_args(list(argv or []))
-    if a.sweep_every_epoch and not (a.train and a.sweep):
-        print("apex-router worldmodel evaluate: --sweep-every-epoch needs --train --sweep",
-              file=sys.stderr)
+    if (a.sweep_every_epoch or a.w_reg_grid) and not (a.train and a.sweep):
+        print("apex-router worldmodel evaluate: --sweep-every-epoch / --w-reg-grid need "
+              "--train --sweep", file=sys.stderr)
         return 2
+    grid = None
+    if a.w_reg_grid:
+        from .train import parse_grid
+        try:
+            grid = parse_grid(a.w_reg_grid)
+        except ValueError as e:
+            print(f"apex-router worldmodel evaluate: --w-reg-grid: {e}", file=sys.stderr)
+            return 2
     if a.backfill_ledger:
         n = backfill_ledger()
         print(f"ledger: {n} line(s) backfilled into {ledger_path()}" if n else
@@ -1161,7 +1183,7 @@ def cmd_evaluate(argv=None) -> int:
         training = train_runs(ds, src,
                               seeds=max(1, a.seeds), sweep=a.sweep, cpu=not a.no_cpu,
                               base_seed=a.seed, overrides=ov, tag=tag, log=quiet,
-                              sweep_every_epoch=a.sweep_every_epoch)
+                              sweep_every_epoch=a.sweep_every_epoch, w_reg_grid=grid)
         training["sweep_every_epoch"] = bool(a.sweep_every_epoch) if a.sweep else None
         runs, cpu_run = training["runs"], training["cpu_run"]
     else:

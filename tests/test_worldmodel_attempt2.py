@@ -285,16 +285,22 @@ def _fake_summaries(monkeypatch, tmp_path):
     """w_reg 1: best CE, best epoch within, epoch 3 outside; w_reg 3: every epoch within;
     w_reg 10: best epoch outside."""
     monkeypatch.setattr(T, "data_home", lambda: tmp_path)
-    table = {1.0: (1.80, True, [3]), 3.0: (1.85, True, []), 10.0: (1.70, False, [0, 1])}
+    table = {1.0: (1.80, True, [3]), 3.0: (1.85, True, []), 10.0: (1.70, False, [0, 1]),
+             30.0: (1.90, True, [0]), 100.0: (1.95, True, [])}
+    trained = []
 
     def fake_train(cfg, ds, run_dir=None, run_id=None, log=print):
         ce, ok, outside = table[cfg.w_reg]
+        trained.append((run_id, cfg.w_reg))
         (tmp_path / "runs" / run_id).mkdir(parents=True, exist_ok=True)
-        return {"best_epoch": 1, "best": {"val_next_ce": ce, "collapse": {
+        s = {"best_epoch": 1, "best": {"val_next_ce": ce, "collapse": {
             "effective_rank": 9.0, "sigreg": 0.05, "within_bounds": ok}},
             "collapse_outside_bounds_epochs": outside}
+        (tmp_path / "runs" / run_id / "summary.json").write_text(json.dumps(s))
+        return s
 
     monkeypatch.setattr(T, "train", fake_train)
+    return trained
 
 
 def test_sweep_best_epoch_rule_is_attempt_1(monkeypatch, tmp_path):
@@ -320,6 +326,62 @@ def test_sweep_every_epoch_none_qualify(monkeypatch, tmp_path):
     sw = T.sweep_w_reg(T.TrainConfig(), None, values=(1.0, 10.0), run_id="x", log=lambda m: None,
                        every_epoch=True)
     assert sw["chosen_w_reg"] is None
+    assert sw["note"] == "C4 fails by construction: no w_reg within bounds on every epoch (grid 1,10)"
+    for w in ("1", "10"):                                   # the table lands in every candidate
+        saved = json.loads((tmp_path / "runs" / f"x-wreg{w}" / "summary.json").read_text())
+        assert saved["w_reg_sweep"]["grid"] == [1.0, 10.0]
+
+
+def test_w_reg_grid_parse_and_default():
+    assert T.W_REG_GRID == (1.0, 3.0, 10.0)
+    assert T.parse_grid("1,3,10,30,100") == (1.0, 3.0, 10.0, 30.0, 100.0)
+    assert T.parse_grid(" 3, 3,1 ") == (3.0, 1.0)
+    for bad in ("", "1,-3", "0", "x", "nan"):
+        with pytest.raises(ValueError):
+            T.parse_grid(bad)
+
+
+def test_sweep_grid_is_recorded(monkeypatch, tmp_path):
+    trained = _fake_summaries(monkeypatch, tmp_path)
+    sw = T.sweep_w_reg(T.TrainConfig(), None, values=T.parse_grid("1,3,10,30,100"), run_id="x",
+                       log=lambda m: None, every_epoch=True)
+    assert [w for _, w in trained] == [1.0, 3.0, 10.0, 30.0, 100.0]
+    assert sw["grid"] == [1.0, 3.0, 10.0, 30.0, 100.0] and sw["chosen_w_reg"] == 3.0
+    assert sw["note"] is None
+    saved = json.loads((tmp_path / "runs" / "x-wreg3" / "summary.json").read_text())
+    assert saved["w_reg_sweep"]["grid"] == sw["grid"]
+    assert not (json.loads((tmp_path / "runs" / "x-wreg100" / "summary.json").read_text())
+                .get("w_reg_sweep"))                              # winner only when one exists
+    default = T.sweep_w_reg(T.TrainConfig(), None, run_id="y", log=lambda m: None)
+    assert default["grid"] == [1.0, 3.0, 10.0]
+
+
+def test_train_runs_falls_back_to_default_and_records(monkeypatch, tmp_path):
+    trained = _fake_summaries(monkeypatch, tmp_path)
+    raw, _ = fixtures.dataset(10, seed=1)
+    out = E.train_runs(E.stream_view(raw), "synthetic-fixtures:10", seeds=2, sweep=True, cpu=False,
+                       sweep_every_epoch=True, w_reg_grid=(1.0, 10.0), log=lambda m: None)
+    assert out["sweep"]["chosen_w_reg"] is None
+    seeds = [(r, w) for r, w in trained if not "-sweep-" in r]
+    assert len(seeds) == 2 and all(w == T.TrainConfig().w_reg for _, w in seeds)
+    for r in out["runs"]:
+        s = json.loads((tmp_path / "runs" / r / "summary.json").read_text())
+        assert s["w_reg_sweep"]["note"].startswith("C4 fails by construction")
+
+
+def test_card_prints_c4_by_construction(tmp_path, monkeypatch):
+    rd = _run_dir(tmp_path, monkeypatch, {})
+    wm = _FakeWM()
+    wm.run_dir = rd
+    monkeypatch.setattr(T.WorldModel, "load", staticmethod(lambda r: wm))
+    note = "C4 fails by construction: no w_reg within bounds on every epoch (grid 1,3,10,30,100)"
+    sw = {"grid": [1.0, 3.0, 10.0, 30.0, 100.0], "every_epoch": True, "note": note,
+          "chosen_w_reg": None, "rule": T.RULE_EVERY_EPOCH, "candidates": []}
+    card = E.scorecard(E.stream_view(fixtures.dataset(40, seed=1)[0]), "synthetic: 40",
+                       ["fake-run"], training={"sweep_every_epoch": True, "sweep": sw})
+    assert card["w_reg_grid"] == sw["grid"] and card["c4_by_construction"] == note
+    txt = E.render(card)
+    assert note in txt and "grid [1.0, 3.0, 10.0, 30.0, 100.0]" in txt
 
 
 # ---- evaluate: input guard + card ----------------------------------------------------------------
@@ -409,6 +471,8 @@ def test_card_records_ablations_and_both_chains(tmp_path, monkeypatch):
 
 def test_cli_sweep_every_epoch_needs_sweep(capsys):
     assert E.cmd_evaluate(["--run", "x", "--sweep-every-epoch"]) == 2
+    assert E.cmd_evaluate(["--train", "--w-reg-grid", "1,30"]) == 2          # needs --sweep
+    assert E.cmd_evaluate(["--train", "--sweep", "--w-reg-grid", "1,-3"]) == 2
 
 
 # ---- MLX: a2f + regime train, record, refuse unannotated input ------------------------------------

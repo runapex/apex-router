@@ -63,10 +63,12 @@ def cmd_train(argv: list[str]) -> int:
     ap.add_argument("--sweep-every-epoch", action="store_true",
                     help="A2-W: with --sweep-w-reg, reject a w_reg whose ANY epoch is outside "
                          "the collapse bounds (how G1 C4 reads a run)")
+    ap.add_argument("--w-reg-grid", default=None, metavar="LIST",
+                    help="with --sweep-w-reg: comma-separated w_reg values (default 1,3,10)")
     ap.add_argument("--json", action="store_true", help="print the summary as JSON")
     a = ap.parse_args(argv)
-    if a.sweep_every_epoch and not a.sweep_w_reg:
-        print("--sweep-every-epoch needs --sweep-w-reg", file=sys.stderr)
+    if (a.sweep_every_epoch or a.w_reg_grid) and not a.sweep_w_reg:
+        print("--sweep-every-epoch / --w-reg-grid need --sweep-w-reg", file=sys.stderr)
         return 2
     from .jepa import mlx_available
     if not mlx_available():
@@ -94,8 +96,14 @@ def cmd_train(argv: list[str]) -> int:
     print(f"data: {st['source']} — {st['tasks']} tasks, {st['steps']} steps "
           f"(train {st['tasks_train']}, val {st['tasks_val']}, test {st['tasks_test']} held out)")
     if a.sweep_w_reg:
-        from .train import sweep_w_reg
-        sw = sweep_w_reg(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print,
+        from .train import W_REG_GRID, parse_grid, sweep_w_reg
+        try:
+            grid = parse_grid(a.w_reg_grid) if a.w_reg_grid else W_REG_GRID
+        except ValueError as e:
+            print(f"--w-reg-grid: {e}", file=sys.stderr)
+            return 2
+        sw = sweep_w_reg(cfg, ds, values=grid, run_id=a.run_id,
+                         log=(lambda m: None) if a.json else print,
                          every_epoch=a.sweep_every_epoch)
         if a.json:
             print(json.dumps(sw, indent=1, default=float))
@@ -106,7 +114,9 @@ def cmd_train(argv: list[str]) -> int:
                   f"{'within' if r['within_bounds'] else 'OUTSIDE'} bounds"
                   + (f" (epochs outside: {r['epochs_outside']})" if r.get("epochs_outside") else "")
                   + ("  <- chosen" if r["chosen"] else ""))
-        print(f"chosen w_reg: {sw['chosen_w_reg']}  ({sw['rule']})")
+        print(f"chosen w_reg: {sw['chosen_w_reg']}  (grid {sw['grid']}; {sw['rule']})")
+        if sw.get("note"):
+            print(sw["note"])
         return 0 if sw["chosen_w_reg"] is not None else 1
     s = train(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print)
     if a.json:
