@@ -91,6 +91,19 @@ next tag will carry.
   subscription OAuth to extra usage (`400 … Third-party apps now draw from your extra usage`), so
   Claude stays in Claude Code. The `learn` spec accepts explicit `validate`/`explain` ids. See
   RUNBOOK-pi-integration.md.
+- `apex-router worldmodel baseline | chains | progress [--synthetic N] [--json]` (P6 track E2,
+  needs numpy + scipy): the baselines and the Markov/Zeno layer the world model has to beat.
+  `baseline` scores a unigram prior, Markov order 1–3 (Dirichlet α = 0.5 backed off to the lower
+  order, per-task-type rows shrunk to the pooled chain) and a logistic regression on hand features
+  on held-out sessions: next-action cross-entropy and perplexity, outcome Brier and 10-bin ECE
+  after the first 8 steps, each with n and a session-bootstrap 95% CI, plus a BIC order test and
+  a per-day breakdown. `chains` fits an absorbing chain over action classes (SUCCESS / FAIL /
+  ESCALATE / ABANDON) per task type: expected steps, absorption odds, ρ(Q), and a workflow
+  ranking. `progress` runs the Zeno detector (geometric fit of failing-test progress over the last
+  4 test runs, limit v_∞ = v_t + Δ_t/(1 − r) with a bootstrap CI, flag when the CI stays below
+  all-tests-passing) and a sliding-window ρ(Q) detector against step-count and wall-time cutoffs
+  (G1 criterion 5). Outcome numbers are marked gold, provisional (weak labels) or inconclusive.
+  Reads `~/.apex-router/worldmodel/` read-only; `--synthetic N` generates data with known dynamics.
 
 ### Fixed
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh
