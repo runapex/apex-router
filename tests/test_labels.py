@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from apex_router import labels as L
 
 
@@ -183,3 +185,73 @@ def test_extract_fails_open(tmp_path):
     d = tmp_path / "dir.jsonl"
     d.mkdir()
     assert L.extract(d) == []
+
+
+def _export_fixture(h: Path):
+    _pi_session(h, "2026-10-07_eeeeeeee-0000-0000-0000-000000000005", [
+        ("SECRET-REQ fix the parser", [("edit", "", False, ""),
+                                       ("bash", "pytest -q", False, "4 passed")], "SECRET-FINAL"),
+        ("thanks, commit and push", [("bash", "git commit -m x", False, "ok")], "done"),
+        ("add retries", [("bash", "ls", True, "")], "tried")])
+    L.build(log=None)
+
+
+def test_export_review_writes_private_file_with_context(tmp_path):
+    _export_fixture(_home())
+    out = tmp_path / "review.jsonl"
+    out.write_text("old")
+    os.chmod(out, 0o644)                                    # an existing file is tightened
+    assert L.export_review(10, out) == 3
+    assert oct(out.stat().st_mode)[-3:] == "600"
+    rows = {r["request"][:10]: r for r in map(json.loads, out.read_text().splitlines())}
+    r = rows["SECRET-REQ"]
+    assert r["last"] == "SECRET-FINAL" and r["next"] == "thanks, commit and push"
+    assert r["votes"] == {"tests": "success", "next_positive": "success"}
+    assert r["signals"]["tests_after_last_edit"] == "passed" and not r["signals"]["committed"]
+    assert {"id", "source", "n_calls", "tools", "judge"} <= set(r)
+    assert rows["add retrie"]["next"] is None and rows["add retrie"]["signals"]["session_ended"]
+    # nothing new stored: no text under the labels home, no gold
+    for f in L.home().iterdir():
+        assert "SECRET" not in f.read_text()
+    assert not (L.home() / "gold.jsonl").exists()
+    assert L.main(["export-review", "--k", "2", "--out", str(tmp_path / "b.jsonl")]) == 0
+    assert len((tmp_path / "b.jsonl").read_text().splitlines()) == 2
+
+
+def test_import_gold_validates_marks_author_and_relabels(tmp_path, capsys):
+    _export_fixture(_home())
+    ids = [json.loads(x)["id"] for x in (L.home() / "tasks.jsonl").read_text().splitlines()]
+    f = tmp_path / "g.jsonl"
+
+    def bad(lines, msg):
+        f.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        assert L.main(["import-gold", str(f), "--by", "model:x"]) == 2
+        assert msg in capsys.readouterr().err
+        assert not (L.home() / "gold.jsonl").exists()          # all-or-nothing
+
+    bad([{"id": "nope", "outcome": "success"}], "not a known task")
+    bad([{"id": ids[0], "outcome": "great"}], "not in success|partial|fail|unknown")
+    bad([{"id": ids[0], "outcome": "fail"}, {"id": ids[0], "outcome": "fail"}], "appears twice")
+    bad([{"id": ids[0], "outcome": "fail", "reason": "x" * 121}], "<= 120 chars")
+    bad([{"id": ids[0], "outcome": "fail"}, {"id": "nope", "outcome": "fail"}], "not a known")
+    with pytest.raises(L.GoldImportError):
+        L.import_gold(f, "has space")
+
+    f.write_text(json.dumps({"id": ids[0], "outcome": "fail", "reason": "tests passed but no"})
+                 + "\n" + json.dumps({"id": ids[2], "outcome": "unknown"}) + "\n")
+    res = L.import_gold(f, "model:claude-test")
+    assert res["imported"] == 2
+    gold = [json.loads(x) for x in (L.home() / "gold.jsonl").read_text().splitlines()]
+    assert {g["by"] for g in gold} == {"model:claude-test"}
+    assert gold[0]["reason"] == "tests passed but no" and "reason" not in gold[1]
+    assert oct((L.home() / "gold.jsonl").stat().st_mode)[-3:] == "600"
+    lab = {x["id"]: x for x in L._read(L.home() / "labels.jsonl")}
+    assert lab[ids[0]]["label"] == "fail" and lab[ids[0]]["from"] == "gold"   # relabel ran
+    assert res["acc"]["tests"] == (0, 1)
+    f.write_text(json.dumps({"id": ids[0], "outcome": "success"}) + "\n")
+    with pytest.raises(L.GoldImportError, match="already has a gold"):
+        L.import_gold(f, "model:claude-test")
+    # report splits gold by author: user (review) vs model
+    gold.append({"id": ids[1], "outcome": "success", "ts": 0, "by": "user"})
+    L._write(L.home() / "gold.jsonl", gold)
+    assert "gold by: user 1 · model/other 2 (model:claude-test 2, user 1)" in L.report()

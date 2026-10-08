@@ -7,6 +7,19 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router labels export-review --k N --out FILE` and `labels import-gold FILE --by NAME`:
+  a non-interactive path for the gold set beside `labels review`. `export-review` writes the
+  same stratified sample `review` shows to a 0600 file, one JSON line per task (request, last
+  assistant message and next user message, clipped to 1500/2000/800 chars; tool summary; weak
+  votes, judge vote and rule signals). It holds transcript text for the reviewer only and stores
+  nothing under `~/.apex-router/labels/`; delete it after the import. `import-gold` reads
+  `{id, outcome, reason?}` lines, rejects the whole file on an unknown task id, an outcome
+  outside success|partial|fail|unknown, a duplicate, or a reason over 120 characters, appends
+  to `gold.jsonl` with `by=NAME`, and relabels. The no-transcript-quotes rule for `reason` is
+  enforced by the length cap only. `labels report` now splits gold by author (`user` vs model)
+  and shows weak-emitted vs gold-derived labels. Gold made by a model (for example
+  `by=model:claude-opus-5-5`) is marked as such and is not the owner's judgement; `review`
+  writes `by=user`.
 - `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
   `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
   steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time

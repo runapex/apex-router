@@ -12,7 +12,10 @@ Labels come from weak signals, never from one guess:
 - **judge**: a local model (ollama, never leaves the machine) reads the request, the last
   assistant message, the tool summary and the next user message, and votes with a confidence.
 - **gold**: tasks the user labels by hand (``apex-router labels review``), sampled stratified by
-  source x weak label x confidence plus the cases where the signals disagree.
+  source x weak label x confidence plus the cases where the signals disagree. The same sample can
+  go to an outside reviewer (``labels export-review`` / ``labels import-gold --by NAME``); every
+  gold row carries ``by`` (``user`` for the owner), so model-made gold is never read as the
+  owner's.
 
 The label model weights each voter by its accuracy MEASURED on the gold set (a Beta(2,2) prior
 until there is gold) and emits a label only when the posterior clears ``EMIT_MIN`` — coverage is
@@ -489,6 +492,19 @@ def sample_for_review(rows: list, labels: list, gold: dict, k: int, seed: int = 
     return picked
 
 
+def _session_paths() -> dict:
+    by_session: dict = {}
+    for p in transcripts():
+        by_session.setdefault(p.stem[-36:], p)
+    return by_session
+
+
+def _load_task(r: dict, by_session: dict) -> dict | None:
+    """The task's text, read from its transcript now (never stored)."""
+    p = by_session.get(r["session"])
+    return next((x for x in extract(p) if x["id"] == r["id"]), None) if p else None
+
+
 def review(k: int = 20, inp=input, out=print) -> int:
     """Show k sampled tasks; the user types s(uccess) / p(artial) / f(ail) / u(nknown) /
     q(uit). Text is read from the transcript now and not stored."""
@@ -497,14 +513,11 @@ def review(k: int = 20, inp=input, out=print) -> int:
     labels = _read(h / "labels.jsonl")
     gold_rows = _read(h / "gold.jsonl")
     gold = {g["id"]: g["outcome"] for g in gold_rows}
-    by_session = {}
-    for p in transcripts():
-        by_session.setdefault(p.stem[-36:], p)
+    by_session = _session_paths()
     keys = {"s": "success", "p": "partial", "f": "fail", "u": "unknown"}
     done = 0
     for r in sample_for_review(rows, labels, gold, k):
-        p = by_session.get(r["session"])
-        t = next((x for x in extract(p) if x["id"] == r["id"]), None) if p else None
+        t = _load_task(r, by_session)
         if not t:
             continue
         out("\n" + "=" * 100)
@@ -524,6 +537,133 @@ def review(k: int = 20, inp=input, out=print) -> int:
     return done
 
 
+# ---- non-interactive review: export for a reviewer, import their gold ----------------------
+# ``export-review`` writes the same sampled tasks ``review`` would show, with more context, to a
+# 0600 file for a reviewer to read OUTSIDE this tool (a person, or a model acting for the owner).
+# The file holds transcript text: it is for the reviewer's eyes only, must never be copied into a
+# repo or into gold.jsonl, and should be deleted after the import. ``import-gold`` reads back
+# ``{id, outcome, reason?}`` lines and appends them to gold.jsonl marked ``by=NAME``, so labels a
+# model made are never confused with the owner's (``review`` writes ``by=user``).
+
+EXPORT_CLIP = {"request": 1500, "last": 2000, "next": 800}
+GOLD_OUTCOMES = OUTCOMES + ("unknown",)
+REASON_MAX = 120
+
+
+def signals(t) -> dict:
+    """The rule-level facts behind the LFs, for a reviewer: counts and booleans, no text."""
+    calls = t["calls"]
+    last_edit = max((i for i, c in enumerate(calls) if c[0] in EDIT_TOOLS), default=-1)
+    tests = lf_tests(t)
+    ran = any(i > last_edit and TEST_CMD.search(c[1] or "") for i, c in enumerate(calls))
+    nxt = t.get("next")
+    return {"n_edits": sum(1 for c in calls if c[0] in EDIT_TOOLS),
+            "n_errors": sum(1 for c in calls if c[2]),
+            "tests_after_last_edit": ("passed" if tests == "success" else "failed"
+                                      if tests == "fail" else "ran, unparsed" if ran else None),
+            "committed": bool(COMMIT.search("\n".join(c[1] or "" for c in calls))),
+            "tail_errors": lf_tail_errors(t) == "fail",
+            "next_interrupt": bool(INTERRUPT.search(nxt or "")),
+            "next_negative": bool(NEG.search(nxt or "")),
+            "next_positive": bool(POS.search(nxt or "")),
+            "next_repeats_request": lf_repeated(t) == "fail",
+            "session_ended": nxt is None}
+
+
+def export_review(k: int, out_path, seed: int = 7) -> int:
+    """Write k tasks sampled by ``sample_for_review`` to ``out_path`` (mode 0600), one JSON line
+    each. Nothing is stored under the labels home. Returns the number written."""
+    h = home()
+    rows = _read(h / "tasks.jsonl")
+    labels = _read(h / "labels.jsonl")
+    gold = {g["id"]: g["outcome"] for g in _read(h / "gold.jsonl")}
+    by_session = _session_paths()
+    out_path = Path(out_path)
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.chmod(out_path, 0o600)                     # an existing file keeps its old mode otherwise
+    n = 0
+    with os.fdopen(fd, "w") as fh:
+        for r in sample_for_review(rows, labels, gold, k, seed=seed):
+            t = _load_task(r, by_session)
+            if not t:
+                continue
+            nxt = t.get("next")
+            fh.write(json.dumps({
+                "id": r["id"], "source": r["source"], "n_calls": len(t["calls"]),
+                "tools": _tool_summary(t),
+                "request": t["request"][:EXPORT_CLIP["request"]],
+                "last": (t["last"] or "")[-EXPORT_CLIP["last"]:],
+                "next": nxt[:EXPORT_CLIP["next"]] if nxt is not None else None,
+                "votes": votes(t), "judge": r.get("judge"), "signals": signals(t)},
+                ensure_ascii=False) + "\n")
+            n += 1
+    return n
+
+
+class GoldImportError(ValueError):
+    pass
+
+
+def import_gold(path, by: str) -> dict:
+    """Append ``{id, outcome, reason?}`` lines from ``path`` to gold.jsonl as ``by=NAME``, then
+    ``relabel()``. All-or-nothing: any bad line rejects the whole file and nothing is written.
+    Rejected: an id not in tasks.jsonl, an outcome outside success|partial|fail|unknown, an id
+    already in gold or twice in the file, a reason that is not a string of <= ``REASON_MAX``
+    characters. The reason must not quote the transcript; that rule is enforced by the length
+    cap only (no matching against transcript text) — it is on the reviewer to keep."""
+    by = (by or "").strip()
+    if not by or len(by) > 64 or any(ch.isspace() for ch in by):
+        raise GoldImportError("--by must be a non-empty name without spaces (<= 64 chars)")
+    h = home()
+    ids = {r["id"] for r in _read(h / "tasks.jsonl")}
+    gold_rows = _read(h / "gold.jsonl")
+    have = {g["id"] for g in gold_rows}
+    errs, new, seen = [], [], set()
+    now = time.time()
+    for i, ln in enumerate(Path(path).read_text().splitlines(), 1):
+        if not ln.strip():
+            continue
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            errs.append(f"line {i}: not JSON")
+            continue
+        if not isinstance(d, dict):
+            errs.append(f"line {i}: not an object")
+            continue
+        tid, o, reason = d.get("id"), d.get("outcome"), d.get("reason")
+        if not isinstance(tid, str) or tid not in ids:
+            errs.append(f"line {i}: id {tid!r} is not a known task")
+        elif tid in have:
+            errs.append(f"line {i}: id {tid} already has a gold label")
+        elif tid in seen:
+            errs.append(f"line {i}: id {tid} appears twice")
+        if o not in GOLD_OUTCOMES:
+            errs.append(f"line {i}: outcome {o!r} not in {'|'.join(GOLD_OUTCOMES)}")
+        if reason is not None and (not isinstance(reason, str) or len(reason) > REASON_MAX):
+            errs.append(f"line {i}: reason must be a string of <= {REASON_MAX} chars")
+        if isinstance(tid, str):
+            seen.add(tid)
+        g = {"id": tid, "outcome": o, "ts": now, "by": by}
+        if reason:
+            g["reason"] = reason
+        new.append(g)
+    if errs:
+        more = f" (+{len(errs) - 20} more)" if len(errs) > 20 else ""
+        raise GoldImportError("; ".join(errs[:20]) + more)
+    if not new:
+        raise GoldImportError("no labels in file")
+    _write(h / "gold.jsonl", gold_rows + new)
+    res = relabel()
+    res["imported"] = len(new)
+    return res
+
+
+def gold_by() -> Counter:
+    """Gold labels per author (``by``); rows written before ``by`` existed count as unmarked."""
+    return Counter(g.get("by") or "unmarked" for g in _read(home() / "gold.jsonl"))
+
+
 # ---- report ---------------------------------------------------------------------------------
 
 def report(res: dict | None = None) -> str:
@@ -533,8 +673,15 @@ def report(res: dict | None = None) -> str:
     labels, acc, gold = res["labels"], res["acc"], res["gold"]
     n = len(labels)
     emitted = [x for x in labels if x["label"] != "unknown"]
-    lines = [(f"tasks {n} · labeled {len(emitted)} ({100 * len(emitted) / max(n, 1):.0f}%) · "
+    weak = sum(1 for x in emitted if x.get("from") == "weak")
+    lines = [(f"tasks {n} · labeled {len(emitted)} ({100 * len(emitted) / max(n, 1):.0f}%; "
+              f"weak-emitted {weak}, from gold {len(emitted) - weak}) · "
               f"gold {len(gold)} / target {gold_target(n)}")]
+    gb = gold_by()
+    if gb:
+        users = gb.get("user", 0)
+        lines.append(f"gold by: user {users} · model/other {sum(gb.values()) - users} ("
+                     + ", ".join(f"{k} {v}" for k, v in sorted(gb.items())) + ")")
     by = Counter(x["label"] for x in labels)
     lines.append("labels: " + ", ".join(f"{k} {by[k]}" for k in OUTCOMES + ("unknown",)))
     cov = Counter(v for x in labels for v in x["voters"])
@@ -590,7 +737,27 @@ def main(argv=None) -> int:
     sub.add_parser("report", help="coverage, voter accuracy and precision on gold")
     r = sub.add_parser("review", help="label sampled tasks by hand (the gold set)")
     r.add_argument("-n", type=int, default=20)
+    e = sub.add_parser("export-review", help="write K sampled tasks with context to FILE (0600) "
+                                              "for an outside reviewer; nothing is stored")
+    e.add_argument("--k", type=int, default=100)
+    e.add_argument("--out", required=True)
+    g = sub.add_parser("import-gold", help="append {id, outcome, reason?} lines to gold as by=NAME")
+    g.add_argument("file")
+    g.add_argument("--by", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "export-review":
+        print(f"exported {export_review(a.k, a.out)} tasks to {a.out} (0600; it holds transcript "
+              f"text: delete it after importing)")
+        return 0
+    if a.cmd == "import-gold":
+        try:
+            res = import_gold(a.file, a.by)
+        except GoldImportError as ex:
+            print(f"import-gold: rejected, nothing written: {ex}", file=sys.stderr)
+            return 2
+        print(f"imported {res['imported']} gold labels by {a.by.strip()}")
+        print(report(res))
+        return 0
     if a.cmd == "build":
         res = build(judge_limit=a.judge)
         print(report(res))
