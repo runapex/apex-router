@@ -249,4 +249,8 @@ def test_criterion5_on_synthetic():
     assert set(c5["detectors"]) == {"zeno", "stalled", "rho", "zeno|stalled", "zeno|rho"}
     assert not c5["detectors"]["zeno|rho"]["retuned"] and c5["detectors"]["zeno"]["retuned"]
     z = c5["detectors"]["zeno|stalled"]
-    assert z["fpr"]["rate"] <= 0.2 and z["wins"] > z["losses"]   # planted shapes are found
+    # planted shapes are found. Recorded for the record (2026-10-07): the earlier zeno-only recall
+    # assertion was dropped when the plateau false positives were fixed (its old 17/19 came from
+    # those false positives); zeno alone no longer passes criterion 5 on this fixture — only
+    # zeno|stalled does — and the FPR bound below is not load-bearing (observed rate 0).
+    assert z["fpr"]["rate"] <= 0.2 and z["wins"] > z["losses"]

@@ -51,7 +51,7 @@ next tag will carry.
   train task has an untrained value head, so criteria 2, 3 and 5 are INCONCLUSIVE for it, with
   that reason. The val CE column scores step 0 the same way for every model.
   `worldmodel train` now trains on the stream view by default (`--view task` keeps the old
-  per-task order) and records the view in `summary.json`. The first real attempt (2026-10-07; 23,554 steps, no
+  per-task order) and records the view in `summary.json`. The first real attempt (2026-10-07; ~23.6k steps — the count grows with the transcripts, no
   labels yet) is G1 FAIL: on criterion 1 the JEPA is about 7% worse than the logistic baseline on test CE
   (stream view; +0.7% with a CI spanning 0 in the task view), and criterion 4 fails because
   the early epochs sit outside the SIGReg bound. Criteria 2, 3 and 5 are INCONCLUSIVE until

@@ -104,9 +104,12 @@ Tasks also carry `task_type` (one of `classify.py`'s classes, null if unclassifi
   would, FPR on successful tasks ≤ 10%).
 - Insights carried from `zeno report` 1b on this machine (2026-10-07): r1 = 0.445, P(fail|fail)
   46% vs stationary 3%, chain beats i.i.d. held out (Brier 0.116 vs 0.162) but under-predicts long
-  sessions — between-session / day-level regime is unmodelled. Retries are therefore
-  state-dependent in the chain (an `err` step's successor distribution is its own row), and the
-  evaluation reports metrics per day as well as pooled.
+  sessions — between-session / day-level regime is unmodelled. As implemented (E2): the
+  absorbing chain's states are action classes only (no error state; the 2-state burst chain
+  stays in `zeno report` 1b); error state enters through the logistic features (last error,
+  cumulative error share), the JEPA inputs (`err` flag over the lookback) and the progress
+  signal (open-error share); the evaluation reports metrics per day as well as pooled. An
+  error-conditioned chain state is a candidate for attempt 2, to be pre-declared.
 
 ## 5. JEPA (E3 `jepa.py`, `train.py`) — MLX
 
