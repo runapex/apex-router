@@ -37,6 +37,19 @@ next tag will carry.
   immediate difference with a Newcombe CI. It reports `INCONCLUSIVE` below 30 randomised rows
   per arm, and shows planning numbers (retries/day, days to the floor, minimum detectable
   difference).
+- `apex-router labels export-review --k N --out FILE` and `labels import-gold FILE --by NAME`:
+  a non-interactive path for the gold set beside `labels review`. `export-review` writes the
+  same stratified sample `review` shows to a 0600 file, one JSON line per task (request, last
+  assistant message and next user message, clipped to 1500/2000/800 chars; tool summary; weak
+  votes, judge vote and rule signals). It holds transcript text for the reviewer only and stores
+  nothing under `~/.apex-router/labels/`; delete it after the import. `import-gold` reads
+  `{id, outcome, reason?}` lines, rejects the whole file on an unknown task id, an outcome
+  outside success|partial|fail|unknown, a duplicate, or a reason over 120 characters, appends
+  to `gold.jsonl` with `by=NAME`, and relabels. The no-transcript-quotes rule for `reason` is
+  enforced by the length cap only. `labels report` now splits gold by author (`user` vs model)
+  and shows weak-emitted vs gold-derived labels. Gold made by a model (for example
+  `by=model:claude-opus-5-5`) is marked as such and is not the owner's judgement; `review`
+  writes `by=user`.
 - `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
   `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
   steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time
@@ -217,6 +230,20 @@ next tag will carry.
   active registry. `route-check --record` uses it for a pi row sent without a `matched`
   verdict, so a remapped family is not drift. Rows from the extension already carry
   `matched` (the resolved id against the family's id), so they were never counted as drift.
+- `labels`: task boundaries skip what the harness injects as a user record. Claude Code records
+  flagged `isMeta` (skill bodies such as Claude in Chrome and `/update-config`, image metadata
+  written after a screenshot tool result) or `isCompactSummary` are no longer requests, and
+  known prefixes catch the same bodies in transcripts without the flags. A pasted image's own
+  record (`[Image #N] …`) now counts as a request. `worldmodel steps` cuts tasks the same way.
+  `lf_repeated` drops `[Image …]` placeholders before comparing, so two screenshots in a row are
+  not a repeat. `lf_next_negative` (and the negative check inside `lf_commit`) no longer fires
+  on a "no" that turns down something the agent offered at the end of its message ("no more
+  pushes" after "say push when you want them there"). "no, still broken" still counts. Task ids
+  are positional, so `labels build` now matches earlier rows by session and request timestamp.
+  Gold labels follow their request to its new id (`id_was` keeps the old one). Gold on a record
+  that is no longer a task becomes `orphan:<id>` and is shown in `labels report`. A judge vote is
+  kept only if the votes and call count it saw are unchanged. On the live data this went from
+  536 to 527 tasks; 85 gold rows kept their id, 11 moved and 4 were orphaned.
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh
   deadline is 1.2 s (was 0.45 s); with endpoint security slowing every spawn, the old budget
   skipped launchctl / ioreg / ollama / `/healthz` on about half the refreshes, and a skipped

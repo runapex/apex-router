@@ -297,7 +297,9 @@ def main(argv=None) -> int:
                                 "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
                    add_help=False)
     sub.add_parser("labels", help="task outcome labels: rules + local judge + hand-labeled gold; "
-                                  "`labels build [--judge N]|report|review [-n N]`", add_help=False)
+                                  "`labels build [--judge N]|report|review [-n N]|"
+                                  "export-review --k N --out FILE|import-gold FILE --by NAME`",
+                   add_help=False)
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
