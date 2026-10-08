@@ -56,6 +56,21 @@ vs observed on train), `--regime` (A2-D, the day regime for the logistic baselin
 bounds). The card's `ablations` records which are on. A run whose input flags (features, regime)
 differ from the requested ones is refused before any test pass, like the view guard.
 
+**C4 collapse recipe** (`docs/research/2026-10-08-p6-c4-warmup-recipe.md`). `--train` takes
+`--config JSON|PATH` (TrainConfig fields, merged before the sweep and seeds) and the explicit
+recipe flags `--z-norm`, `--w-reg-schedule`, `--w-reg-start`, `--w-reg-anneal-epochs`,
+`--lr-warmup-epochs`, `--rank-floor-init`; precedence is explicit flag > `--config` > default
+(`eval_config`). With `--run` the same flags declare the recipe the run must have been trained
+with: a run whose `summary.recipe` (else config; older runs = the defaults) differs in any
+active field is refused before any test pass (`RecipeMismatch`, a `ViewMismatch`). The card's
+`recipe` block and every ledger line record the full declared recipe; the C4 lines state which
+z SIGReg was measured on, and with a z_norm the post-map z (C4's reading) is printed beside the
+pre-map raw encoder output (best-epoch val, scored test), informational only.
+
+**Declared n-floors** (attempt-2 pre-declaration). C2 is INCONCLUSIVE when the test split has
+< 10 gold tasks; C5 when it has < 10 gold or < 3 bad gold tasks — whatever the numbers
+(`floor_reason`: "below declared floor: …"). The card prints each floor under its rule.
+
 **Ledger.** Every scoring of the real test split appends one line per run to
 `<data home>/eval/ledger.jsonl` (0600: ts, manifest + steps/tasks sha256, run id, view, git
 sha); the card prints how often the split has been scored for this manifest. The first write
@@ -279,8 +294,29 @@ def rule1(rel, rel_lo) -> str:
     return "PASS" if (rel >= REL_MIN and rel_lo > 0) else "FAIL"
 
 
+GOLD_TEST_FLOOR = 10        # attempt-2 pre-declaration: < 10 gold test tasks -> C2/C5 INCONCLUSIVE
+BAD_GOLD_FLOOR = 3          # C5 additionally needs >= 3 bad (failed) gold test tasks
+FLOORS = {2: f"INCONCLUSIVE by rule if < {GOLD_TEST_FLOOR} gold test tasks",
+          5: f"INCONCLUSIVE by rule if < {GOLD_TEST_FLOOR} gold test tasks or < {BAD_GOLD_FLOOR} "
+             "bad gold test tasks"}
+FLOOR_SOURCE = "declared floor (docs/research/2026-10-08-p6-attempt-2-predeclaration.md)"
+
+
+def floor_reason(n_gold, n_bad=None) -> str | None:
+    """Why a gold-only criterion is below its declared floor (None = at or above it). ``n_bad``
+    is checked only when given (criterion 5)."""
+    if n_gold is not None and n_gold < GOLD_TEST_FLOOR:
+        return f"below declared floor: n gold test tasks < {GOLD_TEST_FLOOR} (n = {n_gold})"
+    if n_bad is not None and n_bad < BAD_GOLD_FLOOR:
+        return f"below declared floor: n bad gold test tasks < {BAD_GOLD_FLOOR} (n = {n_bad})"
+    return None
+
+
 def rule2(gold: dict) -> str:
+    """Gold only; INCONCLUSIVE below the declared floor (``gold["n"]`` < 10) whatever the numbers."""
     if not gold or not gold.get("n") or gold.get("quality") != "gold":
+        return "INCONCLUSIVE"
+    if floor_reason(gold["n"]):
         return "INCONCLUSIVE"
     lo, hi = gold.get("diff_ci") or (None, None)
     if gold.get("diff") is None or hi is None:
@@ -301,8 +337,13 @@ def rule4(checkpoints) -> str:
     return "PASS" if all(bool(c.get("within_bounds")) for c in cps) else "FAIL"
 
 
-def rule5(det: dict | None, quality: str) -> str:
+def rule5(det: dict | None, quality: str, n_gold: int | None = None, n_bad: int | None = None) -> str:
+    """Gold only; INCONCLUSIVE below the declared floor (< 10 gold or < 3 bad gold test tasks)
+    whatever the detector's numbers. The counts are checked when given (evaluate_run always
+    passes them)."""
     if quality != "gold" or not det:
+        return "INCONCLUSIVE"
+    if floor_reason(n_gold, n_bad):
         return "INCONCLUSIVE"
     v = det.get("verdict")
     return v if v in VERDICTS else "INCONCLUSIVE"
@@ -485,6 +526,94 @@ def check_inputs(summary: dict, features: str = "a1", regime: bool = False) -> t
     return rf, rr
 
 
+class RecipeMismatch(ViewMismatch):
+    """A run trained under another C4 collapse recipe (z_norm, w_reg schedule, init, LR warm-up)
+    than the scoring declares."""
+
+
+def _recipe_value(k: str, v):
+    """Canonical form of one recipe field (True == "orthogonal"; numbers as float/int)."""
+    if k == "rank_floor_init":
+        return "orthogonal" if v is True else (v or False)
+    if k == "w_reg_start":
+        return float(v)
+    if k == "w_reg_anneal_epochs":
+        return int(v)
+    if k == "lr_warmup_epochs":
+        return None if v is None else float(v)
+    return v
+
+
+def recipe_request(src=None) -> dict:
+    """The full recipe block (``train.RECIPE_KEYS`` + ``default``) of a TrainConfig, a config dict
+    or a summary's ``recipe`` block; missing keys are the TrainConfig defaults (attempts 1-2)."""
+    from . import train as T
+    if src is None:
+        src = {}
+    get = (src.get if isinstance(src, dict) else lambda k, d=None: getattr(src, k, d))
+    out = {k: _recipe_value(k, get(k, getattr(T.TrainConfig, k))) for k in T.RECIPE_KEYS}
+    out["default"] = all(out[k] == _recipe_value(k, getattr(T.TrainConfig, k)) for k in T.RECIPE_KEYS)
+    return out
+
+
+def _recipe_effective(r: dict) -> dict:
+    """The fields that change training: the anneal knobs are inert under ``const`` and
+    ``z_norm_stats`` only matters for whiten/center, so those are compared only when active."""
+    from . import train as T
+    e = {k: r[k] for k in T.RECIPE_KEYS}
+    if e["w_reg_schedule"] != "anneal":
+        e.pop("w_reg_start"), e.pop("w_reg_anneal_epochs")
+    if e["z_norm"] not in ("whiten", "center"):
+        e.pop("z_norm_stats")
+    return e
+
+
+def run_recipe(summary: dict) -> dict:
+    """The recipe a run was trained with: summary ``recipe``, else its config; runs from before
+    the recipe options (no record) trained the defaults."""
+    from . import train as T
+    rec = summary.get("recipe")
+    if not isinstance(rec, dict) or not any(k in rec for k in T.RECIPE_KEYS):
+        rec = summary.get("config") or {}
+    return recipe_request(rec)
+
+
+RECIPE_FLAGS = {"z_norm": "--z-norm", "z_norm_stats": "--config z_norm_stats",
+                "w_reg_schedule": "--w-reg-schedule", "w_reg_start": "--w-reg-start",
+                "w_reg_anneal_epochs": "--w-reg-anneal-epochs",
+                "rank_floor_init": "--rank-floor-init", "lr_warmup_epochs": "--lr-warmup-epochs"}
+
+
+def check_recipe_match(summary: dict, recipe: dict | None = None) -> dict:
+    """Raise RecipeMismatch when the run's collapse recipe differs from the declared one (None =
+    the defaults), so a run cannot be scored under a recipe it was not trained with."""
+    from . import train as T
+    want = _recipe_effective(recipe_request(recipe or {}))
+    have_full = run_recipe(summary)
+    have = _recipe_effective(have_full)
+    diff = [k for k in T.RECIPE_KEYS if want.get(k, "<inert>") != have.get(k, "<inert>")]
+    if diff:
+        raise RecipeMismatch(
+            "run was trained with collapse recipe " + ", ".join(f"{k}={_rv(have.get(k, '<inert>'))}"
+                                                                for k in diff)
+            + " but this scoring declares " + ", ".join(f"{k}={_rv(want.get(k, '<inert>'))}"
+                                                        for k in diff)
+            + ": pass " + " ".join(f"{RECIPE_FLAGS[k]} {_rv(have[k])}" for k in diff if k in have)
+            + " (or retrain) — a run is scored only under the recipe it was trained with")
+    return have_full
+
+
+def _rv(v) -> str:
+    """A recipe value as a CLI token: None -> none, False -> off, 30.0 -> 30."""
+    if v is None:
+        return "none"
+    if v is False:
+        return "off"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
 def check_view(summary: dict, view: str | None) -> str | None:
     """The run's training view; raises ViewMismatch when it differs from the requested one."""
     from . import train as T
@@ -518,8 +647,10 @@ def value_head_trained(summary: dict, ds: P.Dataset) -> bool:
 
 def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
                  crit5: bool = True, view: str | None = None, log=print,
-                 features: str = "a1", regime: bool = False, err_states: bool = False) -> dict:
-    """Score one trained run on test (one pass per model) and apply the five rules."""
+                 features: str = "a1", regime: bool = False, err_states: bool = False,
+                 recipe: dict | None = None) -> dict:
+    """Score one trained run on test (one pass per model) and apply the five rules. ``recipe``
+    is the declared collapse recipe (None = the defaults); a run trained otherwise is refused."""
     from . import chains as C
     from . import progress as G
     from . import train as T
@@ -533,6 +664,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     summ = wm.summary or {}
     run_view = check_view(summ, view)
     check_inputs(summ, features, regime)
+    run_rec = check_recipe_match(summ, recipe)
     trained_v = value_head_trained(summ, ds)
     tr, va, te = ds.ids("train"), ds.ids("val"), ds.ids("test")
     m_tr, m_va, m_te = main_ids(ds, "train"), main_ids(ds, "val"), main_ids(ds, "test")
@@ -562,12 +694,14 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
 
     # 2. outcome (gold only for the verdict). An untrained value head is not a forecast: no
     # number is printed for it (not even the provisional one), whatever labels test has.
-    reasons = {}
+    reasons, floors = {}, {}            # floors: a gold criterion below its declared floor
     n_gold_te = len(main_ids(ds, "test", gold_only=True))
     if trained_v:
         gold = outcome_stats(tps["JEPA"], tps[best_o], ds, main_ids(ds, "test", gold_only=True), seed)
         allq = outcome_stats(tps["JEPA"], tps[best_o], ds, m_te, seed)
         v2 = rule2(gold)
+        if gold.get("quality") == "gold" and gold.get("n") and floor_reason(gold["n"]):
+            floors[2] = floor_reason(gold["n"])
     else:
         gold = {"n": 0, "n_gold_test": n_gold_te, "quality": "inconclusive", "skipped": UNTRAINED}
         allq = {"n": 0, "quality": "inconclusive", "skipped": UNTRAINED}
@@ -592,6 +726,13 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     test_z = np.concatenate([jepa.cache[t]["z"] for t in te]) if te else np.zeros((0, wm.cfg.d))
     cps = collapse_checkpoints(wm.run_dir, test_z, wm.cfg, seed)
     v4 = rule4(cps)
+    rec_out = {**run_rec, **{k: v for k, v in (summ.get("recipe") or {}).items()
+                             if k in ("lr_warmup_steps", "w_reg_per_epoch", "pre_norm_collapse")}}
+    if run_rec["z_norm"] is not None and te and hasattr(wm, "model"):
+        # informational: the encoder output before z_norm on the same test sequences (same
+        # weights; not part of any rule — C4 reads the normalised z the model actually uses)
+        rec_out["pre_norm_collapse_test"] = T._pre_norm_collapse(
+            wm.model, wm._windows({t: ds.steps[t] for t in te}), wm.cfg)
 
     # 5. Zeno detector on the value head
     c5, v5 = None, "INCONCLUSIVE"
@@ -608,7 +749,11 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
                               for t in tune + m_te}
             dets = ("jepa",) + dets
         c5 = G.criterion5(ds, scores, tune, m_te, detectors=dets)
-        v5 = rule5(c5["detectors"].get("jepa"), c5["quality"]) if trained_v else "INCONCLUSIVE"
+        n_bad_gold = c5["n_bad"] if c5["quality"] == "gold" else 0
+        v5 = (rule5(c5["detectors"].get("jepa"), c5["quality"], n_gold=n_gold_te, n_bad=n_bad_gold)
+              if trained_v else "INCONCLUSIVE")
+        if trained_v and c5["quality"] == "gold" and floor_reason(n_gold_te, n_bad_gold):
+            floors[5] = floor_reason(n_gold_te, n_bad_gold)
 
     # probes on test z (train fit, test score), per day
     probes = T.linear_probes(probe_arrays(jepa, ds, tr), probe_arrays(jepa, ds, te),
@@ -619,7 +764,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
         "run_id": wm.run_dir.name, "seed": wm.cfg.seed, "device": wm.cfg.device,
         "w_reg": wm.cfg.w_reg, "best_epoch": summ.get("best_epoch"), "view": run_view,
         "features": _cfg_inputs(wm.cfg)[0], "regime": _cfg_inputs(wm.cfg)[1],
-        "value_head_trained": trained_v, "reasons": reasons,
+        "value_head_trained": trained_v, "reasons": reasons, "floors": floors,
         "val_ce": val_ce,                                  # incl. step 0, as the baselines
         "val_next_ce_excl_step0": (summ.get("best") or {}).get("val_next_ce"),   # E3's readout
         "start_prior_matches_run": bool(len(run_sp) == len(sp) and np.allclose(run_sp, sp, atol=1e-9)),
@@ -628,7 +773,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
         "ranking": {"jepa": _rk(rk_jepa), "chain": _rk(rk_chain), "quality": q3,
                     "groups": [{"key": list(k), "chain": v["value"], "jepa": jv.get(k, {}).get("value"),
                                 "n_train": v["n"], "test": real.get(k)} for k, v in chain_vals.items()]},
-        "collapse": cps, "criterion5": c5, "probes": probes, "per_day": days,
+        "collapse": cps, "recipe": rec_out, "criterion5": c5, "probes": probes, "per_day": days,
         "verdicts": {1: v1, 2: v2, 3: v3, 4: v4, 5: v5},
         "seconds": time.perf_counter() - t_start,
     }
@@ -650,7 +795,8 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
                base_seed: int = 0, overrides: dict | None = None, tag: str = "steps",
                log=print, sweep_every_epoch: bool = False, w_reg_grid=None) -> dict:
     """Train k GPU seeds (seed 0 = the sweep winner when --sweep) + one CPU replay run.
-    ``overrides`` may set the A2-F/A2-D inputs (``features``, ``regime``); ``sweep_every_epoch``
+    ``overrides`` (TrainConfig fields, e.g. ``eval_config``'s) may set the A2-F/A2-D inputs
+    (``features``, ``regime``) and the C4 collapse recipe; ``sweep_every_epoch``
     is A2-W; ``w_reg_grid`` the sweep grid (default ``train.W_REG_GRID``). With no qualifying
     w_reg the seeds train the default w_reg and carry the sweep table (its ``note`` says C4 fails
     by construction)."""
@@ -804,6 +950,7 @@ def record_test_scoring(card: dict, home: Path | None = None) -> dict:
                      "invocation": card.get("created"), "manifest_sha256": m.get("sha256"),
                      "steps_sha256": m.get("steps_sha256"), "tasks_sha256": m.get("tasks_sha256"),
                      "run_id": r, "view": card.get("view"), "ablations": card.get("ablations"),
+                     "recipe": card.get("recipe"),
                      "git_sha": (card.get("git") or {}).get("sha")} for r in runs], home)
     same = [r for r in _ledger_rows(home) if r.get("manifest_sha256") == m.get("sha256")]
     return {"path": str(ledger_path(home)), "manifest_sha256": m.get("sha256"),
@@ -839,19 +986,24 @@ def annotate_regime(ds: P.Dataset) -> int:
 
 def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0, training=None,
               view: str = "streams", log=print, features: str = "a1", regime: bool = False,
-              err_states: bool = False) -> dict:
+              err_states: bool = False, recipe: dict | None = None) -> dict:
+    """``recipe``: the declared C4 collapse recipe (a TrainConfig / config dict / recipe block;
+    None = the defaults of attempts 1-2). Every run must have been trained with it."""
     from . import features as F
     F.check_feature_set(features)
+    recipe = recipe_request(recipe)
     for r in list(runs) + ([cpu_run] if cpu_run else []):      # refuse before ANY test pass
         check_view(_run_summary(r), view)
         check_inputs(_run_summary(r), features, regime)
+        check_recipe_match(_run_summary(r), recipe)
     if regime:
         annotate_regime(ds)
     sp = start_prior(ds, ds.ids("train"))
     t0 = time.perf_counter()
     base = fit_baselines(ds, sp, seed, regime=regime, err_states=err_states)
     t_base = time.perf_counter() - t0
-    kw = dict(view=view, log=log, features=features, regime=regime, err_states=err_states)
+    kw = dict(view=view, log=log, features=features, regime=regime, err_states=err_states,
+              recipe=recipe)
     per = [evaluate_run(r, ds, base, sp, seed, **kw) for r in runs]
     replay = (evaluate_run(cpu_run, ds, base, sp, seed, crit5=False, **kw)
               if cpu_run else None)
@@ -868,6 +1020,10 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
         if verdicts[k] == "INCONCLUSIVE" and labs["test"]["gold"] == 0:
             blockers.append(f"C{k}: {labs['test']['gold']} gold-labeled test tasks "
                             f"(gold labels needed: `apex-router labels review`, then rebuild)")
+    for k in (2, 5):
+        fl = next((p["floors"][k] for p in per if k in p.get("floors", {})), None)
+        if verdicts[k] == "INCONCLUSIVE" and fl and labs["test"]["gold"] > 0:
+            blockers.append(f"C{k}: {fl} — {FLOOR_SOURCE}")
     if verdicts[3] == "INCONCLUSIVE" and not any(p["ranking"]["chain"]["n_pairs"] for p in per):
         blockers.append("C3: no workflow pair with ≥ 5 labeled test tasks each and different "
                         "realized success")
@@ -896,11 +1052,14 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
                          "spread": float(np.max(rels) - np.min(rels)) if len(rels) > 1 else None},
         "ablations": ablations_of(features, regime, err_states,
                                   (training or {}).get("sweep_every_epoch")),
+        "recipe": recipe,
         "chain_steps": None,
         "w_reg_grid": ((training or {}).get("sweep") or {}).get("grid"),
         "c4_by_construction": (((training or {}).get("sweep") or {}).get("note")
                                if ((training or {}).get("sweep") or {}).get("every_epoch") else None),
         "verdicts": verdicts, "g1": overall(verdicts), "blockers": blockers, "rules": RULES,
+        "floors": {"2": FLOORS[2], "5": FLOORS[5], "gold_test_min": GOLD_TEST_FLOOR,
+                   "bad_gold_test_min": BAD_GOLD_FLOOR, "source": FLOOR_SOURCE},
         "seed_rule": "a criterion PASSes only if it PASSes on every seed; any FAIL → FAIL",
         "expected": "first G1 attempt on today's data is expected to FAIL on at least one "
                     "criterion (RESEARCH-FIT-BACKLOG P6) — this card says which and why",
@@ -937,6 +1096,64 @@ def _pci(ci, d=1):
     return "[—]" if lo is None else f"[{_pct(lo, d)}, {_pct(hi, d)}]"
 
 
+Z_NORM_READING = {
+    None: "raw z (no z_norm)",
+    "center": "centred z (a fixed affine map estimated on train: mean and one global scale, "
+              "applied before every head)",
+    "whiten": "centred and whitened z (a fixed ZCA map estimated on train, applied before every head)",
+    "layernorm": "layer-normalised z (per row, no train statistics)",
+}
+
+
+def schedule_text(r: dict, w=None) -> str:
+    """The SIGReg weight schedule of a recipe block (``w`` = the final w_reg, if known)."""
+    fin = "final w_reg" if w is None else f"{float(w):g}"
+    if r.get("w_reg_schedule") == "anneal":
+        return (f"anneal {float(r['w_reg_start']):g} → {fin} over {int(r['w_reg_anneal_epochs'])} "
+                f"epochs (geometric), then constant")
+    return f"constant {fin}"
+
+
+def recipe_text(r: dict | None) -> str:
+    """One line for the card's recipe section."""
+    r = recipe_request(r)
+    if r["default"]:
+        return ("default (attempts 1-2): z_norm none, SIGReg weight constant, rank_floor_init off, "
+                "LR warm-up min(warmup, 10% of updates)")
+    zn = r["z_norm"] or "none"
+    if r["z_norm"] in ("whiten", "center"):
+        zn += f" (training stats {r['z_norm_stats']}, train-set statistics before every checkpoint)"
+    lw = ("min(warmup, 10% of updates)" if r["lr_warmup_epochs"] is None
+          else f"{r['lr_warmup_epochs']:g} epochs")
+    return (f"z_norm {zn}; SIGReg weight {schedule_text(r)}; rank_floor_init "
+            f"{_rv(r['rank_floor_init'])}; LR warm-up {lw}")
+
+
+def _map_pair(p: dict, z_norm) -> str:
+    """Post-map (z_norm'd, C4's reading) beside pre-map (raw encoder) collapse for one run."""
+    cps = p.get("collapse") or []
+    val = next((c for c in cps if c.get("checkpoint") == f"epoch {p.get('best_epoch')} (val)"), {})
+    test = cps[-1] if cps else {}
+    pr = p.get("recipe") or {}
+    pv, pt = pr.get("pre_norm_collapse") or {}, pr.get("pre_norm_collapse_test") or {}
+
+    def ev(d):
+        return f"erank {_f(d.get('effective_rank'), 1)} SIGReg {_f(d.get('sigreg'))}"
+    return (f"post-map ({z_norm}) val {ev(val)} | test {ev(test)}; "
+            f"pre-map (raw encoder) val {ev(pv)} | test {ev(pt)}")
+
+
+def _floor_lines(card: dict, per: list, k: int) -> list:
+    """The declared n-floor of a gold criterion, and which runs it made INCONCLUSIVE."""
+    fl = (card.get("floors") or {}).get(str(k)) or FLOORS[k]
+    out = [f"   floor: {fl} ({FLOOR_SOURCE})"]
+    for p in per:
+        r = (p.get("floors") or {}).get(k) or (p.get("floors") or {}).get(str(k))
+        if r:
+            out.append(f"   INCONCLUSIVE ({p['run_id']}): {r} — the numbers above are not a verdict")
+    return out
+
+
 def render(card: dict) -> str:
     per = card["per_run"]
     p0 = per[0]
@@ -956,6 +1173,14 @@ def render(card: dict) -> str:
              + f"  (features {ab.get('features', 'a1')}, sweep rule "
              + ("every epoch" if ab.get("A2-W") else "n/a (no sweep)" if ab.get("A2-W") is None
                 else "best epoch") + ")")
+    rec = recipe_request(card.get("recipe"))
+    L.append("collapse recipe: " + recipe_text(rec))
+    for p in per:
+        pr = p.get("recipe") or {}
+        if pr.get("w_reg_per_epoch") is not None or pr.get("lr_warmup_steps") is not None:
+            L.append(f"  {p['run_id']}: w_reg per epoch ["
+                     + ", ".join(f"{w:.3g}" for w in pr.get("w_reg_per_epoch") or [])
+                     + f"], LR warm-up {pr.get('lr_warmup_steps')} steps")
     b = card["baselines"]
     L += ["", "next-action CE on test (nats/step, 95% session-cluster CI); step 0 of every sequence "
               "from one train start prior",
@@ -1001,6 +1226,7 @@ def render(card: dict) -> str:
                  f"{_f(a['b']['brier'])}; diff {_f(a['diff'])} {_ci(a['diff_ci'])}; n {a['n']}")
     L.append(f"   rule: {card['rules'][2]}; outcome baseline chosen on val: {b['best_outcome']}"
              + (f" ({b['outcome_note']})" if b["outcome_note"] else ""))
+    L += _floor_lines(card, per, 2)
     rk = p0["ranking"]
     jr = (f"not scored — {p0['reasons'][3]}" if 3 in p0["reasons"]
           else _pct(rk['jepa']['accuracy'], 0))
@@ -1028,6 +1254,14 @@ def render(card: dict) -> str:
              + ("the w_reg sweep checked every epoch (A2-W), as the rule above does"
                 if ab.get("A2-W") else "note the w_reg sweep checks the bounds at the best epoch "
                                        "only, the rule above checks every epoch"))
+    L.append(f"   (info) z_norm {rec['z_norm'] or 'none'}: SIGReg measured on "
+             f"{Z_NORM_READING.get(rec['z_norm'], str(rec['z_norm']))}; effective rank is "
+             "invariant to a fixed centring and scale")
+    if rec["z_norm"] is not None:
+        L.append(f"   (info, not in the rule) post-map z (what C4 reads) vs pre-map raw encoder "
+                 f"output, best-epoch val | scored test:")
+        for p in per:
+            L.append(f"     {p['run_id']}: {_map_pair(p, rec['z_norm'])}")
     c5 = p0["criterion5"]
     if 5 in p0["reasons"]:
         L.append(f"C5 {v[5]:<12} Zeno on value head: not scored — {p0['reasons'][5]}")
@@ -1048,6 +1282,7 @@ def render(card: dict) -> str:
     else:
         L.append(f"C5 {v[5]:<12} Zeno detector: 0 labeled test tasks (gold {sp['test']['gold']}) — not scored")
     L.append(f"   rule: {card['rules'][5]}")
+    L += _floor_lines(card, per, 5)
     L += ["", f"G1: {card['g1']}  ({', '.join(f'C{k} {x}' for k, x in v.items())})"]
     for bl in card["blockers"]:
         L.append(f"  blocked: {bl}")
@@ -1096,9 +1331,13 @@ def render(card: dict) -> str:
                      + (" [singular]" if r["singular"] else ""))
     tr = card.get("training") or {}
     if tr.get("sweep"):
-        L += ["", f"w_reg sweep (val only; grid {tr['sweep'].get('grid')}, rule: "
-                  f"{tr['sweep'].get('rule')}): " + "; ".join(
-            f"{r['w_reg']:g}: val CE {_f(r['val_next_ce'])}, erank {_f(r['effective_rank'], 1)}, SIGReg "
+        ann = rec["w_reg_schedule"] == "anneal"
+        L += ["", f"w_reg sweep (val only; grid {tr['sweep'].get('grid')}, schedule "
+                  f"{schedule_text(rec)}, rule: {tr['sweep'].get('rule')}): " + "; ".join(
+            f"{r['w_reg']:g}"
+            + (f" ({float(rec['w_reg_start']):g}→{r['w_reg']:g}/{int(rec['w_reg_anneal_epochs'])}ep)"
+               if ann else "")
+            + f": val CE {_f(r['val_next_ce'])}, erank {_f(r['effective_rank'], 1)}, SIGReg "
             f"{_f(r['sigreg'])}{' within' if r['within_bounds'] else ' OUTSIDE'}{' <- chosen' if r['chosen'] else ''}"
             for r in tr["sweep"]["candidates"])]
     return "\n".join(L)
@@ -1106,14 +1345,59 @@ def render(card: dict) -> str:
 
 # ---- CLI ------------------------------------------------------------------------------------------
 
-def cmd_evaluate(argv=None) -> int:
+EVAL_CONFIG_RESERVED = ("seed", "device")
+
+
+def eval_config(a) -> dict:
+    """TrainConfig overrides for ``evaluate`` (the trained config with --train; the declared
+    inputs + recipe a --run must match otherwise). Precedence: explicit flag > --config >
+    TrainConfig default. Validated through ``TrainConfig.from_dict`` (ValueError on a bad value).
+    ``seed`` / ``device`` are refused in --config: --seed/--seeds and the CPU replay set them, so
+    a config seed would silently relabel runs."""
+    from . import train as T
+    cfgd: dict = {}
+    if getattr(a, "config", None):
+        p = Path(a.config)
+        try:
+            cfgd = json.loads(p.read_text() if p.exists() else a.config)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"--config: not a JSON object or readable JSON file ({e})") from None
+        if not isinstance(cfgd, dict):
+            raise ValueError("--config: must be a JSON object")
+        bad = [k for k in EVAL_CONFIG_RESERVED if k in cfgd]
+        if bad:
+            raise ValueError(f"--config: {bad} are set by --seed/--seeds and the CPU replay, "
+                             "not by the config")
+    flags = {"epochs": a.epochs or None, "features": a.features,
+             "regime": True if a.regime else None,
+             "z_norm": None if a.z_norm is None else (None if a.z_norm == "none" else a.z_norm),
+             "w_reg_schedule": a.w_reg_schedule, "w_reg_start": a.w_reg_start,
+             "w_reg_anneal_epochs": a.w_reg_anneal_epochs,
+             "rank_floor_init": (None if a.rank_floor_init is None else
+                                 False if a.rank_floor_init == "off" else a.rank_floor_init)}
+    for k, v in flags.items():
+        if v is not None:
+            cfgd[k] = v
+    if a.z_norm == "none":                       # explicit "none" overrides a config's z_norm
+        cfgd["z_norm"] = None
+    if a.lr_warmup_epochs is not None:
+        s = str(a.lr_warmup_epochs).strip().lower()
+        try:
+            cfgd["lr_warmup_epochs"] = None if s == "none" else float(s)
+        except ValueError:
+            raise ValueError(f"--lr-warmup-epochs: a number or none, not {a.lr_warmup_epochs!r}") from None
+    T.TrainConfig.from_dict(cfgd)                # validate keys and recipe values now
+    return cfgd
+
+
+def evaluate_parser():
     import argparse
-    import sys
     ap = argparse.ArgumentParser(prog="apex-router worldmodel evaluate",
                                  description="G1 scorecard: JEPA vs baselines on the test split (scored once).")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--run", action="append", help="evaluate a saved run (repeat for several seeds)")
-    g.add_argument("--train", action="store_true", help="train on train/val first (default config)")
+    g.add_argument("--train", action="store_true",
+                   help="train on train/val first (default config; --config / recipe flags override)")
     ap.add_argument("--seeds", type=int, default=2, help="GPU seeds to train with --train (default 2)")
     ap.add_argument("--sweep", action="store_true", help="run train.sweep_w_reg first; seed 0 = the winner")
     ap.add_argument("--no-cpu", action="store_true", help="skip the --device cpu replay run")
@@ -1122,11 +1406,29 @@ def cmd_evaluate(argv=None) -> int:
     ap.add_argument("--synthetic", type=int, metavar="N", help="N synthetic sessions (fixtures.py)")
     ap.add_argument("--view", choices=("streams", "task"), default="streams",
                     help="sequence unit: one per (task, agent) stream (default) or the raw task order")
-    ap.add_argument("--features", choices=("a1", "a2f"), default="a1",
+    ap.add_argument("--features", choices=("a1", "a2f"), default=None,
                     help="JEPA inputs: a1 (attempt 1, default) or a2f (A2-F: + cross-step state); "
                          "a --run trained on other inputs is refused")
-    ap.add_argument("--regime", action="store_true",
+    ap.add_argument("--regime", action="store_true", default=None,
                     help="A2-D: day-regime feature for the logistic baseline and the JEPA")
+    ap.add_argument("--config", metavar="JSON|PATH",
+                    help="TrainConfig fields (JSON object or a path to one), merged before the "
+                         "sweep and seeds like `train --config`; explicit flags win over it. "
+                         "seed/device are set by --seed/--seeds and the CPU replay, not here")
+    rg = ap.add_argument_group("C4 collapse recipe (docs/research/2026-10-08-p6-c4-warmup-recipe.md; "
+                               "a --run trained under another recipe is refused)")
+    rg.add_argument("--z-norm", choices=("none", "layernorm", "whiten", "center"),
+                    help="latent normalisation (default none)")
+    rg.add_argument("--w-reg-schedule", choices=("const", "anneal"),
+                    help="SIGReg weight schedule (default const)")
+    rg.add_argument("--w-reg-start", type=float, metavar="W",
+                    help="anneal: SIGReg weight at epoch 0 (default 30)")
+    rg.add_argument("--w-reg-anneal-epochs", type=int, metavar="K",
+                    help="anneal: epochs to reach the final w_reg (default 4)")
+    rg.add_argument("--lr-warmup-epochs", metavar="E|none",
+                    help="LR warm-up length in epochs (default none = min(warmup, 10%% of updates))")
+    rg.add_argument("--rank-floor-init", choices=("off", "orthogonal", "centered"),
+                    help="z projection init (default off)")
     ap.add_argument("--err-states", action="store_true",
                     help="A2-E: error-conditioned <class>!err states in the absorbing chain")
     ap.add_argument("--sweep-every-epoch", action="store_true",
@@ -1137,7 +1439,12 @@ def cmd_evaluate(argv=None) -> int:
     ap.add_argument("--json", action="store_true")
     g.add_argument("--backfill-ledger", action="store_true",
                    help="only seed eval/ledger.jsonl from the saved scorecards (scores nothing)")
-    a = ap.parse_args(list(argv or []))
+    return ap
+
+
+def cmd_evaluate(argv=None) -> int:
+    import sys
+    a = evaluate_parser().parse_args(list(argv or []))
     if (a.sweep_every_epoch or a.w_reg_grid) and not (a.train and a.sweep):
         print("apex-router worldmodel evaluate: --sweep-every-epoch / --w-reg-grid need "
               "--train --sweep", file=sys.stderr)
@@ -1150,6 +1457,11 @@ def cmd_evaluate(argv=None) -> int:
         except ValueError as e:
             print(f"apex-router worldmodel evaluate: --w-reg-grid: {e}", file=sys.stderr)
             return 2
+    try:
+        cfgd = eval_config(a)
+    except ValueError as e:
+        print(f"apex-router worldmodel evaluate: {e}", file=sys.stderr)
+        return 2
     if a.backfill_ledger:
         n = backfill_ledger()
         print(f"ledger: {n} line(s) backfilled into {ledger_path()}" if n else
@@ -1175,9 +1487,9 @@ def cmd_evaluate(argv=None) -> int:
     quiet = (lambda m: None) if a.json else (lambda m: print(m, file=sys.stderr))
     training, cpu_run = None, None
     t0 = time.perf_counter()
+    features, regime = cfgd.get("features", "a1"), bool(cfgd.get("regime", False))
     if a.train:
-        ov = {"epochs": a.epochs} if a.epochs else {}
-        ov.update(features=a.features, regime=bool(a.regime))
+        ov = dict(cfgd)
         src = (f"{P.data_dir() / 'steps.jsonl'}:{a.view}" if tag == "steps"
                else f"synthetic-fixtures:{a.synthetic}")
         training = train_runs(ds, src,
@@ -1191,8 +1503,8 @@ def cmd_evaluate(argv=None) -> int:
     t_train = time.perf_counter() - t0
     try:
         card = scorecard(ds, desc, runs, cpu_run=cpu_run, seed=a.seed, training=training,
-                         view=a.view, log=quiet, features=a.features, regime=a.regime,
-                         err_states=a.err_states)
+                         view=a.view, log=quiet, features=features, regime=regime,
+                         err_states=a.err_states, recipe=cfgd)
     except ViewMismatch as e:
         print(f"apex-router worldmodel evaluate: {e}", file=sys.stderr)
         return 2
