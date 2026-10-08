@@ -40,6 +40,17 @@ the raw interleaved order instead (E2/E3's readouts) for comparison.
 
 With several seeds a criterion PASSes only if it PASSes on every seed (any FAIL → FAIL); the
 CPU replay run is reported but not part of the verdict.
+
+**Guards.** A run trained on another sequence view than `--view` is refused before any test
+pass (`summary.view`, else the data-source suffix `…:streams` / `…:task`). A run that saw no
+labelled train task has an untrained value head (a random projection): criteria 2, 3 and 5
+are INCONCLUSIVE for it ("value head untrained (0 labelled train tasks)") whatever the test
+labels, and no outcome number is printed for it, not even a provisional one.
+
+**Ledger.** Every scoring of the real test split appends one line per run to
+`<data home>/eval/ledger.jsonl` (0600: ts, manifest + steps/tasks sha256, run id, view, git
+sha); the card prints how often the split has been scored for this manifest. The first write
+backfills from the saved scorecards (`--backfill-ledger` does only that).
 """
 from __future__ import annotations
 
@@ -55,6 +66,7 @@ import numpy as np
 from . import protocol as P
 
 REL_MIN = 0.05
+DAY_MIN_N = 30              # per-day rows with fewer test steps are flagged "too few"
 SUCCESS_V = 0.5             # Zeno threshold on the value head: converging short of P(success) 0.5
 VERDICTS = ("PASS", "FAIL", "INCONCLUSIVE")
 RULES = {
@@ -223,7 +235,8 @@ def per_day(tps: list) -> list:
         for l_, d, s in zip(tp.loss, tp.days, tp.sids):
             by.setdefault(d, []).append((l_, s))
         for d, v in by.items():
-            r = rows.setdefault(d, {"day": d, "n": len(v), "n_sessions": len({s for _, s in v})})
+            r = rows.setdefault(d, {"day": d, "n": len(v), "n_sessions": len({s for _, s in v}),
+                                    "too_few": len(v) < DAY_MIN_N})
             r[tp.name] = float(np.mean([x for x, _ in v]))
     return [rows[d] for d in sorted(rows, key=str)]
 
@@ -365,9 +378,9 @@ def probe_arrays(jepa: Jepa, ds: P.Dataset, ids, prefix=P.OUTCOME_PREFIX) -> dic
             "y_next": cat(y, (0,)).astype(np.int64),
             "phase": np.concatenate([np.asarray(p, np.int64) for p in ph]) if ph else np.zeros(0, np.int64),
             "fail_b": np.concatenate([np.asarray(p, np.int64) for p in fb]) if fb else np.zeros(0, np.int64),
-            "z_last": np.array(zl) if zl else np.zeros((0, d)),
-            "x_last": np.array(xl) if xl else np.zeros((0, F.N_FEAT)),
-            "outcome_last": np.array(ol, dtype=float)}
+            "z_prefix": np.array(zl) if zl else np.zeros((0, d)),
+            "x_prefix": np.array(xl) if xl else np.zeros((0, F.N_FEAT)),
+            "outcome_prefix": np.array(ol, dtype=float)}
 
 
 def collapse_checkpoints(run_dir: Path, test_z, cfg, seed: int) -> list:
@@ -418,8 +431,46 @@ def fit_baselines(ds: P.Dataset, sp, seed: int = 0) -> dict:
             "outcome_note": "" if val_brier else "no labeled val tasks: the prior (train base rate) by rule"}
 
 
+UNTRAINED = "value head untrained (0 labelled train tasks)"
+
+
+class ViewMismatch(ValueError):
+    pass
+
+
+def check_view(summary: dict, view: str | None) -> str | None:
+    """The run's training view; raises ViewMismatch when it differs from the requested one."""
+    from . import train as T
+    rv = summary.get("view") or T.run_view((summary.get("data") or {}).get("source"))
+    if view is not None and rv is not None and rv != view:
+        raise ViewMismatch(f"run was trained on the {rv!r} view but --view is {view!r}: CE over "
+                           f"different sequences is not comparable — pass --view {rv} or retrain")
+    return rv
+
+
+def _run_summary(run) -> dict:
+    """summary.json of a run id or directory, without loading weights ({} if absent)."""
+    from . import train as T
+    p = Path(run)
+    if not p.is_dir():
+        p = T.data_home() / "runs" / str(run)
+    try:
+        return json.loads((p / "summary.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def value_head_trained(summary: dict, ds: P.Dataset) -> bool:
+    """False when the run saw no labelled train task (its value head is a random projection).
+    Read from the run's summary; a run without that record falls back to the dataset."""
+    n = (summary.get("data") or {}).get("labelled_train")
+    if n is None:
+        n = len(main_ids(ds, "train", labeled=True))
+    return n > 0
+
+
 def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
-                 crit5: bool = True, log=print) -> dict:
+                 crit5: bool = True, view: str | None = None, log=print) -> dict:
     """Score one trained run on test (one pass per model) and apply the five rules."""
     from . import chains as C
     from . import progress as G
@@ -431,10 +482,20 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
                          "evaluate a run trained with macro=false")
     if wm.cfg.embed:
         raise ValueError("embedding runs key embeddings by task id; not supported by the stream view")
+    summ = wm.summary or {}
+    run_view = check_view(summ, view)
+    trained_v = value_head_trained(summ, ds)
     tr, va, te = ds.ids("train"), ds.ids("val"), ds.ids("test")
     m_tr, m_va, m_te = main_ids(ds, "train"), main_ids(ds, "val"), main_ids(ds, "test")
     jepa = Jepa(wm, sp, base_rate=_base_rate(ds, m_tr))
     jepa.prepare(ds, tr + va)                      # train/val: values, probes, criterion-5 tuning
+    # val CE scored like the baselines' (step 0 from the start prior included)
+    n_v = tot_v = 0.0
+    for t in va:
+        lp = jepa.task_logprobs(ds.steps[t], ds.tasks[t])
+        tot_v -= float(np.sum(np.maximum(lp, math.log(P.EPS))))
+        n_v += len(lp)
+    val_ce = tot_v / n_v if n_v else None
     jepa.prepare(ds, te)                           # THE test pass
     models = {m.name: m for m in base["models"]}
     tps = {"JEPA": _TestPass(jepa, ds, te, m_te)}
@@ -450,18 +511,32 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     c1_main = paired(tps["JEPA"], tps[best], seed, mask=pm) if pm.any() and not pm.all() else None
     v1 = rule1(c1["rel"], c1["rel_ci"][0])
 
-    # 2. outcome (gold only for the verdict)
-    gold = outcome_stats(tps["JEPA"], tps[best_o], ds, main_ids(ds, "test", gold_only=True), seed)
-    allq = outcome_stats(tps["JEPA"], tps[best_o], ds, m_te, seed)
-    v2 = rule2(gold)
+    # 2. outcome (gold only for the verdict). An untrained value head is not a forecast: no
+    # number is printed for it (not even the provisional one), whatever labels test has.
+    reasons = {}
+    n_gold_te = len(main_ids(ds, "test", gold_only=True))
+    if trained_v:
+        gold = outcome_stats(tps["JEPA"], tps[best_o], ds, main_ids(ds, "test", gold_only=True), seed)
+        allq = outcome_stats(tps["JEPA"], tps[best_o], ds, m_te, seed)
+        v2 = rule2(gold)
+    else:
+        gold = {"n": 0, "n_gold_test": n_gold_te, "quality": "inconclusive", "skipped": UNTRAINED}
+        allq = {"n": 0, "quality": "inconclusive", "skipped": UNTRAINED}
+        v2 = "INCONCLUSIVE"
+        reasons[2] = UNTRAINED
 
     # 3. workflow ranking
     chain_vals = C.workflow_values(ds, m_tr)
     real = C.realized(ds, m_te)
     rk_chain = C.ranking_accuracy(chain_vals, real)
-    jv = jepa_workflow_values(jepa, ds, chain_vals, m_tr)
-    rk_jepa = C.ranking_accuracy(jv, real)
-    v3 = rule3(rk_jepa["accuracy"], rk_chain["accuracy"], rk_chain["n_pairs"])
+    if trained_v:
+        jv = jepa_workflow_values(jepa, ds, chain_vals, m_tr)
+        rk_jepa = C.ranking_accuracy(jv, real)
+        v3 = rule3(rk_jepa["accuracy"], rk_chain["accuracy"], rk_chain["n_pairs"])
+    else:
+        jv, rk_jepa = {}, {"accuracy": None, "n_pairs": 0}
+        v3 = "INCONCLUSIVE"
+        reasons[3] = UNTRAINED
     q3 = P.quality_of(ds.tasks[t].get("outcome_src") for t in m_te if P.label(ds.tasks[t]) is not None)
 
     # 4. collapse
@@ -472,25 +547,31 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     # 5. Zeno detector on the value head
     c5, v5 = None, "INCONCLUSIVE"
     labeled_test = [t for t in m_te if P.label(ds.tasks[t]) is not None]
+    if not trained_v:
+        reasons[5] = UNTRAINED
     if crit5 and labeled_test:
         chain = chain or C.fit_tasks(ds, m_tr)
         tune = m_tr + m_va
         scores = G.detector_scores(ds, tune + m_te, chain, seed=seed)
-        scores["jepa"] = {t: value_zeno_scores(jepa.value_series(t), seed=seed, task_id=t)
-                          for t in tune + m_te}
-        c5 = G.criterion5(ds, scores, tune, m_te, detectors=("jepa", "zeno", "stalled", "rho"))
-        v5 = rule5(c5["detectors"].get("jepa"), c5["quality"])
+        dets = ("zeno", "stalled", "rho")
+        if trained_v:
+            scores["jepa"] = {t: value_zeno_scores(jepa.value_series(t), seed=seed, task_id=t)
+                              for t in tune + m_te}
+            dets = ("jepa",) + dets
+        c5 = G.criterion5(ds, scores, tune, m_te, detectors=dets)
+        v5 = rule5(c5["detectors"].get("jepa"), c5["quality"]) if trained_v else "INCONCLUSIVE"
 
     # probes on test z (train fit, test score), per day
     probes = T.linear_probes(probe_arrays(jepa, ds, tr), probe_arrays(jepa, ds, te),
                              wm.cfg.d_control, seed=seed)
     days = per_day([tps["JEPA"], tps[best]] + [tp for k, tp in tps.items() if k not in ("JEPA", best)])
-    summ = wm.summary or {}
     run_sp = np.asarray(summ.get("start_prior") or sp)
     return {
         "run_id": wm.run_dir.name, "seed": wm.cfg.seed, "device": wm.cfg.device,
-        "w_reg": wm.cfg.w_reg, "best_epoch": summ.get("best_epoch"),
-        "val_next_ce": (summ.get("best") or {}).get("val_next_ce"),
+        "w_reg": wm.cfg.w_reg, "best_epoch": summ.get("best_epoch"), "view": run_view,
+        "value_head_trained": trained_v, "reasons": reasons,
+        "val_ce": val_ce,                                  # incl. step 0, as the baselines
+        "val_next_ce_excl_step0": (summ.get("best") or {}).get("val_next_ce"),   # E3's readout
         "start_prior_matches_run": bool(len(run_sp) == len(sp) and np.allclose(run_sp, sp, atol=1e-9)),
         "ce": ce, "paired": pairs, "c1": c1, "c1_main_streams": c1_main,
         "outcome_gold": gold, "outcome_all": allq,
@@ -561,32 +642,113 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
 
 # ---- provenance + persistence ---------------------------------------------------------------------
 
-def git_sha() -> dict:
-    here = Path(__file__).resolve().parent
+def git_sha(here: Path | None = None) -> dict:
+    """HEAD of the repo holding this package, and whether anything under the repo's top-level
+    `src/` differs from it (`:/src` is relative to the repo root, not to `here`)."""
+    here = Path(here or Path(__file__).resolve().parent)
     try:
         sha = subprocess.run(["git", "-C", str(here), "rev-parse", "HEAD"], capture_output=True,
                              text=True, timeout=5).stdout.strip() or None
-        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain", "--", "src"],
+        if sha is None:
+            return {"sha": None, "dirty_src": None}
+        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain", "--", ":/src"],
                                capture_output=True, text=True, timeout=5).stdout.strip()
         return {"sha": sha, "dirty_src": bool(dirty)}
     except (OSError, subprocess.SubprocessError):
         return {"sha": None, "dirty_src": None}
 
 
+def _sha256_file(p: Path) -> str | None:
+    h = hashlib.sha256()
+    try:
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
 def manifest_info(home: Path | None = None) -> dict:
-    p = (home or P.data_dir()) / "manifest.json"
+    """Manifest hash + its split bounds and counts, and the hashes of the data files it built."""
+    home = home or P.data_dir()
+    p = home / "manifest.json"
+    data = {"steps_sha256": _sha256_file(home / "steps.jsonl"),
+            "tasks_sha256": _sha256_file(home / "tasks.jsonl")}
     try:
         raw = p.read_bytes()
     except OSError:
-        return {"path": str(p), "sha256": None}
+        return {"path": str(p), "sha256": None, **data}
     try:
         m = json.loads(raw)
     except ValueError:
         m = {}
-    return {"path": str(p), "sha256": hashlib.sha256(raw).hexdigest(),
+    return {"path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), **data,
             "built_at": m.get("built_at"), "git_sha": m.get("git_sha"),
             "counts": m.get("counts"), "splits": m.get("splits"),
-            "split_boundaries": m.get("split_boundaries") or m.get("boundaries")}
+            "split_bounds": m.get("split_bounds")}
+
+
+# ---- test-scoring ledger (append-only) ------------------------------------------------------------
+
+def ledger_path(home: Path | None = None) -> Path:
+    return (home or P.data_dir()) / "eval" / "ledger.jsonl"
+
+
+def _ledger_rows(home: Path | None = None) -> list:
+    return P.read_jsonl(ledger_path(home))
+
+
+def _append_ledger(rows: list, home: Path | None = None) -> None:
+    from . import train as T
+    p = ledger_path(home)
+    T._mkdir_private(p.parent.parent)
+    T._mkdir_private(p.parent)
+    for r in rows:
+        T._append_private(p, json.dumps(r, sort_keys=True))
+
+
+def backfill_ledger(home: Path | None = None) -> int:
+    """First use: one ledger line per test scoring recorded in the saved scorecards (real data
+    only; data-file hashes were not recorded then, so they are null). No-op once a ledger exists."""
+    if _ledger_rows(home):
+        return 0
+    d = ledger_path(home).parent
+    rows = []
+    for f in sorted(d.glob("*.json")):
+        try:
+            c = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if c.get("kind") != "worldmodel-g1-scorecard" or str(c.get("source", "")).startswith("synthetic"):
+            continue
+        m = c.get("manifest") or {}
+        runs = list(c.get("runs") or []) + ([c["cpu_replay_run"]] if c.get("cpu_replay_run") else [])
+        for r in runs:
+            rows.append({"ts": c.get("created"), "invocation": c.get("created"),
+                         "manifest_sha256": m.get("sha256"), "steps_sha256": m.get("steps_sha256"),
+                         "tasks_sha256": m.get("tasks_sha256"), "run_id": r,
+                         "view": c.get("view"), "git_sha": (c.get("git") or {}).get("sha"),
+                         "card": f.name, "backfilled": True})
+    if rows:
+        _append_ledger(rows, home)
+    return len(rows)
+
+
+def record_test_scoring(card: dict, home: Path | None = None) -> dict:
+    """Append one ledger line per run whose test split was scored by this invocation, and count
+    the scorings recorded for this manifest (this one included)."""
+    backfill_ledger(home)
+    m = card.get("manifest") or {}
+    runs = list(card.get("runs") or []) + ([card["cpu_replay_run"]] if card.get("cpu_replay_run") else [])
+    _append_ledger([{"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                     "invocation": card.get("created"), "manifest_sha256": m.get("sha256"),
+                     "steps_sha256": m.get("steps_sha256"), "tasks_sha256": m.get("tasks_sha256"),
+                     "run_id": r, "view": card.get("view"),
+                     "git_sha": (card.get("git") or {}).get("sha")} for r in runs], home)
+    same = [r for r in _ledger_rows(home) if r.get("manifest_sha256") == m.get("sha256")]
+    return {"path": str(ledger_path(home)), "manifest_sha256": m.get("sha256"),
+            "scorings": len(same), "invocations": len({r.get("invocation") for r in same})}
 
 
 def save(card: dict, home: Path | None = None) -> Path:
@@ -609,29 +771,37 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
     t0 = time.perf_counter()
     base = fit_baselines(ds, sp, seed)
     t_base = time.perf_counter() - t0
-    per = [evaluate_run(r, ds, base, sp, seed, log=log) for r in runs]
-    replay = evaluate_run(cpu_run, ds, base, sp, seed, crit5=False, log=log) if cpu_run else None
+    for r in list(runs) + ([cpu_run] if cpu_run else []):      # refuse before ANY test pass
+        check_view(_run_summary(r), view)
+    per = [evaluate_run(r, ds, base, sp, seed, view=view, log=log) for r in runs]
+    replay = (evaluate_run(cpu_run, ds, base, sp, seed, crit5=False, view=view, log=log)
+              if cpu_run else None)
     verdicts = {k: combine(p["verdicts"][k] for p in per) for k in range(1, 6)}
     labs = {s: {"gold": len(main_ids(ds, s, gold_only=True)),
                 "labeled": len(main_ids(ds, s, labeled=True)), "tasks": len(main_ids(ds, s))}
             for s in P.SPLITS}
     blockers = []
+    untrained = any(not p["value_head_trained"] for p in per)
+    for k in (2, 3, 5):
+        if verdicts[k] == "INCONCLUSIVE" and untrained:
+            blockers.append(f"C{k}: {UNTRAINED} — label train tasks, then rebuild and retrain")
     for k in (2, 5):
-        if verdicts[k] == "INCONCLUSIVE":
+        if verdicts[k] == "INCONCLUSIVE" and labs["test"]["gold"] == 0:
             blockers.append(f"C{k}: {labs['test']['gold']} gold-labeled test tasks "
                             f"(gold labels needed: `apex-router labels review`, then rebuild)")
-    if verdicts[3] == "INCONCLUSIVE":
+    if verdicts[3] == "INCONCLUSIVE" and not any(p["ranking"]["chain"]["n_pairs"] for p in per):
         blockers.append("C3: no workflow pair with ≥ 5 labeled test tasks each and different "
                         "realized success")
     for k in (1, 4):
         if verdicts[k] == "INCONCLUSIVE":
             blockers.append(f"C{k}: no scorable checkpoint/steps")
     rels = [p["c1"]["rel"] for p in per if p["c1"]["rel"] is not None]
-    return {
+    synthetic = desc.startswith("synthetic")
+    card = {
         "kind": "worldmodel-g1-scorecard", "schema": 1,
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": desc, "view": view, "git": git_sha(),
-        "manifest": None if desc.startswith("synthetic") else manifest_info(),
+        "manifest": None if synthetic else manifest_info(),
         "runs": [p["run_id"] for p in per], "seeds": [p["seed"] for p in per],
         "cpu_replay_run": replay["run_id"] if replay else None, "training": training,
         "splits": {s: {"sequences": len(ds.ids(s)), "tasks": labs[s]["tasks"],
@@ -650,6 +820,9 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
         "expected": "first G1 attempt on today's data is expected to FAIL on at least one "
                     "criterion (RESEARCH-FIT-BACKLOG P6) — this card says which and why",
     }
+    # every scoring of the real test split is recorded (synthetic data has no test to protect)
+    card["ledger"] = None if synthetic else record_test_scoring(card)
+    return card
 
 
 def _f(x, d=3):
@@ -692,9 +865,10 @@ def render(card: dict) -> str:
     b = card["baselines"]
     L += ["", "next-action CE on test (nats/step, 95% session-cluster CI); step 0 of every sequence "
               "from one train start prior",
+          "  (val CE: every val step incl. step 0, the same way for every model)",
           f"  {'model':<26} {'val CE':>7}   {'test CE':<24} n steps / sessions"]
     for name, c in p0["ce"].items():
-        vce = p0["val_next_ce"] if name == "JEPA" else b["val_ce"].get(name)
+        vce = p0["val_ce"] if name == "JEPA" else b["val_ce"].get(name)
         tag = "  <- best on val" if name == b["best_next_action"] else ""
         L.append(f"  {name:<26} {_f(vce):>7}   {_f(c['value'])} {_ci(c['ci']):<17} "
                  f"{c['n']} / {c['n_sessions']}{tag}")
@@ -718,7 +892,10 @@ def render(card: dict) -> str:
         m = p0["c1_main_streams"]
         L.append(f"   (info) main streams only: rel {_pct(m['rel'])} {_pci(m['rel_ci'])}, n {m['n']} steps")
     g, a = p0["outcome_gold"], p0["outcome_all"]
-    if g.get("n"):
+    if g.get("skipped"):
+        L.append(f"C2 {v[2]:<12} outcome Brier: not scored — {g['skipped']} "
+                 f"({g.get('n_gold_test', 0)} gold-labeled test tasks)")
+    elif g.get("n"):
         L.append(f"C2 {v[2]:<12} outcome Brier (gold, first {P.OUTCOME_PREFIX} steps): JEPA "
                  f"{_f(g['a']['brier'])} vs {g['b']['model']} {_f(g['b']['brier'])}; diff {_f(g['diff'])} "
                  f"{_ci(g['diff_ci'])}; ECE {_f(g['a']['ece'])} vs {_f(g['b']['ece'])}; n {g['n']} tasks / "
@@ -731,7 +908,9 @@ def render(card: dict) -> str:
     L.append(f"   rule: {card['rules'][2]}; outcome baseline chosen on val: {b['best_outcome']}"
              + (f" ({b['outcome_note']})" if b["outcome_note"] else ""))
     rk = p0["ranking"]
-    L.append(f"C3 {v[3]:<12} workflow ranking: JEPA {_pct(rk['jepa']['accuracy'], 0)} vs chain "
+    jr = (f"not scored — {p0['reasons'][3]}" if 3 in p0["reasons"]
+          else _pct(rk['jepa']['accuracy'], 0))
+    L.append(f"C3 {v[3]:<12} workflow ranking: JEPA {jr} vs chain "
              f"{_pct(rk['chain']['accuracy'], 0)} over {rk['chain']['n_pairs']} pairs "
              f"(labels: {rk['quality']}); groups valued on train: {len(rk['groups'])}")
     L.append(f"   rule: {card['rules'][3]}")
@@ -747,8 +926,18 @@ def render(card: dict) -> str:
     if len(per) > 1:
         L.append(f"C4 {v[4]:<12} (across seeds)")
     L.append(f"   rule: {card['rules'][4]}")
+    alone = ", ".join(f"{p['run_id']} {'within' if p['collapse'][-1]['within_bounds'] else 'OUTSIDE'}"
+                      for p in per)
+    L.append(f"   (info) the scored checkpoint alone (its test z): {alone}; note the w_reg sweep "
+             "checks the bounds at the best epoch only, the rule above checks every epoch")
     c5 = p0["criterion5"]
-    if c5:
+    if 5 in p0["reasons"]:
+        L.append(f"C5 {v[5]:<12} Zeno on value head: not scored — {p0['reasons'][5]}")
+        if c5:
+            dz = c5["detectors"].get("zeno", {})
+            L.append(f"   proxy Zeno (tests/errors) for reference ({c5['quality']}): {dz.get('verdict')}, "
+                     f"wins {dz.get('wins')} / losses {dz.get('losses')}, FPR {_pct(dz.get('fpr', {}).get('rate'))}")
+    elif c5:
         dj = c5["detectors"].get("jepa", {})
         L.append(f"C5 {v[5]:<12} Zeno on value head ({c5['quality']}): wins {dj.get('wins')} / losses "
                  f"{dj.get('losses')}, win share {_pct(dj.get('win_share', {}).get('rate'))} "
@@ -765,8 +954,14 @@ def render(card: dict) -> str:
     for bl in card["blockers"]:
         L.append(f"  blocked: {bl}")
     L.append(f"  {card['expected']}")
+    led = card.get("ledger")
+    if led:
+        L.append(f"  test split scored {led['scorings']} times for this manifest (ledger; "
+                 f"{led['invocations']} invocations): {led['path']}")
     # probes
-    L += ["", "linear probes on test z (fit on train z, scored on test; raw = same probe on the step features)"]
+    L += ["", "linear probes on test z (fit on train z, scored on test; raw = same probe on the step features)",
+          "  (phase and fail_bucket are model inputs: those probes are near-tautological and only "
+          "check that z keeps the state; outcome rows read the outcome prefix, never the last step)"]
     for target, by in p0["probes"].items():
         for inp, r in by.items():
             if r.get("skipped"):
@@ -777,10 +972,12 @@ def render(card: dict) -> str:
                      f"acc {_f(r['acc'])}{ex}")
     # per day
     names = ["JEPA", b["best_next_action"]] + [k for k in p0["ce"] if k not in ("JEPA", b["best_next_action"])]
-    L += ["", "per day (test, UTC; CE nats/step, no CI — a day is a handful of sessions)"]
+    L += ["", f"per day (test, UTC; CE nats/step, no CI — a day is a handful of sessions; "
+              f"n < {DAY_MIN_N} steps flagged too few)"]
     for r in p0["per_day"]:
         L.append(f"  {r['day']}  n {r['n']:<5} sessions {r['n_sessions']:<3} "
-                 + "  ".join(f"{n} {_f(r.get(n))}" for n in names))
+                 + "  ".join(f"{n} {_f(r.get(n))}" for n in names)
+                 + ("  [too few]" if r["n"] < DAY_MIN_N else ""))
     if card.get("cpu_replay"):
         c = card["cpu_replay"]
         L += ["", f"cpu replay {c['run_id']}: test CE {_f(c['ce']['JEPA']['value'])}, C1 rel "
@@ -817,7 +1014,14 @@ def cmd_evaluate(argv=None) -> int:
                     help="sequence unit: one per (task, agent) stream (default) or the raw task order")
     ap.add_argument("--no-save", action="store_true", help="do not write the scorecard JSON")
     ap.add_argument("--json", action="store_true")
+    g.add_argument("--backfill-ledger", action="store_true",
+                   help="only seed eval/ledger.jsonl from the saved scorecards (scores nothing)")
     a = ap.parse_args(list(argv or []))
+    if a.backfill_ledger:
+        n = backfill_ledger()
+        print(f"ledger: {n} line(s) backfilled into {ledger_path()}" if n else
+              f"ledger: nothing to backfill ({ledger_path()} exists or no real-data scorecards)")
+        return 0
     from .jepa import mlx_available
     if not mlx_available():
         print("mlx is not installed: `pip install 'apex-router[worldmodel]'` (Apple Silicon only)",
@@ -840,15 +1044,21 @@ def cmd_evaluate(argv=None) -> int:
     t0 = time.perf_counter()
     if a.train:
         ov = {"epochs": a.epochs} if a.epochs else {}
-        training = train_runs(ds, f"{tag}:{a.view}" if tag == "steps" else f"synthetic-fixtures:{a.synthetic}",
+        src = (f"{P.data_dir() / 'steps.jsonl'}:{a.view}" if tag == "steps"
+               else f"synthetic-fixtures:{a.synthetic}")
+        training = train_runs(ds, src,
                               seeds=max(1, a.seeds), sweep=a.sweep, cpu=not a.no_cpu,
                               base_seed=a.seed, overrides=ov, tag=tag, log=quiet)
         runs, cpu_run = training["runs"], training["cpu_run"]
     else:
         runs = a.run
     t_train = time.perf_counter() - t0
-    card = scorecard(ds, desc, runs, cpu_run=cpu_run, seed=a.seed, training=training, view=a.view,
-                     log=quiet)
+    try:
+        card = scorecard(ds, desc, runs, cpu_run=cpu_run, seed=a.seed, training=training,
+                         view=a.view, log=quiet)
+    except ViewMismatch as e:
+        print(f"apex-router worldmodel evaluate: {e}", file=sys.stderr)
+        return 2
     card["timings"] = {"train_s": t_train, "evaluate_s": time.perf_counter() - t0 - t_train}
     if not a.no_save:
         card["path"] = str(save(card))

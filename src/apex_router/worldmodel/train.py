@@ -177,6 +177,41 @@ def load_dataset(home: Path | None = None) -> Dataset:
     return Dataset(tasks=tasks, meta=meta, source=str(home / "steps.jsonl"))
 
 
+VIEWS = ("streams", "task")
+
+
+def load_view(view: str = "streams", home: Path | None = None) -> Dataset:
+    """E1's data as training sequences. ``streams`` (default, contract §1: ``i``/``dt``/``phase``
+    count within each (task, agent) stream): one sequence per stream, a subagent stream is
+    ``<task>@<agent>`` with no outcome (the label is the task's, on its main stream). ``task``:
+    the raw per-task order (steps sorted by ``i``, which interleaves main thread and subagents).
+    The view is recorded as the source suffix (``…/steps.jsonl:streams``) and in ``summary.json``."""
+    if view not in VIEWS:
+        raise ValueError(f"view must be one of {VIEWS}, not {view!r}")
+    from . import protocol as P
+    from .evaluate import stream_view
+    home = home or data_home()
+    ds = P.load(home / "steps.jsonl", home / "tasks.jsonl")
+    if view == "streams":
+        ds = stream_view(ds)
+    return Dataset(tasks={t: list(ds.steps[t]) for t in ds.tasks},
+                   meta={t: dict(r) for t, r in ds.tasks.items()},
+                   source=f"{home / 'steps.jsonl'}:{view}")
+
+
+def run_view(source: str | None) -> str | None:
+    """The sequence view a run was trained on, from its data source: ``streams`` / ``task``;
+    a source without a suffix (runs before the view existed) is the raw task order; synthetic
+    sources (one stream per task, the views coincide) give None."""
+    s = str(source or "")
+    if not s or s.startswith("synthetic"):
+        return None
+    for v in VIEWS:
+        if s.endswith(f":{v}"):
+            return v
+    return "task"
+
+
 def synthetic_dataset(n_tasks: int = 300, seed: int = 0) -> Dataset:
     """Contract-schema synthetic tasks with learnable structure (for smoke tests and the CLI).
 
@@ -464,15 +499,21 @@ def linear_probes(tr: dict, va: dict, d_control: int, max_rows: int = 20_000, se
                     "raw": _probe(xtr, ptr, xva, pva, F.N_PHASE)}
     out["fail_bucket"] = {"z": _probe(ztr, ftr, zva, fva, F.N_FAIL_B),
                           "raw": _probe(xtr, ftr, xva, fva, F.N_FAIL_B)}
-    if len(tr["z_last"]) and len(va["z_last"]):
-        zc = slice(tr["z_last"].shape[1] - d_control, None)
+    # Outcome rows: E3's own readout passes the task's last step (``z_last`` …); E4 passes the
+    # protocol's outcome prefix (``z_prefix`` …, never the last step). Same probe either way.
+    def outcome_rows(a: dict):
+        if "z_prefix" in a:
+            return a["z_prefix"], a["x_prefix"], a["outcome_prefix"]
+        return a["z_last"], a["x_last"], a["outcome_last"]
+
+    ztl, xtl, otl = outcome_rows(tr)
+    zvl, xvl, ovl = outcome_rows(va)
+    if len(ztl) and len(zvl):
+        zc = slice(ztl.shape[1] - d_control, None)
         out["outcome"] = {
-            "z_control": _probe(tr["z_last"][:, zc], tr["outcome_last"].astype(int),
-                                va["z_last"][:, zc], va["outcome_last"].astype(int), 2),
-            "z": _probe(tr["z_last"], tr["outcome_last"].astype(int),
-                        va["z_last"], va["outcome_last"].astype(int), 2),
-            "raw": _probe(tr["x_last"], tr["outcome_last"].astype(int),
-                          va["x_last"], va["outcome_last"].astype(int), 2)}
+            "z_control": _probe(ztl[:, zc], otl.astype(int), zvl[:, zc], ovl.astype(int), 2),
+            "z": _probe(ztl, otl.astype(int), zvl, ovl.astype(int), 2),
+            "raw": _probe(xtl, otl.astype(int), xvl, ovl.astype(int), 2)}
     return out
 
 
@@ -592,7 +633,8 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     train_tasks, _ = ds.split("train")
     start = F.start_prior(train_tasks, macro=cfg.macro)
     summary = {
-        "run_id": run_id, "config": asdict(cfg), "data": ds.stats(), "params": n_params,
+        "run_id": run_id, "config": asdict(cfg), "data": ds.stats(),
+        "view": run_view(ds.source), "params": n_params,
         "n_features": n_features(cfg),
         "windows": {"train": len(Wtr), "val": len(Wva)},
         "throughput": {"train_seconds": train_time,
@@ -719,7 +761,7 @@ def probe_run(run: str | Path, ds: Dataset | None = None) -> dict:
             _, n, sd = src.split(":")
             ds = synthetic_dataset(int(n), int(sd.replace("seed", "")))
         else:
-            ds = load_dataset()
+            ds = load_view(run_view(src) or "task")
     Wtr, Wva = _windows(ds, "train", cfg), _windows(ds, "val", cfg)
     y_train = _y_scored(Wtr)
     _, arr_tr = evaluate(wm.model, Wtr, cfg, y_train)
