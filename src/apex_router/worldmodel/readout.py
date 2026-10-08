@@ -315,7 +315,7 @@ def render_progress(rep) -> str:
                  f"{_pci(d['fpr']['ci'])}  → {d['verdict']}")
     L.append("  win = flagged before the cutoff and ≥ 2 steps before the end; loss = cutoff first. "
              "PASS = FPR Wilson upper ≤ 10%, win-share Wilson lower > 50%, median steps saved > 0 "
-             "(pending owner sign-off)")
+             "(owner-signed 2026-10-07)")
     L.append("  stalled = the stuck detector (flat window), reported apart from Zeno; combined rows "
              "(a|b) use each part's θ, not re-tuned — their tuned FPR can reach ~20%; the "
              "test-FPR gate still applies")

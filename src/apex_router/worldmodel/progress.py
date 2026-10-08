@@ -41,7 +41,7 @@ its CI from being a point.
 **Flag** `converging_short` when the status can flag and the CI's upper bound < threshold
 (default 1.0: all tests pass).
 
-**Criterion 5** (rule: coordinator ruling 2026-10-07, pending owner sign-off). Every detector is a
+**Criterion 5** (rule: coordinator ruling 2026-10-07, owner-signed 2026-10-07). Every detector is a
 per-step score and flags at the first step whose score > θ; θ is tuned on train+val successful
 tasks so that ≤ 10% of them are ever flagged (θ ≥ 0 for Zeno / stalled, so the tuned rule is never
 looser than "CI upper < 1"). Baselines: step-count and wall-time cutoffs tuned the same way;
@@ -352,7 +352,7 @@ def criterion5(ds, scores: dict, tune_ids, test_ids, fpr: float = 0.10,
         return min(fs) if fs else None
 
     out = {"thresholds": thetas, "quality": quality, "n_bad": len(bad), "n_good": len(good),
-           "fpr_target": fpr, "rule": "pending owner sign-off",
+           "fpr_target": fpr, "rule": "owner-signed 2026-10-07",
            "baseline": {"recall": _rate(sum(base_flag(t) is not None for t in bad), len(bad)),
                         "fpr": _rate(sum(base_flag(t) is not None for t in good), len(good))},
            "detectors": {}}

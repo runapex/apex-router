@@ -224,7 +224,7 @@ def test_cli_synthetic_text_and_json(cmd, capsys):
     out = capsys.readouterr().out
     assert "synthetic: 30 sessions" in out and "split (by session start)" in out
     if cmd == "progress":
-        assert "planted dynamics" in out and "pending owner sign-off" in out
+        assert "planted dynamics" in out and "owner-signed 2026-10-07" in out
     assert COMMANDS[cmd](["--synthetic", "30", "--json"]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["source"]["splits"]["train"]["tasks"] > 0

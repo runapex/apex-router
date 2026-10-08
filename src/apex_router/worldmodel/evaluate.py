@@ -36,7 +36,7 @@ the raw interleaved order instead (E2/E3's readouts) for comparison.
    test-z diagnostics of the scored checkpoint) within the run's preset bounds.
 5. progress.criterion5 with the JEPA Zeno detector (v_t = value-head P(success), threshold
    SUCCESS_V) as the detector, E2's proxy detectors alongside; gold only, else INCONCLUSIVE.
-   The criterion-5 rule is E2's, "pending owner sign-off".
+   The criterion-5 rule is E2's, signed off by the owner 2026-10-07.
 
 With several seeds a criterion PASSes only if it PASSes on every seed (any FAIL → FAIL); the
 CPU replay run is reported but not part of the verdict.
@@ -76,7 +76,7 @@ RULES = {
     4: "PASS iff every evaluation checkpoint (each epoch's val z + the scored checkpoint's test z) is "
        "within the preset bounds (effective rank ≥ min, SIGReg ≤ max)",
     5: "gold only: progress.criterion5 for the JEPA Zeno detector (FPR Wilson-upper ≤ 10%, win share "
-       "Wilson-lower > 0.5, median steps saved > 0) — rule pending owner sign-off",
+       "Wilson-lower > 0.5, median steps saved > 0) — rule owner-signed 2026-10-07",
 }
 CRITERIA = {1: "next-state CE ≥ 5% below the best baseline", 2: "outcome Brier below baseline (gold)",
             3: "workflow ranking ≥ Markov chain", 4: "no collapse at any checkpoint",

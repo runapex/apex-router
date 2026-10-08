@@ -204,7 +204,7 @@ def test_criterion5_known_answer_small_set_fails():
     assert z["median_saved"] == pytest.approx(-1.5)
     assert z["verdict"] == "FAIL"                             # 1 win / 1 loss, n = 2 successes
     assert c5["baseline"]["recall"]["k"] == 2 and c5["baseline"]["fpr"]["k"] == 1
-    assert c5["rule"] == "pending owner sign-off"
+    assert c5["rule"] == "owner-signed 2026-10-07"
 
 
 def test_criterion5_known_answer_pass():
