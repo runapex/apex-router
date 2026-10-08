@@ -37,7 +37,7 @@ from . import stats
 from .route_conformance import default_conformance_path
 from .route_log import (ALL_TIER_RANK, CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, GPT_FAMILY,
                         OTHER_TIER, default_labeled_path, default_log_path, is_cross_family,
-                        tier_family, tier_of)
+                        is_gpt_family, tier_family, tier_of)
 from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
 _JOIN_WINDOW_S = 300.0
@@ -199,7 +199,10 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
     # pi `sonnet` cue runs gpt-5.6-terra, so the row is gpt-terra's, with `family` as the label.
     tier = tier_of(route_row.get("start_tier")) or tier_of(route_row.get("model"))
     out["tier"] = tier
-    out["tier_family"] = tier_family(tier)
+    # Family is a fact about the ids, even when no tier is known (a new GPT id): the same evidence
+    # route_log._accumulate uses, so the raw and joined headlines cannot disagree.
+    out["tier_family"] = tier_family(tier) or (
+        GPT_FAMILY if is_gpt_family(route_row.get("start_tier"), route_row.get("model")) else None)
     out["cross_family"] = False
     fam = route_row.get("family")
     if isinstance(fam, str):
@@ -667,7 +670,8 @@ def cell_rates(table) -> dict:
             sub["n"] += 1
             sub["escalated"] += 1 if escalated else 0
             sub["rate"] = sub["escalated"] / sub["n"]
-            if tier_family(tier) == GPT_FAMILY:
+            if (tier_family(tier) == GPT_FAMILY or row.get("tier_family") == GPT_FAMILY
+                    or (tier is None and is_gpt_family(row.get("model")))):
                 continue
             cell["n"] += 1
             if escalated:

@@ -22,6 +22,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 LABEL_DRAIN = "com.apex-router.drain"
@@ -165,6 +166,32 @@ def _xml(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+# A bootout'd daemon stays "unloading" until it exits: launchd SIGKILLs it after ExitTimeOut (20 s
+# default), and a proxy draining in-flight streams can use most of that. install.sh's 3 tries
+# (~2 s) lose to that, so wait out the full window (1 s apart) before declaring failure.
+_BOOTSTRAP_TRIES = 30
+
+
+def _launchctl_bootstrap(uid: int, plist: Path, label: str) -> None:
+    """`launchctl bootstrap`, retried 1 s apart for up to _BOOTSTRAP_TRIES, then SystemExit.
+
+    Right after `bootout` of a RUNNING daemon the label is still being torn down and bootstrap
+    returns rc=5 (measured: a SIGTERM-ignoring KeepAlive job failed every attempt for ~20 s, until
+    launchd SIGKILLed it), so an early failure is not a failure. After the retries a nonzero rc is real: the plist is written and the old unit is
+    gone, so swallowing it would leave the job NOT loaded (for serve: the live proxy down) while
+    the installer reports success."""
+    r = None
+    for i in range(_BOOTSTRAP_TRIES):
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+        if i < _BOOTSTRAP_TRIES - 1:
+            time.sleep(1)
+    raise SystemExit(f"launchctl bootstrap {label} failed after {_BOOTSTRAP_TRIES} tries "
+                     f"(rc={r.returncode}): {(r.stderr or r.stdout or '').strip()}")
+
+
 def _launchd_install(no_drain: bool = False) -> list[str]:
     agents = Path.home() / "Library/LaunchAgents"
     logs = Path.home() / ".apex-router/logs"
@@ -188,8 +215,7 @@ def _launchd_install(no_drain: bool = False) -> list[str]:
         plist.write_text(_launchd_plist(label, args, keepalive=keepalive, calendar=cal))
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"],
                        capture_output=True)  # ignore if not loaded
-        subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
-                       capture_output=True)
+        _launchctl_bootstrap(uid, plist, label)
         done.append(label)
     return done
 
@@ -219,7 +245,7 @@ def _launchd_install_serve() -> list[str]:
         LABEL_SERVE, [_py(), "-m", "apex_router.cli", "serve"], keepalive=True, calendar=None,
         extra_env=_serve_env()))   # bake the upstream/port so the gateway is reproducible
     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SERVE}"], capture_output=True)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+    _launchctl_bootstrap(uid, plist, LABEL_SERVE)
     return [LABEL_SERVE]
 
 
@@ -249,7 +275,7 @@ def _launchd_install_snapshot() -> list[str]:
     plist.write_text(_launchd_plist(LABEL_SNAPSHOT, _snapshot_args(), keepalive=False,
                                     calendar=SNAPSHOT_AT))
     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SNAPSHOT}"], capture_output=True)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True)
+    _launchctl_bootstrap(uid, plist, LABEL_SNAPSHOT)
     return [LABEL_SNAPSHOT]
 
 
