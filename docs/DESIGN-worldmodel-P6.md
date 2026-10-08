@@ -64,11 +64,26 @@ and taking the highest-priority class found: `test` > `build` > `vcs` > `remote`
 `VAR=` prefixes are skipped. Non-bash tools map by tool name (Read/Glob/Grep → read/search,
 Edit/Write/NotebookEdit → edit/write, Agent/Task/Workflow → delegate, AskUserQuestion → ask).
 
-Validation set: `tests/fixtures/worldmodel/actions_validation.jsonl` — 300 commands with a
-class each, assembled by the implementer from the local transcripts' **command shapes with
-arguments and paths replaced by placeholders** (never a literal path, token or hostname), reviewed
-by an independent agent; the owner's sign-off is still owed before the classifier counts as
-validated (P0 gate). Target agreement ≥ 95%.
+Rule details (fixed 2026-10-08 after a blind re-label): inspection commands are **read**
+(`cat sed head tail wc nl less awk cut ls stat file realpath readlink shasum df plutil sysctl
+openssl ps pgrep lsof type which command -v`); **search** is content or name lookup (`grep rg
+git grep find fd mdfind`, WebSearch); interpreters fed a query or script are **run** (`sqlite3
+log python node osascript`, model CLIs `codex exec`, `pi -p`); process or service control is
+**run** (`kill pkill launchctl tmux open`); no-op segments add no class (`echo printf sleep date
+pwd test [ set export unset umask`) and a command made only of them is **other**; shell file
+mutation is **write** (`cat >`/`>>`, `tee`, `mkdir cp mv rm chmod rsync`), in-place rewrites are
+**edit** (`sed -i`, `perl -pi`, `patch`); installs, compiles and lint are **build**; `claude plugin
+test` and `python -m unittest` are **test**; `gh` is **vcs**; `curl dig kubectl doctl` and
+WebFetch / browser MCP tools are **remote**; Skill/TodoWrite → plan; StructuredOutput /
+SubagentHandback → ask; unknown tools → other.
+
+Validation set: `tests/fixtures/worldmodel/actions_validation.jsonl` — 306 command shapes with a
+class each (arguments and paths replaced by placeholders; never a literal path, token or
+hostname), assembled by the implementer from the local transcripts. **Signed off 2026-10-08
+(owner-delegated):** an independent blind re-label by the §2 rules agreed on 295/306 (96.4%);
+the 11 disagreements were rule ambiguities, resolved in the paragraph above, not fixture
+errors; the classifier agrees 306/306. Thin classes (remote 9, build 6, edit 4, other 3, ask 2,
+delegate 1, plan 1) are the next thing to grow. Target agreement ≥ 95%.
 
 Phase is **causal** — computed from steps ≤ t only (amended 2026-10-07 after the E3 review found
 the tail rule leaked task length): `explore` (search/read before the first edit of the task so
