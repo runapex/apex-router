@@ -140,10 +140,12 @@ def main(argv=None) -> int:
     verify = sub.add_parser("verify", help="self-check: import + report; exit 0 if routing works")
     verify.add_argument("--json", action="store_true")
     watch = sub.add_parser("watch",
-                           help="manage background services (watchers: drain+daily; proxy: serve)")
+                           help="manage background services (watchers: drain+daily; proxy: serve; "
+                                "transcript mirror: snapshot)")
     watch.add_argument("action", nargs="?", default="status",
                        choices=["install", "uninstall", "status",
-                                "install-serve", "uninstall-serve"])
+                                "install-serve", "uninstall-serve",
+                                "install-snapshot", "uninstall-snapshot"])
     watch.add_argument("--no-drain", action="store_true",
                        help="on 'install', skip the drain worker (Ornith stack drains instead)")
     setup_proxy = sub.add_parser(
@@ -292,7 +294,7 @@ def main(argv=None) -> int:
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
-    sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|baseline|chains|progress|"
+    sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|snapshot|baseline|chains|progress|"
                                       "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
     args, extra = ap.parse_known_args(argv)

@@ -113,6 +113,26 @@ The workflow-discipline skills live in a **different** repo. To get the latest
 (or `/plugin marketplace add runapex/apex-router-skills` if not yet added, then
 `/plugin install apex-workflow@apex-router-skills`).
 
+## Transcript snapshot agent (opt-in)
+
+To keep the P6 / labels datasets from shrinking as pi, Claude Code and Codex prune old
+sessions, install the daily mirror job (macOS `com.apex-router.snapshot`, 03:17,
+`RunAtLoad` false; Linux `apex-router-snapshot.timer`):
+
+```bash
+apex-router worldmodel snapshot              # one manual pass; prints new / updated / unchanged / bytes
+apex-router watch install-snapshot           # writes ~/Library/LaunchAgents/com.apex-router.snapshot.plist
+                                             # and runs launchctl bootstrap gui/$(id -u) <plist>
+launchctl print gui/$(id -u)/com.apex-router.snapshot | head   # verify it is loaded
+apex-router watch uninstall-snapshot         # bootout + remove the plist; the mirror stays
+```
+
+The plist pins the interpreter that ran `install-snapshot` (like the other watchers), so run
+it from the install whose code you want the job to use; after an update that changes the
+snapshot code nothing needs reinstalling. Logs: `~/.apex-router/logs/com.apex-router.snapshot.{log,err}`.
+The mirror (`~/.apex-router/transcripts/`, 0700) holds the owner's own prompt text; the proxy
+and widget never read it. See README "Transcript snapshot".
+
 ## Why nothing restarts
 
 | Component | Needs restart? | Why |

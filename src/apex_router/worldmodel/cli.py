@@ -228,13 +228,42 @@ def cmd_stats(argv: list[str]) -> int:
     return 0
 
 
-COMMANDS.update({"build": cmd_build, "stats": cmd_stats})
+def cmd_snapshot(argv: list[str]) -> int:
+    """Mirror the pi / Claude Code / Codex transcripts into <home>/transcripts so retention
+    pruning stops shrinking the dataset (never deletes, never truncates)."""
+    ap = argparse.ArgumentParser(prog="apex-router worldmodel snapshot",
+                                 description=cmd_snapshot.__doc__)
+    ap.add_argument("--home", default=None,
+                    help="apex-router home (default $APEX_ROUTER_HOME, else ~/.apex-router); "
+                         "the mirror is <home>/transcripts")
+    ap.add_argument("--dry-run", action="store_true", help="count what would be copied; write nothing")
+    ap.add_argument("--json", action="store_true", help="print the counts as JSON")
+    a = ap.parse_args(argv)
+    from .. import transcript_mirror as TM
+    r = TM.snapshot(home=a.home, dry_run=a.dry_run)
+    if a.json:
+        print(json.dumps(r, indent=2))
+    else:
+        print(f"transcript snapshot{' (dry run)' if a.dry_run else ''} -> {r['mirror']}: "
+              f"new {r['new']}, updated {r['updated']}, unchanged {r['unchanged']}, "
+              f"bytes {r['bytes']}" + (f", kept (mirror larger) {r['kept_mirror_larger']}"
+                                       if r["kept_mirror_larger"] else "")
+              + (f", skipped >512MB {r['skipped_large']}" if r["skipped_large"] else "")
+              + (f", errors {r['errors']}" if r["errors"] else ""))
+        for src, v in r["per_source"].items():
+            print(f"  {src:7} files {v['files']} · new {v['new']} · updated {v['updated']}")
+        for n in r["notes"]:
+            print(f"  note: {n}")
+    return 0
+
+
+COMMANDS.update({"build": cmd_build, "stats": cmd_stats, "snapshot": cmd_snapshot})
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
-        order = ["build", "stats", "baseline", "chains", "progress", "train", "probe", "evaluate"]
+        order = ["build", "stats", "snapshot", "baseline", "chains", "progress", "train", "probe", "evaluate"]
         names = [c for c in order if c in COMMANDS] + sorted(set(COMMANDS) - set(order))
         print("usage: apex-router worldmodel {" + ",".join(names) + "} ...")
         return 0 if (not argv or argv[0] in ("-h", "--help")) else 2

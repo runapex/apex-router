@@ -39,6 +39,8 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+from .transcript_mirror import main_transcripts, source_of
+
 OUTCOMES = ("success", "partial", "fail")
 EMIT_MIN = 0.80                 # posterior needed to emit a label (else "unknown")
 GOLD_FRACTION = 0.10            # gold grows with the data: 10% of tasks, at least GOLD_MIN
@@ -141,7 +143,7 @@ def _extract_line(line, tasks, by_call) -> None:
 def extract(path: Path) -> list[dict]:
     """Tasks of one transcript, in order. Each: id, source, session, index, ts, calls
     [(tool, command, is_error, result_head)], last assistant text, request, next request."""
-    source = "pi" if "/.pi/" in str(path) else "claude"
+    source = source_of(path)
     tasks: list[dict] = []
     by_call: dict = {}
     try:
@@ -166,10 +168,10 @@ def extract(path: Path) -> list[dict]:
     return out
 
 
-def transcripts() -> list[Path]:
-    h = Path.home()
-    return sorted(list((h / ".pi" / "agent" / "sessions").glob("**/*.jsonl"))
-                  + list((h / ".claude" / "projects").glob("*/*.jsonl")))
+def transcripts(user_home=None, home=None) -> list[Path]:
+    """pi + Claude Code main sessions: the live dirs UNION the transcript mirror
+    (``apex-router worldmodel snapshot``), one file per (source, session id), larger wins."""
+    return main_transcripts(user_home, home)
 
 
 def all_tasks() -> list[dict]:

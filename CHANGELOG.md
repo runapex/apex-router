@@ -7,6 +7,16 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
+  (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
+  (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
+  + rename; skips files > 512 MB; fail-open per file). `labels.transcripts()` and the P6
+  `worldmodel build` walkers now read the live dirs UNION the mirror, one file per session
+  (larger wins), so retention pruning no longer shrinks the dataset (main-session steps had
+  fallen from ~13k to ~7k). `apex-router watch install-snapshot` / `uninstall-snapshot` adds
+  the opt-in daily job `com.apex-router.snapshot` (03:17, RunAtLoad false; systemd timer on
+  Linux). The mirror holds the owner's own prompt text locally; the proxy and widget never
+  read it, and the P6 builder still stores no text.
 - `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
   `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
   steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time
