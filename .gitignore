@@ -27,6 +27,8 @@ credentials*
 corpus/
 *.jsonl
 !src/apex_router/ornith/training/probe_general.jsonl
+# placeholder command shapes only (no paths, prompts or tokens) — DESIGN-worldmodel-P6.md §2
+!tests/fixtures/worldmodel/actions_validation.jsonl
 
 
 # tool-local config (not part of the package)

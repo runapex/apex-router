@@ -1,7 +1,7 @@
 """``apex-router worldmodel <cmd>`` — P6 world model commands.
 
-E3 (this file's first author) provides ``train`` and ``probe``; E1/E2/E4 register their own
-subcommands in ``COMMANDS``. Heavy imports (numpy, mlx) happen inside each command.
+One dispatcher: E1 ``build``/``stats``, E2 ``baseline``/``chains``/``progress``, E3 ``train``/
+``probe``, E4 ``evaluate`` — all registered in ``COMMANDS``. Heavy imports (numpy, mlx) happen inside each command.
 """
 from __future__ import annotations
 
@@ -142,9 +142,91 @@ from .readout import COMMANDS as _E2_COMMANDS  # noqa: E402
 COMMANDS.update(_E2_COMMANDS)
 
 
+# ---- E1: the step dataset ---------------------------------------------------------------------
+
+def _summary(m: dict) -> str:
+    c = m.get("counts", {})
+    lines = [f"steps {c.get('steps')} · tasks {c.get('tasks')} · sessions {c.get('sessions')} · "
+             f"subagents {c.get('subagents')} (unlinked {c.get('subagents_unlinked')}, "
+             f"orphan {c.get('subagents_orphan')}, by time {c.get('subagents_by_time')})"]
+    for src, v in (m.get("per_source") or {}).items():
+        lines.append(f"  {src:7} " + " · ".join(f"{k} {n}" for k, n in v.items()))
+    cls = m.get("classes") or {}
+    tot = max(sum(cls.values()), 1)
+    lines.append("classes: " + ", ".join(f"{k} {n} ({100 * n / tot:.1f}%)"
+                                         for k, n in sorted(cls.items(), key=lambda x: -x[1]) if n))
+    lines.append("phases: " + ", ".join(f"{k} {n}" for k, n in (m.get("phases") or {}).items()))
+    t = m.get("tests") or {}
+    cov = t.get("coverage")
+    lines.append(f"tests: {t.get('test_steps')} test steps, counts parsed on {t.get('parsed')} "
+                 f"({'n/a' if cov is None else f'{100 * cov:.1f}%'})")
+    lines.append("splits: " + " · ".join(
+        f"{k} {v.get('sessions')}s/{v.get('tasks')}t/{v.get('steps')}st"
+        for k, v in (m.get("splits") or {}).items()))
+    sb = m.get("split_bounds") or {}
+    lines.append(f"split frozen {sb.get('frozen_at')}: val from {sb.get('val_from_iso')}, "
+                 f"test from {sb.get('test_from_iso')}")
+    o = m.get("outcomes") or {}
+    lines.append(f"outcomes: gold {o.get('gold')} · weak {o.get('weak')} · none {o.get('none')}")
+    tt = ", ".join(f"{k} {v}" for k, v in (m.get("task_types") or {}).items())
+    wf = ", ".join(f"{k} {v}" for k, v in (m.get("workflows") or {}).items())
+    lines.append(f"task types: {tt} · workflows: {wf}")
+    ms = m.get("model_source") or {}
+    lines.append("model from: " + " · ".join(f"{k} {v}" for k, v in ms.items()))
+    tr = m.get("time_range") or {}
+    lines.append(f"time: {tr.get('first')} .. {tr.get('last')} · git {str(m.get('git_sha'))[:12]}"
+                 f" · built {m.get('built_at')}")
+    re_ = m.get("read_errors") or {}
+    lines.append(f"read errors: {re_.get('malformed_lines')} malformed lines, "
+                 f"{re_.get('unreadable_files')} unreadable files")
+    return "\n".join(lines)
+
+
+
+def _e1_parser(cmd: str) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog=f"apex-router worldmodel {cmd}")
+    ap.add_argument("--home", default=None,
+                    help="apex-router home (default $APEX_ROUTER_HOME, else ~/.apex-router); "
+                         "data goes to <home>/worldmodel, outcomes come from <home>/labels")
+    ap.add_argument("--json", action="store_true", help="print the manifest as JSON")
+    if cmd == "build":
+        ap.add_argument("--resplit", action="store_true",
+                        help="recompute the frozen train/val/test boundaries (sessions may change "
+                             "split; a test set already scored stops being held out)")
+        ap.add_argument("--no-embed", action="store_true",
+                        help="skip the task-type classifier's local embedding (task_type stays null)")
+    return ap
+
+
+def cmd_build(argv: list[str]) -> int:
+    """Rebuild steps.jsonl / tasks.jsonl / manifest.json from the pi + Claude Code transcripts."""
+    a = _e1_parser("build").parse_args(argv)
+    from . import steps as S
+    m = S.build(home=a.home, embed_fn=None if a.no_embed else "auto", resplit=a.resplit)
+    print(json.dumps(m, indent=2) if a.json else _summary(m))
+    return 0
+
+
+def cmd_stats(argv: list[str]) -> int:
+    """Print the manifest of the last build."""
+    a = _e1_parser("stats").parse_args(argv)
+    from . import steps as S
+    m = S.read_manifest(a.home)
+    if m is None:
+        print("no manifest yet — run `apex-router worldmodel build`", file=sys.stderr)
+        return 1
+    print(json.dumps(m, indent=2) if a.json else _summary(m))
+    return 0
+
+
+COMMANDS.update({"build": cmd_build, "stats": cmd_stats})
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
-        print("usage: apex-router worldmodel {" + ",".join(COMMANDS) + "} ...")
+        order = ["build", "stats", "baseline", "chains", "progress", "train", "probe", "evaluate"]
+        names = [c for c in order if c in COMMANDS] + sorted(set(COMMANDS) - set(order))
+        print("usage: apex-router worldmodel {" + ",".join(names) + "} ...")
         return 0 if (not argv or argv[0] in ("-h", "--help")) else 2
     return COMMANDS[argv[0]](argv[1:])

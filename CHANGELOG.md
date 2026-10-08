@@ -34,6 +34,17 @@ next tag will carry.
 - Optional extra `worldmodel` (`mlx>=0.32.3` on Apple Silicon only, plus numpy). mlx 0.32.3 and
   its required `mlx-metal` were vetted before the install: from PyPI, MIT (LICENSE checked in
   the wheel), released 2026-09-29, and the OSV query returned no advisories for either (`{}`).
+- `apex-router worldmodel build|stats` (P6 E1): a step dataset for the world-model experiment.
+  Every tool call in pi sessions, Claude Code sessions and their subagents becomes one record —
+  action class, tool name, error flag, parsed test counts, size buckets, time gap, workflow phase,
+  model — grouped into tasks (the same user turns `labels` uses, with their outcome label) and
+  split train / val / test by session start time. It is written to `~/.apex-router/worldmodel/`
+  with a manifest, stores no prompt, command or file text, and rebuilds idempotently. The action
+  classifier reads a bash command segment by segment, so `cd`, `echo`, `timeout` and `VAR=`
+  prefixes no longer hide the real command, and `.venv/bin/pytest`, `python -m pytest`,
+  `uv run`, `npm test`, `make test`, `go test` and `cargo test` count as tests. It agrees with a
+  300-command validation set that the implementer labeled; the owner has not yet reviewed those
+  labels.
 - `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
   upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
   Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local

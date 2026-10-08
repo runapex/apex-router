@@ -160,3 +160,26 @@ def test_review_writes_gold_and_sampling_prefers_disagreement(monkeypatch):
     n = L.review(5, inp=lambda _: next(answers, "q"), out=lambda *_: None)
     gold = [json.loads(x) for x in (L.home() / "gold.jsonl").read_text().splitlines()]
     assert n == 2 and sorted(g["outcome"] for g in gold) == ["fail", "success"]
+
+
+def test_extract_fails_open(tmp_path):
+    """Odd records (non-string text, non-dict blocks/lines, bad JSON) are skipped, an unreadable
+    file gives no tasks — extract never raises."""
+    p = tmp_path / "s.jsonl"
+    rows = [
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": 5}]}},
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}},
+        {"type": "message", "message": {"role": "assistant", "content": [
+            7, {"type": "text", "text": None},
+            {"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "ls"}}]}},
+        {"type": "message", "message": {"role": "toolResult", "toolCallId": "c1",
+                                        "content": [{"type": "text", "text": {"x": 1}}]}},
+        [1, 2], "str", None,
+    ]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows) + "{bad json\n")
+    ts = L.extract(p)
+    assert [t["request"] for t in ts] == ["go"] and len(ts[0]["calls"]) == 1
+    assert L.extract(tmp_path / "missing.jsonl") == []
+    d = tmp_path / "dir.jsonl"
+    d.mkdir()
+    assert L.extract(d) == []

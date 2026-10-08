@@ -58,8 +58,9 @@ def _text(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(b.get("text", "") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text")
+        return "\n".join(b["text"] for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"
+                         and isinstance(b.get("text"), str))
     return ""
 
 
@@ -71,8 +72,70 @@ _SKIP_USER = ("<command-", "<local-command", "Caveat:", "<system", "<task-notifi
               "[Image #", "<bash-")
 
 
+def is_tool_result(content) -> bool:
+    """A Claude Code user record that carries tool results (not a typed request)."""
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                             for b in content)
+
+
+def request_text(content) -> str | None:
+    """The request text of a user record, or None when it is not a task boundary (empty, or
+    injected by the harness). Shared with ``worldmodel.steps`` so both cut tasks identically."""
+    t = _text(content).strip()
+    if not t or t.startswith(_SKIP_USER):
+        return None
+    return t
+
+
 def _tid(path: Path, i: int) -> str:
     return hashlib.sha1(f"{path.name}:{i}".encode()).hexdigest()[:12]
+
+
+def _extract_line(line, tasks, by_call) -> None:
+    """One transcript line into ``tasks`` (the open task is ``tasks[-1]``; tool calls are
+    indexed in ``by_call``). Raises on a malformed record; ``extract`` skips it."""
+    cur = tasks[-1] if tasks else None
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(d, dict):               # a JSON line that is not a record
+        return
+    m = d.get("message") if isinstance(d.get("message"), dict) else {}
+    role = m.get("role") or d.get("type")
+    c = m.get("content")
+    if role == "user":
+        if is_tool_result(c):
+            for b in c:                                   # Claude Code tool results
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    call = by_call.get(b.get("tool_use_id"))
+                    if call is not None:
+                        call[2] = bool(b.get("is_error"))
+                        call[3] = _text(b.get("content"))[-2000:] if not isinstance(
+                            b.get("content"), str) else b["content"][-2000:]
+            return
+        t = request_text(c)
+        if t is None:
+            return
+        cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
+        tasks.append(cur)
+    elif role == "assistant" and cur is not None and isinstance(c, list):
+        for b in c:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") in ("toolCall", "tool_use"):
+                a = b.get("arguments") or b.get("input") or {}
+                cmd = a.get("command", "") if isinstance(a, dict) else ""
+                call = [b.get("name"), cmd if isinstance(cmd, str) else "", False, ""]
+                cur["calls"].append(call)
+                by_call[b.get("id")] = call
+            elif b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
+                cur["last"] = b["text"]
+    elif role == "toolResult" and cur is not None:              # pi
+        call = by_call.get(m.get("toolCallId"))
+        if call is not None:
+            call[2] = m.get("isError") in (True, "True", "true")
+            call[3] = _text(c)[-2000:]
 
 
 def extract(path: Path) -> list[dict]:
@@ -80,50 +143,19 @@ def extract(path: Path) -> list[dict]:
     [(tool, command, is_error, result_head)], last assistant text, request, next request."""
     source = "pi" if "/.pi/" in str(path) else "claude"
     tasks: list[dict] = []
-    cur = None
     by_call: dict = {}
-    with open(path, errors="replace") as fh:
+    try:
+        fh = open(path, errors="replace")
+    except OSError:                                  # unreadable transcript: no tasks
+        return []
+    with fh:
         for line in fh:
             try:
-                d = json.loads(line)
-            except ValueError:
+                _extract_line(line, tasks, by_call)
+            except (OSError, UnicodeError):
+                break
+            except Exception:  # noqa: BLE001 — one odd record never sinks the file
                 continue
-            m = d.get("message") if isinstance(d.get("message"), dict) else {}
-            role = m.get("role") or d.get("type")
-            c = m.get("content")
-            if role == "user":
-                if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
-                                               for b in c):
-                    for b in c:                                   # Claude Code tool results
-                        if isinstance(b, dict) and b.get("type") == "tool_result":
-                            call = by_call.get(b.get("tool_use_id"))
-                            if call is not None:
-                                call[2] = bool(b.get("is_error"))
-                                call[3] = _text(b.get("content"))[-2000:] if not isinstance(
-                                    b.get("content"), str) else b["content"][-2000:]
-                    continue
-                t = _text(c).strip()
-                if not t or t.startswith(_SKIP_USER):
-                    continue
-                cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
-                tasks.append(cur)
-            elif role == "assistant" and cur is not None and isinstance(c, list):
-                for b in c:
-                    if not isinstance(b, dict):
-                        continue
-                    if b.get("type") in ("toolCall", "tool_use"):
-                        a = b.get("arguments") or b.get("input") or {}
-                        cmd = a.get("command", "") if isinstance(a, dict) else ""
-                        call = [b.get("name"), cmd if isinstance(cmd, str) else "", False, ""]
-                        cur["calls"].append(call)
-                        by_call[b.get("id")] = call
-                    elif b.get("type") == "text" and b.get("text", "").strip():
-                        cur["last"] = b["text"]
-            elif role == "toolResult" and cur is not None:              # pi
-                call = by_call.get(m.get("toolCallId"))
-                if call is not None:
-                    call[2] = m.get("isError") in (True, "True", "true")
-                    call[3] = _text(c)[-2000:]
     out = []
     for i, t in enumerate(tasks):
         if not t["calls"]:
