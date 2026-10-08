@@ -48,7 +48,9 @@ OUTCOMES = ("success", "partial", "fail")
 EMIT_MIN = 0.80                 # posterior needed to emit a label (else "unknown")
 GOLD_FRACTION = 0.10            # gold grows with the data: 10% of tasks, at least GOLD_MIN
 GOLD_MIN = 100
-JUDGE_MODEL = os.environ.get("APEX_LABEL_JUDGE", "qwen3.8:27b-mlx")
+# Judge defaults = the judge-bench winner on gold (docs/research/2026-10-08-label-judge-bench.md):
+# ornith:35b on the export-review context with the v2 decision-rule prompt, voting at >= 0.9.
+JUDGE_MODEL = os.environ.get("APEX_LABEL_JUDGE", "ornith:35b")
 JUDGE_URL = os.environ.get("APEX_LABEL_JUDGE_URL", "http://127.0.0.1:11434/api/chat")
 CLIP = {"request": 700, "last": 900, "next": 400}
 
@@ -302,6 +304,12 @@ def votes(t) -> dict:
 
 
 # ---- judge ----------------------------------------------------------------------------------
+# A judge config is (model, context, prompt): the CONTEXT builder renders the evidence block of
+# one task, the PROMPT is the instruction header above it. ``labels judge-bench`` scores configs
+# against gold (docs/research/2026-10-08-label-judge-bench.md); each default is env-overridable.
+
+JUDGE_CONTEXT = os.environ.get("APEX_LABEL_JUDGE_CONTEXT", "export")
+JUDGE_PROMPT_VERSION = os.environ.get("APEX_LABEL_JUDGE_PROMPT", "v2")
 
 JUDGE_PROMPT = """You label the OUTCOME of one task an AI coding agent did for a user.
 Use only the evidence below. Decide:
@@ -313,17 +321,43 @@ Use only the evidence below. Decide:
   starts an unrelated topic without saying anything about this one)
 Answer JSON only: {"outcome": "...", "confidence": 0.0-1.0, "evidence": "next_message|tests|
 final_message|tools|none"}
+"""
 
-USER REQUEST:
-<<<{request}>>>
+# v2 states the decision rules the gold reviewer applied. The rules are generic: none quotes or
+# paraphrases a gold task.
+JUDGE_PROMPT_V2 = """You label the OUTCOME of one task an AI coding agent did for a user.
+Use only the evidence below. Outcomes:
+- "success": the request was done (or answered) and nothing in the user's next message says
+  otherwise
+- "partial": some of it was done, but part of what was asked is left undone or blocked, or the
+  user had to correct part of it
+- "fail": not done, wrong, the turn died on an error, or the user had to repeat / correct /
+  revert / abandon it
+- "unknown": the evidence cannot show the outcome
+Decision rules, in order:
+1. The user's next message is the strongest evidence. If it moves on positively - approves,
+   asks a follow-up that builds on the work, answers questions the agent asked, picks an
+   offered option, says continue / push / commit, or starts the next step - the outcome is
+   "success" unless the final message shows the work was not done.
+2. A next message saying the result is wrong, broken or stuck, or repeating the request, means
+   "fail" ("partial" if part of it landed).
+3. A turn cut mid-work - the next message is an interrupt marker, or a new request arriving
+   while the agent was still working with no result yet - is "unknown", not "fail". It is
+   "fail" only when the agent had clearly stalled, errored or refused.
+4. Declining something the agent OFFERED at the end ("no thanks", "no more pushes", "not now")
+   is not a verdict on the work: judge the work itself.
+5. Tests that ran after the last edit and passed, or a commit/push, support "success"; tests
+   that failed after the last edit support "fail" or "partial". A turn that ends in an API /
+   connection error is "fail".
+6. When the session ended (no next message), judge from the final message: finished, verified
+   work is "success"; a status update, a waiting state, or text about other work is "unknown".
+7. A question or analysis request is "success" when the final message answers it.
+Answer JSON only: {"outcome": "...", "confidence": 0.0-1.0, "evidence": "next_message|tests|
+final_message|tools|none"}
+"""
 
-TOOLS: {tools}
-
-AGENT'S FINAL MESSAGE:
-<<<{last}>>>
-
-USER'S NEXT MESSAGE (none = session ended):
-<<<{next}>>>"""
+JUDGE_PROMPTS = {"v1": JUDGE_PROMPT, "v2": JUDGE_PROMPT_V2}
+EVIDENCE = ("next_message", "tests", "final_message", "tools", "none")
 
 
 def _tool_summary(t) -> str:
@@ -338,27 +372,75 @@ def _tool_summary(t) -> str:
     return " · ".join(bits)
 
 
-def judge(t, url: str = JUDGE_URL, model: str = JUDGE_MODEL, timeout: float = 180) -> dict | None:
-    prompt = JUDGE_PROMPT                       # replace(), not format(): the prompt has JSON braces
-    for k, v in (("{request}", t["request"][:CLIP["request"]]), ("{tools}", _tool_summary(t)),
-                 ("{last}", (t["last"] or "")[-CLIP["last"]:]),
-                 ("{next}", (t.get("next") or "none")[:CLIP["next"]])):
-        prompt = prompt.replace(k, v)
+def _evidence_block(t, clip: dict, with_signals: bool) -> str:
+    nxt = t.get("next")
+    parts = ["USER REQUEST:", f"<<<{t['request'][:clip['request']]}>>>", "",
+             f"TOOLS: {_tool_summary(t)}"]
+    if with_signals:
+        parts.append("SIGNALS: " + json.dumps(signals(t)))
+    parts += ["", "AGENT'S FINAL MESSAGE:", f"<<<{(t['last'] or '')[-clip['last']:]}>>>", "",
+              "USER'S NEXT MESSAGE (none = session ended):",
+              f"<<<{(nxt or 'none')[:clip['next']]}>>>"]
+    return "\n".join(parts)
+
+
+def context_clip(t) -> str:
+    """The original judge context: request 700 / final 900 / next 400 chars + tool summary."""
+    return _evidence_block(t, CLIP, with_signals=False)
+
+
+def context_export(t) -> str:
+    """What ``export-review`` showed the gold reviewer: request 1500 / final 2000 / next 800
+    chars, the tool summary and the rule-level ``signals()``."""
+    return _evidence_block(t, EXPORT_CLIP, with_signals=True)
+
+
+JUDGE_CONTEXTS = {"clip": context_clip, "export": context_export}
+
+
+def judge_prompt(t, context: str | None = None, prompt: str | None = None) -> str:
+    return (JUDGE_PROMPTS[prompt or JUDGE_PROMPT_VERSION] + "\n"
+            + JUDGE_CONTEXTS[context or JUDGE_CONTEXT](t))
+
+
+def judge_call(prompt: str, model: str, url: str | None = None, timeout: float = 180) -> tuple:
+    """One deterministic judge call (temperature 0, fixed seed) -> (verdict | None, meta);
+    meta = {latency_s, prompt_tokens, eval_tokens, error}. A failure is an abstention."""
     body = json.dumps({"model": model, "stream": False, "think": False, "format": "json",
-                       "options": {"temperature": 0, "num_ctx": 8192},
+                       "options": {"temperature": 0, "seed": 0, "num_ctx": 8192},
                        "messages": [{"role": "user", "content": prompt}]}).encode()
-    req = urllib.request.Request(url, data=body, headers={"content-type": "application/json"})
+    req = urllib.request.Request(url or JUDGE_URL, data=body,
+                                 headers={"content-type": "application/json"})
+    meta = {"latency_s": None, "prompt_tokens": None, "eval_tokens": None, "error": None}
+    t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            out = json.loads(json.loads(r.read())["message"]["content"])
-    except Exception:  # noqa: BLE001 — a judge failure is an abstention
-        return None
-    o = out.get("outcome")
-    conf = out.get("confidence")
-    if o not in OUTCOMES + ("unknown",) or not isinstance(conf, (int, float)):
-        return None
+            resp = json.loads(r.read())
+        meta.update(prompt_tokens=resp.get("prompt_eval_count"), eval_tokens=resp.get("eval_count"))
+        out = json.loads(resp["message"]["content"])
+    except Exception as ex:  # noqa: BLE001 — a judge failure is an abstention
+        meta.update(latency_s=round(time.time() - t0, 3), error=type(ex).__name__)
+        return None, meta
+    meta["latency_s"] = round(time.time() - t0, 3)
+    o = out.get("outcome") if isinstance(out, dict) else None
+    conf = out.get("confidence") if isinstance(out, dict) else None
+    if (o not in OUTCOMES + ("unknown",) or not isinstance(conf, (int, float))
+            or isinstance(conf, bool)):
+        meta["error"] = "bad_output"
+        return None, meta
+    ev = str(out.get("evidence", ""))
     return {"outcome": o, "confidence": max(0.0, min(1.0, float(conf))),
-            "evidence": str(out.get("evidence", ""))[:20], "model": model}
+            "evidence": ev if ev in EVIDENCE else "other"}, meta
+
+
+def judge(t, url: str | None = None, model: str | None = None, timeout: float = 180,
+          context: str | None = None, prompt: str | None = None) -> dict | None:
+    """The configured judge on one task -> {outcome, confidence, evidence, model, context,
+    prompt} or None (abstain)."""
+    model, context = model or JUDGE_MODEL, context or JUDGE_CONTEXT
+    prompt = prompt or JUDGE_PROMPT_VERSION
+    v, _ = judge_call(judge_prompt(t, context, prompt), model, url, timeout)
+    return None if v is None else {**v, "model": model, "context": context, "prompt": prompt}
 
 
 # ---- label model ----------------------------------------------------------------------------
@@ -388,7 +470,8 @@ def voter_accuracy(rows: list, gold: dict) -> dict:
     return acc
 
 
-JUDGE_MIN_CONF = 0.6
+# calibrated on gold: the lowest confidence bin from which every bin up is >= 0.75 accurate
+JUDGE_MIN_CONF = float(os.environ.get("APEX_LABEL_JUDGE_MIN_CONF") or 0.9)
 
 
 def _all_votes(r) -> dict:
@@ -516,9 +599,20 @@ def _migrate_gold(h: Path, rows: list, old: dict, remap: dict, log=print) -> dic
     return dict(n)
 
 
-def build(judge_limit: int = 0, judge_fn=judge, log=print) -> dict:
+def judge_config(vote: dict | None = None) -> tuple:
+    """(model, context, prompt) of a stored judge vote, or of the current judge when ``vote`` is
+    None. Votes from before the context/prompt fields existed were clip / v1."""
+    if vote is None:
+        return (JUDGE_MODEL, JUDGE_CONTEXT, JUDGE_PROMPT_VERSION)
+    return (vote.get("model"), vote.get("context") or "clip", vote.get("prompt") or "v1")
+
+
+def build(judge_limit: int = 0, judge_fn=judge, log=print, rejudge: bool = False) -> dict:
     """Extract every task, apply the LFs, run the judge on up to ``judge_limit`` tasks not judged
-    yet (newest first), combine with gold accuracies, write tasks/labels. Idempotent."""
+    yet (newest first), combine with gold accuracies, write tasks/labels. Idempotent.
+    ``rejudge`` drops every judge vote the CURRENT judge config did not make, so those tasks are
+    judged again (up to ``judge_limit``; a task past the limit is left without a vote, never with
+    a stale one). Rerunning resumes: votes the current config already made are kept."""
     h = home()
     old_rows = _read(h / "tasks.jsonl")
     old = {r["id"]: r for r in old_rows}
@@ -539,9 +633,11 @@ def build(judge_limit: int = 0, judge_fn=judge, log=print) -> dict:
             prev = by_fp.get(_fp(r))
         if prev is not None and prev["id"] != r["id"]:
             remap[prev["id"]] = r["id"]
-        # a judge vote carries over only when the evidence it saw is unchanged
+        # a judge vote carries over only when the evidence it saw is unchanged (and, with
+        # ``rejudge``, only when the current judge config made it)
         if (prev is not None and prev.get("judge") and prev.get("n_calls") == r["n_calls"]
-                and prev.get("has_next") == r["has_next"] and prev.get("votes") == r["votes"]):
+                and prev.get("has_next") == r["has_next"] and prev.get("votes") == r["votes"]
+                and not (rejudge and judge_config(prev["judge"]) != judge_config())):
             r["judge"] = prev["judge"]
         elif judge_limit:
             todo.append((t, r))
@@ -887,6 +983,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build", help="extract tasks, apply rules, judge up to N new tasks")
     b.add_argument("--judge", type=int, default=0, metavar="N")
+    b.add_argument("--rejudge", action="store_true",
+                   help="drop judge votes the current judge config did not make, then judge "
+                        "up to N tasks (newest first)")
     sub.add_parser("report", help="coverage, voter accuracy and precision on gold")
     r = sub.add_parser("review", help="label sampled tasks by hand (the gold set)")
     r.add_argument("-n", type=int, default=20)
@@ -900,7 +999,20 @@ def main(argv=None) -> int:
                                            "gold as by=NAME")
     g.add_argument("file")
     g.add_argument("--by", required=True)
+    jb = sub.add_parser("judge-bench", help="score judge variants (model x context x prompt) "
+                                            "against gold; cached, no text stored")
+    jb.add_argument("--models", default=None, help=f"comma-separated (default {JUDGE_MODEL})")
+    jb.add_argument("--contexts", default="clip,export")
+    jb.add_argument("--prompts", default="v1,v2")
+    jb.add_argument("--out", default=None, help="default ~/.apex-router/labels/judge_bench")
+    jb.add_argument("--max-latency", type=float, default=20.0, metavar="S",
+                    help="skip a model whose mean latency over its first 5 tasks exceeds S")
+    jb.add_argument("--min-conf", type=float, default=None,
+                    help=f"vote threshold for scoring (default {JUDGE_MIN_CONF})")
     a = ap.parse_args(argv)
+    if a.cmd == "judge-bench":
+        from .label_judge_bench import main as _bench
+        return _bench(a)
     if a.cmd == "export-review":
         ids = [x.strip() for x in a.ids.split(",") if x.strip()] if a.ids else None
         try:
@@ -921,7 +1033,7 @@ def main(argv=None) -> int:
         print(report(res))
         return 0
     if a.cmd == "build":
-        res = build(judge_limit=a.judge)
+        res = build(judge_limit=a.judge, rejudge=a.rejudge)
         print(report(res))
     elif a.cmd == "report":
         print(report())

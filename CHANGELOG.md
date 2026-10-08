@@ -22,6 +22,19 @@ next tag will carry.
   val next-action CE, and its SIGReg reads z after the train-estimated centring. Nothing
   without `z_norm` passes. The attempt-3 paragraph is proposed, not declared
   (`docs/research/2026-10-08-p6-c4-warmup-recipe.md`).
+- `apex-router labels judge-bench [--models] [--contexts clip,export] [--prompts v1,v2] [--out]`
+  scores outcome-judge variants (model × context × prompt) on every gold task. It reports vote
+  accuracy with a Wilson CI, 4-class accuracy, a confusion matrix, abstain / unknown / error
+  rates, latency, tokens and confidence calibration. Calls are deterministic and cached per
+  (variant, task, prompt hash). Nothing written holds transcript text. The judge default is now
+  the bench winner: `ornith:35b` on the export-review context with the v2 decision-rule prompt,
+  voting at confidence ≥ 0.9. Each setting can be overridden with `APEX_LABEL_JUDGE`,
+  `APEX_LABEL_JUDGE_CONTEXT`, `APEX_LABEL_JUDGE_PROMPT` or `APEX_LABEL_JUDGE_MIN_CONF`.
+  Judge accuracy on gold went from 0.46 to 0.90 [0.81, 0.95] at the old 0.6 threshold. Gold is
+  model-made from the same context and the result is in-sample
+  (`docs/research/2026-10-08-label-judge-bench.md`). `labels build --rejudge` re-judges every
+  task whose vote came from another judge config. After a rejudge, coverage went from 20% to
+  67% and weak-emitted labels from 19 to 273.
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
   (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
