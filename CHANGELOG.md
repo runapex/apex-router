@@ -99,11 +99,16 @@ next tag will carry.
   after the first 8 steps, each with n and a session-bootstrap 95% CI, plus a BIC order test and
   a per-day breakdown. `chains` fits an absorbing chain over action classes (SUCCESS / FAIL /
   ESCALATE / ABANDON) per task type: expected steps, absorption odds, ρ(Q), and a workflow
-  ranking. `progress` runs the Zeno detector (geometric fit of failing-test progress over the last
-  4 test runs, limit v_∞ = v_t + Δ_t/(1 − r) with a bootstrap CI, flag when the CI stays below
-  all-tests-passing) and a sliding-window ρ(Q) detector against step-count and wall-time cutoffs
-  (G1 criterion 5). Outcome numbers are marked gold, provisional (weak labels) or inconclusive.
-  Reads `~/.apex-router/worldmodel/` read-only; `--synthetic N` generates data with known dynamics.
+  ranking, with model vs observed task-length spread as a misspecification check. `progress` runs
+  the Zeno detector (geometric fit of failing-test progress over the last 4 test runs, limit
+  v_∞ = v_t + Δ_t/(1 − r) with a residual-bootstrap CI widened by the signal's resolution; flag
+  when the CI stays below all-tests-passing; plateaus and regressions never flag), a separate
+  stalled (stuck) detector and a sliding-window ρ(Q) detector, each against step-count and
+  wall-time cutoffs (G1 criterion 5: wins vs losses, FPR, steps saved — rule pending owner
+  sign-off). The best baseline for each G1 bar is chosen on val. Outcome numbers are marked gold,
+  provisional (weak labels) or inconclusive. Reads `~/.apex-router/worldmodel/` read-only;
+  `--synthetic N` generates data with known (planted) dynamics. The commands are exposed as
+  `worldmodel.readout.COMMANDS` for the `worldmodel` dispatcher.
 
 ### Fixed
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh

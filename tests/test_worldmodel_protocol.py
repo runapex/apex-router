@@ -219,26 +219,72 @@ def test_synthetic_is_deterministic_and_consistent():
 
 @pytest.mark.parametrize("cmd", ["baseline", "chains", "progress"])
 def test_cli_synthetic_text_and_json(cmd, capsys):
-    from apex_router.cli import main
-    assert main(["worldmodel", cmd, "--synthetic", "30"]) == 0
+    from apex_router.worldmodel.readout import COMMANDS
+    assert COMMANDS[cmd](["--synthetic", "30"]) == 0
     out = capsys.readouterr().out
     assert "synthetic: 30 sessions" in out and "split (by session start)" in out
-    assert main(["worldmodel", cmd, "--synthetic", "30", "--json"]) == 0
+    if cmd == "progress":
+        assert "planted dynamics" in out and "pending owner sign-off" in out
+    assert COMMANDS[cmd](["--synthetic", "30", "--json"]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["source"]["splits"]["train"]["tasks"] > 0
 
 
+def test_commands_table_and_no_top_level_dispatch():
+    from apex_router.worldmodel import readout
+    assert readout.COMMANDS == {"baseline": readout.cmd_baseline, "chains": readout.cmd_chains,
+                                "progress": readout.cmd_progress}
+    assert readout.main(["bogus"]) == 2
+
+
+def test_outcome_bar_is_chosen_on_val(monkeypatch):
+    """The best-outcome model must be picked on val Brier, never test."""
+    from apex_router.worldmodel import readout
+    ds, desc = fixtures.dataset(40, seed=1)[0], "synthetic: 40"
+    real = P.outcome_scores
+    calls = []
+
+    def spy(model, name, ds_, split, **kw):
+        calls.append(split)
+        out = real(model, name, ds_, split, **kw)
+        if split == "test":                          # make test prefer the prior, val not
+            out[0].value = 0.0 if name.startswith("prior") else 0.9
+        return out
+
+    monkeypatch.setattr(P, "outcome_scores", spy)
+    rep = readout.baseline_report(ds, desc)
+    vals = {r["model"]: r["brier_val"]["value"] for r in rep["rows"]}
+    assert rep["best_outcome"] == min(vals, key=vals.get)
+    assert "val" in calls
+
+
 def test_cli_no_data_is_an_error(tmp_path, monkeypatch, capsys):
-    from apex_router.cli import main
+    from apex_router.worldmodel.readout import cmd_baseline
     monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
-    assert main(["worldmodel", "baseline"]) == 1
+    assert cmd_baseline([]) == 1
     assert "no train/test tasks" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("missing", ["numpy", "scipy.optimize"])
+def test_missing_optional_dependency_is_a_message(missing, monkeypatch, capsys):
+    import sys
+    from apex_router.worldmodel import readout
+    if missing == "numpy":
+        # simulate a fresh interpreter without numpy: the protocol import is the first to fail
+        for m in [m for m in sys.modules if m.startswith("apex_router.worldmodel.protocol")]:
+            monkeypatch.delitem(sys.modules, m)
+        monkeypatch.setitem(sys.modules, "numpy", None)
+    else:
+        monkeypatch.setitem(sys.modules, "scipy.optimize", None)
+    assert readout.cmd_baseline(["--synthetic", "20"]) == 1
+    err = capsys.readouterr().err
+    assert "needs numpy and scipy" in err and missing in err
+
+
 def test_cli_progress_task_trace(capsys):
-    from apex_router.cli import main
+    from apex_router.worldmodel.readout import cmd_progress
     syn = fixtures.synthetic(30)
     tid = next(t for t, v in syn.truth["tasks"].items() if v["kind"] == "short")
-    assert main(["worldmodel", "progress", "--synthetic", "30", "--task", tid]) == 0
+    assert cmd_progress(["--synthetic", "30", "--task", tid]) == 0
     out = capsys.readouterr().out
     assert f"task {tid}" in out and "failing tests per run" in out

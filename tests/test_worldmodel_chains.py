@@ -134,3 +134,23 @@ def test_burst_chain_is_imported_not_copied():
     from apex_router import markov
     assert C.burst is markov
     assert P.ACTIONS[0] == "search"
+
+
+def test_unknown_actions_are_counted_as_other_not_dropped():
+    walks = [(["read", "other", "edit"], "SUCCESS"), (["read", "edit"], "FAIL")]
+    pooled = C.fit(walks, alpha=0.0)
+    child = C.fit([(["read", "vcs", "mystery", "edit"], "SUCCESS")], prior=pooled)
+    # vcs is outside the pooled state set, "mystery" outside §2: both count as `other`
+    assert child.n_mapped_other == 2 and child.n_dropped == 0
+    assert child.counts[pooled.index("read"), pooled.index("other")] == 1
+    assert child.counts[pooled.index("other"), pooled.index("other")] == 1
+    no_other = C.fit([(["read", "edit"], "SUCCESS")], alpha=0.0)
+    assert C.fit([(["read", "vcs"], "SUCCESS")], prior=no_other).n_dropped == 1
+
+
+def test_table_reports_observed_length_for_misspecification():
+    walks = [(["read"] * n, "SUCCESS") for n in (1, 2, 3, 10)]
+    row = C.table({"pooled": C.fit(walks)})[0]
+    assert row["observed_mean"] == pytest.approx(4.0)
+    assert row["observed_sd"] == pytest.approx(np.std([1, 2, 3, 10], ddof=1))
+    assert row["expected_steps"] > 1 and row["sd_steps"] > 0

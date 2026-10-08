@@ -57,6 +57,9 @@ class Chain:
     n_tasks: int = 0
     n_transitions: int = 0
     counts: np.ndarray | None = None
+    lengths: tuple = ()              # observed walk lengths (for the misspecification check)
+    n_mapped_other: int = 0          # steps whose class was outside `states` → counted as other
+    n_dropped: int = 0               # … and with no `other` state to count them in
     _an: dict | None = field(default=None, repr=False)
 
     @property
@@ -75,22 +78,41 @@ class Chain:
 
 
 def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0) -> Chain | None:
-    """`walks`: [(action names, absorbing state)]. With `prior`, shrink to it on its state set."""
-    walks = [(list(a), z) for a, z in walks if a and z in ABSORBING]
+    """`walks`: [(action names, absorbing state)]. With `prior`, shrink to it on its state set.
+
+    A class outside §2 counts as `other` (as in protocol.act_id); with a prior, a class missing
+    from the prior's state set also counts as `other` when that state exists — never silently
+    dropped. Both are counted (`n_mapped_other`; `n_dropped` when there is no `other` state)."""
+    walks = [(list(acts), z) for acts, z in walks if acts and z in ABSORBING]
     if prior is not None:
         states = prior.states
     else:
-        seen = {a for acts, _ in walks for a in acts}
+        seen = {a if a in ACTIONS else "other" for acts, _ in walks for a in acts}
         states = tuple(a for a in ACTIONS if a in seen)
     if not states:
         return None
     T = len(states)
     pos = {a: i for i, a in enumerate(states)}
+    other = pos.get("other")
+    mapped = dropped = 0
+    pos_all = {}
+    for acts, _ in walks:
+        for a in acts:
+            a2 = a if a in ACTIONS else "other"
+            if a2 in pos:
+                pos_all[a] = pos[a2]
+                mapped += a2 != a
+            elif other is not None:
+                pos_all[a] = other
+                mapped += 1
+            else:
+                pos_all[a] = None
+                dropped += 1
     C = np.zeros((T, T + _A))
     c0 = np.zeros(T)
     n_tr = 0
     for acts, z in walks:
-        idx = [pos.get(a) for a in acts]
+        idx = [pos_all.get(a) for a in acts]
         if idx[0] is not None:
             c0[idx[0]] += 1
         for x, y in zip(idx, idx[1:]):
@@ -113,7 +135,8 @@ def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0
     else:
         P = (C + beta * prior.P) / (C.sum(axis=1, keepdims=True) + beta)
         pi0 = (c0 + beta * prior.pi0) / (c0.sum() + beta)
-    return Chain(states, P, pi0, len(walks), n_tr, C)
+    return Chain(states, P, pi0, len(walks), n_tr, C, tuple(len(a) for a, _ in walks),
+                 mapped, dropped)
 
 
 def walks_of(ds, ids) -> list:
@@ -206,7 +229,11 @@ def table(chains: dict) -> list:
         if ch is None:
             continue
         an = analyse(ch)
+        L = np.asarray(ch.lengths, dtype=float)
         rows.append({"key": k, "n_tasks": ch.n_tasks, "n_transitions": ch.n_transitions,
+                     "observed_mean": float(L.mean()) if len(L) else None,
+                     "observed_sd": float(L.std(ddof=1)) if len(L) > 1 else None,
+                     "n_mapped_other": ch.n_mapped_other, "n_dropped": ch.n_dropped,
                      "expected_steps": an["expected_steps"],
                      "sd_steps": (None if an["var_steps"] is None
                                   else float(np.sqrt(max(an["var_steps"], 0.0)))),

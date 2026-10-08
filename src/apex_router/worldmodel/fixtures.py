@@ -3,6 +3,11 @@
 Not a model of this machine's sessions: a generator with KNOWN dynamics, so every E2 estimator
 can be checked against the answer it should recover.
 
+**Circularity, stated:** the `short` kind plants exactly the geometric-to-residual shape the Zeno
+detector looks for, and `stuck` the flat shape the stalled detector looks for. A detector score on
+this data checks the code (does it find what was planted, at what FPR), not the method (does that
+shape occur in, and predict, real failed tasks). `worldmodel progress --synthetic` says so.
+
 - **Action dependence**: order 1 (P(b | a)) or order 2 (P(c | a, b)); each row puts most mass on
   one fixed successor and spreads the rest (Dirichlet), plus a pull towards `test` so tasks run
   tests often enough to measure progress. Per task type the rows are perturbed (hierarchy to find).

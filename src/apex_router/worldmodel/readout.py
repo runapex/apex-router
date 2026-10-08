@@ -4,8 +4,12 @@ Reads `~/.apex-router/worldmodel/{steps,tasks}.jsonl` (APEX_ROUTER_HOME honoured
 `--tasks` override) read-only, or generates `--synthetic N` sessions in memory (fixtures.py; known
 dynamics, labels marked gold — a check of the estimators, not a measurement of this machine).
 Every number carries its n and a 95% session-bootstrap CI (Wilson for rates); outcome numbers say
-gold / provisional / inconclusive. Other `worldmodel` subcommands (E1's builder, E4's evaluate)
-are forwarded to `apex_router.worldmodel.cli` when that module exists.
+gold / provisional / inconclusive.
+
+Entry points: `cmd_baseline(argv)`, `cmd_chains(argv)`, `cmd_progress(argv)` and `COMMANDS` (name →
+fn), for the single `worldmodel` dispatcher (worldmodel/cli.py) to merge into its own table. This
+module owns no top-level dispatch. numpy/scipy are imported only inside a command, so a missing
+one prints a one-line message (rc 1) instead of a traceback.
 """
 from __future__ import annotations
 
@@ -13,8 +17,6 @@ import argparse
 import json
 import math
 import sys
-
-from . import protocol as P
 
 ORDERS = (1, 2, 3)
 
@@ -39,6 +41,7 @@ def _pci(ci, d=0):
 
 
 def _load(args):
+    from . import protocol as P
     if args.synthetic:
         from .fixtures import dataset
         ds, _ = dataset(args.synthetic, seed=args.seed)
@@ -48,6 +51,7 @@ def _load(args):
 
 
 def _source(ds, desc) -> dict:
+    from . import protocol as P
     sp = {}
     for s in P.SPLITS:
         ids = ds.ids(s)
@@ -57,7 +61,8 @@ def _source(ds, desc) -> dict:
                              and ds.tasks[t].get("outcome_src") == "gold"),
                  "weak": sum(1 for t in ids if P.label(ds.tasks[t]) is not None
                              and ds.tasks[t].get("outcome_src") != "gold")}
-    return {"desc": desc, "splits": sp, "dropped_steps": ds.dropped}
+    return {"desc": desc, "synthetic": desc.startswith("synthetic:"), "splits": sp,
+            "dropped_steps": ds.dropped}
 
 
 def _head(title, src) -> list:
@@ -69,13 +74,10 @@ def _head(title, src) -> list:
     return L
 
 
-def _empty(ds) -> bool:
-    return not ds.ids("train") or not ds.ids("test")
-
-
 # ---- baseline ---------------------------------------------------------------------------------
 
 def baseline_report(ds, desc, seed: int = 0) -> dict:
+    from . import protocol as P
     from . import baselines as B
     tr, va = ds.ids("train"), ds.ids("val")
     models = [B.Unigram()] + [B.Markov(order=k) for k in ORDERS] + [B.Logistic()]
@@ -85,11 +87,13 @@ def baseline_report(ds, desc, seed: int = 0) -> dict:
     for m in models:
         ce_v, _ = P.next_action_scores(m, m.name, ds, "val", seed)
         ce_t, ppl_t = P.next_action_scores(m, m.name, ds, "test", seed)
+        br_v, _ = P.outcome_scores(m, m.name, ds, "val", seed=seed)
         br, ec = P.outcome_scores(m, m.name, ds, "test", seed=seed)
         br_end, _ = P.outcome_scores(m, m.name, ds, "test", seed=seed, prefix=None)
         br_gold, _ = P.outcome_scores(m, m.name, ds, "test", gold_only=True, seed=seed)
         rows.append({"model": m.name, "ce_val": ce_v.to_dict(), "ce_test": ce_t.to_dict(),
-                     "ppl_test": ppl_t.to_dict(), "brier": br.to_dict(), "ece": ec.to_dict(),
+                     "ppl_test": ppl_t.to_dict(), "brier_val": br_v.to_dict(),
+                     "brier": br.to_dict(), "ece": ec.to_dict(),
                      "brier_end": br_end.to_dict(), "brier_gold": br_gold.to_dict()})
     # best next-action baseline by VAL CE (test is not used to choose)
     scored = [(r["ce_val"]["value"], i) for i, r in enumerate(rows) if r["ce_val"]["value"] is not None]
@@ -97,7 +101,9 @@ def baseline_report(ds, desc, seed: int = 0) -> dict:
     best = models[best_i]
     paired = [P.paired_ce(best, m, f"{best.name} − {m.name}", ds, "test", seed).to_dict()
               for i, m in enumerate(models) if i != best_i]
-    b_scored = [(r["brier"]["value"], i) for i, r in enumerate(rows) if r["brier"]["value"] is not None]
+    # outcome bar chosen on VAL Brier at the protocol prefix; test is scored once
+    b_scored = [(r["brier_val"]["value"], i) for i, r in enumerate(rows)
+                if r["brier_val"]["value"] is not None]
     ob_i = min(b_scored)[1] if b_scored else 0
     mk = [(rows[i]["ce_val"]["value"], i) for i, m in enumerate(models)
           if isinstance(m, B.Markov) and rows[i]["ce_val"]["value"] is not None]
@@ -130,13 +136,17 @@ def render_baseline(rep) -> str:
                  f"rel {_pct(rel, 1)} {_pci(d['extra'].get('rel_ci'), 1)}")
     L += ["", f"2. outcome — P(success) after the first {rep['outcome_prefix']} steps "
               "(never the last), test tasks"]
-    L.append(f"  {'model':<26} {'Brier':<22} {'ECE (10 bins)':<22} {'n tasks / sessions':<19} labels")
+    L.append(f"  {'model':<26} {'val Brier':<10} {'test Brier':<22} {'ECE (10 bins)':<22} "
+             f"{'n tasks / sessions':<19} labels")
     for r in rep["rows"]:
-        b, e = r["brier"], r["ece"]
-        L.append(f"  {r['model']:<26} {_f(b['value']):>5} {_ci(b['ci']):<16} {_f(e['value']):>5} "
-                 f"{_ci(e['ci']):<16} {str(b['n']) + ' / ' + str(b['n_sessions']):<19} {b['quality']}")
-    L.append(f"  best: {rep['best_outcome']} — G1 criterion 2 (gold only) needs a Brier below it "
-             "with the paired CI excluding 0")
+        b, e, bv = r["brier"], r["ece"], r["brier_val"]
+        L.append(f"  {r['model']:<26} {_f(bv['value']):<10} {_f(b['value']):>5} {_ci(b['ci']):<16} "
+                 f"{_f(e['value']):>5} {_ci(e['ci']):<16} "
+                 f"{str(b['n']) + ' / ' + str(b['n_sessions']):<19} {b['quality']}")
+    L.append("  (Markov orders share one outcome model: P(SUCCESS) of the order-1 absorbing chain from "
+             "the last action seen)")
+    L.append(f"  best on val: {rep['best_outcome']} — G1 criterion 2 (gold only) needs a test Brier "
+             "below it with the paired CI excluding 0")
     pb = rep["paired_brier_gold"]
     L.append(f"    {pb['model']:<44} {_f(pb['value']):>6} {_ci(pb['ci']):<18} n {pb['n']} "
              f"(paired Brier, {pb['quality']})")
@@ -203,6 +213,16 @@ def render_chains(rep) -> str:
                  f"{_pct(pa['SUCCESS'], 1):>10} {_pct(pa['FAIL'], 1):>8} {_pct(pa['ESCALATE'], 1):>7} "
                  f"{_pct(pa['ABANDON'], 1):>8}  {_f(r['rho'], 4)}")
     L.append("  E[steps] = π0·N·1 from START; ρ(Q) → 1 is the closed-form 'steps to absorption → ∞'")
+    L.append("  misspecification check — model E[steps] ± sd vs observed task length mean ± sd: "
+             + "; ".join(f"{r['key']} {_f(r['expected_steps'], 1)} ± {_f(r['sd_steps'], 1)} vs "
+                         f"{_f(r['observed_mean'], 1)} ± {_f(r['observed_sd'], 1)}"
+                         for r in rep["table"] if not r["singular"]))
+    L.append("  (a first-order chain has geometric-like length tails; an observed sd far from the "
+             "model's says length depends on more than the current action)")
+    pooled = rep["table"][0] if rep["table"] else None
+    if pooled and (pooled["n_mapped_other"] or pooled["n_dropped"]):
+        L.append(f"  {pooled['n_mapped_other']} steps outside the state set counted as `other`, "
+                 f"{pooled['n_dropped']} dropped")
     L += ["", f"2. workflow value = P(success) − λ·E[steps], λ = {rep['lambda']:g} "
               "(train) vs realized success (test)"]
     for w in rep["workflows"]:
@@ -259,7 +279,8 @@ def render_progress(rep) -> str:
         for w in rep["windows"]:
             L.append(f"  step {w['step']:>3}  v {_f(w['v'])}  r {_f(w['r'])}  v∞ {_f(w['v_inf'])} "
                      f"{_ci(w['ci']):<18} {w['status']:<14}"
-                     + ("  CONVERGING SHORT" if w["converging_short"] else ""))
+                     + ("  CONVERGING SHORT" if w["converging_short"] else "")
+                     + ("  STALLED (stuck detector)" if w["stalled"] else ""))
         if not rep["windows"]:
             L.append("  fewer than 4 progress observations — no window to test")
         rho = [x for x in rep["rho"] if x is not None]
@@ -269,27 +290,35 @@ def render_progress(rep) -> str:
         return "\n".join(L)
     c5 = rep["criterion5"]
     th = c5["thresholds"]
+    if rep["source"].get("synthetic"):
+        L.append("  SYNTHETIC: planted dynamics — the generator plants the geometric-to-residual "
+                 "shape the detector looks for; this checks the code, not the method")
     L += ["", "1. detectors on test tasks"]
     L.append("  progress signal: " + ", ".join(f"{k} {v}" for k, v in sorted(rep["signal_kinds_test"].items()))
              + " tasks;  window status: " + (", ".join(
                  f"{k} {v}" for k, v in sorted(rep["window_status_test"].items())) or "—"))
     L.append(f"  thresholds tuned on train+val successes (≤ {_pct(c5['fpr_target'])} of them flagged): "
-             f"zeno CI-upper < {_f(1.0 - th['zeno'])}, ρ(Q) > {_f(th.get('rho'), 4)}, "
+             f"zeno CI-upper < {_f(1.0 - th['zeno'])}, stalled v < {_f(1.0 - th['stalled'])}, "
+             f"ρ(Q) > {_f(th.get('rho'), 4)}, "
              f"steps > {_f(th['steps'], 0)}, wall > {_f(th['wall'], 0)} s")
     L += ["", f"2. G1 criterion 5 — tasks ending fail/escalate/abandon flagged before the "
-              f"step/wall cutoff (labels: {c5['quality']})"]
+              f"step/wall cutoff (labels: {c5['quality']}; rule {c5['rule']})"]
     bl = c5["baseline"]
     L.append(f"  baseline (earlier of step and wall cutoff): recall {_pct(bl['recall']['rate'])} "
              f"{_pci(bl['recall']['ci'])} of {c5['n_bad']}, FPR {_pct(bl['fpr']['rate'])} "
              f"{_pci(bl['fpr']['ci'])} of {c5['n_good']} successes")
     for name, d in c5["detectors"].items():
-        L.append(f"  {name:<9} earlier {d['earlier']['k']}/{d['earlier']['n']} = "
-                 f"{_pct(d['earlier']['rate'])} {_pci(d['earlier']['ci'])}  recall "
-                 f"{_pct(d['recall']['rate'])}  FPR {d['fpr']['k']}/{d['fpr']['n']} = "
-                 f"{_pct(d['fpr']['rate'])} {_pci(d['fpr']['ci'])}  → {d['verdict']}")
-    L.append("  zeno|rho = the earlier of the two, each at its own θ (its FPR is not re-tuned)")
-    L.append(f"  PASS = test FPR ≤ {_pct(c5['fpr_target'])} and earlier share ≥ "
-             f"{_pct(c5['min_share'])} (the share is this module's reading; G1 names none)")
+        ws = d["win_share"]
+        L.append(f"  {name:<13} wins {d['wins']:>2} losses {d['losses']:>2}  win share "
+                 f"{_pct(ws['rate'])} {_pci(ws['ci'])}  median saved {_f(d['median_saved'], 1)}  "
+                 f"recall {_pct(d['recall']['rate'])}  FPR {d['fpr']['k']}/{d['fpr']['n']} "
+                 f"{_pci(d['fpr']['ci'])}  → {d['verdict']}")
+    L.append("  win = flagged before the cutoff and ≥ 2 steps before the end; loss = cutoff first. "
+             "PASS = FPR Wilson upper ≤ 10%, win-share Wilson lower > 50%, median steps saved > 0 "
+             "(pending owner sign-off)")
+    L.append("  stalled = the stuck detector (flat window), reported apart from Zeno; combined rows "
+             "(a|b) use each part's θ, not re-tuned — their tuned FPR can reach ~20%; the "
+             "test-FPR gate still applies")
     L.append("  caveat: a flag needs ≥ 4 test runs (or error events) in the task — tasks without "
              "them can only be caught by the cutoff")
     return "\n".join(L)
@@ -297,50 +326,73 @@ def render_progress(rep) -> str:
 
 # ---- CLI --------------------------------------------------------------------------------------
 
-def main(argv=None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv[:1] and argv[0] not in ("baseline", "chains", "progress", "-h", "--help"):
-        try:
-            from . import cli as e_cli  # E1/E4's commands (build, evaluate, …)
-        except ImportError:
-            print(f"apex-router worldmodel: unknown command {argv[0]!r} "
-                  "(this build has baseline | chains | progress)", file=sys.stderr)
-            return 2
-        return e_cli.main(argv)
-    ap = argparse.ArgumentParser(prog="apex-router worldmodel",
-                                 description="P6 world-model baselines and the Markov/Zeno layer.")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, h in (("baseline", "next-action CE / outcome Brier per baseline + BIC order test"),
-                    ("chains", "absorbing chain per task type + workflow ranking"),
-                    ("progress", "Zeno progress detector + G1 criterion 5")):
-        p = sub.add_parser(name, help=h)
-        p.add_argument("--synthetic", type=int, metavar="N", help="N synthetic sessions instead of data")
-        p.add_argument("--seed", type=int, default=0)
-        p.add_argument("--steps", help="steps.jsonl (default ~/.apex-router/worldmodel/)")
-        p.add_argument("--tasks", help="tasks.jsonl (default ~/.apex-router/worldmodel/)")
-        p.add_argument("--json", action="store_true")
-        if name == "chains":
-            p.add_argument("--lam", type=float, default=0.0, help="λ in value = P(success) − λ·E[steps]")
-        if name == "progress":
-            p.add_argument("--task", help="trace one task id")
-    args = ap.parse_args(argv)
+_HELP = {"baseline": "next-action CE / outcome Brier per baseline + BIC order test",
+         "chains": "absorbing chain per task type + workflow ranking",
+         "progress": "Zeno progress detector + G1 criterion 5"}
+_OPTIONAL = {"numpy", "scipy"}
+
+
+def _parser(name: str) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog=f"apex-router worldmodel {name}", description=_HELP[name])
+    p.add_argument("--synthetic", type=int, metavar="N", help="N synthetic sessions instead of data")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--steps", help="steps.jsonl (default ~/.apex-router/worldmodel/)")
+    p.add_argument("--tasks", help="tasks.jsonl (default ~/.apex-router/worldmodel/)")
+    p.add_argument("--json", action="store_true")
+    if name == "chains":
+        p.add_argument("--lam", type=float, default=0.0, help="λ in value = P(success) − λ·E[steps]")
+    if name == "progress":
+        p.add_argument("--task", help="trace one task id")
+    return p
+
+
+def _run(name: str, argv) -> int:
+    args = _parser(name).parse_args(list(argv or []))
     try:
         ds, desc = _load(args)
-    except ImportError as e:
-        print(f"apex-router worldmodel: needs numpy and scipy (missing: {e.name or e})", file=sys.stderr)
+        if not ds.ids("train") or not ds.ids("test"):
+            print(f"apex-router worldmodel: no train/test tasks in {desc} — build the step dataset "
+                  "first (E1) or pass --synthetic N", file=sys.stderr)
+            return 1
+        if name == "baseline":
+            rep, render = baseline_report(ds, desc, args.seed), render_baseline
+        elif name == "chains":
+            rep, render = chains_report(ds, desc, args.lam), render_chains
+        else:
+            rep, render = progress_report(ds, desc, args.seed, args.task), render_progress
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] not in _OPTIONAL:
+            raise
+        print(f"apex-router worldmodel {name}: needs numpy and scipy (missing: {e.name}); "
+              "install the world-model extra", file=sys.stderr)
         return 1
-    if _empty(ds):
-        print(f"apex-router worldmodel: no train/test tasks in {desc} — build the step dataset "
-              "first (E1) or pass --synthetic N", file=sys.stderr)
-        return 1
-    if args.cmd == "baseline":
-        rep, render = baseline_report(ds, desc, args.seed), render_baseline
-    elif args.cmd == "chains":
-        rep, render = chains_report(ds, desc, args.lam), render_chains
-    else:
-        rep, render = progress_report(ds, desc, args.seed, args.task), render_progress
     print(json.dumps(_clean(rep), indent=2, default=_json_default) if args.json else render(rep))
     return 0
+
+
+def cmd_baseline(argv=None) -> int:
+    return _run("baseline", argv)
+
+
+def cmd_chains(argv=None) -> int:
+    return _run("chains", argv)
+
+
+def cmd_progress(argv=None) -> int:
+    return _run("progress", argv)
+
+
+COMMANDS = {"baseline": cmd_baseline, "chains": cmd_chains, "progress": cmd_progress}
+
+
+def main(argv=None) -> int:
+    """Standalone use (`python -m apex_router.worldmodel.readout baseline …`)."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] not in COMMANDS:
+        print("usage: readout {" + "|".join(COMMANDS) + "} [--synthetic N] [--json] …",
+              file=sys.stderr)
+        return 2
+    return COMMANDS[argv[0]](argv[1:])
 
 
 def _clean(o):
