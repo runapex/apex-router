@@ -482,16 +482,38 @@ def _all_votes(r) -> dict:
     return v
 
 
-def posterior(r, acc: dict) -> tuple:
-    """Naive-Bayes combination: each voter with accuracy a (Beta(2,2)-smoothed on gold) multiplies
-    its label by a and the others by (1-a)/2. Uniform prior. -> (label, probability)."""
+SIGNAL_CONTEXTS = {"export"}    # judge contexts that show the judge the rule voters' facts
+
+
+def _smoothed(acc: dict, name: str) -> float:
+    k, n = acc.get(name, (0, 0))
+    return min(0.99, max(0.34, (k + 2) / (n + 4)))
+
+
+def voter_groups(r, acc: dict) -> list:
+    """[(label, accuracy)] of the independent voters of one task. A judge that read the rule
+    voters' facts (``SIGNAL_CONTEXTS``: its prompt carries ``signals()``) is not independent of
+    the rules it agrees with: the judge and every rule voting its label are ONE correlated voter
+    with the accuracy of the most accurate of them (max, not product). Rules that disagree with
+    the judge, and every voter when the judge did not see the signals, count separately."""
     vs = _all_votes(r)
-    if not vs:
+    j = r.get("judge")
+    if "judge" in vs and isinstance(j, dict) and judge_config(j)[1] in SIGNAL_CONTEXTS:
+        group = [n for n, v in vs.items() if v == vs["judge"]]
+        out = [(vs["judge"], max(_smoothed(acc, n) for n in group))]
+        return out + [(v, _smoothed(acc, n)) for n, v in vs.items() if n not in group]
+    return [(v, _smoothed(acc, n)) for n, v in vs.items()]
+
+
+def posterior(r, acc: dict) -> tuple:
+    """Naive-Bayes combination over ``voter_groups``: each voter with accuracy a (Beta(2,2)-
+    smoothed on gold) multiplies its label by a and the others by (1-a)/2. Uniform prior.
+    -> (label, probability)."""
+    groups = voter_groups(r, acc)
+    if not groups:
         return ("unknown", 0.0)
     logp = {o: 0.0 for o in OUTCOMES}
-    for name, v in vs.items():
-        k, n = acc.get(name, (0, 0))
-        a = min(0.99, max(0.34, (k + 2) / (n + 4)))
+    for v, a in groups:
         for o in OUTCOMES:
             logp[o] += math.log(a if o == v else (1 - a) / 2)
     m = max(logp.values())
@@ -791,17 +813,120 @@ def signals(t) -> dict:
             "session_ended": nxt is None}
 
 
-def export_review(k: int, out_path, seed: int = 7, ids: list | None = None) -> int:
+# ---- stratified sampling for a holdout -------------------------------------------------------
+# ``export-review --strata suspected-fail:25,test-split:12,random:23`` draws each stratum in the
+# order given, never a task with gold in force and never one an earlier stratum took:
+# - suspected-fail: a rule signal of failure (tail_errors, interrupted, next_negative, repeated,
+#   tests failed after the last edit), a judge vote of fail/partial at any confidence, or a judge
+#   confidence below ``JUDGE_MIN_CONF``;
+# - test-split: tasks in the P6 test split (``worldmodel/tasks.jsonl``, ``split == "test"``),
+#   drawn in ``_test_priority`` order (no emitted label, rule fail vote, tool error, rest);
+# - random: uniform over what is left.
+STRATA = ("suspected-fail", "test-split", "random")
+FAIL_SIGNALS = ("tail_errors", "interrupted", "next_negative", "repeated", "tests")
+
+
+def wm_task_key(r: dict) -> str:
+    """The P6 task id (``sid:i``) of a labels task row: ``worldmodel.steps`` cuts tasks with the
+    same ordinals and gives each the labels id ``_tid(path, i)``, so (session, index) is the
+    join."""
+    return f"{r['session']}:{r['index']}"
+
+
+def split_test_keys(path: Path | None = None) -> set:
+    """``sid:i`` of every P6 task whose frozen split is ``test`` (empty if not built)."""
+    if path is None:
+        path = home().parent / "worldmodel" / "tasks.jsonl"
+    return {x["task"] for x in _read(Path(path))
+            if isinstance(x, dict) and x.get("split") == "test" and isinstance(x.get("task"), str)}
+
+
+def suspected_fail(r: dict, min_conf: float | None = None) -> bool:
+    min_conf = JUDGE_MIN_CONF if min_conf is None else min_conf
+    v = r.get("votes") or {}
+    if any(v.get(s) == "fail" for s in FAIL_SIGNALS):
+        return True
+    j = r.get("judge")
+    if isinstance(j, dict):
+        if j.get("outcome") in ("fail", "partial"):
+            return True
+        c = j.get("confidence")
+        if isinstance(c, (int, float)) and c < min_conf:
+            return True
+    return False
+
+
+def parse_strata(spec: str) -> list:
+    """``"suspected-fail:25,test-split:12,random:23"`` -> [(name, count)]."""
+    out = []
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, n = part.partition(":")
+        if name not in STRATA or not n.isdigit():
+            raise GoldImportError(f"bad stratum {part!r}: want NAME:COUNT, NAME in "
+                                  f"{'|'.join(STRATA)}")
+        out.append((name, int(n)))
+    if not out:
+        raise GoldImportError("no strata given")
+    return out
+
+
+def _test_priority(r: dict, lab: dict) -> int:
+    """Test-split draw order (stable within a rank): no emitted label, then a rule fail vote,
+    then any tool error, then the rest — where bad tasks are, if any exist."""
+    if lab.get(r["id"]) in (None, "unknown"):
+        return 0
+    if any((r.get("votes") or {}).get(s) == "fail" for s in FAIL_SIGNALS):
+        return 1
+    return 2 if (r.get("n_errors") or 0) > 0 else 3
+
+
+def sample_strata(rows: list, labels: list, gold: dict, strata: list, test_keys: set,
+                  seed: int = 7) -> list:
+    """[(row, stratum)] drawn per ``strata`` (see ``STRATA``); a stratum with fewer candidates
+    than asked gives what it has."""
+    rng = random.Random(seed)
+    lab = {x["id"]: x.get("label") for x in labels}
+    taken = set(gold)
+    out = []
+    for name, n in strata:
+        pool = [r for r in rows if r["id"] not in taken]
+        if name == "suspected-fail":
+            pool = [r for r in pool if suspected_fail(r)]
+            rng.shuffle(pool)
+        elif name == "test-split":
+            pool = [r for r in pool if wm_task_key(r) in test_keys]
+            rng.shuffle(pool)
+            pool.sort(key=lambda r: _test_priority(r, lab))
+        else:
+            rng.shuffle(pool)
+        for r in pool[:n]:
+            out.append((r, name))
+            taken.add(r["id"])
+    return out
+
+
+def export_review(k: int, out_path, seed: int = 7, ids: list | None = None,
+                  strata: list | None = None, test_keys: set | None = None) -> int:
     """Write k tasks sampled by ``sample_for_review`` — or exactly the tasks in ``ids``, gold or
-    not — to ``out_path`` (mode 0600), one JSON line each. A task that already has gold carries
-    the row in force (outcome, ts, by) so a correction can name it in ``supersedes``. Nothing is
-    stored under the labels home. Returns the number written."""
+    not, or the tasks ``sample_strata`` draws for ``strata`` — to ``out_path`` (mode 0600), one
+    JSON line each. A task that already has gold carries the row in force (outcome, ts, by) so a
+    correction can name it in ``supersedes``; a stratified row carries its ``stratum``. Nothing
+    is stored under the labels home. Returns the number written."""
     h = home()
     rows = _read(h / "tasks.jsonl")
     labels = _read(h / "labels.jsonl")
     latest = gold_latest()
     gold = {g: x["outcome"] for g, x in latest.items()}
-    if ids is not None:
+    stratum: dict = {}
+    if strata is not None:
+        drawn = sample_strata(rows, labels, gold, strata,
+                              split_test_keys() if test_keys is None else test_keys, seed=seed)
+        picked = [r for r, _ in drawn]
+        stratum = {r["id"]: s for r, s in drawn}
+    elif ids is not None:
         by_id = {r["id"]: r for r in rows}
         missing = [i for i in ids if i not in by_id]
         if missing:
@@ -828,7 +953,8 @@ def export_review(k: int, out_path, seed: int = 7, ids: list | None = None) -> i
                 "next": nxt[:EXPORT_CLIP["next"]] if nxt is not None else None,
                 "votes": votes(t), "judge": r.get("judge"), "signals": signals(t),
                 "gold": ({f: latest[r["id"]].get(f) for f in ("outcome", "ts", "by")}
-                         if r["id"] in latest else None)},
+                         if r["id"] in latest else None),
+                **({"stratum": stratum[r["id"]]} if r["id"] in stratum else {})},
                 ensure_ascii=False) + "\n")
             n += 1
     return n
@@ -838,8 +964,12 @@ class GoldImportError(ValueError):
     pass
 
 
-def import_gold(path, by: str) -> dict:
-    """Append ``{id, outcome, reason?}`` lines from ``path`` to gold.jsonl as ``by=NAME``, then
+TAG_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
+
+def import_gold(path, by: str, tag: str | None = None) -> dict:
+    """Append ``{id, outcome, reason?}`` lines from ``path`` to gold.jsonl as ``by=NAME`` (and
+    ``tag=TAG`` on every row when given, e.g. a holdout batch), then
     ``relabel()``. All-or-nothing: any bad line rejects the whole file and nothing is written.
     Rejected: an id not in tasks.jsonl, an outcome outside success|partial|fail|unknown, an id
     already in gold or twice in the file, a reason that is not a string of <= ``REASON_MAX``
@@ -852,6 +982,8 @@ def import_gold(path, by: str) -> dict:
     by = (by or "").strip()
     if not by or len(by) > 64 or any(ch.isspace() for ch in by):
         raise GoldImportError("--by must be a non-empty name without spaces (<= 64 chars)")
+    if tag is not None and not TAG_RE.match(tag):
+        raise GoldImportError("--tag must be 1-64 chars of letters, digits, . _ : -")
     h = home()
     ids = {r["id"] for r in _read(h / "tasks.jsonl")}
     gold_rows = _read(h / "gold.jsonl")
@@ -888,6 +1020,8 @@ def import_gold(path, by: str) -> dict:
         if isinstance(tid, str):
             seen.add(tid)
         g = {"id": tid, "outcome": o, "ts": now, "by": by}
+        if tag is not None:
+            g["tag"] = tag
         if reason:
             g["reason"] = reason
         if sup is not None:
@@ -911,7 +1045,30 @@ def gold_by() -> Counter:
                    for k, g in gold_latest().items())          # superseded rows not counted
 
 
+def gold_by_tag() -> Counter:
+    """Gold labels in force per ``tag`` (untagged rows count as ``untagged``; orphans skipped)."""
+    return Counter(g.get("tag") or "untagged" for k, g in gold_latest().items()
+                   if not k.startswith("orphan:"))
+
+
 # ---- report ---------------------------------------------------------------------------------
+
+def class_prior_line(labels: list, gold: dict, rows: list) -> str:
+    """Class shares of the weak-emitted labels vs the decided gold vs what the independent rule
+    signals alone suggest (share of tasks with a rule fail vote, share with any tool error), so
+    a shortage of fail labels is visible next to the evidence that bad tasks exist."""
+    def shares(c: Counter) -> str:
+        n = sum(c[o] for o in OUTCOMES)
+        return (" / ".join(f"{c[o] / n:.2f}" for o in OUTCOMES) + f" (n {n})") if n else "– (n 0)"
+    weak = Counter(x["label"] for x in labels if x.get("from") == "weak")
+    gd = Counter(v for v in gold.values() if v in OUTCOMES)
+    n = max(len(rows), 1)
+    rule_fail = sum(1 for r in rows if any((r.get("votes") or {}).get(s) == "fail"
+                                           for s in FAIL_SIGNALS))
+    errs = sum(1 for r in rows if (r.get("n_errors") or 0) > 0)
+    return (f"class prior s/p/f: weak-emitted {shares(weak)} · gold {shares(gd)} · independent "
+            f"signals: rule-fail vote {rule_fail / n:.2f} of tasks, n_errors>0 {errs / n:.2f}")
+
 
 def report(res: dict | None = None) -> str:
     h = home()
@@ -931,8 +1088,12 @@ def report(res: dict | None = None) -> str:
         lines.append(f"gold by: user {users} · model/other {sum(gb.values()) - users} ("
                      + ", ".join(f"{k} {v}" for k, v in sorted(gb.items())) + ")"
                      + (f" · orphaned {orphaned} (request no longer a task)" if orphaned else ""))
+    gt = gold_by_tag()
+    if any(k != "untagged" for k in gt):
+        lines.append("gold by tag: " + ", ".join(f"{k} {v}" for k, v in sorted(gt.items())))
     by = Counter(x["label"] for x in labels)
     lines.append("labels: " + ", ".join(f"{k} {by[k]}" for k in OUTCOMES + ("unknown",)))
+    lines.append(class_prior_line(labels, gold, _read(h / "tasks.jsonl")))
     cov = Counter(v for x in labels for v in x["voters"])
     lines.append("voter            votes  coverage   gold n  accuracy  95% CI")
     for name in list(LFS) + ["judge"]:
@@ -995,10 +1156,15 @@ def main(argv=None) -> int:
     e.add_argument("--out", required=True)
     e.add_argument("--ids", help="comma-separated task ids to export instead of sampling "
                                  "(gold or not; their gold row in force is included)")
+    e.add_argument("--strata", help="stratified holdout instead of the review sample: "
+                                    "NAME:COUNT,... with NAME in " + "|".join(STRATA)
+                                    + " (drawn in order, never a task with gold)")
+    e.add_argument("--seed", type=int, default=7)
     g = sub.add_parser("import-gold", help="append {id, outcome, reason?, supersedes?} lines to "
                                            "gold as by=NAME")
     g.add_argument("file")
     g.add_argument("--by", required=True)
+    g.add_argument("--tag", default=None, help="mark every imported row tag=TAG (e.g. a holdout)")
     jb = sub.add_parser("judge-bench", help="score judge variants (model x context x prompt) "
                                             "against gold; cached, no text stored")
     jb.add_argument("--models", default=None, help=f"comma-separated (default {JUDGE_MODEL})")
@@ -1009,6 +1175,9 @@ def main(argv=None) -> int:
                     help="skip a model whose mean latency over its first 5 tasks exceeds S")
     jb.add_argument("--min-conf", type=float, default=None,
                     help=f"vote threshold for scoring (default {JUDGE_MIN_CONF})")
+    jb.add_argument("--gold-tag", default=None,
+                    help="score only on gold rows (in force) tagged TAG; writes results-TAG.jsonl "
+                         "/ table-TAG.md next to the untagged ones (shared cache)")
     a = ap.parse_args(argv)
     if a.cmd == "judge-bench":
         from .label_judge_bench import main as _bench
@@ -1016,7 +1185,8 @@ def main(argv=None) -> int:
     if a.cmd == "export-review":
         ids = [x.strip() for x in a.ids.split(",") if x.strip()] if a.ids else None
         try:
-            n = export_review(a.k, a.out, ids=ids)
+            strata = parse_strata(a.strata) if a.strata else None
+            n = export_review(a.k, a.out, ids=ids, strata=strata, seed=a.seed)
         except GoldImportError as ex:
             print(f"export-review: {ex}", file=sys.stderr)
             return 2
@@ -1025,7 +1195,7 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "import-gold":
         try:
-            res = import_gold(a.file, a.by)
+            res = import_gold(a.file, a.by, tag=a.tag)
         except GoldImportError as ex:
             print(f"import-gold: rejected, nothing written: {ex}", file=sys.stderr)
             return 2
