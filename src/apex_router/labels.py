@@ -71,6 +71,21 @@ _SKIP_USER = ("<command-", "<local-command", "Caveat:", "<system", "<task-notifi
               "[Image #", "<bash-")
 
 
+def is_tool_result(content) -> bool:
+    """A Claude Code user record that carries tool results (not a typed request)."""
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                             for b in content)
+
+
+def request_text(content) -> str | None:
+    """The request text of a user record, or None when it is not a task boundary (empty, or
+    injected by the harness). Shared with ``worldmodel.steps`` so both cut tasks identically."""
+    t = _text(content).strip()
+    if not t or t.startswith(_SKIP_USER):
+        return None
+    return t
+
+
 def _tid(path: Path, i: int) -> str:
     return hashlib.sha1(f"{path.name}:{i}".encode()).hexdigest()[:12]
 
@@ -88,12 +103,13 @@ def extract(path: Path) -> list[dict]:
                 d = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(d, dict):               # a JSON line that is not a record
+                continue
             m = d.get("message") if isinstance(d.get("message"), dict) else {}
             role = m.get("role") or d.get("type")
             c = m.get("content")
             if role == "user":
-                if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
-                                               for b in c):
+                if is_tool_result(c):
                     for b in c:                                   # Claude Code tool results
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             call = by_call.get(b.get("tool_use_id"))
@@ -102,8 +118,8 @@ def extract(path: Path) -> list[dict]:
                                 call[3] = _text(b.get("content"))[-2000:] if not isinstance(
                                     b.get("content"), str) else b["content"][-2000:]
                     continue
-                t = _text(c).strip()
-                if not t or t.startswith(_SKIP_USER):
+                t = request_text(c)
+                if t is None:
                     continue
                 cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
                 tasks.append(cur)

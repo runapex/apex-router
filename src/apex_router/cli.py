@@ -125,6 +125,10 @@ def main(argv=None) -> int:
         # Task outcome labels (weak rules + local judge + gold). Own subcommands, like zeno.
         from .labels import main as _labels
         return _labels(raw[1:])
+    if raw[:1] == ["worldmodel"]:
+        # P6 world model (docs/DESIGN-worldmodel-P6.md): step dataset build + stats. Own subcommands.
+        from .worldmodel.cli import main as _worldmodel
+        return _worldmodel(raw[1:])
     if raw[:1] == ["zeno"]:
         # Zeno frontier report (diminishing reliability returns, horizon compounding, failure-mode
         # discovery). Own subcommands, so it parses its own args like xval.
@@ -285,6 +289,9 @@ def main(argv=None) -> int:
                    add_help=False)
     sub.add_parser("labels", help="task outcome labels: rules + local judge + hand-labeled gold; "
                                   "`labels build [--judge N]|report|review [-n N]`", add_help=False)
+    sub.add_parser("worldmodel", help="P6 world model: `worldmodel build [--home H] [--json]` "
+                                      "(step + task dataset from the transcripts) | `worldmodel "
+                                      "stats`", add_help=False)
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)

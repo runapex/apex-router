@@ -1,0 +1,300 @@
+{"cmd": "cd <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cat <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "sed -n <arg> <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "sleep <n> ; echo <arg>", "tool": "Bash", "cls": "other", "src": "transcript"}
+{"cmd": "cat >> <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> && cat <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> uv run python -m unittest <path> -v 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path> | head <arg>", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> ; cat -n <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && cat -n <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "sed -n '<msg>' <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "grep -n \"<msg>\" <path> | head <arg>", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "python3 -c \"<code>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "sleep <n> ; cd <path> ; git log --oneline <arg>", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "echo \"<msg>\" >> <path>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> <path> <path> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; cat >> <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cat > <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> uv run python -m unittest <path> -v 2>&1", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && sed -n '<msg>' <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cat <path> ; echo <arg> ; cat <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cat >> <path> << EOF\n<body>\nEOF\necho <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cat -n <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "sleep <n> ; echo", "tool": "Bash", "cls": "other", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\ngrep -n \"<msg>\" <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; cat <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; PYTHONPATH=<arg> python3 - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && cat > <path> << EOF\n<body>\nEOF\npython3 <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> ; <VAR>=<arg> ; bash <path> \"<msg>\" <arg> <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "grep -n \"<msg>\" <path>", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> && grep -n \"<msg>\" <path>", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> ; <VAR>=<arg> ; sed -n <arg> <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": ".venv/bin/python - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> <path> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> ( .venv/bin/python -m pytest -q -p <arg> 2>&1 | tail <arg> <arg> echo \"<msg>\" ; cat >> <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && PYTHONDONTWRITEBYTECODE=<arg> .venv/bin/python - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n '<msg>' <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; cat <path> ; echo <arg> ; cat <path> ; echo <arg> ; cat <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; cat -n <path> | sed -n <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cat > <path> << EOF\n<body>\nEOF\necho <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cat >> <path> << EOF\n<body>\nEOF\nsleep <n> ; echo <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> ; <VAR>=<arg> ; sed -n <arg> <arg> ; sed -n <arg> <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "sleep <n> ; echo done", "tool": "Bash", "cls": "other", "src": "transcript"}
+{"cmd": "cd <path> ; cat >> <path> << EOF\n<body>\nEOF\necho <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -c \"<code>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "python3 <path>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && python3 -c \"<code>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && cat >> <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; grep -n \"<msg>\" <path> | head", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> ; cat -n <path> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> <path> <path> <path> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> uv run python3 - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> uv run python -c \"<code>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF\ngrep -n \"<msg>\" <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> && echo <arg> && cat <path> && echo <arg> && cat <path> && echo <arg> && cat <path> && wc -l <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -c \"<code>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cat <path> <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "pi -p --provider <arg> --model <path> --thinking <arg> --no-session \"<msg>\" 2>&1 | tail <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path> ; grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && cat <path> <path> <path> ; wc -l <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; python3 -c \"<code>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n -i \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF\n<VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <arg> 2>&1 | grep -E \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "git status --short", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "echo '<msg>' >> <path>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF\n.venv/bin/pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path> | head <arg> ; grep -n \"<msg>\" <path> | head", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cat -n <path> | sed -n <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> && /<path>/.venv/bin/python - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && sed -n <arg> <path> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> ; cat -n <path> ; cat -n <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path> | head <arg> ; grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\nsed -n <arg> <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; <VAR>=<arg> ; ./<script> <path> <arg> <arg> ; echo \"<msg>\" >> <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> uv run python -c '<code>'", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "<cmd> query \"<msg>\" -k <n> --json", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": ".venv/bin/python <path>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && python3 -m unittest <arg> -s <arg> -p <path> -v > <path> 2>&1 ; echo \"<msg>\" ; rg '<msg>' <path>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && uv run python -c \"<code>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; <VAR>=<arg> ; bash <path> <arg> <arg> <arg> ; bash <path> <arg> <n>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "./<script> <path> <arg> <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> $( .venv/bin/python -m pytest -q -p <arg> 2>&1 | tail <arg> ) ; echo \"<msg>\" ; cat >> <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && bash <path> && swiftc <path> <path> -o <path> && ./<script> && python3 -m unittest <arg> -s <arg> -v > <path> 2>&1 ; echo \"<msg>\" ; rg '<msg>' <path>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> 2>&1 | tail <arg> ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <arg> -s <arg> -p '<msg>' 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\nrm <path> ; grep -n \"<msg>\" <path> | head ; PYTHONDONTWRITEBYTECODE=<arg> /<path>/.venv/bin/python -m unittest <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && grep -rn -i \"<msg>\" <path> | grep -v \"<msg>\" ; echo <arg> ; .venv/bin/python -m pytest -q 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF\nsed -i '<msg>' <path>\n/<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && .venv/bin/pytest -q 2>&1 | tail <arg> ; git status --short ; git diff <arg> <arg> --stat -- . '<path>' '<msg>'", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\nsed -n <arg> <path>\n<VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "for <arg> in <arg> <arg> <arg> <arg> <arg> ; do\necho \"<msg>\"\n( cd <path> && <VAR>=<arg> uv run python -m unittest <path> -v 2>&1 | grep -E \"<msg>\" )\necho\ndone", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && sed -i '<msg>' '<msg>' <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run --package <arg> python -m unittest <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF\n( cd plugin && claude plugin test . 2>&1 | tail <arg> ) ; git commit -qam \"<msg>\" && git log --oneline <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; cat > <path> << EOF\n<body>\nEOF\ncat > <path> << EOF\n<body>\nEOF\n.venv/bin/pytest -q 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> 2>&1 | tail <arg> ; echo \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && echo '<msg>' > <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <arg> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "( cd <path> && PYTHONDONTWRITEBYTECODE=<arg> <VAR>=<arg> uv run python -m unittest <path> -v ) 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; cd <arg> && python3 - << EOF\n<body>\nEOF\nclaude plugin test . 2>&1 | tail <arg> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && .venv/bin/pytest -q 2>&1 | grep -E \"<msg>\" | head ; .venv/bin/pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && git show --stat --format=<arg> <arg> | cat ; cat <path> | head <arg> ; cmp <path> <path> && echo <arg> ; time .venv/bin/pytest -q <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "grep -n -B2 -A6 '<msg>' <path> | head <arg> ; .venv/bin/pytest -q -p <arg> > <path> 2>&1 ; echo \"<msg>\" >> <path> ; tail <arg> <path>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && timeout 60 /<path>/.venv/bin/pytest -q -s -p <arg> -o <VAR>=<arg> <path> 2>&1 | grep -vE \"<msg>\" | head <arg> | cut -c1-250", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF\nsed -n <arg> <path> ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && uv run pytest -q 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> timeout 60 uv run python -m unittest -v <path> 2>&1 | grep -v \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && patch --ignore-whitespace <path> << EOF\n<body>\nEOF\n.venv/bin/python -m pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && for i in $( <cmd> <n> <n> ) ; do <VAR>=<arg> uv run python -m unittest <arg> -s <arg> -p '<msg>' > <path> 2>&1 || { echo \"<msg>\" ; grep -A50 \"<msg>\" <path> | head <arg> ; break ; } ; done ; echo done", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\ngit -C <path> diff --no-index --stat <path> <path> ; cd <path> && PYTHONDONTWRITEBYTECODE=<arg> /<path>/.venv/bin/python -m unittest <arg> -s <arg> -p '<msg>' 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\n<VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> <path> 2>&1 | grep -E \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && PYTHONDONTWRITEBYTECODE=<arg> <VAR>=<arg> uv run python -m unittest <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path> | head <arg> ; grep -n \"<msg>\" <path> ; .venv/bin/python -m pytest -q <path> <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\n<VAR>=<arg>\ncp -p <path> <path> && cmp <path> <path> && echo <arg>\n.venv/bin/pytest -q <path> 2>&1 | tail <arg>\n.venv/bin/pytest -q <path> -k <arg> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "PYTHONPATH=<arg> .venv/bin/pytest -q <path> <path> <path> <path> <path>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && sed -i '<msg>' '<msg>' <path> && head <arg> <path> && .venv/bin/python -m pytest -q <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; claude plugin validate plugin 2>&1 | tail <arg> ; /<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; claude plugin test plugin 2>&1 | grep -E \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run --package <arg> python -m unittest <arg> 2>&1 | tail <arg> ; ls -la <path> <path> 2>&1", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && .venv/bin/python -m pytest -q <path> <path> <path> <path> 2>&1 | tail <arg> ; git status --short", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; sed -i '<msg>' '<msg>' <path> ; .venv/bin/pytest -q <path> <path> <path> <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF\n~/<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg>\nsed -n <arg> <path> ; grep -n \"<msg>\" <path> ; grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && cat > <path> << EOF\n<body>\nEOF\n.venv/bin/python -m pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && PYTHONDONTWRITEBYTECODE=<arg> /<path>/.venv/bin/python3 -m unittest <arg> -s <arg> -p '<msg>' 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && time /<path>/.venv/bin/pytest -q <path> -rs 2>&1 | tail <arg> ; wc -l <path> ; git ls-files <path> | head <arg> ; cut -f1 <path>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; python3 - << EOF\n<body>\nEOF\n.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; .venv/bin/python -m ruff check <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && git branch -a ; ls <arg> | head ; sed -n <arg> <path> | head <arg> ; grep -n '<msg>' <path> ; ls .venv/bin/pytest 2>&1", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF\nsed -n <arg> <path>\n/<path>/.venv/bin/pytest -q 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> timeout 60 uv run python -m unittest <path> <path> -v 2>&1 | grep -cE \"<msg>\" ; echo \"<msg>\" ; cd <path> && git status --short", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && for i in <n> <n> ; do stat -f \"<msg>\" <path> ; /<path>/.venv/bin/pytest -q -p <arg> 2>&1 | tail <arg> ; echo <VAR>=<arg> ; stat -f \"<msg>\" <path> ; done ; ps <arg> | grep \"<path>\" | grep -v grep | wc -l", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\ncp <path> <path>\ngrep -c \"<msg>\" <path>\n.venv/bin/python -m pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cat >> <path> << EOF\n<body>\nEOF\n.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; ls -d <path> >/dev/null && echo ; ls <path> 2>&1 | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\ngrep -n \"<msg>\" <path> | head <arg> ; .venv/bin/pytest -q -p <arg> <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; ~/<path>/.venv/bin/pytest -q <path> <path> 2>&1 | tail <arg> ; grep -n -i \"<msg>\" <path> | head <arg> ; grep -rn \"<msg>\" <path> | head", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; sed -n <arg> <path> ; .venv/bin/pytest -q <path> <path> <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && /<path>/.venv/bin/pytest -q <path> <path> <path> 2>&1 | tail <arg> ; claude plugin test plugin 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "for i in <n> <n> <n> <n> <n> <n> ; do claude plugin test plugin > <path> 2>&1 ; tail <arg> <path> | head <arg> | tr '<msg>' '<msg>' ; echo ; done ; grep -h -A10 \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && cat > <path> << EOF\n<body>\nEOF\n<VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run --package <arg> python -m unittest <arg> -s <arg> -p '<msg>' -v > <path> 2>&1 ; echo \"<msg>\" ; tail <arg> <path> ; git -C <path> status --short <path>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && cat >> <path> << EOF\n<body>\nEOF\ncd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> -v 2>&1 | tail <arg> ; python3 -c \"<code>\" ; grep -c '<msg>' <path>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && git status --short . | head ; uv run python -m unittest <arg> -s <arg> -p '<msg>' 2>&1 | tail <arg> ; for <arg> in <path> <path> ; do head <arg> <arg> ; uv run python <arg> 2>&1 | tail <arg> ; done", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && timeout 60 ./.venv/bin/python -m pytest <path> -q -p <arg> 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && python3 - << EOF\n<body>\nEOF\n.venv/bin/pytest -q -p <arg> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> 2>&1 | tail <arg> ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -c \"<code>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && ls <path> | tr '<msg>' '<msg>' ; echo ; <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run --package <arg> python -m unittest $( ls <path> | sed '<path>' | grep -v '<msg>' ) 2>&1 | tail <arg> ; echo \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && sed -i '<msg>' \"<msg>\" <path> && grep -n \"<msg>\" <path> && PYTHONDONTWRITEBYTECODE=<arg> /<path>/.venv/bin/python3 -m unittest <arg> -s <arg> -p '<msg>' 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; grep -n \"<msg>\" <path> | head ; grep -n \"<msg>\" <path> | head", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; cd <arg> && sed -i '<msg>' \"<msg>\" <path> && sed -i '<msg>' '<msg>' <path> && cat <path> | tail <arg> && claude plugin test . 2>&1 | tail <arg> ; grep -n \"<msg>\" <path> | head", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "grep -n \"<msg>\" <path> <path> 2>/dev/null | head ; echo <arg> ; grep -rn \"<msg>\" <path> 2>/dev/null | head <arg> ; ls <path> 2>/dev/null | head", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "git diff --stat <path> && git diff <path> -- . '<path>' '<path>' | head <arg>", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "cat >> <path> << EOF\n<body>\nEOF\n<VAR>=<arg> ; bash <path> <path> <arg> <n>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "sed -n <arg> <path> ; echo <arg> ; sed -n <arg> <path> ; echo <arg> ; sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "ls -la <path> 2>/dev/null | head <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "python3 - << EOF\n<body>\nEOF\ngit diff -- <path> | grep '<msg>' | cut -c1-160 | head <arg> ; sed -n <arg> <path> | cut -c1-120", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "mkdir -p <path> && cat > <path> << EOF\n<body>\nEOF\ncd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python <path> <n>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "find <path> -type <arg> | head <arg> && echo \"<msg>\" && ls -R <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "wc -l <path> <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "sleep <n> ; cd <path> && mv <path> <path> ; ls -la <arg> <path> 2>&1 | head ; <VAR>=<arg> && python3 <arg> <path> <path> && python3 <arg> <path> <path> && python3 <arg> <path> <path> && python3 <arg> <path> <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "rm -rf <path> ; <VAR>=<arg> uv run python <path> <arg> --out <path> 2>&1 | tail <arg> ; echo \"<msg>\" ; ls <path> | head ; grep -l \"<msg>\" <path> 2>/dev/null | head", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "claude plugin test plugin 2>&1 | grep -B3 -A12 \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "echo '<msg>' ; pi <arg> check --provider <arg> --json 2>&1 ; echo \"<msg>\" ; echo '<msg>' ; claude <arg> status 2>&1 ; echo \"<msg>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "rg -n \"<msg>\" <arg> <arg> <arg> <path> | head <arg>", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "PYTHONPATH=<arg> /<path>/.venv/bin/python -m <path> zeno report", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "\npi <arg> list 2>&1", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cp <path> <path> && cat > <path> << EOF\n<body>\nEOF\necho <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "printf '<msg>' | grep -nE '<msg>' ; grep --version | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "tail <arg> <path> | python3 -c \"<code>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": ".venv/bin/python <path> query --help", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "tmux <arg> -t <arg> -l \"<msg>\" && sleep <n> && tmux <arg> -t <arg> <arg> ; sleep <n> ; tmux <arg> -t <arg> -p | grep -v '<msg>' | tail <arg> ; ls -la <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "head -c <n> <path> | head <arg> ; echo ; tail <arg> <path> | cut -c1-800", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "curl -sL --max-time <n> <path> | grep -n -i -A3 '<msg>' | head <arg> ; curl -sL --max-time <n> <path> | grep -E '<msg>' | head <arg> ; curl -sL --max-time <n> <path> | grep -i -B2 -A6 '<msg>' | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "uv tool list 2>/dev/null | grep -A3 apex-router ; echo \"<msg>\" ; ~/<path>/python -c \"<code>\" ; grep '<msg>' <path> 2>/dev/null ; echo \"<msg>\" ; cd <path> && git status --short", "tool": "bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "apex-router <arg> --help 2>&1 ; printf '<msg>' ; apex-router <arg> --help 2>&1", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "ps -p <n> -o <arg> ; cd <path> && grep -n \"<msg>\" <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "pkill -f <path> ; sleep <n> ; curl -s -w \"<msg>\" <path> | head -c <n>", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "diff -q <path> <path> || true ; printf '<msg>' ; readlink <path> || true ; diff -q <path> <path> || true ; printf '<msg>' ; ~/<path>/python - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "<cmd> --headless <path> \"<msg>\" \"<msg>\" \"<msg>\" <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "pwd ; mkdir -p <arg> <path> <path> <path> <path> <path>\ncat > <path> << EOF\n<body>\nEOF\n/<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "~/<path>/python - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "awk '<msg>' <path> ; cat <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "which pi && pi --help 2>&1 | head <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "bash -n <path> && echo <arg> ; .venv/bin/python -m pytest <arg> -q 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "transcript"}
+{"cmd": "/<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg>\ngit add <pkg> <path> <path>\ngit commit -q -m \"<msg>\" && git log --oneline <arg>\ncat > <path> << EOF\n<body>\nEOF", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "./<script> 2>&1 | grep -E '<msg>' ; echo \"<msg>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "date ; cd <path> && sed -n <arg> <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "env | grep -i -E \"<msg>\" ; echo \"<msg>\" ; launchctl list 2>/dev/null | grep -i <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "( cd <path> && <VAR>=<arg> PYTHONDONTWRITEBYTECODE=<arg> uv run python -m unittest <path> -v ) 2>&1 | grep -E \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "/<path>/.venv/bin/python - << EOF\n<body>\nEOF\nwc -l <path> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": ".venv/bin/pytest -q 2>&1 | grep <arg> ; .venv/bin/pytest -q <path> 2>&1 | grep -E \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "PYTHONDONTWRITEBYTECODE=<arg> python3 <path> 2>&1 | tail <arg> ; echo \"<msg>\" ; git diff --stat -- <path> <path> ; git status --short", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "stat -f '<msg>' <path> ; cd <path> ; grep -i pressure <path> <path> <path> ; cat <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "command -v pi && pi --help | head <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "mv <path> <path> ; claude plugin test plugin 2>&1 | grep -i \"<msg>\" | head <arg> ; /<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; mv <path> <path> ; claude plugin test plugin 2>&1 | grep \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "linode-cli <arg> <arg> --help 2>&1 | head <arg> ; linode-cli <arg> <arg> --help 2>&1 | grep -E \"<msg>\" | head <arg> ; linode-cli <arg> <arg> --text 2>&1 | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "./.venv/bin/python -m compileall -q <path> && git diff --check", "tool": "bash", "cls": "build", "src": "transcript"}
+{"cmd": "plutil -p <path> | grep -i -A3 \"<msg>\" ; plutil -p <path> | grep -i \"<msg>\"", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "source <path> ; <VAR>=<arg> ; cd <path>\nls <path> 2>&1 | head <arg>\nlsof -nP <arg> <arg> ; echo \"<msg>\"\ntime <VAR>=<arg> <cmd> -m <path> --probe-thinking > <path> 2>&1 ; echo \"<msg>\" | tee -a <path> ; cat <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "launchctl list | grep <arg> ; lsof <arg> <arg> 2>/dev/null ; curl -s -m <n> <path> ; echo \"<msg>\"", "tool": "bash", "cls": "remote", "src": "transcript"}
+{"cmd": "set -euo <arg>\ngit -C <path> push <arg> <arg>\ngit -C <path> push <arg> <arg>", "tool": "bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "codex exec --help 2>&1 | sed -n '<msg>'", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "sqlite3 <path> \"<msg>\" 2>/dev/null | head <arg> ; sqlite3 <path> \"<msg>\" 2>/dev/null ; sqlite3 <path> \"<msg>\" 2>/dev/null | head <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "timeout 60 pi -p \"<msg>\" 2>&1 | tail <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "ollama show <arg> --parameters 2>&1 | head ; echo <arg> ; ollama show <path> --parameters 2>&1 | head ; ollama show <arg> 2>&1 | grep -i -E \"<msg>\" | head", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "export <VAR>=<arg> ; kubectl -n <arg> <arg> <arg> -o <arg> 2>&1 | head <arg> ; kubectl <arg> <arg> -o <path> 2>&1", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "node --version ; cd <path> && for <arg> in <arg> <arg> <arg> <arg> ; do HOME=<arg> node --experimental-strip-types --input-type=<arg> -e \"<msg>\" 2>&1 | grep -v <arg> | tail <arg> ; done", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "\"<path>\" - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "lsof <arg> | xargs kill 2>/dev/null ; sleep <n> ; python3 <path> & sleep <n>\nexport <VAR>=<arg>\nrm -f <path>\n<VAR>=<arg> .venv/bin/python <path> --record && <VAR>=<arg> .venv/bin/python <path> ; echo \"<msg>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "sh -n <path> && python3 - << EOF\n<body>\nEOF\nsh <path> > <path> 2>&1 ; printf '<msg>' \"<msg>\"", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": ".venv/bin/apex-router <arg> --help && printf '<msg>' && .venv/bin/python -m <path> --help", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "pgrep -f \"<msg>\" ; echo <VAR>=<arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "kubectl --context <arg> -n <arg> <arg> <arg> -o <arg> ; kubectl --context <arg> -n <arg> describe pod -l <VAR>=<arg> | grep -A12 -E \"<msg>\" | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "brew install gh 2>&1 | tail <arg> ; gh --version | head <arg> ; gh <arg> status 2>&1 | head <arg>", "tool": "Bash", "cls": "build", "src": "transcript"}
+{"cmd": "chmod <n> <path> ; cat > <path> << EOF\n<body>\nEOF\necho <arg>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "{ cat << EOF\n<body>\nEOF\ncat <path> ; } | codex exec --sandbox <arg> --skip-git-repo-check --ephemeral - > <path> <n> > <path> ; echo \"<msg>\" ; wc -w <path>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "~/<path>/pip install --quiet <arg>", "tool": "bash", "cls": "build", "src": "transcript"}
+{"cmd": "~/<path>/docker <arg> <arg> <arg> <path> 2>&1 | head <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "open -a <arg> <path> ; sleep <n> ; osascript << EOF\n<body>\nEOF\nls <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "kill -TERM <n> 2>/dev/null || true ; sleep <n> ; ps -p <n> -o <arg> ; wc -c <path>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "umask ; <VAR>=<arg> $( mktemp -d ) ; cd <arg> ; umask <n> ; echo '<msg>' > <arg> ; chmod <n> <arg> ; python3 -c \"<code>\" ; ls -l <arg> <arg> ; rm -rf <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "ioreg -r -d <n> -c <arg> | grep -o -E '<msg>' ; curl -s -m1 <path> | python3 -c \"<code>\" ; date -u <arg> ; python3 - << EOF\n<body>\nEOF", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "openssl <arg> -in <path> -noout -subject -issuer -enddate -ext <arg> 2>&1 ; ls -l <path> 2>&1 | head ; stat -f '<msg>' <path> 2>&1", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "zsh <path> 2>&1", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "df -h <path> <path> ; ls -ld <path> ; lsof <path> 2>/dev/null | head", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "fold -w <n> -s <path>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "mdfind \"<msg>\" 2>/dev/null | head ; ls <path> 2>/dev/null | head ; <cmd> --version 2>&1 | head <arg> ; node --version", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "osascript -e '<msg>' 2>&1 | head <arg> ; osascript -e '<msg>' 2>&1", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "file <path> ; cat <path> 2>/dev/null | head <arg> ; ls <path> | grep -i \"<msg>\"", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "nl -ba <path> | sed -n '<msg>'", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "~/<path>/.venv/bin/pytest -q <path> <path> 2>&1 | tail <arg> ; git ls-files | xargs grep -ln \"<path>\" 2>/dev/null | head", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "test -x <path> && echo \"<msg>\" || echo \"<msg>\" ; ls <path> 2>/dev/null ; echo \"<msg>\" ; git -C <path> log --oneline <arg> 2>&1 | head <arg> ; git -C <path> remote -v", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "dig <arg> <path> <arg> 2>/dev/null ; dig <arg> <path> <arg> 2>/dev/null ; dig <arg> <path> <arg> 2>/dev/null ; curl -sI <path> --max-time <n> | head <arg> ; ls <path> | grep -iE \"<msg>\"", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "shasum -a <n> <path> && git show <path> | shasum -a <n> && grep -n \"<msg>\" <path> && git diff --stat <arg> <arg> -- <path> <path> | wc -l", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "md5 -q <path> ; wc -l <path> ; cd <path> && git status --short | head", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "realpath \"<path>\" ; realpath . ; ls -ld \"<path>\" <path> \"<path>\" ; shasum <path> \"<path>\"", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "docker --version 2>&1 | head <arg> ; docker <arg> --format '<msg>' 2>&1 | head <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "~/<path>/time -p env PYTHONPATH=<arg> python3 -m <path> --json --no-write 2>&1 | tail <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "~/<path>/apex-router zeno report 2>&1 | sed -n '<msg>' | head <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "setopt <arg> 2>/dev/null ; grep -rnE \"<msg>\" <arg> <arg> <arg> | grep -v \"<path>\" | head <arg> ; echo <arg> ; grep -rnE \"<msg>\" <arg> | grep -v \"<path>\" | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "readlink <path> ; <VAR>=<arg> $( python3 -c \"<msg>\" ) ; echo <arg> ; git -C \"<msg>\" rev-parse --show-toplevel 2>/dev/null ; sed -n <arg> <path>", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "pdfinfo '<msg>' | head <arg> && pdftotext -f <n> -l <n> -layout '<msg>' <path>", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "cut -c1-1200 <path> | sed -n <arg>", "tool": "Bash", "cls": "read", "src": "transcript"}
+{"cmd": "rmdir <path> 2>/dev/null ; rm -f <path> ; rmdir <path> <path> <path> <path> 2>&1 ; ls -d <path> <path> 2>&1", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "gh repo view <path> --json <arg> 2>/dev/null || echo \"<msg>\" ; echo \"<msg>\" ; git log <path> <arg> --oneline", "tool": "bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "log show --predicate '<msg>' --last <n> --style <arg> 2>/dev/null | grep -viE '<msg>' | tail <arg> ; defaults read <path> 2>/dev/null | head <arg>", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "python <path>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "uvx --from <arg> <arg> --model <arg> --steps <n> --width <n> --height <n> --output <path> --prompt \"<msg>\" 2>&1 | tail <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "time PYTHONPATH=<arg> /<path>/.venv/bin/python -c \"<code>\"", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "unset <arg> ; /<path>/.venv/bin/python -m <path> --check 2>&1 | tail <arg> ; /<path>/.venv/bin/pytest -q 2>&1 | tail <arg> ; git status --short", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "type apex-router 2>/dev/null ; echo \"<msg>\"", "tool": "bash", "cls": "read", "src": "transcript"}
+{"cmd": "sysctl <path> <path> <path> <path> ; <cmd> -g <arg> ; git status --short --untracked-files=<arg> ; sleep <n>", "tool": "bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "~/<path>/.venv/bin/python -c '<code>' 2>&1 | tail <arg> ; echo \"<msg>\" ; ls -d <path> && ls <path> | head <arg> ; ls <path> ; date", "tool": "Bash", "cls": "run", "src": "transcript"}
+{"cmd": "'<path>' - << EOF\n<body>\nEOF", "tool": "bash", "cls": "run", "src": "transcript"}
+{"cmd": "cd <path> ; grep -noE '<msg>' <path> | sort <arg> -k2 -u | wc -l ; grep -noE '<msg>' <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "<VAR>=<arg> ; cd <path> ; sed -n <arg> <path> ; grep -n \"<msg>\" -A6 <path> | head <arg> ; cat <path> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "sed -i '<msg>' '<msg>' <path> && grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "edit", "src": "transcript"}
+{"cmd": "cd <path> && perl -pi -e '<msg>' <path> <path>\nsed -n <arg> <path> ; sed -n <arg> <path> ; grep -n '<msg>' <path> <path>", "tool": "Bash", "cls": "edit", "src": "transcript"}
+{"cmd": "cd <path> && ruff check --output-format <arg> <path> <path> <path> <path> <path>", "tool": "Bash", "cls": "build", "src": "transcript"}
+{"cmd": "python3 -m venv <path> && ~/<path>/pip install --quiet <arg> <arg> <arg> <arg>", "tool": "bash", "cls": "build", "src": "transcript"}
+{"cmd": "cd <path> ; uv pip install -e '<msg>' 2>&1 | tail <arg> ; .venv/bin/pytest -q 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "uv tool install --force --no-cache . 2>&1 | tail <arg> && apex-router <arg> 2>&1 | head <arg>", "tool": "bash", "cls": "build", "src": "transcript"}
+{"cmd": "git push -u <arg> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "git add <pkg> <path> && git commit -m \"<msg>\"", "tool": "Bash", "cls": "vcs", "src": "transcript"}
+{"cmd": "mkdir -p <path> && rsync -a --exclude <arg> --exclude <arg> <path> <path> && mkdir -p <path> && ls <path>", "tool": "Bash", "cls": "write", "src": "transcript"}
+{"cmd": "cd <path> ; git grep -n \"<msg>\" <path> -- <arg> | head <arg>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "env | grep '<msg>' | sort", "tool": "bash", "cls": "search", "src": "transcript"}
+{"cmd": "timeout 60 bash -c \"cd <path> && <VAR>=<arg> uv run python -m unittest <path>  2>&1  | grep -E '<msg>'\"", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> ; timeout 60 .venv/bin/pytest -q <path> <path> <path> <path> 2>&1 | tail <arg> || timeout 60 /<path>/.venv/bin/pytest -q <path> <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "P=<path>/.venv/bin/pytest ; $P -q <path> 2>&1 | tail <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
+{"cmd": "cd <path> && npm test 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "echo \"<msg>\" ; make test", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "go test ./... 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "cargo test -q 2>&1 | tail <arg>", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "npx jest <path>", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "bundle exec rspec <path>", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "CI=<arg> npm run test -- --watch=false", "tool": "bash", "cls": "test", "src": "constructed"}
+{"cmd": "", "tool": "read", "cls": "read", "src": "transcript"}
+{"cmd": "", "tool": "edit", "cls": "edit", "src": "transcript"}
+{"cmd": "", "tool": "write", "cls": "write", "src": "transcript"}
+{"cmd": "", "tool": "Read", "cls": "read", "src": "transcript"}
+{"cmd": "", "tool": "Grep", "cls": "search", "src": "transcript"}
+{"cmd": "", "tool": "Edit", "cls": "edit", "src": "transcript"}
+{"cmd": "", "tool": "Agent", "cls": "delegate", "src": "transcript"}
+{"cmd": "", "tool": "AskUserQuestion", "cls": "ask", "src": "transcript"}
+{"cmd": "", "tool": "WebFetch", "cls": "remote", "src": "transcript"}
+{"cmd": "", "tool": "Skill", "cls": "plan", "src": "transcript"}
