@@ -7,6 +7,24 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
+  `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
+  steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time
+  buckets, error and test flags, task-so-far counts; never text) into a 64-d latent split into a
+  48-d perceptual and a 16-d control part. Losses: latent prediction 1–4 steps ahead conditioned
+  on the next action (stop-gradient targets, no EMA teacher), SIGReg (Epps–Pulley statistic over
+  random projections; a VICReg-style term as an ablation flag), next-action cross-entropy, and a
+  value head P(success | control latent) on labelled tasks. ~1.75M parameters by default (ceiling
+  12M). Every epoch logs collapse diagnostics (effective rank, SIGReg statistic, mean cosine)
+  against preset bounds; the best checkpoint gets numpy linear probes (next action, outcome,
+  phase, failing-tests bucket). `WorldModel.load(run).predict(steps)` returns the latents,
+  next-action probabilities and P(success) for E2/E4. Optional macro-step merge and a cached,
+  fail-open nomic-embed request embedding (off by default). Runs go to
+  `~/.apex-router/worldmodel/runs/<run_id>/` (0700/0600). No mlx import outside the training and
+  inference functions, so nothing else in apex-router needs it.
+- Optional extra `worldmodel` (`mlx>=0.32.3` on Apple Silicon only, plus numpy). mlx 0.32.3 and
+  its required `mlx-metal` were vetted before the install: from PyPI, MIT (LICENSE checked in
+  the wheel), released 2026-09-29, and the OSV query returned no advisories for either (`{}`).
 - `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
   upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
   Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local

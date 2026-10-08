@@ -1,0 +1,121 @@
+"""``apex-router worldmodel <cmd>`` — P6 world model commands.
+
+E3 (this file's first author) provides ``train`` and ``probe``; E1/E2/E4 register their own
+subcommands in ``COMMANDS``. Heavy imports (numpy, mlx) happen inside each command.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def _fmt(x, nd: int = 4) -> str:
+    try:
+        return f"{float(x):.{nd}f}"
+    except (TypeError, ValueError):
+        return str(x)
+
+
+def _print_probes(probes: dict) -> None:
+    for target, by_input in probes.items():
+        for inp, r in by_input.items():
+            if r.get("skipped"):
+                print(f"  probe {target:<12} on {inp:<9} skipped (n_train={r['n_train']}, n_val={r['n_val']})")
+                continue
+            extra = (f" brier {_fmt(r['brier'])} (prior {_fmt(r['prior_brier'])})" if "brier" in r else "")
+            print(f"  probe {target:<12} on {inp:<9} n={r['n_val']:<6} ce {_fmt(r['ce'])} "
+                  f"(prior {_fmt(r['prior_ce'])}) acc {_fmt(r['acc'], 3)}{extra}")
+
+
+def _print_collapse(c: dict) -> None:
+    print(f"  collapse: effective rank {_fmt(c['effective_rank'], 1)} (min {c['erank_min']}), "
+          f"SIGReg {_fmt(c['sigreg'])} (max {c['sigreg_max']}), mean cosine {_fmt(c['mean_cosine'], 3)}, "
+          f"n={c['n']} -> {'within bounds' if c['within_bounds'] else 'OUTSIDE BOUNDS'}")
+
+
+def cmd_train(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="apex-router worldmodel train",
+                                 description="Train the P6 JEPA world model (needs the [worldmodel] extra).")
+    ap.add_argument("--synthetic", type=int, metavar="N",
+                    help="train on N synthetic tasks instead of <data home>/steps.jsonl")
+    ap.add_argument("--config", help="JSON object or path to a JSON file with TrainConfig fields")
+    ap.add_argument("--epochs", type=int)
+    ap.add_argument("--seed", type=int)
+    ap.add_argument("--run-id")
+    ap.add_argument("--json", action="store_true", help="print the summary as JSON")
+    a = ap.parse_args(argv)
+    from .jepa import mlx_available
+    if not mlx_available():
+        print("mlx is not installed: `pip install 'apex-router[worldmodel]'` (Apple Silicon only)",
+              file=sys.stderr)
+        return 2
+    from .train import TrainConfig, load_dataset, synthetic_dataset, train
+    cfgd: dict = {}
+    if a.config:
+        p = Path(a.config)
+        cfgd = json.loads(p.read_text() if p.exists() else a.config)
+    if a.epochs is not None:
+        cfgd["epochs"] = a.epochs
+    if a.seed is not None:
+        cfgd["seed"] = a.seed
+    cfg = TrainConfig.from_dict(cfgd)
+    ds = synthetic_dataset(a.synthetic, cfg.seed) if a.synthetic else load_dataset()
+    st = ds.stats()
+    print(f"data: {st['source']} — {st['tasks']} tasks, {st['steps']} steps "
+          f"(train {st['tasks_train']}, val {st['tasks_val']}, test {st['tasks_test']} held out)")
+    s = train(cfg, ds, run_id=a.run_id, log=(lambda m: None) if a.json else print)
+    if a.json:
+        print(json.dumps(s, indent=1, default=float))
+        return 0
+    b = s["best"]
+    t = s["throughput"]
+    print(f"run {s['run_id']}: {s['params']:,} params, {s['n_features']} features, "
+          f"windows train {s['windows']['train']} / val {s['windows']['val']}")
+    print(f"  throughput {t['windows_per_s']:.0f} windows/s ({t['steps_per_s']:.0f} steps/s), "
+          f"{t['train_seconds']:.1f} s training")
+    print(f"  best epoch {s['best_epoch']}: val next-action CE {_fmt(b['val_next_ce'])} nats/step "
+          f"(unigram {_fmt(b['val_unigram_ce'])}), acc {_fmt(b['val_next_acc'], 3)}, "
+          f"value BCE {_fmt(b['val_value_bce'])}, task Brier {_fmt(b['val_brier_task'])} "
+          f"(base rate {_fmt(b['val_brier_task_baserate'])}, n={b['val_tasks_labelled']}), "
+          f"latent pred {_fmt(b['val_pred'])}")
+    _print_collapse(s["final_val"]["collapse"])
+    if s["collapse_outside_bounds_epochs"]:
+        print(f"  epochs outside collapse bounds: {s['collapse_outside_bounds_epochs']}")
+    _print_probes(s["probes"])
+    return 0
+
+
+def cmd_probe(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="apex-router worldmodel probe",
+                                 description="Collapse diagnostics + linear probes for a saved run.")
+    ap.add_argument("run_id")
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    from .jepa import mlx_available
+    if not mlx_available():
+        print("mlx is not installed: `pip install 'apex-router[worldmodel]'`", file=sys.stderr)
+        return 2
+    from .train import probe_run
+    r = probe_run(a.run_id)
+    if a.json:
+        print(json.dumps(r, indent=1, default=float))
+        return 0
+    v = r["val"]
+    print(f"run {r['run']}: val next-action CE {_fmt(v['val_next_ce'])} (unigram "
+          f"{_fmt(v['val_unigram_ce'])}), task Brier {_fmt(v['val_brier_task'])} (n={v['val_tasks_labelled']})")
+    _print_collapse(v["collapse"])
+    _print_probes(r["probes"])
+    return 0
+
+
+COMMANDS = {"train": cmd_train, "probe": cmd_probe}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
+        print("usage: apex-router worldmodel {" + ",".join(COMMANDS) + "} ...")
+        return 0 if (not argv or argv[0] in ("-h", "--help")) else 2
+    return COMMANDS[argv[0]](argv[1:])
