@@ -49,7 +49,11 @@ next tag will carry.
   enforced by the length cap only. `labels report` now splits gold by author (`user` vs model)
   and shows weak-emitted vs gold-derived labels. Gold made by a model (for example
   `by=model:claude-opus-5-5`) is marked as such and is not the owner's judgement; `review`
-  writes `by=user`.
+  writes `by=user`. `export-review --ids A,B` exports exactly those tasks, gold or not, and
+  includes the gold row currently in force for each. Gold is append-only. To correct a label,
+  import a line with `supersedes=<ts of the row in force>`; the newest row per id wins in
+  `relabel`, `report` and the sampler. A correction without `supersedes`, or with a stale one,
+  is rejected.
 - `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
   `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
   steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time

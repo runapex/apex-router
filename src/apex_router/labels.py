@@ -448,6 +448,22 @@ def _row(t) -> dict:
             "votes": votes(t)}
 
 
+def gold_latest(gold_rows: list | None = None) -> dict:
+    """id -> the gold row in force: the newest by ``ts`` (file order breaks ties). Gold is
+    append-only; a correction is a new row with ``supersedes`` = the ts of the row it replaces."""
+    if gold_rows is None:
+        gold_rows = _read(home() / "gold.jsonl")
+    out: dict = {}
+    for g in gold_rows:
+        k = g.get("id")
+        if not isinstance(k, str):
+            continue
+        cur = out.get(k)
+        if cur is None or float(g.get("ts") or 0) >= float(cur.get("ts") or 0):
+            out[k] = g
+    return out
+
+
 def _fp(r) -> tuple:
     """A text-free identity for one request: its session and its record timestamp."""
     return (r.get("session"), r.get("ts"))
@@ -473,7 +489,9 @@ def _migrate_gold(h: Path, rows: list, old: dict, remap: dict, log=print) -> dic
             dest.append(gid)
         else:
             dest.append(None)
-    claimed = Counter(d for d in dest if d)
+    # rows superseding each other share an id: count distinct SOURCE ids per destination
+    pairs = {(g.get("id"), d) for g, d in zip(gold_rows, dest) if d}
+    claimed = Counter(d for _, d in pairs)
     n = Counter()
     out = []
     for g, d in zip(gold_rows, dest):
@@ -546,7 +564,7 @@ def relabel(rows=None) -> dict:
     h = home()
     rows = rows if rows is not None else _read(h / "tasks.jsonl")
     live = {r["id"] for r in rows}
-    gold = {g["id"]: g["outcome"] for g in _read(h / "gold.jsonl") if g.get("id") in live}
+    gold = {k: g["outcome"] for k, g in gold_latest().items() if k in live}
     acc = voter_accuracy(rows, gold)
     labels = []
     for r in rows:
@@ -677,20 +695,31 @@ def signals(t) -> dict:
             "session_ended": nxt is None}
 
 
-def export_review(k: int, out_path, seed: int = 7) -> int:
-    """Write k tasks sampled by ``sample_for_review`` to ``out_path`` (mode 0600), one JSON line
-    each. Nothing is stored under the labels home. Returns the number written."""
+def export_review(k: int, out_path, seed: int = 7, ids: list | None = None) -> int:
+    """Write k tasks sampled by ``sample_for_review`` — or exactly the tasks in ``ids``, gold or
+    not — to ``out_path`` (mode 0600), one JSON line each. A task that already has gold carries
+    the row in force (outcome, ts, by) so a correction can name it in ``supersedes``. Nothing is
+    stored under the labels home. Returns the number written."""
     h = home()
     rows = _read(h / "tasks.jsonl")
     labels = _read(h / "labels.jsonl")
-    gold = {g["id"]: g["outcome"] for g in _read(h / "gold.jsonl")}
+    latest = gold_latest()
+    gold = {g: x["outcome"] for g, x in latest.items()}
+    if ids is not None:
+        by_id = {r["id"]: r for r in rows}
+        missing = [i for i in ids if i not in by_id]
+        if missing:
+            raise GoldImportError(f"unknown task ids: {', '.join(missing[:10])}")
+        picked = [by_id[i] for i in dict.fromkeys(ids)]
+    else:
+        picked = sample_for_review(rows, labels, gold, k, seed=seed)
     by_session = _session_paths()
     out_path = Path(out_path)
     fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.chmod(out_path, 0o600)                     # an existing file keeps its old mode otherwise
     n = 0
     with os.fdopen(fd, "w") as fh:
-        for r in sample_for_review(rows, labels, gold, k, seed=seed):
+        for r in picked:
             t = _load_task(r, by_session)
             if not t:
                 continue
@@ -701,7 +730,9 @@ def export_review(k: int, out_path, seed: int = 7) -> int:
                 "request": t["request"][:EXPORT_CLIP["request"]],
                 "last": (t["last"] or "")[-EXPORT_CLIP["last"]:],
                 "next": nxt[:EXPORT_CLIP["next"]] if nxt is not None else None,
-                "votes": votes(t), "judge": r.get("judge"), "signals": signals(t)},
+                "votes": votes(t), "judge": r.get("judge"), "signals": signals(t),
+                "gold": ({f: latest[r["id"]].get(f) for f in ("outcome", "ts", "by")}
+                         if r["id"] in latest else None)},
                 ensure_ascii=False) + "\n")
             n += 1
     return n
@@ -717,16 +748,20 @@ def import_gold(path, by: str) -> dict:
     Rejected: an id not in tasks.jsonl, an outcome outside success|partial|fail|unknown, an id
     already in gold or twice in the file, a reason that is not a string of <= ``REASON_MAX``
     characters. The reason must not quote the transcript; that rule is enforced by the length
-    cap only (no matching against transcript text) — it is on the reviewer to keep."""
+    cap only (no matching against transcript text) — it is on the reviewer to keep.
+
+    Corrections never edit a row: a line for an id that already has gold must carry
+    ``supersedes`` = the ``ts`` of the row currently in force for that id; the new row is
+    appended and wins (``gold_latest``). A stale or unknown ``supersedes`` is rejected."""
     by = (by or "").strip()
     if not by or len(by) > 64 or any(ch.isspace() for ch in by):
         raise GoldImportError("--by must be a non-empty name without spaces (<= 64 chars)")
     h = home()
     ids = {r["id"] for r in _read(h / "tasks.jsonl")}
     gold_rows = _read(h / "gold.jsonl")
-    have = {g["id"] for g in gold_rows}
+    have = gold_latest(gold_rows)
     errs, new, seen = [], [], set()
-    now = time.time()
+    now = max([time.time()] + [float(g.get("ts") or 0) + 1e-3 for g in gold_rows])
     for i, ln in enumerate(Path(path).read_text().splitlines(), 1):
         if not ln.strip():
             continue
@@ -739,10 +774,15 @@ def import_gold(path, by: str) -> dict:
             errs.append(f"line {i}: not an object")
             continue
         tid, o, reason = d.get("id"), d.get("outcome"), d.get("reason")
+        sup = d.get("supersedes")
         if not isinstance(tid, str) or tid not in ids:
             errs.append(f"line {i}: id {tid!r} is not a known task")
-        elif tid in have:
-            errs.append(f"line {i}: id {tid} already has a gold label")
+        elif tid in have and sup is None:
+            errs.append(f"line {i}: id {tid} already has a gold label (pass supersedes=<its ts>)")
+        elif sup is not None and (tid not in have or not isinstance(sup, (int, float))
+                                  or abs(float(have[tid].get("ts") or 0) - sup) > 1e-6):
+            errs.append(f"line {i}: supersedes {sup!r} is not the ts of the gold row in force "
+                        f"for {tid}")
         elif tid in seen:
             errs.append(f"line {i}: id {tid} appears twice")
         if o not in GOLD_OUTCOMES:
@@ -754,6 +794,8 @@ def import_gold(path, by: str) -> dict:
         g = {"id": tid, "outcome": o, "ts": now, "by": by}
         if reason:
             g["reason"] = reason
+        if sup is not None:
+            g["supersedes"] = sup
         new.append(g)
     if errs:
         more = f" (+{len(errs) - 20} more)" if len(errs) > 20 else ""
@@ -769,8 +811,8 @@ def import_gold(path, by: str) -> dict:
 def gold_by() -> Counter:
     """Gold labels per author (``by``); rows written before ``by`` existed count as unmarked.
     Orphaned rows (request no longer a task) are counted under ``orphaned``, not an author."""
-    return Counter("orphaned" if str(g.get("id", "")).startswith("orphan:")
-                   else (g.get("by") or "unmarked") for g in _read(home() / "gold.jsonl"))
+    return Counter("orphaned" if k.startswith("orphan:") else (g.get("by") or "unmarked")
+                   for k, g in gold_latest().items())          # superseded rows not counted
 
 
 # ---- report ---------------------------------------------------------------------------------
@@ -852,13 +894,22 @@ def main(argv=None) -> int:
                                               "for an outside reviewer; nothing is stored")
     e.add_argument("--k", type=int, default=100)
     e.add_argument("--out", required=True)
-    g = sub.add_parser("import-gold", help="append {id, outcome, reason?} lines to gold as by=NAME")
+    e.add_argument("--ids", help="comma-separated task ids to export instead of sampling "
+                                 "(gold or not; their gold row in force is included)")
+    g = sub.add_parser("import-gold", help="append {id, outcome, reason?, supersedes?} lines to "
+                                           "gold as by=NAME")
     g.add_argument("file")
     g.add_argument("--by", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "export-review":
-        print(f"exported {export_review(a.k, a.out)} tasks to {a.out} (0600; it holds transcript "
-              f"text: delete it after importing)")
+        ids = [x.strip() for x in a.ids.split(",") if x.strip()] if a.ids else None
+        try:
+            n = export_review(a.k, a.out, ids=ids)
+        except GoldImportError as ex:
+            print(f"export-review: {ex}", file=sys.stderr)
+            return 2
+        print(f"exported {n} tasks to {a.out} (0600; it holds transcript text: delete it after "
+              f"importing)")
         return 0
     if a.cmd == "import-gold":
         try:
