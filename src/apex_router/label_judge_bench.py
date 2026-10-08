@@ -17,7 +17,14 @@ Metrics per variant (``score``):
 - ``acc4``: exact 4-class accuracy over every gold task (unknown included; an error is wrong).
 - ``abstain``: share of tasks with no vote (error, "unknown", or confidence < min_conf);
   ``unknown``: share answered "unknown"; ``error``: share that failed or returned bad JSON.
+- ``per_class``: per outcome, recall / precision of the raw answer (any confidence) and of the
+  vote (confidence >= min_conf); ``base_success``: accuracy of always answering "success" on the
+  decided gold (the bar ``acc_vote`` must clear to mean anything).
 - confusion gold x judge, mean latency, mean prompt / eval tokens.
+
+``--gold-tag TAG`` restricts the tasks to gold rows in force tagged TAG (a holdout batch made
+after the judge was chosen) and writes ``results-TAG.jsonl`` / ``table-TAG.md``; the cache is
+shared.
 """
 from __future__ import annotations
 
@@ -63,12 +70,13 @@ def _append(p: Path, row: dict) -> None:
         fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
-def gold_tasks(log=print) -> list:
-    """[(task, gold outcome)] for every gold id in force, sorted by id. The task text is read
-    from its transcript now and never stored."""
+def gold_tasks(log=print, tag: str | None = None) -> list:
+    """[(task, gold outcome)] for every gold id in force (only rows tagged ``tag`` when given),
+    sorted by id. The task text is read from its transcript now and never stored."""
     rows = {r["id"]: r for r in L._read(L.home() / "tasks.jsonl")}
     gold = {k: g["outcome"] for k, g in L.gold_latest().items()
-            if not k.startswith("orphan:") and k in rows and g.get("outcome") in GOLD4}
+            if not k.startswith("orphan:") and k in rows and g.get("outcome") in GOLD4
+            and (tag is None or g.get("tag") == tag)}
     by_session = L._session_paths()
     want: dict = {}
     for k in gold:
@@ -127,6 +135,36 @@ def run_variant(tasks: list, model: str, context: str, prompt: str, cache_dir: P
     return results, "ok"
 
 
+BAD_SWEEP = (0.6, 0.7, 0.8, 0.9)
+
+
+def bad_sweep(results: list, min_conf: float, thresholds=BAD_SWEEP) -> list:
+    """Measure (never adopt) a split threshold: success votes at ``min_conf``, fail/partial votes
+    at each threshold t. Per t: recall / precision of fail, of partial, of bad (fail or partial
+    voted on a fail-or-partial gold task), and the overall vote accuracy."""
+    bad = ("partial", "fail")
+    out = []
+    for t in thresholds:
+        def votes(r):
+            c = r.get("confidence") or 0
+            o = r["outcome"]
+            return o if (o == "success" and c >= min_conf) or (o in bad and c >= t) else None
+        row = {"t": t}
+        for name, cls in (("fail", ("fail",)), ("partial", ("partial",)), ("bad", bad)):
+            ng = sum(1 for r in results if r["gold"] in cls)
+            pv = [r for r in results if votes(r) in cls]
+            hit = sum(1 for r in pv if (r["gold"] in cls if name == "bad" else r["gold"] == votes(r)))
+            row[name] = {"recall": round(hit / ng, 4) if ng else None, "k": hit, "n_gold": ng,
+                         "n_vote": len(pv),
+                         "precision": round(hit / len(pv), 4) if pv else None}
+        dec = [r for r in results if r["gold"] in L.OUTCOMES and votes(r)]
+        row["acc_vote"] = round(sum(votes(r) == r["gold"] for r in dec) / len(dec), 4) if dec \
+            else None
+        row["vote_n"] = len(dec)
+        out.append(row)
+    return out
+
+
 def score(results: list, min_conf: float | None = None) -> dict:
     min_conf = L.JUDGE_MIN_CONF if min_conf is None else min_conf
     n = len(results)
@@ -147,6 +185,21 @@ def score(results: list, min_conf: float | None = None) -> dict:
     lo, hi = L.wilson(vk, vn)
     lo4, hi4 = L.wilson(k4, n)
     mean = (lambda xs: round(sum(xs) / len(xs), 2) if xs else None)  # noqa: E731
+    ratio = (lambda k, m: round(k / m, 4) if m else None)  # noqa: E731
+    per_class = {}
+    for o in GOLD4:
+        ng = sum(1 for r in results if r["gold"] == o)
+        pr = [r for r in results if r["outcome"] == o]
+        pv = [r for r in pr if o in L.OUTCOMES and (r.get("confidence") or 0) >= min_conf]
+        tv = sum(1 for r in pv if r["gold"] == o)
+        per_class[o] = {"n_gold": ng,
+                        "recall_raw": ratio(sum(r["gold"] == o for r in pr), ng),
+                        "n_pred_raw": len(pr),
+                        "precision_raw": ratio(sum(r["gold"] == o for r in pr), len(pr)),
+                        "recall_vote": ratio(tv, ng) if o in L.OUTCOMES else None,
+                        "n_vote": len(pv),
+                        "precision_vote": ratio(tv, len(pv)) if o in L.OUTCOMES else None}
+    decided = [r for r in results if r["gold"] in L.OUTCOMES]
     return {"n": n, "min_conf": min_conf,
             "acc_vote": round(vk / vn, 4) if vn else None, "vote_k": vk, "vote_n": vn,
             "acc_vote_ci": [round(lo, 3), round(hi, 3)],
@@ -155,6 +208,9 @@ def score(results: list, min_conf: float | None = None) -> dict:
             "unknown": round(sum(r["outcome"] == "unknown" for r in results) / n, 4) if n else None,
             "error": round(sum(r["outcome"] == "error" for r in results) / n, 4) if n else None,
             "confusion": {g: {o: conf[(g, o)] for o in JUDGE5} for g in GOLD4},
+            "per_class": per_class,
+            "base_success": ratio(sum(r["gold"] == "success" for r in decided), len(decided)),
+            "bad_sweep": bad_sweep(results, min_conf),
             "latency_s": mean(lat), "prompt_tokens": mean(pt), "eval_tokens": mean(et)}
 
 
@@ -204,6 +260,40 @@ def render(rows: list) -> str:
     return "\n".join(out)
 
 
+def render_classes(r: dict) -> str:
+    f = (lambda x: "–" if x is None else f"{x:.2f}")  # noqa: E731
+    out = [f"per class {r['variant']} (raw = any confidence; vote = confidence >= {r['min_conf']})"
+           f" · always-success on decided gold: {f(r.get('base_success'))}",
+           "| class | gold n | recall raw | precision raw (n) | recall vote | precision vote (n) |",
+           "|---" * 6 + "|"]
+    for o, c in (r.get("per_class") or {}).items():
+        out.append(f"| {o} | {c['n_gold']} | {f(c['recall_raw'])} | {f(c['precision_raw'])} "
+                   f"({c['n_pred_raw']}) | {f(c['recall_vote'])} | {f(c['precision_vote'])} "
+                   f"({c['n_vote']}) |")
+    return "\n".join(out)
+
+
+def render_sweep(r: dict) -> str:
+    f = (lambda x: "–" if x is None else f"{x:.2f}")  # noqa: E731
+    out = [f"fail/partial vote threshold sweep {r['variant']} (success stays at {r['min_conf']};"
+           " measured, not adopted)",
+           "| t | fail recall (k/n) | fail precision (votes) | partial recall | partial precision "
+           "(votes) | bad recall | bad precision (votes) | acc_vote (n) |", "|---" * 8 + "|"]
+    for s in r.get("bad_sweep") or []:
+        fa, pa, ba = s["fail"], s["partial"], s["bad"]
+        out.append(f"| {s['t']} | {f(fa['recall'])} ({fa['k']}/{fa['n_gold']}) | "
+                   f"{f(fa['precision'])} ({fa['n_vote']}) | {f(pa['recall'])} | "
+                   f"{f(pa['precision'])} ({pa['n_vote']}) | {f(ba['recall'])} | "
+                   f"{f(ba['precision'])} ({ba['n_vote']}) | {f(s['acc_vote'])} ({s['vote_n']}) |")
+    return "\n".join(out)
+
+
+def render_calibration(r: dict) -> str:
+    return (f"calibration {r['variant']}: " + ", ".join(
+        f"[{b['lo']:.1f},{b['hi']:.1f}) {b['k']}/{b['n']}" for b in r["calibration"]["bins"])
+        + f" -> threshold {r['calibration']['threshold']}")
+
+
 def render_confusion(r: dict) -> str:
     out = [f"confusion {r['variant']} (rows gold, cols judge)",
            "| gold \\ judge | " + " | ".join(JUDGE5) + " |", "|---" * (len(JUDGE5) + 1) + "|"]
@@ -225,16 +315,19 @@ def _unload(model: str) -> None:
 
 def bench(models: list, contexts: list, prompts: list, out: Path | None = None, call=None,
           min_conf: float | None = None, max_latency: float = 20.0, unload=None,
-          tasks: list | None = None, log=print) -> list:
+          tasks: list | None = None, log=print, gold_tag: str | None = None) -> list:
     """Run every variant (models outer, so one model is loaded at a time); write
     ``results.jsonl`` (one row per variant, merged with earlier runs) and ``table.md`` (all
-    variants benched so far). -> every result row."""
+    variants benched so far) — ``results-TAG.jsonl`` / ``table-TAG.md`` with ``gold_tag``, so a
+    holdout never overwrites the in-sample rows. -> every result row."""
     out = Path(out) if out else default_out()
     out.mkdir(parents=True, exist_ok=True)
     os.chmod(out, 0o700)
-    tasks = gold_tasks(log) if tasks is None else tasks
+    tasks = gold_tasks(log, tag=gold_tag) if tasks is None else tasks
+    sfx = f"-{_slug(gold_tag)}" if gold_tag else ""
     if log:
-        log(f"judge-bench: {len(tasks)} gold tasks · gold {dict(Counter(g for _, g in tasks))}")
+        log(f"judge-bench: {len(tasks)} gold tasks" + (f" (tag {gold_tag})" if gold_tag else "")
+            + f" · gold {dict(Counter(g for _, g in tasks))}")
     rows = []
     for m in models:
         slow = None
@@ -249,7 +342,8 @@ def bench(models: list, contexts: list, prompts: list, out: Path | None = None, 
                     if status != "ok":
                         slow = status
                 row = {"variant": name, "model": m, "context": c, "prompt": p,
-                       "status": status, "ts": time.time(), **score(res, min_conf),
+                       "status": status, "ts": time.time(), "gold_tag": gold_tag,
+                       **score(res, min_conf),
                        "calibration": calibrate(res)}
                 rows.append(row)
                 if log:
@@ -260,20 +354,26 @@ def bench(models: list, contexts: list, prompts: list, out: Path | None = None, 
             unload(m)
     # results.jsonl accumulates across runs: this run's variants replace their earlier rows
     mine = {r["variant"] for r in rows}
-    rows = [r for r in L._read(out / "results.jsonl") if r.get("variant") not in mine] + rows
-    L._write(out / "results.jsonl", rows)
-    w = pick_winner(rows)
+    rows = [r for r in L._read(out / f"results{sfx}.jsonl")
+            if r.get("variant") not in mine] + rows
+    L._write(out / f"results{sfx}.jsonl", rows)
     md = [render(rows), ""]
     md += [render_confusion(r) + "\n" for r in rows if r["status"] == "ok"]
-    md.append(f"winner (acc_vote >= {BAR_ACC}, CI lo > {BAR_LO}): "
-              + (w["variant"] if w else "no variant clears the bar"))
-    if w:
-        cal = w["calibration"]
-        md.append("calibration: " + ", ".join(
-            f"[{b['lo']:.1f},{b['hi']:.1f}) {b['k']}/{b['n']}" for b in cal["bins"])
-            + f" -> threshold {cal['threshold']}")
-    (out / "table.md").write_text("\n".join(md) + "\n")
-    os.chmod(out / "table.md", 0o600)
+    md += [render_classes(r) + "\n" for r in rows if r["status"] == "ok" and "per_class" in r]
+    if gold_tag:
+        # a held-out set measures the chosen judge; selecting on it would make it in-sample
+        md += [render_calibration(r) + "\n" for r in rows if r["status"] == "ok"]
+        md += [render_sweep(r) + "\n" for r in rows if r["status"] == "ok" and "bad_sweep" in r]
+        md.append(f"held-out gold (tag {gold_tag}): scored only, no winner is picked here")
+    else:
+        w = pick_winner(rows)
+        md.append(f"winner (acc_vote >= {BAR_ACC}, CI lo > {BAR_LO}): "
+                  + (w["variant"] if w else "no variant clears the bar"))
+        if w:
+            md.append(render_calibration(w).replace(f"calibration {w['variant']}",
+                                                    "calibration"))
+    (out / f"table{sfx}.md").write_text("\n".join(md) + "\n")
+    os.chmod(out / f"table{sfx}.md", 0o600)
     return rows
 
 
@@ -287,7 +387,8 @@ def main(a) -> int:
         print(f"judge-bench: unknown context/prompt: {', '.join(bad)}")
         return 2
     out = Path(a.out) if a.out else default_out()
+    tag = getattr(a, "gold_tag", None)
     bench(models, contexts, prompts, out, min_conf=a.min_conf, max_latency=a.max_latency,
-          unload=_unload)
-    print((out / "table.md").read_text())
+          unload=_unload, gold_tag=tag)
+    print((out / (f"table-{_slug(tag)}.md" if tag else "table.md")).read_text())
     return 0

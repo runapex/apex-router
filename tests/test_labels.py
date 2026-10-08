@@ -93,6 +93,43 @@ def test_posterior_needs_agreement_or_measured_accuracy():
     assert L.posterior(conflict, {})[1] < L.EMIT_MIN
 
 
+def test_judge_that_saw_signals_and_agreeing_rules_are_one_voter():
+    acc = {"judge": (40, 50), "commit": (45, 50), "tests": (30, 50), "next_negative": (9, 10)}
+    sees = {"outcome": "success", "confidence": 0.95, "context": "export"}
+    blind = {**sees, "context": "clip"}
+    r = {"votes": {"commit": "success", "tests": "success"}, "judge": sees}
+    g = L.voter_groups(r, acc)
+    assert g == [("success", L._smoothed(acc, "commit"))]           # max of the group, once
+    # the old judge context (no signals) and pre-context votes stay independent voters
+    assert len(L.voter_groups({**r, "judge": blind}, acc)) == 3
+    legacy = {"outcome": "success", "confidence": 0.95}                    # stored before context
+    assert len(L.voter_groups({**r, "judge": legacy}, acc)) == 3
+    # the grouped posterior is lower than the product of three "independent" agreeing voters
+    assert L.posterior(r, acc)[1] < L.posterior({**r, "judge": blind}, acc)[1]
+    assert L.posterior(r, acc)[0] == "success"
+    # a rule that disagrees with the judge still counts separately
+    r2 = {"votes": {"commit": "success", "next_negative": "fail"}, "judge": sees}
+    g2 = L.voter_groups(r2, acc)
+    assert sorted(v for v, _ in g2) == ["fail", "success"] and len(g2) == 2
+    # no judge vote (low confidence): rules count as before
+    r3 = {"votes": {"commit": "success", "tests": "success"},
+          "judge": {**sees, "confidence": 0.5}}
+    assert len(L.voter_groups(r3, acc)) == 2
+
+
+def test_class_prior_line():
+    labels = [{"label": "success", "from": "weak"}] * 3 + [{"label": "fail", "from": "weak"},
+                                                          {"label": "fail", "from": "gold"},
+                                                          {"label": "unknown", "from": "weak"}]
+    gold = {"a": "success", "b": "fail", "c": "unknown", "d": "partial"}
+    rows = [{"votes": {"tail_errors": "fail"}, "n_errors": 3}, {"votes": {}, "n_errors": 1},
+            {"votes": {"commit": "success"}, "n_errors": 0}, {"votes": {}}]
+    s = L.class_prior_line(labels, gold, rows)
+    assert "weak-emitted 0.75 / 0.00 / 0.25 (n 4)" in s
+    assert "gold 0.33 / 0.33 / 0.33 (n 3)" in s
+    assert "rule-fail vote 0.25 of tasks, n_errors>0 0.50" in s
+
+
 def test_judge_votes_only_when_confident():
     r = {"votes": {}, "judge": {"outcome": "fail", "confidence": 0.5}}
     assert L._all_votes(r) == {}
@@ -421,3 +458,89 @@ def test_declining_an_offer_is_not_negative():
     # a decline-looking "no" with no offer in the final message still counts
     assert L.lf_next_negative(dict(base, last="Done.", next="no more pushes")) == "fail"
     assert L.lf_next_negative(dict(base, last="Want me to push?", next="no, push")) is None
+
+
+def _row(i, votes=None, judge=None, session="s"):
+    return {"id": f"t{i}", "session": session, "index": i, "votes": votes or {}, "judge": judge}
+
+
+def test_suspected_fail_signals():
+    assert L.suspected_fail(_row(0, votes={"tail_errors": "fail"}))
+    assert L.suspected_fail(_row(0, votes={"tests": "fail"}))
+    assert not L.suspected_fail(_row(0, votes={"tests": "success", "commit": "success"}))
+    assert L.suspected_fail(_row(0, judge={"outcome": "partial", "confidence": 0.95}))
+    assert L.suspected_fail(_row(0, judge={"outcome": "fail", "confidence": 0.3}))
+    assert L.suspected_fail(_row(0, judge={"outcome": "success", "confidence": 0.8}))
+    assert not L.suspected_fail(_row(0, judge={"outcome": "success", "confidence": 0.95}))
+    assert not L.suspected_fail(_row(0, judge={"outcome": "unknown", "confidence": 0.95}))
+    assert not L.suspected_fail(_row(0))
+
+
+def test_sample_strata_in_order_disjoint_and_without_gold():
+    hi = {"outcome": "success", "confidence": 0.95}
+    rows = ([_row(i, votes={"interrupted": "fail"}) for i in range(4)]          # t0-t3 suspect
+            + [_row(i, judge=hi) for i in range(4, 12)])                         # t4-t11 clean
+    labels = [{"id": f"t{i}", "label": "unknown" if i in (6, 7) else "success"}
+              for i in range(12)]
+    test_keys = {"s:2", "s:5", "s:6", "s:7", "s:8"}
+    gold = {"t0": "fail", "t5": "success"}
+    got = L.sample_strata(rows, labels, gold, [("suspected-fail", 10), ("test-split", 2),
+                                               ("random", 3)], test_keys, seed=1)
+    ids = [r["id"] for r, _ in got]
+    assert len(ids) == len(set(ids)) and not set(ids) & set(gold)
+    assert sorted(r["id"] for r, s in got if s == "suspected-fail") == ["t1", "t2", "t3"]
+    # t2 already taken by suspected-fail; t5 has gold; unlabelled test tasks come first
+    assert sorted(r["id"] for r, s in got if s == "test-split") == ["t6", "t7"]
+    assert [s for _, s in got].count("random") == 3
+    assert all(r["id"] not in ("t0", "t1", "t2", "t3", "t5", "t6", "t7")
+               for r, s in got if s == "random")
+    # test-split order: no emitted label, then a rule fail vote, then a tool error, then the rest
+    lab = {"a": "unknown", "b": "success", "c": "success", "d": "success"}
+    pri = [{"id": "d", "votes": {}, "n_errors": 0}, {"id": "c", "votes": {}, "n_errors": 2},
+           {"id": "b", "votes": {"repeated": "fail"}}, {"id": "a", "votes": {}}]
+    assert [r["id"] for r in sorted(pri, key=lambda r: L._test_priority(r, lab))] == \
+        ["a", "b", "c", "d"]
+    assert L.sample_strata(rows, labels, gold, [("random", 3)], test_keys, seed=1) == \
+        L.sample_strata(rows, labels, gold, [("random", 3)], test_keys, seed=1)
+    assert L.parse_strata("suspected-fail:25, test-split:12,random:23") == [
+        ("suspected-fail", 25), ("test-split", 12), ("random", 23)]
+    for bad in ("nope:3", "random", "random:x", ""):
+        with pytest.raises(L.GoldImportError):
+            L.parse_strata(bad)
+
+
+def test_split_test_keys_join_and_strata_export(tmp_path):
+    _export_fixture(_home())
+    rows = L._read(L.home() / "tasks.jsonl")
+    wm = L.home().parent / "worldmodel" / "tasks.jsonl"
+    wm.parent.mkdir(parents=True, exist_ok=True)
+    # the P6 task id is sid:i; the labels row joins by (session, index)
+    wm.write_text("".join(json.dumps({"task": L.wm_task_key(r),
+                                      "split": "test" if r["index"] == 1 else "train"}) + "\n"
+                          for r in rows) + "not json\n")
+    keys = L.split_test_keys()
+    assert keys == {L.wm_task_key(r) for r in rows if r["index"] == 1}
+    out = tmp_path / "s.jsonl"
+    assert L.main(["export-review", "--out", str(out), "--strata", "test-split:5,random:1"]) == 0
+    ex = [json.loads(x) for x in out.read_text().splitlines()]
+    assert [x["stratum"] for x in ex] == ["test-split", "random"]
+    assert ex[0]["id"] == next(r["id"] for r in rows if r["index"] == 1)
+    assert oct(out.stat().st_mode)[-3:] == "600"
+    assert L.main(["export-review", "--out", str(out), "--strata", "bogus:1"]) == 2
+
+
+def test_import_gold_tag_and_report_split(tmp_path, capsys):
+    _export_fixture(_home())
+    ids = [r["id"] for r in L._read(L.home() / "tasks.jsonl")]
+    f = tmp_path / "g.jsonl"
+    f.write_text(json.dumps({"id": ids[0], "outcome": "success"}) + "\n")
+    L.import_gold(f, "model:x")
+    f.write_text(json.dumps({"id": ids[1], "outcome": "fail"}) + "\n"
+                 + json.dumps({"id": ids[2], "outcome": "unknown"}) + "\n")
+    assert L.main(["import-gold", str(f), "--by", "model:x", "--tag", "has space"]) == 2
+    assert "--tag" in capsys.readouterr().err
+    assert L.main(["import-gold", str(f), "--by", "model:x", "--tag", "holdout-1"]) == 0
+    gold = L._read(L.home() / "gold.jsonl")
+    assert "tag" not in gold[0] and {g["tag"] for g in gold[1:]} == {"holdout-1"}
+    assert L.gold_by_tag() == {"untagged": 1, "holdout-1": 2}
+    assert "gold by tag: holdout-1 2, untagged 1" in L.report()

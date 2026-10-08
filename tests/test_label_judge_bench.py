@@ -207,3 +207,67 @@ def test_cli_judge_bench(monkeypatch, tmp_path, capsys):
                    "--out", str(tmp_path / "o")]) == 0
     assert "x|clip|v2" in capsys.readouterr().out
     assert L.main(["judge-bench", "--contexts", "nope", "--out", str(tmp_path / "o")]) == 2
+
+
+def test_gold_tag_restricts_tasks_and_writes_separate_results(tmp_path):
+    ids = _fixture()
+    gold = L._read(L.home() / "gold.jsonl")
+    for g in gold:
+        if g["id"] in (ids[2], ids[3]):
+            g["tag"] = "hold"
+    L._write(L.home() / "gold.jsonl", gold)
+    assert sorted(t["id"] for t, _ in B.gold_tasks(log=None, tag="hold")) == sorted(ids[2:4])
+    assert len(B.gold_tasks(log=None)) == 4
+
+    def fake(prompt, model):
+        o = "fail" if "SECRET-C" in prompt else "success"
+        return ({"outcome": o, "confidence": 0.95, "evidence": "none"},
+                {"latency_s": 0.1, "prompt_tokens": 1, "eval_tokens": 1, "error": None})
+    out = tmp_path / "b"
+    B.bench(["m"], ["export"], ["v2"], out, call=fake, unload=None, log=None)
+    rows = B.bench(["m"], ["export"], ["v2"], out, call=fake, unload=None, log=None,
+                   gold_tag="hold")
+    r = rows[0]
+    assert r["n"] == 2 and r["gold_tag"] == "hold" and r["acc4"] == 0.5
+    assert r["per_class"]["fail"]["recall_vote"] == 1.0
+    assert r["per_class"]["fail"]["precision_vote"] == 1.0
+    assert r["per_class"]["unknown"]["recall_raw"] == 0.0
+    assert r["base_success"] == 0.0
+    assert L._read(out / "results.jsonl")[0]["n"] == 4            # in-sample row untouched
+    assert L._read(out / "results-hold.jsonl")[0]["n"] == 2
+    t = (out / "table-hold.md").read_text()
+    assert "per class m|export|v2" in t and "calibration m|export|v2" in t
+    assert "no winner is picked" in t and "winner (" not in t
+
+
+def test_score_per_class_and_base_rate():
+    res = [{"gold": "fail", "outcome": "fail", "confidence": 0.95},
+           {"gold": "fail", "outcome": "fail", "confidence": 0.5},       # raw hit, not a vote
+           {"gold": "fail", "outcome": "unknown", "confidence": 0.95},
+           {"gold": "success", "outcome": "fail", "confidence": 0.95},
+           {"gold": "success", "outcome": "success", "confidence": 0.99}]
+    s = B.score(res, min_conf=0.9)
+    f = s["per_class"]["fail"]
+    assert (f["n_gold"], f["recall_raw"], f["recall_vote"]) == (3, round(2 / 3, 4), round(1 / 3, 4))
+    assert (f["n_vote"], f["precision_vote"]) == (2, 0.5)
+    assert (f["n_pred_raw"], f["precision_raw"]) == (3, round(2 / 3, 4))
+    assert s["base_success"] == 0.4
+
+
+def test_bad_sweep_lowers_only_fail_partial_threshold():
+    res = [{"gold": "fail", "outcome": "fail", "confidence": 0.95},
+           {"gold": "fail", "outcome": "fail", "confidence": 0.75},
+           {"gold": "partial", "outcome": "fail", "confidence": 0.75},
+           {"gold": "partial", "outcome": "partial", "confidence": 0.65},
+           {"gold": "success", "outcome": "success", "confidence": 0.85},   # never a vote at 0.9
+           {"gold": "success", "outcome": "partial", "confidence": 0.7}]
+    sw = {s["t"]: s for s in B.bad_sweep(res, 0.9)}
+    assert sw[0.9]["fail"] == {"recall": 0.5, "k": 1, "n_gold": 2, "n_vote": 1, "precision": 1.0}
+    assert sw[0.7]["fail"]["k"] == 2 and sw[0.7]["fail"]["n_vote"] == 3
+    assert sw[0.7]["fail"]["precision"] == round(2 / 3, 4)
+    assert sw[0.7]["partial"]["n_vote"] == 1 and sw[0.7]["partial"]["k"] == 0
+    assert sw[0.6]["partial"]["k"] == 1
+    # bad = fail or partial voted on a fail-or-partial gold task
+    assert (sw[0.7]["bad"]["k"], sw[0.7]["bad"]["n_vote"], sw[0.7]["bad"]["n_gold"]) == (3, 4, 4)
+    assert sw[0.9]["vote_n"] == 1 and sw[0.7]["vote_n"] == 4 and sw[0.7]["acc_vote"] == 0.5
+    assert "bad_sweep" in B.score(res, 0.9)

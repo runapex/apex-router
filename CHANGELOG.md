@@ -50,6 +50,28 @@ next tag will carry.
   (`docs/research/2026-10-08-label-judge-bench.md`). `labels build --rejudge` re-judges every
   task whose vote came from another judge config. After a rejudge, coverage went from 20% to
   67% and weak-emitted labels from 19 to 273.
+- Held-out check of the outcome judge. `labels export-review --strata
+  suspected-fail:N,test-split:N,random:N [--seed]` draws a stratified sample of tasks with no
+  gold, one stratum after another:
+  - suspected-fail: a rule fail signal, a judge fail/partial vote, or judge confidence < 0.9;
+  - test-split: tasks in the P6 test split, joined by `session:index`, unlabelled first, then
+    rule-fail, then tool errors;
+  - random: uniform over the rest.
+
+  `labels import-gold --tag TAG` marks a batch. `labels judge-bench --gold-tag TAG` scores
+  only that batch and writes `results-TAG.jsonl` / `table-TAG.md`. It adds per-class
+  recall/precision, the always-success base rate, confidence bins and a fail/partial-only
+  threshold sweep, and it never picks a winner on held-out gold. `labels report` gains
+  `gold by tag` and a class-prior line (weak-emitted vs gold vs independent signals).
+
+  `posterior()` now counts a judge that saw `signals()` (export context) and the rules that
+  agree with it as one voter, at the best accuracy among them. On today's data this lowers p
+  on 52 tasks and changes 0 of the 273 weak labels.
+
+  On 82 held-out gold labels (`holdout-2026-10-08`), the adopted judge scores 0.95 [0.83, 0.99]
+  (38/40 votes). That matches the in-sample 0.90. Always-success scores 37/40 on the same tasks.
+  Fail recall is 1/3, and bad (fail or partial) recall at 0.9 is 2/11. Defaults are unchanged
+  (`docs/research/2026-10-08-label-judge-holdout.md`).
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
   (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
