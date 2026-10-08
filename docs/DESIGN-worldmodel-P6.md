@@ -28,7 +28,7 @@ One JSON line per tool call (= one step), `steps.jsonl`:
  "agent": "<subagent id|null>",   # null for the main thread
  "src":   "pi|claude",
  "task":  "<task id>",            # sid + ordinal of the user turn (a task = one user turn that ran ≥ 1 tool)
- "i":     int,                    # step index within the task (0-based)
+ "i":     int,                    # step index within the (task, agent) STREAM (0-based); dt/phase are per stream too
  "ts":    float,                  # epoch seconds
  "act":   "<action class>",       # §2 vocabulary
  "tool":  "<tool name>",          # pi/Claude tool name (bash, read, edit, Agent, …) — no args
@@ -42,6 +42,11 @@ One JSON line per tool call (= one step), `steps.jsonl`:
  "spawn": 0|1                     # this step spawned a subagent (Agent/Task/Workflow)
 }
 ```
+
+The split boundaries (timestamps) are frozen in `manifest.json` on the first build and reused
+on rebuilds (`--resplit` recomputes them), so the test split is scored once across rebuilds.
+Subagents spawned by a `Workflow` call are joined to their task through the run id
+(`wf_…`, the subagent directory name) found in the call's result — never by time alone.
 
 `tasks.jsonl`: one line per task — `{task, sid, src, t0, t1, steps, outcome, outcome_src,
 split}` where `outcome ∈ success|partial|fail|unknown` comes from `~/.apex-router/labels/labels.jsonl`
