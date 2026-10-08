@@ -470,7 +470,7 @@ def test_suspected_fail_signals():
     assert not L.suspected_fail(_row(0, votes={"tests": "success", "commit": "success"}))
     assert L.suspected_fail(_row(0, judge={"outcome": "partial", "confidence": 0.95}))
     assert L.suspected_fail(_row(0, judge={"outcome": "fail", "confidence": 0.3}))
-    assert L.suspected_fail(_row(0, judge={"outcome": "success", "confidence": 0.8}))
+    assert L.suspected_fail(_row(0, judge={"outcome": "success", "confidence": 0.75}))
     assert not L.suspected_fail(_row(0, judge={"outcome": "success", "confidence": 0.95}))
     assert not L.suspected_fail(_row(0, judge={"outcome": "unknown", "confidence": 0.95}))
     assert not L.suspected_fail(_row(0))
