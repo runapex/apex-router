@@ -52,6 +52,9 @@ def cmd_train(argv: list[str]) -> int:
     ap.add_argument("--sweep-w-reg", action="store_true",
                     help="train w_reg in {1, 3, 10}; pick min val CE among runs within the "
                          "collapse bounds (recorded as w_reg_sweep in the winner's summary.json)")
+    ap.add_argument("--view", choices=("streams", "task"), default="streams",
+                    help="sequence unit: one per (task, agent) stream (default; contract §1 counts "
+                         "i/dt/phase per stream) or the raw per-task order (escape hatch)")
     ap.add_argument("--json", action="store_true", help="print the summary as JSON")
     a = ap.parse_args(argv)
     from .jepa import mlx_available
@@ -59,7 +62,7 @@ def cmd_train(argv: list[str]) -> int:
         print("mlx is not installed: `pip install 'apex-router[worldmodel]'` (Apple Silicon only)",
               file=sys.stderr)
         return 2
-    from .train import TrainConfig, load_dataset, synthetic_dataset, train
+    from .train import TrainConfig, load_view, synthetic_dataset, train
     cfgd: dict = {}
     if a.config:
         p = Path(a.config)
@@ -71,7 +74,7 @@ def cmd_train(argv: list[str]) -> int:
     if a.device:
         cfgd["device"] = a.device
     cfg = TrainConfig.from_dict(cfgd)
-    ds = synthetic_dataset(a.synthetic, cfg.seed) if a.synthetic else load_dataset()
+    ds = synthetic_dataset(a.synthetic, cfg.seed) if a.synthetic else load_view(a.view)
     st = ds.stats()
     print(f"data: {st['source']} — {st['tasks']} tasks, {st['steps']} steps "
           f"(train {st['tasks_train']}, val {st['tasks_val']}, test {st['tasks_test']} held out)")

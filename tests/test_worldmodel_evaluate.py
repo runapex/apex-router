@@ -117,11 +117,15 @@ def test_stream_view_separates_subagents():
 class FakeWM:
     """WorldModel stand-in: deterministic per-step outputs; records every score() call."""
 
+    labelled_train = None          # set to 0 to model a run that never saw a label
+
     def __init__(self, run_dir, d=8, dc=4, seed=0):
         self.run_dir = Path(run_dir)
         self.cfg = SimpleNamespace(macro=False, embed=False, d=d, d_control=dc, erank_min=2.0,
                                    sigreg_max=10.0, seed=seed, device="cpu", w_reg=1.0)
         self.summary = {"best_epoch": 0, "best": {"val_next_ce": 2.0}}
+        if self.labelled_train is not None:
+            self.summary["data"] = {"labelled_train": self.labelled_train}
         self.calls = []
 
     def score(self, tasks):
@@ -268,7 +272,180 @@ def test_value_zeno_flags_converging_short():
     assert np.all(np.isneginf(E.value_zeno_scores(up, threshold=0.5)))
 
 
+# ---- review fixes: provenance, view guard, untrained value head, ledger, display -----------------
+
+def test_git_dirty_flag_sees_src_from_a_package_dir(tmp_path):
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    repo = tmp_path / "repo"
+    pkg = repo / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "m.py").write_text("x = 1\n")
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+    for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True, env=env, capture_output=True)
+    clean = E.git_sha(pkg)
+    assert clean["sha"] and clean["dirty_src"] is False
+    (pkg / "m.py").write_text("x = 2\n")                 # touched file under src/, seen from pkg/
+    assert E.git_sha(pkg)["dirty_src"] is True
+    assert E.git_sha(tmp_path / "nowhere") == {"sha": None, "dirty_src": None}
+
+
+def test_check_view_refuses_a_mismatch():
+    assert E.check_view({"view": "streams"}, "streams") == "streams"
+    assert E.check_view({"data": {"source": "/x/steps.jsonl:task"}}, "task") == "task"
+    assert E.check_view({"data": {"source": "/x/steps.jsonl"}}, "task") == "task"   # legacy run
+    assert E.check_view({"data": {"source": "synthetic:300:seed0"}}, "streams") is None
+    assert E.check_view({}, "streams") is None
+    with pytest.raises(E.ViewMismatch, match="--view task"):
+        E.check_view({"view": "task"}, "streams")
+    with pytest.raises(E.ViewMismatch):
+        E.check_view({"data": {"source": "/x/steps.jsonl"}}, "streams")
+
+
+def test_view_mismatch_refused_before_any_test_pass(fake_run, tmp_path):
+    rd = tmp_path / "worldmodel" / "runs" / "fake-run"
+    rd.mkdir(parents=True)
+    (rd / "summary.json").write_text(json.dumps({"view": "task"}))
+    with pytest.raises(E.ViewMismatch):
+        E.scorecard(_ds(), "synthetic: 40", ["fake-run"], view="streams")
+    assert fake_run == []                                # no WorldModel loaded, nothing scored
+    assert not E.ledger_path().exists()
+
+
+def _write_contract(home: Path, n=30):
+    """fixtures data with a subagent stream per delegating task, as E1 writes it."""
+    syn = fixtures.synthetic(n, seed=2)
+    steps = []
+    for s in syn.steps:
+        steps.append(s)
+        if s["act"] == "delegate":
+            for j in range(3):
+                steps.append(dict(s, agent=f"a{s['i']}", i=j, act="search", spawn=0,
+                                  ts=s["ts"] + 0.1 * (j + 1)))
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "steps.jsonl").write_text("\n".join(json.dumps(s) for s in steps) + "\n")
+    (home / "tasks.jsonl").write_text("\n".join(json.dumps(t) for t in syn.tasks) + "\n")
+
+
+def test_load_view_streams_default_and_task_escape_hatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
+    home = tmp_path / "worldmodel"
+    _write_contract(home)
+    st, tk = T.load_view(), T.load_view("task")
+    assert st.source.endswith("steps.jsonl:streams") and tk.source.endswith("steps.jsonl:task")
+    assert T.run_view(st.source) == "streams" and T.run_view(tk.source) == "task"
+    assert len(st.tasks) > len(tk.tasks)                 # subagent streams are their own sequences
+    sub = [t for t in st.tasks if "@" in t]
+    assert sub and all(st.meta[t]["outcome"] == "unknown" for t in sub)
+    assert sum(map(len, st.tasks.values())) == sum(map(len, tk.tasks.values()))
+    with pytest.raises(ValueError):
+        T.load_view("bogus")
+
+
+def test_untrained_value_head_makes_2_3_5_inconclusive(fake_run, monkeypatch):
+    monkeypatch.setattr(FakeWM, "labelled_train", 0)
+    ds = _ds()                                           # gold labels on test DO exist
+    assert E.main_ids(ds, "test", gold_only=True)
+    card = E.scorecard(ds, "synthetic: gold", ["fake-run"])
+    p = card["per_run"][0]
+    assert p["value_head_trained"] is False
+    for k in (2, 3, 5):
+        assert card["verdicts"][k] == "INCONCLUSIVE"
+        assert p["reasons"][k] == E.UNTRAINED
+        assert any(b.startswith(f"C{k}: {E.UNTRAINED}") for b in card["blockers"])
+    assert p["outcome_gold"]["skipped"] == E.UNTRAINED and p["outcome_all"]["n"] == 0
+    assert p["ranking"]["jepa"]["accuracy"] is None
+    assert p["criterion5"] is None or "jepa" not in p["criterion5"]["detectors"]
+    txt = E.render(card)
+    assert txt.count(E.UNTRAINED) >= 3 and "provisional" not in txt
+    # the same data with a trained head is scored (the guard is the head, not the labels)
+    monkeypatch.setattr(FakeWM, "labelled_train", 100)
+    again = E.scorecard(ds, "synthetic: gold", ["fake-run"])
+    assert again["per_run"][0]["value_head_trained"] and again["verdicts"][2] in ("PASS", "FAIL")
+
+
+def test_jepa_val_ce_includes_step_0_like_the_baselines(fake_run):
+    ds = _ds()
+    card = E.scorecard(ds, "synthetic: 40", ["fake-run"])
+    sp = np.array(card["start_prior"])
+    va = ds.ids("val")
+    tot = sum(-math.log(sp[P.act_id(ds.steps[t][0])]) + (len(ds.steps[t]) - 1) * math.log(P.V)
+              for t in va)
+    n = sum(len(ds.steps[t]) for t in va)
+    p = card["per_run"][0]
+    assert p["val_ce"] == pytest.approx(tot / n)
+    assert p["val_next_ce_excl_step0"] == 2.0            # E3's readout kept, labelled as such
+    assert f"{p['val_ce']:.3f}" in E.render(card)
+
+
+def test_manifest_split_bounds_and_data_hashes(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps({"split_bounds": {"val": 1.0, "test": 2.0}}))
+    (tmp_path / "steps.jsonl").write_text("{}\n")
+    m = E.manifest_info(tmp_path)
+    assert m["split_bounds"] == {"val": 1.0, "test": 2.0}
+    assert len(m["steps_sha256"]) == 64 and m["tasks_sha256"] is None
+
+
+def test_ledger_counts_every_real_test_scoring_and_backfills(fake_run, tmp_path):
+    home = tmp_path / "worldmodel"
+    (home / "eval").mkdir(parents=True)
+    old = {"kind": "worldmodel-g1-scorecard", "created": "2026-10-08T00:00:00Z",
+           "source": "/x/steps.jsonl", "view": "streams", "git": {"sha": "abc"},
+           "manifest": {"sha256": None}, "runs": ["r0", "r1"], "cpu_replay_run": "r0-cpu"}
+    syn = dict(old, source="synthetic: 300", runs=["s0"], cpu_replay_run=None)
+    (home / "eval" / "a.json").write_text(json.dumps(old))
+    (home / "eval" / "b.json").write_text(json.dumps(syn))
+    card = E.scorecard(_ds(), "real-shaped (test)", ["fake-run"])
+    rows = P.read_jsonl(E.ledger_path())
+    assert [r["run_id"] for r in rows] == ["r0", "r1", "r0-cpu", "fake-run"]   # synthetic skipped
+    assert all(r.get("backfilled") for r in rows[:3]) and not rows[3].get("backfilled")
+    assert card["ledger"]["scorings"] == 4 and card["ledger"]["invocations"] == 2
+    assert (os.stat(E.ledger_path()).st_mode & 0o777) == 0o600
+    assert "test split scored 4 times for this manifest" in E.render(card)
+    again = E.scorecard(_ds(), "real-shaped (test)", ["fake-run"])
+    assert again["ledger"]["scorings"] == 5                       # appended, never rewritten
+    assert E.backfill_ledger() == 0
+    syn_card = E.scorecard(_ds(), "synthetic: 40", ["fake-run"])
+    assert syn_card["ledger"] is None and len(P.read_jsonl(E.ledger_path())) == 5
+
+
+def test_display_flags_small_days_and_probe_keys(fake_run):
+    ds = _ds()
+    card = E.scorecard(ds, "synthetic: 40", ["fake-run"])
+    rows = card["per_run"][0]["per_day"]
+    assert all(r["too_few"] == (r["n"] < E.DAY_MIN_N) for r in rows)
+    txt = E.render(card)
+    assert "near-tautological" in txt
+    if any(r["too_few"] for r in rows):
+        assert "[too few]" in txt
+    jepa = E.Jepa(FakeWM("/nonexistent"), np.array(card["start_prior"]), 0.5)
+    te = ds.ids("test")
+    jepa.prepare(ds, te)
+    arr = E.probe_arrays(jepa, ds, te)
+    assert {"z_prefix", "x_prefix", "outcome_prefix"} <= set(arr) and "z_last" not in arr
+    assert len(arr["z_prefix"]) == len(E.main_ids(ds, "test", labeled=True))
+
+
 # ---- a tiny real run (mlx) -------------------------------------------------------------------------
+
+@needs_mlx
+def test_train_cli_records_view(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
+    _write_contract(tmp_path / "worldmodel", n=40)
+    from apex_router.worldmodel.cli import main
+    for args, want in (([], "streams"), (["--view", "task"], "task")):
+        rc = main(["train", "--epochs", "1", "--run-id", f"v-{want}", "--json", *args])
+        assert rc == 0
+        capsys.readouterr()
+        s = json.loads((tmp_path / "worldmodel" / "runs" / f"v-{want}" / "summary.json").read_text())
+        assert s["view"] == want and s["data"]["source"].endswith(f":{want}")
+    # evaluating the task-view run under the default stream view is refused with a clear error
+    rc = main(["evaluate", "--run", "v-task", "--no-save"])
+    assert rc == 2 and "--view task" in capsys.readouterr().err
 
 @needs_mlx
 def test_cli_train_and_evaluate_synthetic(tmp_path, monkeypatch, capsys):

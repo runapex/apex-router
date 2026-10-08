@@ -42,8 +42,16 @@ next tag will carry.
   replay run. Criteria 2 and 5 count gold labels only (weak labels print a provisional line).
   Sequences are (task, agent) streams by default, since a step's `i` counts within its stream
   (`--view task` keeps the interleaved order). The scorecard is saved to
-  `~/.apex-router/worldmodel/eval/<ts>-<run>.json` (0600) with the git sha, the dataset
-  manifest hash, run ids and seeds. The first real attempt (2026-10-07; 23,554 steps, no
+  `~/.apex-router/worldmodel/eval/<ts>-<run>.json` (0600) with the git sha (and whether `src/`
+  was dirty), the hashes of the manifest, `steps.jsonl` and `tasks.jsonl`, the manifest's split
+  bounds, run ids and seeds. Each scoring of the real test split also adds a line to the
+  append-only `eval/ledger.jsonl`, and the card prints how many times the split has been scored
+  for this manifest (`--backfill-ledger` seeds the ledger from saved cards). A run trained on
+  another view than `--view` is refused before any test pass. A run that never saw a labelled
+  train task has an untrained value head, so criteria 2, 3 and 5 are INCONCLUSIVE for it, with
+  that reason. The val CE column scores step 0 the same way for every model.
+  `worldmodel train` now trains on the stream view by default (`--view task` keeps the old
+  per-task order) and records the view in `summary.json`. The first real attempt (2026-10-07; 23,554 steps, no
   labels yet) is G1 FAIL: on criterion 1 the JEPA is about 7% worse than the logistic baseline on test CE
   (stream view; +0.7% with a CI spanning 0 in the task view), and criterion 4 fails because
   the early epochs sit outside the SIGReg bound. Criteria 2, 3 and 5 are INCONCLUSIVE until
