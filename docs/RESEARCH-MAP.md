@@ -211,10 +211,10 @@ All of these are **hypotheses to test**, not established benefits.
 | Zeno progress | L3 | E2 (code + synthetic; real data unscored) | right question, closed form; plateau false positives removed | gold labels; only 16/43 test tasks carry parsed test runs |
 | Markov absorbing chain | L3/L4 | E2 | interpretable expected steps / odds | absorbing outcome labels |
 | Workflow graph | L4 | E1–E2 | design + day-0 baseline | labels |
-| JEPA | L4 (fit) → L3 (act) | E2 (G1 attempts 1–2 FAIL) | beats prior and Markov on next action; C2 inconclusive (8 gold test tasks, below the declared floor) | loses to logistic by 4% (was 6%); C4 unreachable through warm-up; gold on test; data volume |
+| JEPA | L4 (fit) → L3 (act) | E2 (G1 attempts 1–3 FAIL; **paused** — stop rule fired) | next-action structure beyond order 2 exists and the hand features carry it | the latent loses to its own inputs twice; outcome forecast at the base rate; C4 reachable only by centring (−7 pts C1); wait for 50k steps |
 | xval bandit | L4 (fit) → L2 (pick arm) | E4 code, data insufficient | the only live learning loop | runs per arm |
 | Zeno p^n | L1 (readout) | E4 | honest horizon readout | not a decision tool |
-| Outcome labels | L5 | E4 / data E1 | pipeline + precision accounting | **100 gold labels** |
+| Outcome labels | L5 | E4 / data **E3** (held-out judge 0.95; gold 182 model-made, 82 held out; coverage 88%) | judge + rule voters with measured accuracies; test split fully gold | fail/partial recall (1/3); gold is Opus-made, not the owner's; the test split has 3 bad tasks |
 | Shared open weights | L0 → all | E1 | observable KV, model internals, cheap open-model runs (hypotheses) | quality gate per lane; isolation review |
 
 **Order that unblocks the most:** gold labels → one task table + shared eval protocol → Stage B

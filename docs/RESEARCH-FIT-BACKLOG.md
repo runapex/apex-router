@@ -155,7 +155,7 @@ E4 evaluates both; E5 wires "converging short" / ρ(Q) as a switch-or-stop trigg
 
 **First G1 attempt (2026-10-07, this workstation): FAIL** — C1 JEPA test CE 1.777 vs logistic
 1.673 (rel −6.2% [−7.8%, −3.2%]; beats prior/Markov), C4 FAIL (early epochs above the SIGReg
-bound), C2/C3/C5 INCONCLUSIVE (0 gold labels). Full card: `docs/research/2026-10-07-p6-g1-attempt-1.md`. **Attempt 2 (2026-10-08, pre-declared ablations): FAIL** — C1 −4.0% [−5.5%, −1.8%] (narrower), C2 INCONCLUSIVE by the declared n-floor (8 gold test tasks), C4 fails by construction (no w_reg within bounds through warm-up), C5 FAIL (1 bad task): `docs/research/2026-10-08-p6-g1-attempt-2.md`.
+bound), C2/C3/C5 INCONCLUSIVE (0 gold labels). Full card: `docs/research/2026-10-07-p6-g1-attempt-1.md`. **Attempt 2 (2026-10-08, pre-declared ablations): FAIL** — C1 −4.0% [−5.5%, −1.8%] (narrower), C2 INCONCLUSIVE by the declared n-floor (8 gold test tasks), C4 fails by construction (no w_reg within bounds through warm-up), C5 FAIL (1 bad task): `docs/research/2026-10-08-p6-g1-attempt-2.md`. **Attempt 3 (2026-10-08, corrected labels + centring recipe): FAIL** — C1 −11.1%, C2 FAIL at the base rate (41 gold), C4 PASS (as val predicted), C5 FAIL on 3 bad tasks; the pre-declared stop rule fired (raw-input probe beats the latent twice): **no further attempts until the 50k-step kill point**: `docs/research/2026-10-08-p6-g1-attempt-3.md`.
 Code: `apex_router.worldmodel` (E1–E4).
 
 **Schedule and kill criterion:** first G1 attempt on the current ~13k steps (~1-2 weeks of work;
