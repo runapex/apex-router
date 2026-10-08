@@ -73,6 +73,22 @@ class TrainConfig:
     # are attempt 1's inputs, so an attempt-1 config replays unchanged.
     features: str = "a1"                 # "a1" | "a2f" (A2-F: + cross-step task state)
     regime: bool = False                 # A2-D: + day regime (features.annotate_regime)
+    # C4 warm-up recipe (loop 2; docs/research/2026-10-08-p6-c4-warmup-recipe.md). All off by
+    # default so attempts 1-2 replay unchanged; each changes the model or the schedule, never the
+    # bounds below. z_norm: None | "layernorm" | "whiten" | "center" (jepa.py docstring);
+    # w_reg_schedule "anneal": SIGReg weight w_reg_start at epoch 0, geometric to w_reg at epoch
+    # w_reg_anneal_epochs and w_reg after (`w_reg_at`); rank_floor_init: False | True (=
+    # "orthogonal": orthonormal-row z projection) | "centered" (+ data-dependent centring and
+    # scale on train windows, `jepa.center_z_projection`); lr_warmup_epochs: LR warm-up length
+    # in epochs (None = `warmup` steps capped at 10% of all updates, the attempt-1/2 rule;
+    # 0 = no warm-up).
+    z_norm: str | None = None
+    z_norm_stats: str = "batch"          # whiten/center in training: "batch" | "running" | "renorm"
+    w_reg_schedule: str = "const"        # "const" | "anneal"
+    w_reg_start: float = 30.0
+    w_reg_anneal_epochs: int = 4
+    rank_floor_init: bool | str = False
+    lr_warmup_epochs: float | None = None
     # preset collapse bounds (G1 criterion 4)
     erank_min: float = 8.0
     sigreg_max: float = 0.10
@@ -90,7 +106,61 @@ class TrainConfig:
             raise ValueError(f"unknown config keys: {sorted(unknown)}")
         cfg = cls(**d)
         F.check_feature_set(cfg.features)
+        check_recipe(cfg)
         return cfg
+
+
+W_REG_SCHEDULES = ("const", "anneal")
+
+
+def check_recipe(cfg: "TrainConfig") -> None:
+    """Validate the C4 warm-up recipe fields (ValueError on a bad value)."""
+    from .jepa import check_rank_floor_init, check_z_norm
+    check_z_norm(cfg.z_norm)
+    check_rank_floor_init(cfg.rank_floor_init)
+    from .jepa import Z_NORM_STATS
+    if cfg.z_norm_stats not in Z_NORM_STATS:
+        raise ValueError(f"z_norm_stats must be one of {Z_NORM_STATS}, not {cfg.z_norm_stats!r}")
+    if cfg.w_reg_schedule not in W_REG_SCHEDULES:
+        raise ValueError(f"w_reg_schedule must be one of {W_REG_SCHEDULES}, "
+                         f"not {cfg.w_reg_schedule!r}")
+    if cfg.w_reg_schedule == "anneal" and (not cfg.w_reg_start > 0
+                                           or int(cfg.w_reg_anneal_epochs) < 1):
+        raise ValueError("anneal needs w_reg_start > 0 and w_reg_anneal_epochs >= 1")
+    if cfg.lr_warmup_epochs is not None and not (math.isfinite(cfg.lr_warmup_epochs)
+                                                 and cfg.lr_warmup_epochs >= 0):
+        raise ValueError(f"lr_warmup_epochs must be >= 0 or None, not {cfg.lr_warmup_epochs!r}")
+
+
+def w_reg_at(cfg: "TrainConfig", epoch: int) -> float:
+    """SIGReg weight used while training ``epoch`` (0-based). ``const``: ``w_reg``. ``anneal``:
+    ``w_reg_start * (w_reg / w_reg_start) ** (epoch / K)`` for epoch < K, then ``w_reg``
+    (K = ``w_reg_anneal_epochs``): epoch 0 trains at ``w_reg_start``, epoch K at ``w_reg``."""
+    if cfg.w_reg_schedule != "anneal":
+        return float(cfg.w_reg)
+    K = int(cfg.w_reg_anneal_epochs)
+    if epoch >= K:
+        return float(cfg.w_reg)
+    return float(cfg.w_reg_start * (cfg.w_reg / cfg.w_reg_start) ** (epoch / K))
+
+
+def warmup_steps(cfg: "TrainConfig", batches_per_epoch: int) -> int:
+    """LR warm-up updates: ``lr_warmup_epochs`` x batches per epoch when set, else the attempt-1/2
+    rule ``min(warmup, 10% of all updates)``."""
+    if cfg.lr_warmup_epochs is not None:
+        return int(round(cfg.lr_warmup_epochs * batches_per_epoch))
+    return min(cfg.warmup, (cfg.epochs * batches_per_epoch) // 10)
+
+
+RECIPE_KEYS = ("z_norm", "z_norm_stats", "w_reg_schedule", "w_reg_start", "w_reg_anneal_epochs",
+               "rank_floor_init", "lr_warmup_epochs")
+
+
+def recipe_of(cfg: "TrainConfig") -> dict:
+    """The C4 warm-up recipe fields of a config, plus ``default`` (True when none is changed)."""
+    out = {k: getattr(cfg, k) for k in RECIPE_KEYS}
+    out["default"] = all(getattr(cfg, k) == getattr(TrainConfig, k) for k in RECIPE_KEYS)
+    return out
 
 
 def ablations(cfg: "TrainConfig") -> dict:
@@ -386,6 +456,15 @@ def _last_positions(W: F.Windows) -> dict[int, tuple[int, int]]:
 def evaluate(model, W: F.Windows, cfg: TrainConfig, y_train: np.ndarray) -> tuple[dict, dict]:
     """Val metrics + collapse diagnostics. Returns ``(metrics, arrays)``; ``arrays`` holds the
     flattened real-position latents and targets for the probes."""
+    was_training = model.training
+    model.eval()                     # z_norm whiten/center: train-set statistics, never val's
+    try:
+        return _evaluate(model, W, cfg, y_train)
+    finally:
+        model.train(was_training)
+
+
+def _evaluate(model, W: F.Windows, cfg: TrainConfig, y_train: np.ndarray) -> tuple[dict, dict]:
     import mlx.core as mx
     from .jepa import jepa_losses
     z, lp, v = _forward_all(model, W)
@@ -575,14 +654,20 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
 
     model = build_model(n_features(cfg), cfg)
     mx.eval(model.parameters())
+    z_init = None
+    if cfg.rank_floor_init == "centered":    # data-dependent: TRAIN windows only
+        from .jepa import center_z_projection
+        z_init = center_z_projection(model, Wtr.X, Wtr.mask)
     n_params = count_params(model)
-    warm = min(cfg.warmup, (cfg.epochs * math.ceil(len(Wtr) / cfg.batch)) // 10)
+    warm = warmup_steps(cfg, math.ceil(len(Wtr) / cfg.batch))
     sched = (optim.join_schedules([optim.linear_schedule(cfg.lr * 0.01, cfg.lr, warm),
                                    lambda _: cfg.lr], [warm]) if warm > 0 else cfg.lr)
     opt = optim.AdamW(learning_rate=sched, weight_decay=cfg.weight_decay)
 
+    w_now = [w_reg_at(cfg, 0)]
+
     def loss_fn(mdl, x, m, a, y, o, h, dirs):
-        return jepa_losses(mdl, x, m, a, y, o, h, dirs, cfg)
+        return jepa_losses(mdl, x, m, a, y, o, h, dirs, cfg, w_reg=w_now[0])
 
     step_fn = nn.value_and_grad(model, loss_fn)
 
@@ -595,10 +680,20 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     if metrics_path.exists():
         metrics_path.unlink()
 
+    # z_norm "whiten"/"center": exact TRAIN-set statistics before every checkpoint (never val's)
+    from .jepa import refresh_z_stats
+    refresh_z_stats(model, Wtr.X, Wtr.mask)
+    # collapse readout of the untrained model on val (not a C4 checkpoint: C4 reads the epochs)
+    init_collapse = evaluate(model, Wva, cfg, y_train)[0]["collapse"]
+    w_reg_epochs: list[float] = []
+
     best, best_epoch, bad = float("inf"), -1, 0
     best_metrics: dict = {}
     train_time, train_windows, train_steps = 0.0, 0, 0
+    model.train()
     for epoch in range(cfg.epochs):
+        w_now[0] = w_reg_at(cfg, epoch)
+        w_reg_epochs.append(w_now[0])
         perm = rng.permutation(len(Wtr))
         sums: dict[str, float] = {}
         nb = 0
@@ -622,6 +717,7 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
             train_steps += int(Wtr.mask[idx].sum())
         train_time += time.perf_counter() - t0
         tr = {f"train_{k}": v / max(nb, 1) for k, v in sorted(sums.items())}
+        refresh_z_stats(model, Wtr.X, Wtr.mask)
         ev, _ = evaluate(model, Wva, cfg, y_train)
         row = {"epoch": epoch, **tr, **ev}
         _append_private(metrics_path, _dumps(row))
@@ -649,6 +745,12 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     _, arr_tr = evaluate(model, Wtr, cfg, y_train)
     ev_va, arr_va = evaluate(model, Wva, cfg, y_train)
     probes = linear_probes(arr_tr, arr_va, cfg.d_control, seed=cfg.seed)
+    recipe = {**recipe_of(cfg), "lr_warmup_steps": warm, "w_reg_per_epoch": w_reg_epochs,
+              "init_collapse": init_collapse}
+    if z_init is not None:
+        recipe["centered_init"] = z_init
+    if cfg.z_norm is not None:       # the encoder output before z_norm, best checkpoint, val
+        recipe["pre_norm_collapse"] = _pre_norm_collapse(model, Wva, cfg)
     prior = (np.bincount(y_train, minlength=F.N_ACT) + 0.5) / (y_train.size + 0.5 * F.N_ACT)
     train_tasks, _ = ds.split("train")
     start = F.start_prior(train_tasks, macro=cfg.macro)
@@ -670,9 +772,23 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
         "train_unigram_ce": F.unigram_ce(y_train, y_train),
         "collapse_outside_bounds_epochs": [
             r["epoch"] for r in read_jsonl(metrics_path) if not r["collapse"]["within_bounds"]],
+        "recipe": recipe,
     }
     _write_private(run_dir / "summary.json", _dumps(summary))
     return summary
+
+
+def _pre_norm_collapse(model, W: F.Windows, cfg: TrainConfig) -> dict:
+    """Collapse diagnostics of the pre-``z_norm`` encoder output on ``W``'s owned positions: a
+    normalised z can be in bounds while the code under it is low-rank, so both are reported."""
+    import mlx.core as mx
+    zs = []
+    for b in range(0, len(W), 256):
+        z = model.encode_pre(mx.array(W.X[b:b + 256]))
+        mx.eval(z)
+        zs.append(np.array(z))
+    zf = np.concatenate(zs)[_own(W)] if zs else np.zeros((0, cfg.d), np.float32)
+    return collapse_diagnostics(zf, erank_min=cfg.erank_min, sigreg_max=cfg.sigreg_max, seed=cfg.seed)
 
 
 # ---- inference API (E2 / E4) ---------------------------------------------------------------------
@@ -706,6 +822,7 @@ class WorldModel:
         set_device(self.cfg.device)
         self.model = build_model(n_features(self.cfg), self.cfg)
         self.model.load_weights(str(self.run_dir / "weights.safetensors"))
+        self.model.eval()
 
     @classmethod
     def load(cls, run: str | Path) -> "WorldModel":

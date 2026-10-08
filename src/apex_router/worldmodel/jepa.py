@@ -47,9 +47,45 @@ the defaults, N(0, 0.25·I) about 0.15, N(0, I) samples ~1/N). Padded positions 
 
 Preset collapse bounds (G1 criterion 4, fixed before any real-data run): effective rank >= 8
 (= d/8) and SIGReg <= 0.10 (a quarter of the fully collapsed value).
+
+Warm-up recipe options (loop 2, ``docs/research/2026-10-08-p6-c4-warmup-recipe.md``; all off by
+default, so attempts 1-2 replay bit-exactly on CPU). They change the MODEL / schedule so the latent
+starts near the target distribution; the bounds themselves are untouched:
+
+- ``z_norm="layernorm"``: a final LayerNorm on z WITHOUT affine parameters (a learned scale
+  would reopen the shrink-z path the latent-prediction MSE rewards); every row has mean 0 and
+  variance 1 across its d coordinates.
+- ``z_norm="whiten"``: ZCA whitening of z, ``(z - m) @ C^{-1/2}``, ``C^{-1/2}`` by
+  ``WHITEN_ITERS`` (5) Newton-Schulz steps (IterNorm; Huang et al., 2019, "Iterative
+  Normalization: Beyond Standardization towards Efficient Whitening", CVPR — recalled, not
+  re-read). Batch-norm semantics (``z_norm_stats="batch"``, default): training normalises with
+  the batch statistics of the REAL positions (padded rows are all-zero inputs and are excluded)
+  with gradients through them; evaluation uses buffers that ``train`` sets to the exact
+  train-set statistics before every checkpoint (``refresh_z_stats``), so a val/test checkpoint
+  is a fixed affine map of the encoder output, estimated on train only. Few NS steps whiten
+  tiny-variance directions only partially, so a rank-deficient z does not get noise amplified
+  to unit scale. No affine parameters.
+- ``z_norm="center"``: the same machinery with centring plus ONE global scale,
+  ``(z - m) * sqrt(d / tr C)`` — total variance d, the shape of z left to the encoder and SIGReg.
+  Added after diagnosing the real-data runs: the control's out-of-bounds SIGReg is mostly mean
+  offset (val SIGReg 0.19 raw vs 0.05 centred), while 5-step ZCA leaves ~12 unit directions
+  and ~52 near-zero ones, which SIGReg reads as a too-small scale. Caveat (recorded per run as
+  ``recipe.pre_norm_collapse``): the encoder output UNDER the map stays far outside the SIGReg
+  bound (~0.8); the effective rank is the same either way (it is computed on centred z and is
+  scale-free), so the map moves SIGReg only.
+- ``rank_floor_init``: ``True`` / ``"orthogonal"`` — the z projection (``to_z``) starts with
+  orthonormal rows (numpy QR of a Gaussian matrix, seeded by ``cfg.seed``), bias 0
+  (``orthogonal_rows``). ``"centered"`` — the same rows, then a data-dependent init on TRAIN
+  windows (``center_z_projection``; LSUV-style, Mishkin & Matas 2016, recalled): bias = minus
+  the mean of the initial z and one global scale so the total variance is d. Diagnosed on the
+  real data: the default init's z is nearly the same vector for every step (val SIGReg 0.39,
+  mean cosine 0.61 — the "constant z" value), and orthogonal rows alone do not change that
+  (0.43); centring + scaling them gives 0.03 with effective rank 47 — inside the bounds before
+  the first update. It is an initialisation only: nothing constrains z afterwards.
 """
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 
 import numpy as np
@@ -149,6 +185,52 @@ def vicreg_np(z: np.ndarray, gamma: float = 1.0, eps: float = 1e-4) -> float:
     return float(var + (off ** 2).sum() / z.shape[1])
 
 
+Z_NORMS = (None, "layernorm", "whiten", "center")
+Z_NORM_STATS = ("batch", "running", "renorm")
+WHITEN_ITERS = 5
+WHITEN_MOMENTUM = 0.1
+WHITEN_EPS = 1e-5
+
+
+RANK_FLOOR_INITS = (False, True, "orthogonal", "centered")
+
+
+def check_rank_floor_init(v) -> None:
+    if not any(v is x or (isinstance(v, str) and v == x) for x in RANK_FLOOR_INITS):
+        raise ValueError(f"rank_floor_init must be one of {RANK_FLOOR_INITS}, not {v!r}")
+
+
+def check_z_norm(z_norm) -> None:
+    if z_norm not in Z_NORMS:
+        raise ValueError(f"z_norm must be one of {Z_NORMS}, not {z_norm!r}")
+
+
+def orthogonal_rows(rows: int, cols: int, seed: int = 0, gain: float = 1.0) -> np.ndarray:
+    """``(rows, cols)`` float32 with orthonormal rows (rows <= cols) or orthonormal columns
+    (rows > cols): Q of a QR of a seeded Gaussian matrix, sign-fixed so it is uniform (Haar)."""
+    rng = np.random.default_rng(seed)
+    a = rng.standard_normal((max(rows, cols), min(rows, cols)))
+    q, r = np.linalg.qr(a)
+    q = q * np.sign(np.diag(r))[None, :]
+    w = q.T if rows <= cols else q
+    return (gain * w).astype(np.float32)
+
+
+def inv_sqrt_ns(cov, iters: int = WHITEN_ITERS, eps: float = WHITEN_EPS):
+    """``cov^{-1/2}`` (symmetric PSD, mlx) by ``iters`` Newton-Schulz steps on the trace-normalised
+    matrix (IterNorm). Few steps whiten the large-variance directions fully and the tiny ones only
+    partially, so a rank-deficient z does not get its noise blown up to unit scale."""
+    import mlx.core as mx
+    d = cov.shape[-1]
+    c = cov + eps * mx.eye(d)
+    tr = mx.trace(c)
+    cn = c / tr
+    p = mx.eye(d)
+    for _ in range(iters):
+        p = 0.5 * (3.0 * p - p @ p @ p @ cn)
+    return p / mx.sqrt(tr)
+
+
 # ---- MLX model -----------------------------------------------------------------------------------
 
 def mlx_available() -> bool:
@@ -178,6 +260,70 @@ def _mlx_classes():
             h = nn.gelu(self.l2(h))
             return z + self.l3(h)
 
+    class ZWhiten(nn.Module):
+        """Normalisation of ``z (B, L, d)`` with statistics of the REAL positions.
+        ``mode="zca"``: ``(z - mean) @ C^{-1/2}``; ``mode="center"``: ``(z - mean) * sqrt(d / tr C)``.
+        Every training batch updates running buffers (momentum, stop-gradient); evaluation uses
+        the buffers (``train`` overwrites them with exact train-set statistics before every
+        checkpoint, ``refresh_z_stats``), so a val/test checkpoint is a fixed affine map. In
+        training the map uses ``stats="batch"`` — the batch's own statistics, gradients through
+        them (batch-norm) — ``"running"`` — the buffers, stop-gradient (the evaluation map) — or
+        ``"renorm"`` — the buffers' value with the batch map's gradient (batch renorm)."""
+
+        def __init__(self, d: int, mode: str = "zca", stats: str = "batch",
+                     iters: int = WHITEN_ITERS, momentum: float = WHITEN_MOMENTUM,
+                     eps: float = WHITEN_EPS):
+            super().__init__()
+            if mode not in ("zca", "center"):
+                raise ValueError(f"ZWhiten mode must be 'zca' or 'center', not {mode!r}")
+            if stats not in Z_NORM_STATS:
+                raise ValueError(f"ZWhiten stats must be one of {Z_NORM_STATS}, not {stats!r}")
+            self.mode, self.stats, self.iters = mode, stats, iters
+            self.momentum, self.eps = momentum, eps
+            self.running_mean = mx.zeros((d,))
+            self.running_sq = mx.eye(d)                  # E[z z^T]; with mean 0 -> cov = I
+            self.freeze(keys=["running_mean", "running_sq"], recurse=False)
+
+        def transform(self, mean, cov):
+            """``(shift, matrix-or-scalar)`` for the given mean and covariance."""
+            d = mean.shape[-1]
+            if self.mode == "center":
+                return mean, mx.sqrt(d / mx.maximum(mx.trace(cov), self.eps))
+            return mean, inv_sqrt_ns(cov, self.iters, self.eps)
+
+        def running_transform(self):
+            m = self.running_mean
+            return self.transform(m, self.running_sq - m[:, None] * m[None, :])
+
+        def set_stats(self, mean, sq):
+            """Replace the running buffers (``refresh_z_stats``: exact train-set statistics)."""
+            self.running_mean = mx.array(np.asarray(mean, np.float32))
+            self.running_sq = mx.array(np.asarray(sq, np.float32))
+
+        def __call__(self, z, real):
+            B, L, d = z.shape
+            zf = z.reshape(B * L, d)
+            if self.training:
+                w = mx.stop_gradient(real.reshape(B * L).astype(z.dtype))
+                n = mx.maximum(w.sum(), 1.0)
+                mu = (w[:, None] * zf).sum(0) / n
+                sq = (w[:, None] * zf).T @ zf / n
+                k = self.momentum
+                self.running_mean = (1 - k) * self.running_mean + k * mx.stop_gradient(mu)
+                self.running_sq = (1 - k) * self.running_sq + k * mx.stop_gradient(sq)
+            if self.training and self.stats in ("batch", "renorm"):
+                shift, a = self.transform(mu, sq - mu[:, None] * mu[None, :])
+                if self.stats == "renorm":
+                    # batch renormalisation (Ioffe, 2017, recalled): the forward VALUE is the
+                    # running map (no batch-composition noise), the gradient the batch map's
+                    r_shift, r_a = self.running_transform()
+                    shift = shift + mx.stop_gradient(r_shift - shift)
+                    a = a + mx.stop_gradient(r_a - a)
+            else:
+                shift, a = (mx.stop_gradient(t) for t in self.running_transform())
+            zc = zf - shift
+            return (zc * a if self.mode == "center" else zc @ a).reshape(B, L, d)
+
     class JEPA(nn.Module):
         def __init__(self, n_feat: int, cfg):
             super().__init__()
@@ -193,8 +339,25 @@ def _mlx_classes():
             self.next_head = nn.Linear(cfg.d, N_ACT)
             self.value_l1 = nn.Linear(cfg.d_control, 32)
             self.value_l2 = nn.Linear(32, 1)
+            self.z_norm = getattr(cfg, "z_norm", None)
+            check_z_norm(self.z_norm)
+            if self.z_norm == "layernorm":
+                self.z_ln = nn.LayerNorm(cfg.d, affine=False)
+            elif self.z_norm in ("whiten", "center"):
+                self.z_wh = ZWhiten(cfg.d, mode="zca" if self.z_norm == "whiten" else "center",
+                                    stats=getattr(cfg, "z_norm_stats", "batch"))
 
         def encode(self, x):
+            z = self.encode_pre(x)
+            if self.z_norm == "layernorm":
+                return self.z_ln(z)
+            if self.z_norm in ("whiten", "center"):
+                # padded positions are all-zero inputs (a real step always has its action one-hot)
+                return self.z_wh(z, mx.abs(x).sum(-1) > 0)
+            return z
+
+        def encode_pre(self, x):
+            """The encoder output before the optional ``z_norm`` (the latent itself without it)."""
             B, L, Fd = x.shape
             # causal "conv" stem: step t also sees steps t-1 .. t-lookback directly (zeros
             # before the window start), so short-range order is available without attention
@@ -221,9 +384,70 @@ def _mlx_classes():
 
 
 def build_model(n_feat: int, cfg):
-    """Instantiate the JEPA (imports mlx). Seed ``mx.random`` before calling for a fixed init."""
+    """Instantiate the JEPA (imports mlx). Seed ``mx.random`` before calling for a fixed init.
+    With ``cfg.rank_floor_init`` the z projection is re-initialised with orthonormal rows (from a
+    numpy generator seeded by ``cfg.seed``, so ``mx.random`` draws are unchanged)."""
     _, JEPA = _mlx_classes()
-    return JEPA(n_feat, cfg)
+    model = JEPA(n_feat, cfg)
+    rfi = getattr(cfg, "rank_floor_init", False)
+    check_rank_floor_init(rfi)
+    if rfi is not False:
+        import mlx.core as mx
+        w = orthogonal_rows(cfg.d, cfg.hidden, seed=10_007 + int(cfg.seed))
+        model.to_z.weight = mx.array(w)
+        model.to_z.bias = mx.zeros((cfg.d,))
+    return model
+
+
+def center_z_projection(model, X: np.ndarray, real: np.ndarray, batch: int = 256) -> dict:
+    """Data-dependent part of ``rank_floor_init="centered"``: with ``X (W, L, F)`` training windows
+    and ``real (W, L)`` their real positions, rescale ``to_z`` so the encoder output over those
+    positions has mean 0 and total variance d: ``W <- s W``, ``b <- -s m`` (m, the mean of
+    ``W h``; s = sqrt(d / tr cov)). Returns ``{"mean_norm", "scale", "n"}``."""
+    import mlx.core as mx
+    zs = []
+    for b in range(0, len(X), batch):
+        z = model.encode_pre(mx.array(X[b:b + batch]))
+        mx.eval(z)
+        zs.append(np.array(z)[np.asarray(real[b:b + batch], bool)])
+    z = np.concatenate(zs).astype(np.float64) if zs else np.zeros((0, model.d))
+    if len(z) < 2:
+        return {"mean_norm": float("nan"), "scale": 1.0, "n": int(len(z))}
+    w0, b0 = np.array(model.to_z.weight, np.float64), np.array(model.to_z.bias, np.float64)
+    m = z.mean(0) - b0                               # mean of W h (the bias-free part)
+    tr = float(np.trace(np.cov(z.T)))
+    s = math.sqrt(z.shape[1] / tr) if tr > 1e-12 else 1.0
+    model.to_z.weight = mx.array((s * w0).astype(np.float32))
+    model.to_z.bias = mx.array((-s * m).astype(np.float32))
+    mx.eval(model.parameters())
+    return {"mean_norm": float(np.linalg.norm(z.mean(0))), "scale": s, "n": int(len(z))}
+
+
+def refresh_z_stats(model, X: np.ndarray, real: np.ndarray, batch: int = 256) -> bool:
+    """For ``z_norm`` "whiten" / "center": set the running buffers to the EXACT statistics of the
+    pre-norm z over ``X (W, L, F)`` (training windows) at ``real (W, L)`` positions, with the
+    current weights ("precise BN"; Wu & Johnson, 2021, "Rethinking 'Batch' in BatchNorm",
+    recalled). Called before every evaluation checkpoint: in the first epochs the encoder moves
+    faster than a momentum buffer can follow (measured: the running mean lagged the true one by
+    ~3 in norm through epoch 0), and a stale buffer is itself an offset SIGReg reads. Returns
+    False (no-op) for a model without such a layer."""
+    import mlx.core as mx
+    wh = getattr(model, "z_wh", None)
+    if wh is None:
+        return False
+    n, s1, s2 = 0, None, None
+    for b in range(0, len(X), batch):
+        z = model.encode_pre(mx.array(X[b:b + batch]))
+        mx.eval(z)
+        z = np.array(z)[np.asarray(real[b:b + batch], bool)].astype(np.float64)
+        s1 = z.sum(0) if s1 is None else s1 + z.sum(0)
+        s2 = z.T @ z if s2 is None else s2 + z.T @ z
+        n += len(z)
+    if n == 0:
+        return False
+    wh.set_stats(s1 / n, s2 / n)
+    mx.eval(wh.running_mean, wh.running_sq)
+    return True
 
 
 def count_params(model) -> int:
@@ -260,9 +484,10 @@ def vicreg_mx(z, w, gamma: float = 1.0, eps: float = 1e-4):
     return var + (off ** 2).sum() / z.shape[1]
 
 
-def jepa_losses(model, x, mask, act, y_next, outcome, has_label, dirs, cfg):
+def jepa_losses(model, x, mask, act, y_next, outcome, has_label, dirs, cfg, w_reg=None):
     """All loss terms for one batch. Returns ``(total, parts)``; ``parts`` holds the unweighted
-    terms (``pred``, ``pred_k1..K``, ``reg``, ``next_ce``, ``value_bce``).
+    terms (``pred``, ``pred_k1..K``, ``reg``, ``next_ce``, ``value_bce``). ``w_reg`` overrides
+    ``cfg.w_reg`` (the per-epoch value of an annealed schedule).
 
     Shapes: ``x (B, L, F)``, ``mask/act/y_next (B, L)``, ``outcome/has_label (B,)``,
     ``dirs (d, M)``. Padded positions carry ``mask = 0`` and are excluded from every term.
@@ -307,6 +532,7 @@ def jepa_losses(model, x, mask, act, y_next, outcome, has_label, dirs, cfg):
     value_bce = (bce * vmask).sum() / mx.maximum(vmask.sum(), 1.0)
     parts["value_bce"] = value_bce
 
-    total = (cfg.w_pred * pred + cfg.w_reg * reg + cfg.w_next * next_ce
+    wr = cfg.w_reg if w_reg is None else w_reg
+    total = (cfg.w_pred * pred + wr * reg + cfg.w_next * next_ce
              + cfg.w_value * value_bce)
     return total, parts

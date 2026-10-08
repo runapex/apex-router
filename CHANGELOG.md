@@ -7,6 +7,21 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- P6 JEPA collapse-recipe options in `TrainConfig`, all off by default; with defaults, attempt
+  2 replays bit-exactly on CPU. The options:
+  - `z_norm` = `layernorm` / `whiten` / `center`. For `whiten` and `center`, training uses
+    batch statistics; before every checkpoint the map is set to the exact train-set
+    statistics. `z_norm_stats` selects `batch`, `running` or `renorm`.
+  - `w_reg_schedule="anneal"`, configured by `w_reg_start` and `w_reg_anneal_epochs`.
+  - `rank_floor_init` = `orthogonal` / `centered`.
+  - `lr_warmup_epochs`.
+
+  `summary.json` gains a `recipe` block: the options, the per-epoch w_reg, the init and
+  pre-norm collapse readouts. On the real data's train/val split, `center` plus an anneal from
+  30 keeps every epoch inside the C4 bounds at a final w_reg of 1, 3 and 10. It costs about 5%
+  val next-action CE, and its SIGReg reads z after the train-estimated centring. Nothing
+  without `z_norm` passes. The attempt-3 paragraph is proposed, not declared
+  (`docs/research/2026-10-08-p6-c4-warmup-recipe.md`).
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
   (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
