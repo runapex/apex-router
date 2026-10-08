@@ -44,8 +44,10 @@ Active / idle for a Claude session is Claude's own status (``busy`` / ``idle`` i
 (``agent_resources.agent_active``).
 
 Bar: ``● N`` plus `` ⚠`` when an agent is stuck or erroring (``agent_resources.agent_flagged``:
-a subagent running > 20 min, an error in the last 5 min or a 60-min error rate >= 5%, or a
-context >= 85% of a known window).
+a subagent running > 20 min, a ``waiting?`` subagent quiet > 10 min while its session is busy
+(a heuristic), an error in the last 5 min or a 60-min error rate >= 5%, or a context >= 85% of a
+known window). Live pi / Codex processes with no session log in the last hour are listed under
+idle (``quiet``) and counted in the Agents header's memory.
 Bar dot colour: green = GREEN with a sufficient sample; orange = AMBER; red = RED; gray when the
 sample is insufficient (most 15-min windows), UNKNOWN, or the snapshot itself failed. A RED forced
 by a fresh retry-after stays red even on a small sample (the provider said back off).
@@ -114,8 +116,10 @@ def adapters_dirs() -> list:
     return [datapce_home() / "adapters", router_home() / "adapters"]
 
 
-def _num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+_num = agent_resources._num             # one implementation of each helper, shared
+_err = agent_resources._err
+fmt_age = agent_resources.fmt_age        # = agent_resources.fmt_dur
+fmt_mb = agent_resources.fmt_mb          # a missing size reads "?" in the menu
 
 
 def _epoch_s(v):
@@ -124,10 +128,6 @@ def _epoch_s(v):
     if v is None or not math.isfinite(v):  # json accepts Infinity/NaN
         return None
     return v / 1000.0 if v > 1e12 else float(v)
-
-
-def _err(e: BaseException) -> str:
-    return f"{type(e).__name__}: {e}"
 
 
 # ---- collectors -----------------------------------------------------------------------------
@@ -361,19 +361,6 @@ def esc(s) -> str:
     return ("–" * (len(s) - len(stripped)) + stripped) if stripped != s else s
 
 
-def fmt_age(s) -> str:
-    if not isinstance(s, (int, float)) or not math.isfinite(s):
-        return "?"
-    s = max(0, int(s))
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    if s < 86400:
-        return f"{s // 3600}h"
-    return f"{s // 86400}d"
-
-
 def _active(snap) -> int:
     """Active agents: Claude's own busy status, the log-mtime state only without one."""
     return sum(1 for a in snap.get("agents") or []
@@ -552,11 +539,8 @@ def _tree_tip(tree: dict, extra=()) -> str:
 
 
 def _status_word(a: dict) -> str:
-    """Claude's own busy/idle when known; else the log-mtime state."""
-    st = _res(a).get("status")
-    if st:
-        return esc(st)
-    return esc(a.get("state", "?"))
+    """Claude's own busy/idle when known; else the log-mtime state (``display_state``), esc()'d."""
+    return esc(agent_resources.display_state(a))
 
 
 def _fit(line: str, tail: str = "", width: int = MENU_WIDTH) -> str:
@@ -917,12 +901,6 @@ def net_spark_line(history) -> str:
     spark = widget_history.sparkline([r[1] + r[2] for r in rates])
     return (f"{'net':<4} {spark.ljust(SPARK_W)}  {text} | {MONO} "
             f"color={INK['blue']} tooltip=\"{_tip(tip)}\"")
-
-
-def fmt_mb(mb) -> str:
-    if not isinstance(mb, (int, float)) or not math.isfinite(mb):
-        return "?"
-    return f"{mb / 1024:.1f}GB" if mb >= 1024 else f"{mb:.0f}MB"
 
 
 def _rank(a: dict):
