@@ -292,8 +292,8 @@ def main(argv=None) -> int:
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
-    sub.add_parser("worldmodel", help="P6 latent world model: `worldmodel train [--synthetic N] "
-                                      "[--config JSON] [--epochs E]|probe <run_id>` (needs [worldmodel])",
+    sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|baseline|chains|progress|"
+                                      "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
     args, extra = ap.parse_known_args(argv)
 

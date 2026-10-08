@@ -136,6 +136,10 @@ def cmd_probe(argv: list[str]) -> int:
 
 
 COMMANDS = {"train": cmd_train, "probe": cmd_probe}
+# E2: baselines, absorbing chains, Zeno progress (readout imports numpy/scipy inside each command).
+from .readout import COMMANDS as _E2_COMMANDS  # noqa: E402
+
+COMMANDS.update(_E2_COMMANDS)
 
 
 def main(argv: list[str] | None = None) -> int:
