@@ -1,0 +1,79 @@
+● 3 ⚠ | color=#FF9500
+---
+Open dashboard ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=all terminal=false refresh=false
+---
+Pressure | size=12 color=#C15F3C,#D97757
+AMBER · 22 requests / 15 min | color=#A86A1E,#D4A27F
+causes: transport 1 | color=#141413,#FAF9F5
+families: fable GREEN, opus AMBER, sonnet GREEN | emojize=false symbolize=false color=#141413,#FAF9F5
+errors 15m: 2 (http_529 1, midstream_ReadError 1) | emojize=false symbolize=false color=#B5372B,#E06C5C
+---
+Limit | size=12 color=#C15F3C,#D97757
+5h 42% · age 2m | emojize=false symbolize=false color=#141413,#FAF9F5
+---
+Agents · 3 active · 4 idle · 1.5GB · cpu 360% · 32 req/h · out 28.8k/h · cache 99% · ↑18M ↓281K | size=12 color=#C15F3C,#D97757 tooltip="memory = physical footprint of every agent process tree · cpu sampled over 0.25s · req/out/cache = all proxy traffic, last 60 min · cache = cached / (input + cached + cache write) · ↑↓ = bytes the proxy sent upstream / received, last 60 min"
+demo aaaa1111          busy    220MB  140%  io 3.0MB/s · 25 req · out 22.5k · ↑14M ↓220K · ctx 282k/1M 28% … ⚠ | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 100 · up 2h · 4 procs · cpu time 1h · io life 806/606MB · io now r 2.00 w 1.00 MB/s · rss 570MB · cpu sampled · subagents 60m 6 (2 running) · matched by procStart" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--Open details ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--Σ 60m  25 req · in 3.1k · cached 4.6M · write 50.0k · out 22.5k · cache 99% · 2 err 8% · ↑14M ↓220K | font=Menlo size=12 emojize=false symbolize=false tooltip="main thread + every subagent, last 60 min of proxy traffic" color=#141413,#FAF9F5
+--cpu  ▃▃▃▂▁█                          140% | font=Menlo size=12 emojize=false symbolize=false tooltip="cpu % sampled each refresh · last 6 samples (~1/min) · scale 0..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--mem  █████▁                          220MB | font=Menlo size=12 emojize=false symbolize=false tooltip="physical footprint · last 6 samples (~1/min) · scale 220MB..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--io   ▁▁▁▂▁█                          3.0MB/s | font=Menlo size=12 emojize=false symbolize=false tooltip="disk read+write MB/s · last 6 samples (~1/min)" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--ctx  ▂▂▁▁▁█                          28% 282k | font=Menlo size=12 emojize=false symbolize=false tooltip="context of the latest main-thread request · last 6 samples (~1/min)" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--req  ▁▁▁▂▂▂▂▂▂▂▃█                    12 per 5 min · 60 min | font=Menlo size=12 emojize=false symbolize=false tooltip="requests per 5-min bucket, main + subagents, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--tok  ▁▁▁▂▂▂▂▂▂▂▃█                    out 10.8k per 5 min | font=Menlo size=12 emojize=false symbolize=false tooltip="output tokens per 5-min bucket, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=aaaa1111-0000-4000-8000-000000000001 terminal=false refresh=false
+--main  13 req · out 11.7k · cache 99% · 1 err 8% · ctx 282k/1M 28% · ttft 1.5s | font=Menlo size=12 emojize=false symbolize=false tooltip="in 1.6k · cached 2.1M · write 26.0k · out 11.7k" color=#141413,#FAF9F5
+--Subagents 60m · 6 · 2 running · 2 ⚠ | color=#141413,#FAF9F5
+--▶ fix the parser          6 req · out 5.4k · cache 99% · ctx 152k/1M 15% · last 2s | font=Menlo size=12 emojize=false symbolize=false tooltip="type general-purpose · id a0000000001 · state running · in 720 · cached 900.0k · write 12.0k · out 5.4k · run 13m · last 2s · depth 1" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=a0000000001 terminal=false refresh=false
+--⚠ long search [31mred[0m  3 req · out 2.7k · cache 99% · ctx 152k/1M 15% · last 5s | font=Menlo size=12 emojize=false symbolize=false tooltip="type Explore · id a0000000002 · state running · in 360 · cached 450.0k · write 6.0k · out 2.7k · run 30m · last 5s · depth 1 · flagged: running > 20 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=a0000000002 terminal=false refresh=false
+--⚠ errors here             2 req · out 1.8k · cache 100% · 1 err 50% · ctx 152k/1M 15% · last 3m | font=Menlo size=12 emojize=false symbolize=false tooltip="type Explore · id a0000000005 · state quiet · in 240 · cached 1.0M · write 4.0k · out 1.8k · 1 err 50% · run 26m · last 4m · depth 2 · flagged: an error in the last 5 min or rate ≥ 5%" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=a0000000005 terminal=false refresh=false
+--? ?                       1 req · out 900 · cache 99% · ctx 152k/1M 15% · last 1m | font=Menlo size=12 emojize=false symbolize=false tooltip="type ? · id aghost00001 · state ? · in 120 · cached 150.0k · write 2.0k · out 900 · no log" color=#141413,#FAF9F5
+--◦ quiet ¦ one             0 req · out 0 · last 3m | font=Menlo size=12 emojize=false symbolize=false tooltip="type Explore · id a0000000003 · state quiet · out 0 · run 9m · quiet 3m · depth 1" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=a0000000003 terminal=false refresh=false
+--✓ –– done plan            0 req · out 0 · last 20m | font=Menlo size=12 emojize=false symbolize=false tooltip="type Plan · id a0000000004 · state done · out 0 · run 20m · done 20m · depth 1" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=a0000000004 terminal=false refresh=false
+--Processes · 3 · 180MB | size=12 tooltip="the listed child processes; the whole tree incl. the session process: 4 procs · 220MB" color=#141413,#FAF9F5
+----pytest                    70MB  50% | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 103 · up 2h · cpu time 18m · rss 50MB" color=#141413,#FAF9F5
+----langserver.index          60MB  40% | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 102 · up 2h · cpu time 18m · rss 100MB" color=#141413,#FAF9F5
+----zsh                       50MB  30% | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 101 · up 2h · cpu time 18m · rss 20MB" color=#141413,#FAF9F5
+--Models 60m | color=#141413,#FAF9F5
+----claude-opus-5-5         19 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#FAF9F5
+----claude-fable-5-1        6 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#FAF9F5
+demo bbbb2222          busy     70MB   40%  5 req · out 4.5k · ↑2.9M ↓44K · ctx 152k/1M 15% · last 13m ⚠ | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 200 · up 2h · 1 procs · cpu time 20m · io life 300/250MB · io now r 0.00 w 0.00 MB/s · rss 200MB · cpu sampled · subagents 60m 2 (0 running) · matched by procStart" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--Open details ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--Σ 60m  5 req · in 600 · cached 750.0k · write 10.0k · out 4.5k · cache 99% · ↑2.9M ↓44K | font=Menlo size=12 emojize=false symbolize=false tooltip="main thread + every subagent, last 60 min of proxy traffic" color=#141413,#FAF9F5
+--cpu  █                               40% | font=Menlo size=12 emojize=false symbolize=false tooltip="cpu % sampled each refresh · last 1 samples (~1/min) · scale 0..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--mem  ▄                               70MB | font=Menlo size=12 emojize=false symbolize=false tooltip="physical footprint · last 1 samples (~1/min) · scale 70MB..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--ctx  ▄                               15% 152k | font=Menlo size=12 emojize=false symbolize=false tooltip="context of the latest main-thread request · last 1 samples (~1/min)" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--req  ▁▁▁▁▁▁▁▁▆█▁▁                    0 per 5 min · 60 min | font=Menlo size=12 emojize=false symbolize=false tooltip="requests per 5-min bucket, main + subagents, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--tok  ▁▁▁▁▁▁▁▁▆█▁▁                    out 0 per 5 min | font=Menlo size=12 emojize=false symbolize=false tooltip="output tokens per 5-min bucket, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
+--main  1 req · out 900 · cache 99% · ctx 152k/1M 15% · ttft 1.5s | font=Menlo size=12 emojize=false symbolize=false tooltip="in 120 · cached 150.0k · write 2.0k · out 900" color=#141413,#FAF9F5
+--Subagents 60m · 2 · 0 running · 1 ⚠ | color=#141413,#FAF9F5
+--⧗ hung review             4 req · out 3.6k · cache 99% · ctx 152k/1M 15% · last 12m | font=Menlo size=12 emojize=false symbolize=false tooltip="type general-purpose · id b0000000002 · state done · in 480 · cached 600.0k · write 8.0k · out 3.6k · waiting? its session is busy and nothing else wrote for 12m (heuristic) · run 18m · waiting? 12m · depth 1 · flagged: quiet > 10 min whil…" color=#141413,#FAF9F5
+--✓ finished early          0 req · out 0 · last 25m | font=Menlo size=12 emojize=false symbolize=false tooltip="type Explore · id b0000000001 · state done · out 0 · run 15m · done 25m · depth 1" color=#141413,#FAF9F5
+--Models 60m | color=#141413,#FAF9F5
+----claude-sonnet-5-5       4 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#FAF9F5
+----claude-opus-5-5         1 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#FAF9F5
+pi:pilot 0000abcd      active  210MB   60%  1 req · out 900 · ↑586K ↓8.8K · ctx 52k/1M 5% · last 2m | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 300 · up 1d · 2 procs · cpu time 43m · io life 801/701MB · io now r 0.00 w 0.00 MB/s · rss 84MB · cpu sampled · matched by lsof-cwd" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=0199aaaa-0000-7000-8000-00000000abcd terminal=false refresh=false
+--Open details ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=0199aaaa-0000-7000-8000-00000000abcd terminal=false refresh=false
+--Σ 60m  1 req · in 10.0k · cached 40.0k · write 2.0k · out 900 · cache 77% · ↑586K ↓8.8K | font=Menlo size=12 emojize=false symbolize=false tooltip="main thread + every subagent, last 60 min of proxy traffic" color=#141413,#FAF9F5
+idle (4) · 1.0GB held | color=#141413,#FAF9F5
+--demo cccc3333           idle 30m   570MB | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 250 · up 2h · 1 procs · cpu time 20m · io life 350/300MB · io now r 0.00 w 0.00 MB/s · rss 150MB · cpu sampled" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=cccc3333-0000-4000-8000-000000000003 terminal=false refresh=false
+--codex:cx 0000cdef       idle 40m | font=Menlo size=12 emojize=false symbolize=false bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=0199bbbb-0000-7000-8000-00000000cdef terminal=false refresh=false
+--pi · old-proj · quiet · up 3d · 200MB | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 310 · no session log written in the last hour · cwd from lsof · 1 procs" color=#141413,#FAF9F5
+--codex · cx2 · quiet · up 7d · 300MB | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 320 · no session log written in the last hour · cwd from lsof · 1 procs" color=#141413,#FAF9F5
+---
+Quality · 24h | size=12 color=#C15F3C,#D97757
+routing ? | emojize=false symbolize=false tooltip="no route_log.jsonl" color=#5E5D59,#B0AEA5
+tier match ? | emojize=false symbolize=false tooltip="no conformance.jsonl" color=#5E5D59,#B0AEA5
+requests 32 · ok 94% · retries 0 · failed 2 | emojize=false symbolize=false tooltip="proxy telemetry, 24 h · failed = error or upstream rejection (4xx/5xx) · retried requests 0, waited 0 ms · broken streams 1 · http_529 1, midstream_ReadError 1" color=#B5372B,#E06C5C
+---
+System | size=12 color=#C15F3C,#D97757
+proxy down | emojize=false symbolize=false color=#B5372B,#E06C5C
+worker up · queue 2 · running 1 | emojize=false symbolize=false tooltip="launchd com.ornith.worker · pid 500 · 160MB · 30% · 0.0MB/s" color=#5A7A3C,#8FB05F
+net  ▄▄▄▄█                           ↓20K/s ↑8.4K/s · 5m ↓3.5M ↑739K | font=Menlo size=12 color=#3A6A9E,#6A9BCC tooltip="all network traffic of this Mac (physical en* interfaces; VPN tunnels ride on them), averaged between refreshes · totals over the refreshes of the last hour · per-agent ↑↓ = LLM bytes through the proxy"
+gpu  ▆▅▄▃▂█                          37% · mem 29.8GB · load 2.5 | font=Menlo size=12 color=#7A5C9E,#A88CC9 tooltip="GPU utilisation and GPU-allocated memory are system-wide (macOS gives no per-process GPU figure without root) · load = 1-min load average · load 1/5/15 2.50 2.25 2.00"
+ollama qwen3:8b 6.0GB 4m · nomic-embed-text 512MB pinned ← worker | emojize=false symbolize=false tooltip="memory held per model · pinned = keep_alive -1, else time until it unloads · server + runners 270MB · 30% · 0.0MB/s · ← processes connected to ollama now: apex-router labels pid 500" color=#7A5C9E,#A88CC9
+---
+Demo ¦ adapter | size=12 color=#C15F3C,#D97757 emojize=false symbolize=false
+queue 3 | emojize=false symbolize=false color=#141413,#FAF9F5
+–– last run ok | emojize=false symbolize=false color=#141413,#FAF9F5
+7 | emojize=false symbolize=false color=#141413,#FAF9F5
+updated 5m ago | color=#141413,#FAF9F5

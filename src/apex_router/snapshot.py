@@ -44,8 +44,10 @@ Active / idle for a Claude session is Claude's own status (``busy`` / ``idle`` i
 (``agent_resources.agent_active``).
 
 Bar: ``● N`` plus `` ⚠`` when an agent is stuck or erroring (``agent_resources.agent_flagged``:
-a subagent running > 20 min, an error in the last 5 min or a 60-min error rate >= 5%, or a
-context >= 85% of a known window).
+a subagent running > 20 min, a ``waiting?`` subagent quiet > 10 min while its session is busy
+(a heuristic), an error in the last 5 min or a 60-min error rate >= 5%, or a context >= 85% of a
+known window). Live pi / Codex processes with no session log in the last hour are listed under
+idle (``quiet``) and counted in the Agents header's memory.
 Bar dot colour: green = GREEN with a sufficient sample; orange = AMBER; red = RED; gray when the
 sample is insufficient (most 15-min windows), UNKNOWN, or the snapshot itself failed. A RED forced
 by a fresh retry-after stays red even on a small sample (the provider said back off).
@@ -114,8 +116,10 @@ def adapters_dirs() -> list:
     return [datapce_home() / "adapters", router_home() / "adapters"]
 
 
-def _num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+_num = agent_resources._num             # one implementation of each helper, shared
+_err = agent_resources._err
+fmt_age = agent_resources.fmt_age        # = agent_resources.fmt_dur
+fmt_mb = agent_resources.fmt_mb          # a missing size reads "?" in the menu
 
 
 def _epoch_s(v):
@@ -124,10 +128,6 @@ def _epoch_s(v):
     if v is None or not math.isfinite(v):  # json accepts Infinity/NaN
         return None
     return v / 1000.0 if v > 1e12 else float(v)
-
-
-def _err(e: BaseException) -> str:
-    return f"{type(e).__name__}: {e}"
 
 
 # ---- collectors -----------------------------------------------------------------------------
@@ -303,7 +303,8 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
     w = _safe(worker_fn) if worker_fn else _safe(_default_worker, dl)
     wpid = w.get("pid") if isinstance(w, dict) else None
     res = _safe(resources_fn or agent_resources.collect, found, home=home, telemetry=telemetry,
-                now=now, worker_pid=wpid if isinstance(wpid, int) else None, deadline=dl)
+                now=now, worker_pid=wpid if isinstance(wpid, int) else None, deadline=dl,
+                quiet=True)
     if isinstance(res, dict) and not res.get("error") and isinstance(res.get("agents"), list):
         found, system = res["agents"], res.get("system") or {}
         graph = res.get("graph") or {"nodes": [], "edges": []}
@@ -358,19 +359,6 @@ def esc(s) -> str:
     s = _clip(s).replace("|", "¦")
     stripped = s.lstrip("-")
     return ("–" * (len(s) - len(stripped)) + stripped) if stripped != s else s
-
-
-def fmt_age(s) -> str:
-    if not isinstance(s, (int, float)) or not math.isfinite(s):
-        return "?"
-    s = max(0, int(s))
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    if s < 86400:
-        return f"{s // 3600}h"
-    return f"{s // 86400}d"
 
 
 def _active(snap) -> int:
@@ -436,6 +424,7 @@ UPARAMS = "emojize=false symbolize=false"     # on every line that carries user-
 MONO = "font=Menlo size=12"
 _SUB_SYM = {"running": "▶", "quiet": "◦", "done": "✓", "?": "?",
             "active": "▶", "idle": "✓"}                 # the last two: pre-0.4.2 snapshots
+WAITING_SYM = "⧗"     # agent_resources.mark_waiting: the quiet subagent a busy session waits on
 _LEVELS = {2: {"subs": 8, "procs": 3, "models": 3}, 1: {"subs": 3, "procs": 1, "models": 1}}
 
 
@@ -550,11 +539,8 @@ def _tree_tip(tree: dict, extra=()) -> str:
 
 
 def _status_word(a: dict) -> str:
-    """Claude's own busy/idle when known; else the log-mtime state."""
-    st = _res(a).get("status")
-    if st:
-        return esc(st)
-    return esc(a.get("state", "?"))
+    """Claude's own busy/idle when known; else the log-mtime state (``display_state``), esc()'d."""
+    return esc(agent_resources.display_state(a))
 
 
 def _fit(line: str, tail: str = "", width: int = MENU_WIDTH) -> str:
@@ -617,7 +603,9 @@ def _agent_row(a: dict, prefix: str = "", now: float | None = None, bin_path=Non
 
 
 _FLAG_WHY = {"long": "running > 20 min", "errors": "an error in the last 5 min or rate ≥ 5%",
-             "ctx": "context ≥ 85% of its window"}
+             "ctx": "context ≥ 85% of its window",
+             "waiting": "quiet > 10 min while its session is busy and nothing else wrote since "
+                        "(heuristic: it may be hung, or in a long tool call)"}
 
 
 def _sub_row(sa: dict, prefix: str, bin_path=None) -> str:
@@ -625,7 +613,10 @@ def _sub_row(sa: dict, prefix: str, bin_path=None) -> str:
     flagged for errors). Input / cached / write tokens and run time are in the tooltip."""
     st = sa.get("telemetry") if isinstance(sa.get("telemetry"), dict) else {}
     flags = sa.get("flags") or []
-    sym = "⚠" if flags else _SUB_SYM.get(sa.get("state"), "?")
+    if sa.get("waiting") and not [f for f in flags if f != "waiting"]:
+        sym = WAITING_SYM                        # the waiting flag alone keeps its own symbol
+    else:
+        sym = "⚠" if flags else _SUB_SYM.get(sa.get("state"), "?")
     label = esc(sa.get("description") or sa.get("type") or "?")
     bits = [f"{st.get('requests', 0)} req", f"out {agent_resources._k(st.get('tokens_out', 0))}"]
     share = agent_resources.cache_share(st)
@@ -642,6 +633,9 @@ def _sub_row(sa: dict, prefix: str, bin_path=None) -> str:
     line = _fit(f"{sym} {_col(label, LABEL_W)}  " + " · ".join(bits))
     tip = [f"type {esc(sa.get('type', '?'))}", f"id {esc(sa.get('id', '?'))}",
            f"state {sa.get('state')}", agent_resources.tokens_text(st)]
+    if sa.get("waiting"):
+        tip.append(f"waiting? its session is busy and nothing else wrote for "
+                   f"{fmt_age(sa.get('waiting_s'))} (heuristic)")
     if st.get("errors"):
         tip.append(agent_resources.err_text(st))
     tip.append(agent_resources.lifecycle_text(sa))
@@ -756,6 +750,34 @@ def _agent_submenu(a: dict, level: int = 2, bin_path=None, history=None) -> list
         out += [_u(f"----{_col(esc(name), LABEL_W)}  {n} req", mono=True)
                 for name, n in models.most_common(cap["models"])]
     return out
+
+
+def _quiet_procs(snap: dict) -> list:
+    s = snap.get("system") if isinstance(snap.get("system"), dict) else {}
+    q = s.get("quiet_procs")
+    return [x for x in q if isinstance(x, dict)] if isinstance(q, list) else []
+
+
+def _quiet_mb(q: dict):
+    fp = q.get("footprint_mb")
+    return fp if isinstance(fp, (int, float)) else q.get("rss_mb")
+
+
+def _quiet_row(q: dict) -> str:
+    """``pi · <cwd basename or ?> · quiet · up 3d · 5MB`` — a live pi / Codex process whose session
+    log was not written in the last hour (``agent_resources.quiet_procs``). No click action: it
+    has no session id."""
+    bits = [esc(q.get("kind", "?")), esc(q.get("cwd_name") or "?"), "quiet"]
+    if isinstance(q.get("uptime_s"), (int, float)):
+        bits.append(f"up {fmt_age(q['uptime_s'])}")
+    mb = _quiet_mb(q)
+    if isinstance(mb, (int, float)):
+        bits.append(fmt_mb(mb))
+    tip = [f"pid {q.get('pid')}", "no session log written in the last hour",
+           "cwd from lsof" if q.get("cwd_name") else "cwd unknown"]
+    if q.get("procs"):
+        tip.append(f"{q['procs']} procs")
+    return _u("--" + " · ".join(bits), mono=True, tip=" · ".join(tip))
 
 
 def _idle_row(a: dict, bin_path=None) -> str:
@@ -881,12 +903,6 @@ def net_spark_line(history) -> str:
             f"color={INK['blue']} tooltip=\"{_tip(tip)}\"")
 
 
-def fmt_mb(mb) -> str:
-    if not isinstance(mb, (int, float)) or not math.isfinite(mb):
-        return "?"
-    return f"{mb / 1024:.1f}GB" if mb >= 1024 else f"{mb:.0f}MB"
-
-
 def _rank(a: dict):
     return agent_resources.rank_key(a)                 # the same order the subagent scan used
 
@@ -924,9 +940,10 @@ def _agents_body(snap: dict, budget: int, bin_path=None, history=None) -> list:
     active = sorted([a for a in ags if a.get("error") or agent_resources.agent_active(a)],
                     key=_rank)
     idlers = [a for a in ags if not a.get("error") and not agent_resources.agent_active(a)]
+    quiet = _quiet_procs(snap)
+    n_idle = len(idlers) + len(quiet)
     shown, hidden = active[:ACTIVE_MAX], active[ACTIVE_MAX:]
-    idle_lines = (1 + min(len(idlers), IDLE_SHOWN_MAX) + (len(idlers) > IDLE_SHOWN_MAX)) \
-        if idlers else 0
+    idle_lines = (1 + min(n_idle, IDLE_SHOWN_MAX) + (n_idle > IDLE_SHOWN_MAX)) if n_idle else 0
     reserve_tail = idle_lines + (1 if hidden else 0)
     body, used = [], 0
     for i, a in enumerate(shown):
@@ -941,13 +958,15 @@ def _agents_body(snap: dict, budget: int, bin_path=None, history=None) -> list:
     if hidden:
         tot = agent_resources.merge_stats(*[agent_resources.session_totals(_res(a)) for a in hidden])
         body.append(_more_text(len(hidden), tot, "more active"))
-    if idlers:
+    if n_idle:
         held = [(_res(a).get("tree") or {}).get("footprint_mb") for a in idlers]
+        held += [_quiet_mb(q) for q in quiet]
         held = [m for m in held if isinstance(m, (int, float))]
-        body.append(f"idle ({len(idlers)})" + (f" · {fmt_mb(sum(held))} held" if held else ""))
+        body.append(f"idle ({n_idle})" + (f" · {fmt_mb(sum(held))} held" if held else ""))
         body += [_idle_row(a, bin_path) for a in idlers[:IDLE_SHOWN_MAX]]
-        if len(idlers) > IDLE_SHOWN_MAX:
-            body.append(f"--… {len(idlers) - IDLE_SHOWN_MAX} more")
+        body += [_quiet_row(q) for q in quiet[:max(0, IDLE_SHOWN_MAX - len(idlers))]]
+        if n_idle > IDLE_SHOWN_MAX:
+            body.append(f"--… {n_idle - IDLE_SHOWN_MAX} more")
     return body or ["none in the last hour"]
 
 
@@ -1186,7 +1205,8 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
         section(esc(ad.get("title", "?")), body, user_text=True)
     other = len(head) + 1 + sum(len(x) for x in sections if x)
     budget = max(30, MENU_LINES_MAX - other - 2)
-    n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a))
+    n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a)) \
+        + len(_quiet_procs(snap))
     sections[agents_at] = ([_agents_header(snap, _active(snap), n_idle)]
                            + _agents_body(snap, budget, bin_path, history) + ["---"])
     lines = head + [ln for sec in sections for ln in sec]

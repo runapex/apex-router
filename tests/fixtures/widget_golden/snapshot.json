@@ -1,0 +1,1582 @@
+{
+  "adapters": [
+    {
+      "age_s": 300.0,
+      "rows": [
+        "queue 3",
+        "-- last run ok",
+        "7"
+      ],
+      "stale": false,
+      "title": "Demo | adapter"
+    }
+  ],
+  "agents": [
+    {
+      "age_s": 2.0,
+      "kind": "claude",
+      "repo": "demo",
+      "res": {
+        "name": "n",
+        "pid_source": "procStart",
+        "series": {
+          "cached": [
+            0,
+            0,
+            0,
+            300000,
+            150000,
+            150000,
+            150000,
+            300000,
+            150000,
+            300000,
+            450000,
+            2650000
+          ],
+          "err": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2
+          ],
+          "in": [
+            0,
+            0,
+            0,
+            240,
+            120,
+            120,
+            120,
+            240,
+            120,
+            240,
+            360,
+            1520
+          ],
+          "net": [
+            0,
+            0,
+            0,
+            1218000,
+            609000,
+            609000,
+            609000,
+            1218000,
+            609000,
+            1218000,
+            1827000,
+            7308000
+          ],
+          "out": [
+            0,
+            0,
+            0,
+            1800,
+            900,
+            900,
+            900,
+            1800,
+            900,
+            1800,
+            2700,
+            10800
+          ],
+          "req": [
+            0,
+            0,
+            0,
+            2,
+            1,
+            1,
+            1,
+            2,
+            1,
+            2,
+            3,
+            12
+          ],
+          "write": [
+            0,
+            0,
+            0,
+            4000,
+            2000,
+            2000,
+            2000,
+            4000,
+            2000,
+            4000,
+            6000,
+            24000
+          ]
+        },
+        "status": "busy",
+        "subagents": {
+          "count": 6,
+          "flagged": 2,
+          "hidden": {
+            "cache_read": 0,
+            "cache_write": 0,
+            "errors": 0,
+            "errors_5m": 0,
+            "last_ts": null,
+            "models": {},
+            "net_down": 0,
+            "net_up": 0,
+            "req_5m": 0,
+            "requests": 0,
+            "tokens_in": 0,
+            "tokens_out": 0
+          },
+          "list": [
+            {
+              "age_s": 2.0,
+              "depth": 1,
+              "description": "fix the parser",
+              "flags": [],
+              "id": "a0000000001",
+              "last_s": 2.0,
+              "run_s": 838.0,
+              "state": "running",
+              "telemetry": {
+                "cache_read": 900000,
+                "cache_write": 12000,
+                "ctx_pct": 15,
+                "ctx_tokens": 152120,
+                "ctx_ts": 1791399996.0,
+                "ctx_window": 1000000,
+                "ctx_window_src": "family",
+                "errors": 0,
+                "errors_5m": 0,
+                "last_ts": 1791399996.0,
+                "models": {
+                  "claude-fable-5-1": 6
+                },
+                "net_down": 54000,
+                "net_up": 3600000,
+                "p50_ttft_ms": 1500,
+                "req_5m": 5,
+                "requests": 6,
+                "tokens_in": 720,
+                "tokens_out": 5400
+              },
+              "type": "general-purpose"
+            },
+            {
+              "age_s": 5.0,
+              "depth": 1,
+              "description": "long search \u001b[31mred\u001b[0m",
+              "flags": [
+                "long"
+              ],
+              "id": "a0000000002",
+              "last_s": 5.0,
+              "run_s": 1855.0,
+              "state": "running",
+              "telemetry": {
+                "cache_read": 450000,
+                "cache_write": 6000,
+                "ctx_pct": 15,
+                "ctx_tokens": 152120,
+                "ctx_ts": 1791399990.0,
+                "ctx_window": 1000000,
+                "ctx_window_src": "family",
+                "errors": 0,
+                "errors_5m": 0,
+                "last_ts": 1791399990.0,
+                "models": {
+                  "claude-opus-5-5": 3
+                },
+                "net_down": 27000,
+                "net_up": 1800000,
+                "p50_ttft_ms": 1500,
+                "req_5m": 1,
+                "requests": 3,
+                "tokens_in": 360,
+                "tokens_out": 2700
+              },
+              "type": "Explore"
+            },
+            {
+              "age_s": 240.0,
+              "depth": 2,
+              "description": "errors here",
+              "flags": [
+                "errors"
+              ],
+              "id": "a0000000005",
+              "last_s": 200.0,
+              "run_s": 1560.0,
+              "state": "quiet",
+              "telemetry": {
+                "cache_read": 1020000,
+                "cache_write": 4000,
+                "ctx_pct": 15,
+                "ctx_tokens": 152120,
+                "ctx_ts": 1791399800.0,
+                "ctx_window": 1000000,
+                "ctx_window_src": "family",
+                "errors": 1,
+                "errors_5m": 1,
+                "last_ts": 1791399800.0,
+                "models": {
+                  "claude-opus-5-5": 2
+                },
+                "net_down": 18000,
+                "net_up": 1200000,
+                "p50_ttft_ms": 1500,
+                "req_5m": 2,
+                "requests": 2,
+                "tokens_in": 240,
+                "tokens_out": 1800
+              },
+              "type": "Explore"
+            },
+            {
+              "age_s": null,
+              "depth": null,
+              "description": "",
+              "flags": [],
+              "id": "aghost00001",
+              "last_s": 90.0,
+              "run_s": null,
+              "state": "?",
+              "telemetry": {
+                "cache_read": 150000,
+                "cache_write": 2000,
+                "ctx_pct": 15,
+                "ctx_tokens": 152120,
+                "ctx_ts": 1791399910.0,
+                "ctx_window": 1000000,
+                "ctx_window_src": "family",
+                "errors": 0,
+                "errors_5m": 0,
+                "last_ts": 1791399910.0,
+                "models": {
+                  "claude-opus-5-5": 1
+                },
+                "net_down": 9000,
+                "net_up": 600000,
+                "p50_ttft_ms": 1500,
+                "req_5m": 1,
+                "requests": 1,
+                "tokens_in": 120,
+                "tokens_out": 900
+              },
+              "type": "?"
+            },
+            {
+              "age_s": 180.0,
+              "depth": 1,
+              "description": "quiet | one",
+              "flags": [],
+              "id": "a0000000003",
+              "last_s": 180.0,
+              "run_s": 540.0,
+              "state": "quiet",
+              "telemetry": null,
+              "type": "Explore"
+            },
+            {
+              "age_s": 1200.0,
+              "depth": 1,
+              "description": "-- done plan",
+              "flags": [],
+              "id": "a0000000004",
+              "last_s": 1200.0,
+              "run_s": 1200.0,
+              "state": "done",
+              "telemetry": null,
+              "type": "Plan"
+            }
+          ],
+          "main_age_s": 8.0,
+          "more": 0,
+          "partial": false,
+          "quiet": 2,
+          "running": 2,
+          "scanned": true,
+          "totals": {
+            "cache_read": 2520000,
+            "cache_write": 24000,
+            "errors": 1,
+            "errors_5m": 1,
+            "last_ts": 1791399996.0,
+            "models": {
+              "claude-fable-5-1": 6,
+              "claude-opus-5-5": 6
+            },
+            "net_down": 108000,
+            "net_up": 7200000,
+            "req_5m": 9,
+            "requests": 12,
+            "tokens_in": 1440,
+            "tokens_out": 10800
+          },
+          "waiting": 0
+        },
+        "telemetry": {
+          "cache_read": 2080000,
+          "cache_write": 26000,
+          "ctx_pct": 28,
+          "ctx_tokens": 282200,
+          "ctx_ts": 1791399970.0,
+          "ctx_window": 1000000,
+          "ctx_window_src": "family",
+          "errors": 1,
+          "errors_5m": 1,
+          "last_ts": 1791399970.0,
+          "models": {
+            "claude-opus-5-5": 13
+          },
+          "net_down": 117000,
+          "net_up": 7800000,
+          "p50_ttft_ms": 1500,
+          "req_5m": 3,
+          "requests": 13,
+          "tokens_in": 1640,
+          "tokens_out": 11700
+        },
+        "tree": {
+          "alive": true,
+          "cpu_pct": 140.0,
+          "cpu_pct_ps": 47.0,
+          "cpu_s": 4406.0,
+          "cpu_src": "sampled",
+          "footprint_mb": 220.0,
+          "pid": 100,
+          "procs": 4,
+          "read_mb": 806.0,
+          "read_mbs": 2.0,
+          "rss_mb": 570.0,
+          "top": [
+            {
+              "cpu_pct": 50.0,
+              "cpu_s": 1103.0,
+              "footprint_mb": 70.0,
+              "name": "pytest",
+              "pid": 103,
+              "rss_mb": 50.0,
+              "uptime_s": 7200
+            },
+            {
+              "cpu_pct": 40.0,
+              "cpu_s": 1102.0,
+              "footprint_mb": 60.0,
+              "name": "langserver.index",
+              "pid": 102,
+              "rss_mb": 100.0,
+              "uptime_s": 7200
+            },
+            {
+              "cpu_pct": 30.0,
+              "cpu_s": 1101.0,
+              "footprint_mb": 50.0,
+              "name": "zsh",
+              "pid": 101,
+              "rss_mb": 20.0,
+              "uptime_s": 7200
+            }
+          ],
+          "uptime_s": 7200,
+          "write_mb": 606.0,
+          "write_mbs": 1.0
+        }
+      },
+      "session": "aaaa1111",
+      "session_id": "aaaa1111-0000-4000-8000-000000000001",
+      "state": "active",
+      "subagents": 4
+    },
+    {
+      "age_s": 120.0,
+      "cwd": "<HOME>/work/pilot",
+      "kind": "pi",
+      "repo": "pilot",
+      "res": {
+        "pid_source": "lsof-cwd",
+        "series": {
+          "cached": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            40000
+          ],
+          "err": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "in": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            10000
+          ],
+          "net": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            609000
+          ],
+          "out": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            900
+          ],
+          "req": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "write": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2000
+          ]
+        },
+        "telemetry": {
+          "cache_read": 40000,
+          "cache_write": 2000,
+          "ctx_pct": 5,
+          "ctx_tokens": 52000,
+          "ctx_ts": 1791399870.0,
+          "ctx_window": 1000000,
+          "ctx_window_src": "family",
+          "errors": 0,
+          "errors_5m": 0,
+          "last_ts": 1791399870.0,
+          "models": {
+            "it-entra-claude-opus-5-5": 1
+          },
+          "net_down": 9000,
+          "net_up": 600000,
+          "p50_ttft_ms": 1500,
+          "req_5m": 1,
+          "requests": 1,
+          "tokens_in": 10000,
+          "tokens_out": 900
+        },
+        "tree": {
+          "alive": true,
+          "cpu_pct": 60.0,
+          "cpu_pct_ps": 0.2,
+          "cpu_s": 2601.0,
+          "cpu_src": "sampled",
+          "footprint_mb": 210.0,
+          "pid": 300,
+          "procs": 2,
+          "read_mb": 801.0,
+          "read_mbs": 0.0,
+          "rss_mb": 84.0,
+          "top": [
+            {
+              "cpu_pct": 0.0,
+              "cpu_s": 1301.0,
+              "footprint_mb": 110.0,
+              "name": "node",
+              "pid": 301,
+              "rss_mb": 4.0,
+              "uptime_s": 86400
+            }
+          ],
+          "uptime_s": 86400,
+          "write_mb": 701.0,
+          "write_mbs": 0.0
+        }
+      },
+      "session": "0000abcd",
+      "session_id": "0199aaaa-0000-7000-8000-00000000abcd",
+      "state": "active"
+    },
+    {
+      "age_s": 900.0,
+      "kind": "claude",
+      "repo": "demo",
+      "res": {
+        "name": "n",
+        "pid_source": "procStart",
+        "series": {
+          "cached": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            300000,
+            450000,
+            0,
+            0
+          ],
+          "err": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "in": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            240,
+            360,
+            0,
+            0
+          ],
+          "net": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1218000,
+            1827000,
+            0,
+            0
+          ],
+          "out": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1800,
+            2700,
+            0,
+            0
+          ],
+          "req": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            3,
+            0,
+            0
+          ],
+          "write": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            4000,
+            6000,
+            0,
+            0
+          ]
+        },
+        "status": "busy",
+        "subagents": {
+          "count": 2,
+          "flagged": 1,
+          "hidden": {
+            "cache_read": 0,
+            "cache_write": 0,
+            "errors": 0,
+            "errors_5m": 0,
+            "last_ts": null,
+            "models": {},
+            "net_down": 0,
+            "net_up": 0,
+            "req_5m": 0,
+            "requests": 0,
+            "tokens_in": 0,
+            "tokens_out": 0
+          },
+          "list": [
+            {
+              "age_s": 720.0,
+              "depth": 1,
+              "description": "hung review",
+              "flags": [
+                "waiting"
+              ],
+              "id": "b0000000002",
+              "last_s": 720.0,
+              "run_s": 1080.0,
+              "state": "done",
+              "telemetry": {
+                "cache_read": 600000,
+                "cache_write": 8000,
+                "ctx_pct": 15,
+                "ctx_tokens": 152120,
+                "ctx_ts": 1791399220.0,
+                "ctx_window": 1000000,
+                "ctx_window_src": "family",
+                "errors": 0,
+                "errors_5m": 0,
+                "last_ts": 1791399220.0,
+                "models": {
+                  "claude-sonnet-5-5": 4
+                },
+                "net_down": 36000,
+                "net_up": 2400000,
+                "p50_ttft_ms": 1500,
+                "req_5m": 0,
+                "requests": 4,
+                "tokens_in": 480,
+                "tokens_out": 3600
+              },
+              "type": "general-purpose",
+              "waiting": true,
+              "waiting_s": 720.0
+            },
+            {
+              "age_s": 1500.0,
+              "depth": 1,
+              "description": "finished early",
+              "flags": [],
+              "id": "b0000000001",
+              "last_s": 1500.0,
+              "run_s": 900.0,
+              "state": "done",
+              "telemetry": null,
+              "type": "Explore"
+            }
+          ],
+          "main_age_s": 900.0,
+          "more": 0,
+          "partial": false,
+          "quiet": 0,
+          "running": 0,
+          "scanned": true,
+          "totals": {
+            "cache_read": 600000,
+            "cache_write": 8000,
+            "errors": 0,
+            "errors_5m": 0,
+            "last_ts": 1791399220.0,
+            "models": {
+              "claude-sonnet-5-5": 4
+            },
+            "net_down": 36000,
+            "net_up": 2400000,
+            "req_5m": 0,
+            "requests": 4,
+            "tokens_in": 480,
+            "tokens_out": 3600
+          },
+          "waiting": 1
+        },
+        "telemetry": {
+          "cache_read": 150000,
+          "cache_write": 2000,
+          "ctx_pct": 15,
+          "ctx_tokens": 152120,
+          "ctx_ts": 1791399040.0,
+          "ctx_window": 1000000,
+          "ctx_window_src": "family",
+          "errors": 0,
+          "errors_5m": 0,
+          "last_ts": 1791399040.0,
+          "models": {
+            "claude-opus-5-5": 1
+          },
+          "net_down": 9000,
+          "net_up": 600000,
+          "p50_ttft_ms": 1500,
+          "req_5m": 0,
+          "requests": 1,
+          "tokens_in": 120,
+          "tokens_out": 900
+        },
+        "tree": {
+          "alive": true,
+          "cpu_pct": 40.0,
+          "cpu_pct_ps": 0.5,
+          "cpu_s": 1200.0,
+          "cpu_src": "sampled",
+          "footprint_mb": 70.0,
+          "pid": 200,
+          "procs": 1,
+          "read_mb": 300.0,
+          "read_mbs": 0.0,
+          "rss_mb": 200.0,
+          "top": [],
+          "uptime_s": 7200,
+          "write_mb": 250.0,
+          "write_mbs": 0.0
+        }
+      },
+      "session": "bbbb2222",
+      "session_id": "bbbb2222-0000-4000-8000-000000000002",
+      "state": "idle",
+      "subagents": 0
+    },
+    {
+      "age_s": 1800.0,
+      "kind": "claude",
+      "repo": "demo",
+      "res": {
+        "name": "n",
+        "pid_source": "procStart",
+        "status": "idle",
+        "subagents": {
+          "count": 0,
+          "flagged": 0,
+          "hidden": {
+            "cache_read": 0,
+            "cache_write": 0,
+            "errors": 0,
+            "errors_5m": 0,
+            "last_ts": null,
+            "models": {},
+            "net_down": 0,
+            "net_up": 0,
+            "req_5m": 0,
+            "requests": 0,
+            "tokens_in": 0,
+            "tokens_out": 0
+          },
+          "list": [],
+          "more": 0,
+          "partial": false,
+          "quiet": 0,
+          "running": 0,
+          "scanned": false,
+          "totals": {
+            "cache_read": 0,
+            "cache_write": 0,
+            "errors": 0,
+            "errors_5m": 0,
+            "last_ts": null,
+            "models": {},
+            "net_down": 0,
+            "net_up": 0,
+            "req_5m": 0,
+            "requests": 0,
+            "tokens_in": 0,
+            "tokens_out": 0
+          },
+          "waiting": 0
+        },
+        "tree": {
+          "alive": true,
+          "cpu_pct": 50.0,
+          "cpu_pct_ps": 0.0,
+          "cpu_s": 1250.0,
+          "cpu_src": "sampled",
+          "footprint_mb": 570.0,
+          "pid": 250,
+          "procs": 1,
+          "read_mb": 350.0,
+          "read_mbs": 0.0,
+          "rss_mb": 150.0,
+          "top": [],
+          "uptime_s": 7200,
+          "write_mb": 300.0,
+          "write_mbs": 0.0
+        }
+      },
+      "session": "cccc3333",
+      "session_id": "cccc3333-0000-4000-8000-000000000003",
+      "state": "idle",
+      "subagents": 0
+    },
+    {
+      "age_s": 2400.0,
+      "cwd": "<HOME>/work/cx",
+      "kind": "codex",
+      "repo": "cx",
+      "session": "0000cdef",
+      "session_id": "0199bbbb-0000-7000-8000-00000000cdef",
+      "state": "idle"
+    }
+  ],
+  "errors15m": {
+    "by_cause": {
+      "http_529": 1,
+      "midstream_ReadError": 1
+    },
+    "n": 2,
+    "window_min": 15
+  },
+  "graph": {
+    "edges": [
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:a0000000001"
+      },
+      {
+        "from": "a:a0000000001",
+        "kind": "calls",
+        "requests": 6,
+        "to": "m:claude-fable-5-1"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:a0000000002"
+      },
+      {
+        "from": "a:a0000000002",
+        "kind": "calls",
+        "requests": 3,
+        "to": "m:claude-opus-5-5"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:a0000000005"
+      },
+      {
+        "from": "a:a0000000005",
+        "kind": "calls",
+        "requests": 2,
+        "to": "m:claude-opus-5-5"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:aghost00001"
+      },
+      {
+        "from": "a:aghost00001",
+        "kind": "calls",
+        "requests": 1,
+        "to": "m:claude-opus-5-5"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:a0000000003"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "spawned",
+        "to": "a:a0000000004"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "runs",
+        "to": "p:103"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "runs",
+        "to": "p:102"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "runs",
+        "to": "p:101"
+      },
+      {
+        "from": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "calls",
+        "requests": 13,
+        "to": "m:claude-opus-5-5"
+      },
+      {
+        "from": "s:pi:0199aaaa-0000-7000-8000-00000000abcd",
+        "kind": "runs",
+        "to": "p:301"
+      },
+      {
+        "from": "s:pi:0199aaaa-0000-7000-8000-00000000abcd",
+        "kind": "calls",
+        "requests": 1,
+        "to": "m:it-entra-claude-opus-5-5"
+      },
+      {
+        "from": "s:claude:bbbb2222-0000-4000-8000-000000000002",
+        "kind": "spawned",
+        "to": "a:b0000000002"
+      },
+      {
+        "from": "a:b0000000002",
+        "kind": "calls",
+        "requests": 4,
+        "to": "m:claude-sonnet-5-5"
+      },
+      {
+        "from": "s:claude:bbbb2222-0000-4000-8000-000000000002",
+        "kind": "spawned",
+        "to": "a:b0000000001"
+      },
+      {
+        "from": "s:claude:bbbb2222-0000-4000-8000-000000000002",
+        "kind": "calls",
+        "requests": 1,
+        "to": "m:claude-opus-5-5"
+      }
+    ],
+    "nodes": [
+      {
+        "cache_share": 0.9885925021706052,
+        "cpu_pct": 140.0,
+        "ctx_pct": 28,
+        "ctx_tokens": 282200,
+        "ctx_window": 1000000,
+        "flagged": true,
+        "footprint_mb": 220.0,
+        "id": "s:claude:aaaa1111-0000-4000-8000-000000000001",
+        "kind": "session",
+        "label": "claude \u00b7 demo \u00b7 aaaa1111",
+        "last_s": 4.0,
+        "pid": 100,
+        "read_mb": 806.0,
+        "read_mbs": 2.0,
+        "req_5m": 12,
+        "requests": 13,
+        "requests_total": 25,
+        "rss_mb": 570.0,
+        "state": "busy",
+        "status": "busy",
+        "tokens_out_total": 22500,
+        "write_mb": 606.0,
+        "write_mbs": 1.0
+      },
+      {
+        "age_s": 2.0,
+        "cache_read": 900000,
+        "cache_write": 12000,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [],
+        "id": "a:a0000000001",
+        "kind": "subagent",
+        "label": "general-purpose \u00b7 fix the parser",
+        "requests": 6,
+        "run_s": 838.0,
+        "state": "running",
+        "tokens_in": 720,
+        "tokens_out": 5400
+      },
+      {
+        "age_s": 5.0,
+        "cache_read": 450000,
+        "cache_write": 6000,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [
+          "long"
+        ],
+        "id": "a:a0000000002",
+        "kind": "subagent",
+        "label": "Explore \u00b7 long search \u001b[31mred\u001b[0m",
+        "requests": 3,
+        "run_s": 1855.0,
+        "state": "running",
+        "tokens_in": 360,
+        "tokens_out": 2700
+      },
+      {
+        "age_s": 240.0,
+        "cache_read": 1020000,
+        "cache_write": 4000,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "depth": 2,
+        "errors": 1,
+        "errors_5m": 1,
+        "flags": [
+          "errors"
+        ],
+        "id": "a:a0000000005",
+        "kind": "subagent",
+        "label": "Explore \u00b7 errors here",
+        "requests": 2,
+        "run_s": 1560.0,
+        "state": "quiet",
+        "tokens_in": 240,
+        "tokens_out": 1800
+      },
+      {
+        "age_s": null,
+        "cache_read": 150000,
+        "cache_write": 2000,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "depth": null,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [],
+        "id": "a:aghost00001",
+        "kind": "subagent",
+        "label": "? \u00b7 ",
+        "requests": 1,
+        "run_s": null,
+        "state": "?",
+        "tokens_in": 120,
+        "tokens_out": 900
+      },
+      {
+        "age_s": 180.0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "ctx_pct": null,
+        "ctx_tokens": null,
+        "ctx_window": null,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [],
+        "id": "a:a0000000003",
+        "kind": "subagent",
+        "label": "Explore \u00b7 quiet | one",
+        "requests": 0,
+        "run_s": 540.0,
+        "state": "quiet",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "age_s": 1200.0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "ctx_pct": null,
+        "ctx_tokens": null,
+        "ctx_window": null,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [],
+        "id": "a:a0000000004",
+        "kind": "subagent",
+        "label": "Plan \u00b7 -- done plan",
+        "requests": 0,
+        "run_s": 1200.0,
+        "state": "done",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cpu_pct": 50.0,
+        "footprint_mb": 70.0,
+        "id": "p:103",
+        "kind": "process",
+        "label": "pytest",
+        "pid": 103,
+        "rss_mb": 50.0
+      },
+      {
+        "cpu_pct": 40.0,
+        "footprint_mb": 60.0,
+        "id": "p:102",
+        "kind": "process",
+        "label": "langserver.index",
+        "pid": 102,
+        "rss_mb": 100.0
+      },
+      {
+        "cpu_pct": 30.0,
+        "footprint_mb": 50.0,
+        "id": "p:101",
+        "kind": "process",
+        "label": "zsh",
+        "pid": 101,
+        "rss_mb": 20.0
+      },
+      {
+        "cache_share": 0.7692307692307693,
+        "cpu_pct": 60.0,
+        "ctx_pct": 5,
+        "ctx_tokens": 52000,
+        "ctx_window": 1000000,
+        "flagged": false,
+        "footprint_mb": 210.0,
+        "id": "s:pi:0199aaaa-0000-7000-8000-00000000abcd",
+        "kind": "session",
+        "label": "pi \u00b7 pilot \u00b7 0000abcd",
+        "last_s": 130.0,
+        "pid": 300,
+        "read_mb": 801.0,
+        "read_mbs": 0.0,
+        "req_5m": 1,
+        "requests": 1,
+        "requests_total": 1,
+        "rss_mb": 84.0,
+        "state": "active",
+        "status": null,
+        "tokens_out_total": 900,
+        "write_mb": 701.0,
+        "write_mbs": 0.0
+      },
+      {
+        "cpu_pct": 0.0,
+        "footprint_mb": 110.0,
+        "id": "p:301",
+        "kind": "process",
+        "label": "node",
+        "pid": 301,
+        "rss_mb": 4.0
+      },
+      {
+        "cache_share": 0.9860636339731791,
+        "cpu_pct": 40.0,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "flagged": true,
+        "footprint_mb": 70.0,
+        "id": "s:claude:bbbb2222-0000-4000-8000-000000000002",
+        "kind": "session",
+        "label": "claude \u00b7 demo \u00b7 bbbb2222",
+        "last_s": 780.0,
+        "pid": 200,
+        "read_mb": 300.0,
+        "read_mbs": 0.0,
+        "req_5m": 0,
+        "requests": 1,
+        "requests_total": 5,
+        "rss_mb": 200.0,
+        "state": "busy",
+        "status": "busy",
+        "tokens_out_total": 4500,
+        "write_mb": 250.0,
+        "write_mbs": 0.0
+      },
+      {
+        "age_s": 720.0,
+        "cache_read": 600000,
+        "cache_write": 8000,
+        "ctx_pct": 15,
+        "ctx_tokens": 152120,
+        "ctx_window": 1000000,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [
+          "waiting"
+        ],
+        "id": "a:b0000000002",
+        "kind": "subagent",
+        "label": "general-purpose \u00b7 hung review",
+        "requests": 4,
+        "run_s": 1080.0,
+        "state": "done",
+        "tokens_in": 480,
+        "tokens_out": 3600,
+        "waiting": true
+      },
+      {
+        "age_s": 1500.0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "ctx_pct": null,
+        "ctx_tokens": null,
+        "ctx_window": null,
+        "depth": 1,
+        "errors": 0,
+        "errors_5m": 0,
+        "flags": [],
+        "id": "a:b0000000001",
+        "kind": "subagent",
+        "label": "Explore \u00b7 finished early",
+        "requests": 0,
+        "run_s": 900.0,
+        "state": "done",
+        "tokens_in": 0,
+        "tokens_out": 0
+      },
+      {
+        "cache_share": null,
+        "cpu_pct": 50.0,
+        "ctx_pct": null,
+        "ctx_tokens": null,
+        "ctx_window": null,
+        "flagged": false,
+        "footprint_mb": 570.0,
+        "id": "s:claude:cccc3333-0000-4000-8000-000000000003",
+        "kind": "session",
+        "label": "claude \u00b7 demo \u00b7 cccc3333",
+        "last_s": null,
+        "pid": 250,
+        "read_mb": 350.0,
+        "read_mbs": 0.0,
+        "req_5m": null,
+        "requests": null,
+        "requests_total": 0,
+        "rss_mb": 150.0,
+        "state": "idle",
+        "status": "idle",
+        "tokens_out_total": 0,
+        "write_mb": 300.0,
+        "write_mbs": 0.0
+      },
+      {
+        "cache_share": null,
+        "cpu_pct": null,
+        "ctx_pct": null,
+        "ctx_tokens": null,
+        "ctx_window": null,
+        "flagged": false,
+        "footprint_mb": null,
+        "id": "s:codex:0199bbbb-0000-7000-8000-00000000cdef",
+        "kind": "session",
+        "label": "codex \u00b7 cx \u00b7 0000cdef",
+        "last_s": null,
+        "pid": null,
+        "read_mb": null,
+        "read_mbs": null,
+        "req_5m": null,
+        "requests": null,
+        "requests_total": 0,
+        "rss_mb": null,
+        "state": "idle",
+        "status": null,
+        "tokens_out_total": 0,
+        "write_mb": null,
+        "write_mbs": null
+      },
+      {
+        "id": "m:claude-fable-5-1",
+        "kind": "model",
+        "label": "claude-fable-5-1",
+        "requests": 6
+      },
+      {
+        "id": "m:claude-opus-5-5",
+        "kind": "model",
+        "label": "claude-opus-5-5",
+        "requests": 20
+      },
+      {
+        "id": "m:it-entra-claude-opus-5-5",
+        "kind": "model",
+        "label": "it-entra-claude-opus-5-5",
+        "requests": 1
+      },
+      {
+        "id": "m:claude-sonnet-5-5",
+        "kind": "model",
+        "label": "claude-sonnet-5-5",
+        "requests": 4
+      }
+    ]
+  },
+  "measure": {
+    "age_s": 120.0,
+    "cost_usd": 1.23,
+    "ctx_pct": 31,
+    "limit_kind": "five_hour",
+    "limit_pct": 42,
+    "resets_at": null
+  },
+  "pressure": {
+    "causes": {
+      "local": 0,
+      "rate_limited": 0,
+      "rate_limited_rate": 0.0,
+      "retried": 0,
+      "transport_errors": 1,
+      "transport_rate": 0.0455,
+      "upstream_rejected": 0
+    },
+    "families": {
+      "fable": "GREEN",
+      "opus": "AMBER",
+      "sonnet": "GREEN"
+    },
+    "insufficient_sample": false,
+    "level": "AMBER",
+    "min_sample": 10,
+    "n": 22,
+    "recommendation": "shed mechanical and exploration subagents one tier down (opus\u2192sonnet, sonnet\u2192haiku); cap parallel heavy agents at 2",
+    "retry_after_recent": false,
+    "retry_after_s": null,
+    "window_min": 15
+  },
+  "proxy": {
+    "error": "refused",
+    "up": false
+  },
+  "quality": {
+    "classification": {
+      "missing": true
+    },
+    "conformance": {
+      "missing": true
+    },
+    "reliability": {
+      "causes": {
+        "http_529": 1,
+        "midstream_ReadError": 1
+      },
+      "failed": 2,
+      "midstream": 1,
+      "requests": 32,
+      "retried_requests": 0,
+      "retries": 0,
+      "retry_wait_ms": 0
+    },
+    "verification": {
+      "codeqa": {
+        "missing": true
+      },
+      "xval": {
+        "missing": true
+      }
+    },
+    "window_h": 24
+  },
+  "schema": 1,
+  "system": {
+    "agents_cpu_pct": 360.0,
+    "agents_footprint_mb": 1570.0,
+    "agents_procs": 10,
+    "agents_rss_mb": 1094.0,
+    "excluded_self_pids": 1,
+    "gpu_mem_mb": 30517.6,
+    "gpu_scope": "system-wide",
+    "gpu_util_pct": 37,
+    "loadavg": [
+      2.5,
+      2.25,
+      2.0
+    ],
+    "net": {
+      "ifs": "en0",
+      "rx": 987654321,
+      "tx": 123456789
+    },
+    "ollama": [
+      {
+        "name": "qwen3:8b",
+        "size_mb": 6144.0,
+        "unloads_in_s": 240,
+        "vram_mb": 6144.0
+      },
+      {
+        "name": "nomic-embed-text:latest",
+        "pinned": true,
+        "size_mb": 512.0,
+        "vram_mb": 512.0
+      }
+    ],
+    "ollama_clients": [
+      {
+        "name": "apex-router labels",
+        "pid": 500,
+        "worker": true
+      }
+    ],
+    "quiet_procs": [
+      {
+        "cwd_name": "old-proj",
+        "footprint_mb": 200.0,
+        "kind": "pi",
+        "pid": 310,
+        "procs": 1,
+        "rss_mb": 60.0,
+        "uptime_s": 259200
+      },
+      {
+        "cwd_name": "cx2",
+        "footprint_mb": 300.0,
+        "kind": "codex",
+        "pid": 320,
+        "procs": 1,
+        "rss_mb": 30.0,
+        "uptime_s": 604800
+      }
+    ],
+    "rate_pids": 13,
+    "rate_window_s": 0.25,
+    "subagent_scans": 2,
+    "traffic_60m": {
+      "cache_read": 5540000,
+      "cache_write": 64000,
+      "ctx_pct": 15,
+      "ctx_tokens": 152120,
+      "ctx_ts": 1791399996.0,
+      "ctx_window": 1000000,
+      "ctx_window_src": "family",
+      "errors": 2,
+      "errors_5m": 2,
+      "last_ts": 1791399996.0,
+      "models": {
+        "claude-fable-5-1": 6,
+        "claude-opus-5-5": 21,
+        "claude-sonnet-5-5": 4,
+        "it-entra-claude-opus-5-5": 1
+      },
+      "net_down": 288000,
+      "net_up": 19200000,
+      "p50_ttft_ms": 1500,
+      "req_5m": 14,
+      "requests": 32,
+      "tokens_in": 13800,
+      "tokens_out": 28800
+    }
+  },
+  "worker": {
+    "inbox": 2,
+    "label": "com.ornith.worker",
+    "pid": 500,
+    "queue_running": 1,
+    "res": {
+      "ollama_models": [
+        {
+          "name": "qwen3:8b",
+          "size_mb": 6144.0,
+          "unloads_in_s": 240,
+          "vram_mb": 6144.0
+        },
+        {
+          "name": "nomic-embed-text:latest",
+          "pinned": true,
+          "size_mb": 512.0,
+          "vram_mb": 512.0
+        }
+      ],
+      "ollama_tree": {
+        "alive": true,
+        "cpu_pct": 30.0,
+        "cpu_pct_ps": 50.0,
+        "cpu_s": 2801.0,
+        "cpu_src": "sampled",
+        "footprint_mb": 270.0,
+        "pid": 400,
+        "procs": 2,
+        "read_mb": 1001.0,
+        "read_mbs": 0.0,
+        "rss_mb": 4922.8,
+        "top": [
+          {
+            "cpu_pct": 20.0,
+            "cpu_s": 1401.0,
+            "footprint_mb": 140.0,
+            "name": "ollama",
+            "pid": 401,
+            "rss_mb": 4882.8,
+            "uptime_s": 600
+          }
+        ],
+        "uptime_s": 259200,
+        "write_mb": 901.0,
+        "write_mbs": 0.0
+      },
+      "tree": {
+        "alive": true,
+        "cpu_pct": 30.0,
+        "cpu_pct_ps": 0.1,
+        "cpu_s": 1500.0,
+        "cpu_src": "sampled",
+        "footprint_mb": 160.0,
+        "pid": 500,
+        "procs": 1,
+        "read_mb": 600.0,
+        "read_mbs": 0.0,
+        "rss_mb": 30.0,
+        "top": [],
+        "uptime_s": 259200,
+        "write_mb": 550.0,
+        "write_mbs": 0.0
+      }
+    },
+    "running": true
+  }
+}

@@ -11,7 +11,7 @@ each refresh appends one small sample to `~/.apex-router/widget/history.jsonl` (
 [History](#history)); clicking a row writes and opens a detail page (see
 [Clicking: detail pages](#clicking-detail-pages)). Each refresh runs `ps` once (plus one `ps -o pid=,args=` for at most 40
 node/python/… processes inside agent trees), `ioreg` once, `launchctl list` once and — only when a
-pi or Codex session is listed — `lsof` once, and makes two loopback calls: the proxy's `/healthz`
+pi or Codex process is running — `lsof` once (at most 40 pids), and makes two loopback calls: the proxy's `/healthz`
 and ollama's `/api/ps`. All of these, the 0.25 s cpu/io sampling window and the subagent log scan
 share one 1.2 s deadline; a source that would start after it is skipped and shown under System as
 unavailable (or `not checked`), so even a hung source keeps a refresh near 1.2 s. A refresh takes
@@ -94,8 +94,9 @@ A model family that is RED or AMBER on its own rate colours the dot even when th
 The number is the count of active agents: a Claude Code session whose own status
 (`~/.claude/sessions/<pid>.json`) is `busy`; for a session without a status (pi, Codex) one whose
 log changed in the last 5 minutes. A `⚠` after it (`● 2 ⚠`) means an agent needs a look: a
-subagent still writing after more than 20 min, an error in the last 5 min or a 60-min error rate
-of 5 % or more (main thread or subagent), or a context at 85 % of a known window. One old
+subagent still writing after more than 20 min, a subagent `waiting?` for more than 10 min (see
+below), an error in the last 5 min or a 60-min error rate of 5 % or more (main thread or
+subagent), or a context at 85 % of a known window. One old
 transient error does not raise it. The `⚠` never changes the dot colour, which stays the
 pressure rule above.
 
@@ -149,12 +150,19 @@ Models 60m
   one `model` line instead of a `Models 60m` submenu.
 - The main and subagent rows keep input / cached / cache-write tokens and run time in their
   tooltip; `Σ` shows the full split.
-- Subagents: `▶` running (wrote in the last 60 s), `◦` quiet (< 5 min), `✓` done, `⚠` flagged
-  (running > 20 min, an error in the last 5 min or an error rate ≥ 5 % — then with count and
-  share — or context ≥ 85 % of a known window). `last` is the newer of its log write and its
+- Subagents: `▶` running (wrote in the last 60 s), `◦` quiet (< 5 min), `✓` done, `⧗`
+  `waiting?` (below), `⚠` flagged (running > 20 min, an error in the last 5 min or an error rate
+  ≥ 5 % — then with count and share — or context ≥ 85 % of a known window). `last` is the newer of its log write and its
   newest request. Run time is the subagent log's last write minus its spawn (the `meta.json`
   mtime). Ordered running, then erroring, then by output tokens; 8 are shown, the rest are one
   `… N more (x req, out y)` line. Error rates below 1 % read `<1%`.
+- `⧗` `waiting?` is a heuristic for a hung subagent, which otherwise looks done: both stop
+  writing. While the session's own status is `busy`, the subagent whose log went quiet (> 60 s)
+  last — neither the main log nor any other subagent has written since — is the one the session
+  is probably waiting on. Its tooltip and `--graph` say `waiting? 12m`; after 10 min it also raises
+  the session's and the bar's `⚠` (its tooltip says why), but keeps `⧗` unless another flag
+  applies. A subagent in a long tool call (a test run, a build) looks the same, hence the `?`.
+  Only for sessions whose subagent logs are read (the active ones shown).
 - `Processes · N · MB` counts and sums the child processes listed under it; the whole tree
   including the session process is in its tooltip.
 - Processes are named by the basename of the script a node/python/ruby process runs
@@ -162,6 +170,12 @@ Models 60m
 - Caps: 8 active sessions (ranked by output tokens, then cpu; the rest become one line with their
   totals), 8 subagents per session, 8 idle sessions; the menu stays near 80 lines, giving the
   top-ranked sessions the most detail. Idle sessions fold under `idle (N) · 548MB held`.
+- A live `pi` or `codex` process whose session log was not written in the last hour (so no
+  session lists it) still holds memory: it is listed under idle as
+  `pi · graphs · quiet · up 10d · 159MB` (the basename of its working directory from the same
+  `lsof` call, `?` when unknown; uptime; memory of its process tree), counted in `idle (N)`, the
+  held memory and the Agents header's memory. It is left out when a listed session of its kind
+  shares its working directory (it may be that one). At most 8, newest first; no click action.
 - When the widget runs inside a session's terminal it leaves out its own process, its children
   and the shell that started it.
 - The widget shows no dollar amounts.

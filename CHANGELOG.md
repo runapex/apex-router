@@ -248,6 +248,21 @@ next tag will carry.
   `anthropic` first. If that family's switch fails it stays put instead of trying `anthropic`.
 - pi `/learn` now validates with Sonnet 5.5 and explains with Opus 5.5 on `foundry`; it asked for
   `anthropic/claude-sonnet-5`, which your setup has no credentials for.
+- Menu bar widget: a hung subagent no longer looks done. While its session is `busy`, the
+  subagent whose log went quiet (> 60 s) last, with nothing written since in the main log or any
+  other subagent, is shown as `⧗ waiting?`; after 10 min it raises the session's `⚠`. A heuristic
+  (a long tool call looks the same), documented as such in the plugin README.
+- Menu bar widget: a live `pi` / `codex` process with no session log in the last hour is listed
+  under idle (`pi · <cwd name> · quiet · up 10d · 159MB`) and counted in the Agents memory; before,
+  such processes were invisible (five on the test machine, ~620MB).
+
+### Changed
+- `agent_resources` is a package (`base`, `procs`, `sessions`, `telemetry`, `subagents`,
+  `system`, `graph`, `text`); `from apex_router import agent_resources` and every name it had
+  keep working. The duplicated helpers have one implementation each (`fmt_age` = `fmt_dur`,
+  `fmt_mem` = `fmt_mb` with `?MB` for a missing value, one `_num` / `_err`, `_status_word` =
+  `display_state` esc()'d). Output is unchanged: a new test compares `snapshot --json`,
+  `--menubar` and `--graph` on a fixed fake HOME byte for byte with a committed golden.
 
 ## 0.4.1 — 2026-10-04
 
