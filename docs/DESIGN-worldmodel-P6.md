@@ -65,9 +65,13 @@ arguments and paths replaced by placeholders** (never a literal path, token or h
 by an independent agent; the owner's sign-off is still owed before the classifier counts as
 validated (P0 gate). Target agreement ≥ 95%.
 
-Phase from the step itself and its neighbours: `explore` (search/read before the first edit of
-the task), `edit` (edit/write), `verify` (test/build/run after an edit), `deliver` (vcs/ask at
-the tail), else `other`.
+Phase is **causal** — computed from steps ≤ t only (amended 2026-10-07 after the E3 review found
+the tail rule leaked task length): `explore` (search/read before the first edit of the task so
+far), `edit` (this step is edit/write), `verify` (test/build/run after an edit so far), `deliver`
+(this step is vcs/ask), else `other`. Appending later steps never changes an earlier phase.
+
+Tasks also carry `task_type` (one of `classify.py`'s classes, null if unclassifiable) and
+`workflow` (`W2` if the task spawned a subagent, else `W0`; a recorded workflow wins).
 
 ## 3. Evaluation protocol (`protocol.py`) — shared by every track
 
@@ -110,8 +114,10 @@ the tail), else `other`.
   read `z_control` only.
 - Collapse diagnostics at every checkpoint: effective rank of z on val, SIGReg statistic; a
   checkpoint outside the preset bounds is reported, not silently kept.
-- Macro-steps: an optional run-length merge of consecutive same-class steps (3–6 macro-steps per
-  task) as a config flag; both granularities are evaluated.
+- Macro-steps: an optional run-length merge of consecutive same-class steps as a config flag,
+  no global cap (a cap that merges the minimum pair is non-causal); a macro-step is finalised at
+  run end, so macro mode is offline evaluation only. Both granularities are evaluated.
+- Step 0 is scored from a start prior fitted on train first actions (every model alike).
 - Training: fixed seed, config JSON beside the checkpoint, ≤ 12M params, runs on this M3 Max
   within minutes; `mlx` installed into `.venv` only after dependency vetting (OSV, license,
   release recency) — report the vetting.
