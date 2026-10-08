@@ -257,6 +257,48 @@ def test_import_gold_validates_marks_author_and_relabels(tmp_path, capsys):
     assert "gold by: user 1 · model/other 2 (model:claude-test 2, user 1)" in L.report()
 
 
+def test_export_by_ids_and_supersede_corrections(tmp_path, capsys):
+    _export_fixture(_home())
+    ids = [json.loads(x)["id"] for x in (L.home() / "tasks.jsonl").read_text().splitlines()]
+    f = tmp_path / "g.jsonl"
+    f.write_text(json.dumps({"id": ids[0], "outcome": "fail", "reason": "first look"}) + "\n")
+    L.import_gold(f, "model:x")
+    # export exactly the named tasks (gold or not), with the gold row in force
+    out = tmp_path / "e.jsonl"
+    assert L.main(["export-review", "--k", "0", "--out", str(out),
+                   "--ids", f"{ids[0]},{ids[2]}"]) == 0
+    ex = [json.loads(x) for x in out.read_text().splitlines()]
+    assert [x["id"] for x in ex] == [ids[0], ids[2]] and oct(out.stat().st_mode)[-3:] == "600"
+    assert ex[0]["gold"]["outcome"] == "fail" and ex[1]["gold"] is None
+    assert L.main(["export-review", "--out", str(out), "--ids", "nope"]) == 2
+    ts0 = ex[0]["gold"]["ts"]
+
+    def rejected(line, msg):
+        f.write_text(json.dumps(line) + "\n")
+        with pytest.raises(L.GoldImportError, match=msg):
+            L.import_gold(f, "model:x")
+    rejected({"id": ids[0], "outcome": "success"}, "pass supersedes")
+    rejected({"id": ids[0], "outcome": "success", "supersedes": ts0 - 5}, "not the ts")
+    rejected({"id": ids[2], "outcome": "success", "supersedes": ts0}, "not the ts")
+    # a correction appends; the newest row is in force everywhere
+    f.write_text(json.dumps({"id": ids[0], "outcome": "success", "supersedes": ts0,
+                             "reason": "scope grew; continuation finished it"}) + "\n")
+    res = L.import_gold(f, "model:x")
+    rows = L._read(L.home() / "gold.jsonl")
+    assert len(rows) == 2 and rows[0]["outcome"] == "fail"                 # nothing edited
+    assert rows[1]["supersedes"] == ts0 and rows[1]["ts"] > ts0
+    assert res["gold"] == {ids[0]: "success"}
+    lab = {x["id"]: x for x in L._read(L.home() / "labels.jsonl")}
+    assert lab[ids[0]]["label"] == "success"
+    assert L.gold_by() == {"model:x": 1}                                    # counted once
+    # the superseded ts no longer works; the new one does
+    rejected({"id": ids[0], "outcome": "fail", "supersedes": ts0}, "not the ts")
+    # newest wins even if rows are out of file order; a rebuild keeps both rows on the task
+    assert L.gold_latest([rows[1], rows[0]])[ids[0]]["outcome"] == "success"
+    L.build(log=None)
+    assert [g["id"] for g in L._read(L.home() / "gold.jsonl")] == [ids[0], ids[0]]
+
+
 def _claude_session(home: Path, name: str, records: list) -> Path:
     """records: ("user", text, extra) | ("tool", name, cmd, result) | ("say", text).
     ``tool`` writes an assistant tool_use plus the user tool_result, like Claude Code."""
