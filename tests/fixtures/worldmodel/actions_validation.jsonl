@@ -206,7 +206,7 @@
 {"cmd": "stat -f '<msg>' <path> ; cd <path> ; grep -i pressure <path> <path> <path> ; cat <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
 {"cmd": "command -v pi && pi --help | head <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
 {"cmd": "mv <path> <path> ; claude plugin test plugin 2>&1 | grep -i \"<msg>\" | head <arg> ; /<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; mv <path> <path> ; claude plugin test plugin 2>&1 | grep \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
-{"cmd": "linode-cli <arg> <arg> --help 2>&1 | head <arg> ; linode-cli <arg> <arg> --help 2>&1 | grep -E \"<msg>\" | head <arg> ; linode-cli <arg> <arg> --text 2>&1 | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
+{"cmd": "doctl <arg> <arg> --help 2>&1 | head <arg> ; doctl <arg> <arg> --help 2>&1 | grep -E \"<msg>\" | head <arg> ; doctl <arg> <arg> --text 2>&1 | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
 {"cmd": "./.venv/bin/python -m compileall -q <path> && git diff --check", "tool": "bash", "cls": "build", "src": "transcript"}
 {"cmd": "plutil -p <path> | grep -i -A3 \"<msg>\" ; plutil -p <path> | grep -i \"<msg>\"", "tool": "Bash", "cls": "search", "src": "transcript"}
 {"cmd": "source <path> ; <VAR>=<arg> ; cd <path>\nls <path> 2>&1 | head <arg>\nlsof -nP <arg> <arg> ; echo \"<msg>\"\ntime <VAR>=<arg> <cmd> -m <path> --probe-thinking > <path> 2>&1 ; echo \"<msg>\" | tee -a <path> ; cat <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
