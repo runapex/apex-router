@@ -69,6 +69,10 @@ class TrainConfig:
     stride: int | None = None            # window stride; None = L // 2 (overlapping windows)
     embed: bool = False
     value_gold_only: bool = False
+    # attempt-2 ablations (docs/research/2026-10-08-p6-attempt-2-predeclaration.md); the defaults
+    # are attempt 1's inputs, so an attempt-1 config replays unchanged.
+    features: str = "a1"                 # "a1" | "a2f" (A2-F: + cross-step task state)
+    regime: bool = False                 # A2-D: + day regime (features.annotate_regime)
     # preset collapse bounds (G1 criterion 4)
     erank_min: float = 8.0
     sigreg_max: float = 0.10
@@ -84,7 +88,14 @@ class TrainConfig:
         unknown = set(d) - names
         if unknown:
             raise ValueError(f"unknown config keys: {sorted(unknown)}")
-        return cls(**d)
+        cfg = cls(**d)
+        F.check_feature_set(cfg.features)
+        return cfg
+
+
+def ablations(cfg: "TrainConfig") -> dict:
+    """The attempt-2 ablations a config turns on (A2-W is a sweep rule, recorded by the sweep)."""
+    return {"A2-F": cfg.features == "a2f", "A2-D": bool(cfg.regime)}
 
 
 # ---- paths and I/O -------------------------------------------------------------------------------
@@ -313,12 +324,19 @@ def _windows(ds: Dataset, split: str, cfg: TrainConfig) -> F.Windows:
         from .embed import task_embeddings
         extra = task_embeddings(sorted(tasks))
     return F.build_windows(tasks, outcomes, L=cfg.L, macro=cfg.macro, extra=extra,
-                           stride=cfg.stride)
+                           stride=cfg.stride, features=cfg.features, regime=cfg.regime)
 
 
 def n_features(cfg: TrainConfig) -> int:
     from .embed import EMBED_DIM
-    return F.N_FEAT + (EMBED_DIM + 1 if cfg.embed else 0)
+    return F.n_feat(cfg.features, cfg.regime) + (EMBED_DIM + 1 if cfg.embed else 0)
+
+
+def annotate_regime(ds: Dataset) -> int:
+    """A2-D: write the causal day-regime annotation on every step of ``ds`` (all sequences of a
+    session together, so sibling streams count; ``features.annotate_regime``). Idempotent."""
+    return F.annotate_regime(ds.tasks, {t: m.get("sid") for t, m in ds.meta.items()
+                                        if m.get("sid") is not None})
 
 
 # ---- evaluation ----------------------------------------------------------------------------------
@@ -548,6 +566,8 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
     set_device(cfg.device)
     mx.random.seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
+    if cfg.regime:
+        annotate_regime(ds)
     Wtr, Wva = _windows(ds, "train", cfg), _windows(ds, "val", cfg)
     if len(Wtr) == 0 or len(Wva) == 0:
         raise ValueError(f"need train and val windows (train={len(Wtr)}, val={len(Wva)})")
@@ -636,6 +656,8 @@ def train(cfg: TrainConfig, ds: Dataset, run_dir: Path | None = None, run_id: st
         "run_id": run_id, "config": asdict(cfg), "data": ds.stats(),
         "view": run_view(ds.source), "params": n_params,
         "n_features": n_features(cfg),
+        # attempt-2 ablations: which inputs this run saw (evaluate refuses a mismatched scoring)
+        "features": cfg.features, "regime": bool(cfg.regime), "ablations": ablations(cfg),
         "windows": {"train": len(Wtr), "val": len(Wva)},
         "throughput": {"train_seconds": train_time,
                        "windows_per_s": train_windows / max(train_time, 1e-9),
@@ -697,8 +719,12 @@ class WorldModel:
         if self.cfg.embed:
             from .embed import task_embeddings
             extra = task_embeddings(sorted(tasks))
+        if self.cfg.regime and not all(F.has_regime(s) for st in tasks.values() for s in st):
+            raise ValueError("this run reads the day regime (A2-D): annotate the steps with "
+                             "features.annotate_regime over their whole sessions first")
         return F.build_windows(tasks, None, L=self.cfg.L, macro=self.cfg.macro, extra=extra,
-                               stride=self.cfg.stride)
+                               stride=self.cfg.stride, features=self.cfg.features,
+                               regime=self.cfg.regime)
 
     def score(self, tasks: dict[str, list[dict]]) -> dict[str, dict]:
         clean = {}
@@ -762,6 +788,8 @@ def probe_run(run: str | Path, ds: Dataset | None = None) -> dict:
             ds = synthetic_dataset(int(n), int(sd.replace("seed", "")))
         else:
             ds = load_view(run_view(src) or "task")
+    if cfg.regime:
+        annotate_regime(ds)
     Wtr, Wva = _windows(ds, "train", cfg), _windows(ds, "val", cfg)
     y_train = _y_scored(Wtr)
     _, arr_tr = evaluate(wm.model, Wtr, cfg, y_train)
@@ -772,12 +800,64 @@ def probe_run(run: str | Path, ds: Dataset | None = None) -> dict:
 
 # ---- regulariser-weight sweep --------------------------------------------------------------------
 
-def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: str | None = None,
-                log=print) -> dict:
+RULE_BEST_EPOCH = "min val next-action CE among settings within collapse bounds at the best epoch"
+RULE_EVERY_EPOCH = ("min val next-action CE among settings within collapse bounds at EVERY epoch "
+                    "(each epoch's val z, as G1 C4 reads them; A2-W)")
+
+
+W_REG_GRID = (1.0, 3.0, 10.0)          # attempt 1's grid (the default, so attempt 1 replays)
+NO_WREG_MSG = "C4 fails by construction: no w_reg within bounds on every epoch (grid {grid})"
+
+
+def parse_grid(text: str) -> tuple[float, ...]:
+    """``"1,3,10,30,100"`` -> (1.0, 3.0, 10.0, 30.0, 100.0); positive, finite, de-duplicated."""
+    vals = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        v = float(part)
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError(f"w_reg grid values must be positive and finite, not {part!r}")
+        if v not in vals:
+            vals.append(v)
+    if not vals:
+        raise ValueError("empty w_reg grid")
+    return tuple(vals)
+
+
+def grid_text(values) -> str:
+    return ",".join(f"{float(v):g}" for v in values)
+
+
+def record_sweep(run_id: str, sweep: dict) -> None:
+    """Write the sweep table (grid, candidates, rule, choice) into a run's summary.json."""
+    p = data_home() / "runs" / run_id / "summary.json"
+    try:
+        summ = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return
+    summ["w_reg_sweep"] = sweep
+    _write_private(p, _dumps(summ))
+
+
+def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=W_REG_GRID, run_id: str | None = None,
+                log=print, every_epoch: bool = False) -> dict:
     """Train one run per SIGReg weight and pick the best by val next-action CE at the best
-    epoch, REJECTING any setting whose best epoch is outside the preset collapse bounds (a hard
-    constraint, not a tie-breaker). The winner's ``summary.json`` gets a ``w_reg_sweep`` table
-    (every candidate: val CE, effective rank, SIGReg, within_bounds, chosen)."""
+    epoch, REJECTING any setting outside the preset collapse bounds (a hard constraint, not a
+    tie-breaker). The winner's ``summary.json`` gets a ``w_reg_sweep`` table (every candidate:
+    val CE, effective rank, SIGReg, within_bounds, chosen).
+
+    Which checkpoints must be within bounds: ``every_epoch=False`` (attempt 1) — the best epoch
+    only; ``every_epoch=True`` (attempt 2, A2-W) — every epoch the candidate trained, i.e. every
+    row of its ``metrics.jsonl`` (epochs after the best one included), which is how G1 C4 reads
+    a run; a candidate with ANY epoch outside is rejected. (C4 also checks the scored
+    checkpoint's test z; the sweep never reads test, so that one stays C4's alone.)
+
+    ``values`` is the grid (``--w-reg-grid``; default ``W_REG_GRID``), recorded as ``grid``. With
+    no qualifying candidate, ``chosen_w_reg`` is None, ``note`` says so (``NO_WREG_MSG``) and the
+    table is written into every candidate's summary.json (the winner's only, otherwise)."""
+    values = tuple(float(v) for v in values)
     base = run_id or _run_id(ds.source, cfg.seed)
     rows, results = [], {}
     for w in values:
@@ -785,11 +865,14 @@ def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: 
         rid = f"{base}-wreg{w:g}"
         s = train(c, ds, run_id=rid, log=log)
         col = s["best"].get("collapse", {})
+        outside = list(s.get("collapse_outside_bounds_epochs") or [])
+        best_ok = bool(col.get("within_bounds"))
         rows.append({"w_reg": float(w), "run_id": rid, "best_epoch": s["best_epoch"],
                      "val_next_ce": s["best"].get("val_next_ce"),
                      "val_brier_task": s["best"].get("val_brier_task"),
                      "effective_rank": col.get("effective_rank"), "sigreg": col.get("sigreg"),
-                     "within_bounds": bool(col.get("within_bounds"))})
+                     "within_bounds_best_epoch": best_ok, "epochs_outside": outside,
+                     "within_bounds": (best_ok and not outside) if every_epoch else best_ok})
         results[rid] = s
     ok = [r for r in rows if r["within_bounds"] and r["val_next_ce"] is not None
           and math.isfinite(r["val_next_ce"])]
@@ -797,9 +880,13 @@ def sweep_w_reg(cfg: TrainConfig, ds: Dataset, values=(1.0, 3.0, 10.0), run_id: 
     for r in rows:
         r["chosen"] = win is not None and r is win
     out = {"candidates": rows, "chosen_w_reg": win["w_reg"] if win else None,
-           "rule": "min val next-action CE among settings within collapse bounds at the best epoch"}
-    if win:
-        summ = results[win["run_id"]]
-        summ["w_reg_sweep"] = out
-        _write_private(data_home() / "runs" / win["run_id"] / "summary.json", _dumps(summ))
+           "every_epoch": bool(every_epoch), "grid": list(values),
+           "note": (None if win else NO_WREG_MSG.format(grid=grid_text(values)) if every_epoch
+                    else f"no w_reg within bounds at the best epoch (grid {grid_text(values)})"),
+           "rule": RULE_EVERY_EPOCH if every_epoch else RULE_BEST_EPOCH}
+    for r in rows:
+        if win is None or r is win:
+            summ = results[r["run_id"]]
+            summ["w_reg_sweep"] = out
+            _write_private(data_home() / "runs" / r["run_id"] / "summary.json", _dumps(summ))
     return out

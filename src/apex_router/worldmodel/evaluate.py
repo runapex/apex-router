@@ -47,6 +47,15 @@ labelled train task has an untrained value head (a random projection): criteria 
 are INCONCLUSIVE for it ("value head untrained (0 labelled train tasks)") whatever the test
 labels, and no outcome number is printed for it, not even a provisional one.
 
+**Attempt-2 ablations** (`docs/research/2026-10-08-p6-attempt-2-predeclaration.md`), each a
+flag, all off by default so attempt 1 replays: `--features a2f` (A2-F, JEPA inputs gain the
+cross-step task state), `--err-states` (A2-E, the absorbing chain — C3 values, the Markov outcome
+readout, the ρ detector — gets `<class>!err` states; the card reports both chains' E[steps] ± sd
+vs observed on train), `--regime` (A2-D, the day regime for the logistic baseline AND the JEPA),
+`--sweep-every-epoch` (A2-W, the w_reg sweep rejects a candidate with any epoch outside the
+bounds). The card's `ablations` records which are on. A run whose input flags (features, regime)
+differ from the requested ones is refused before any test pass, like the view guard.
+
 **Ledger.** Every scoring of the real test split appends one line per run to
 `<data home>/eval/ledger.jsonl` (0600: ts, manifest + steps/tasks sha256, run id, view, git
 sha); the card prints how often the split has been scored for this manifest. The first write
@@ -353,14 +362,17 @@ def jepa_workflow_values(jepa: Jepa, ds: P.Dataset, chain_vals: dict, train_ids,
 
 def probe_arrays(jepa: Jepa, ds: P.Dataset, ids, prefix=P.OUTCOME_PREFIX) -> dict:
     """train.linear_probes input from cached scores: per-step z / raw features / targets, and per
-    labeled main-stream task z at the outcome prefix (not the last step — that would leak)."""
+    labeled main-stream task z at the outcome prefix (not the last step — that would leak). The
+    raw reference uses the run's own input columns (features / regime from its config)."""
     from . import features as F
     z, x, y, ph, fb = [], [], [], [], []
     zl, xl, ol = [], [], []
+    feats, reg = _cfg_inputs(jepa.wm.cfg)
+    nf = F.n_feat(feats, reg)
     for t in ids:
         st = ds.steps[t]
         r = jepa.cache[t]
-        X = F.task_features(st)
+        X = F.task_features(st, feats, reg)
         z.append(r["z"])
         x.append(X)
         y.append(F.next_action_targets(st))
@@ -374,12 +386,12 @@ def probe_arrays(jepa: Jepa, ds: P.Dataset, ids, prefix=P.OUTCOME_PREFIX) -> dic
             ol.append(lab)
     d = jepa.wm.cfg.d
     cat = (lambda a, shape: np.concatenate(a) if a else np.zeros(shape))
-    return {"z": cat(z, (0, d)), "x": cat(x, (0, F.N_FEAT)),
+    return {"z": cat(z, (0, d)), "x": cat(x, (0, nf)),
             "y_next": cat(y, (0,)).astype(np.int64),
             "phase": np.concatenate([np.asarray(p, np.int64) for p in ph]) if ph else np.zeros(0, np.int64),
             "fail_b": np.concatenate([np.asarray(p, np.int64) for p in fb]) if fb else np.zeros(0, np.int64),
             "z_prefix": np.array(zl) if zl else np.zeros((0, d)),
-            "x_prefix": np.array(xl) if xl else np.zeros((0, F.N_FEAT)),
+            "x_prefix": np.array(xl) if xl else np.zeros((0, nf)),
             "outcome_prefix": np.array(ol, dtype=float)}
 
 
@@ -402,12 +414,15 @@ def collapse_checkpoints(run_dir: Path, test_z, cfg, seed: int) -> list:
 
 # ---- evaluation of one run ------------------------------------------------------------------------
 
-def fit_baselines(ds: P.Dataset, sp, seed: int = 0) -> dict:
+def fit_baselines(ds: P.Dataset, sp, seed: int = 0, regime: bool = False,
+                  err_states: bool = False) -> dict:
     """Fit E2's baselines on train (val picks hyper-parameters), wrap them with the shared start
-    prior, and pick the best next-action and outcome baselines ON VAL."""
+    prior, and pick the best next-action and outcome baselines ON VAL. ``regime`` (A2-D) and
+    ``err_states`` (A2-E) as in ``baselines.all_baselines``."""
     from . import baselines as B
     tr, va = ds.ids("train"), ds.ids("val")
-    models = [StartPrior(m.fit(ds, tr, va), sp) for m in B.all_baselines((1, 2))]
+    models = [StartPrior(m.fit(ds, tr, va), sp)
+              for m in B.all_baselines((1, 2), regime=regime, err_states=err_states)]
     val_ce = {}
     for m in models:
         n = tot = 0.0
@@ -436,6 +451,38 @@ UNTRAINED = "value head untrained (0 labelled train tasks)"
 
 class ViewMismatch(ValueError):
     pass
+
+
+class FeatureMismatch(ViewMismatch):
+    """A run trained on other inputs (A2-F features / A2-D regime) than the scoring asks for."""
+
+
+def run_inputs(summary: dict) -> tuple[str, bool]:
+    """(features, regime) a run was trained with: summary, else its config; attempt-1 runs (no
+    record) are ("a1", False)."""
+    cfg = summary.get("config") or {}
+    feats = summary.get("features") or cfg.get("features") or "a1"
+    reg = summary.get("regime")
+    if reg is None:
+        reg = cfg.get("regime", False)
+    return str(feats), bool(reg)
+
+
+def _cfg_inputs(cfg) -> tuple[str, bool]:
+    """(features, regime) of a loaded run's config (attempt-1 configs: "a1", False)."""
+    return str(getattr(cfg, "features", "a1") or "a1"), bool(getattr(cfg, "regime", False))
+
+
+def check_inputs(summary: dict, features: str = "a1", regime: bool = False) -> tuple[str, bool]:
+    """Raise FeatureMismatch when the run's input flags differ from the requested ones."""
+    rf, rr = run_inputs(summary)
+    if rf != features or rr != bool(regime):
+        raise FeatureMismatch(
+            f"run was trained with features={rf!r}, regime={rr} but this scoring asks for "
+            f"features={features!r}, regime={bool(regime)}: pass --features {rf}"
+            f"{' --regime' if rr else ''} (or retrain) — scores over different inputs are not "
+            "the registered comparison")
+    return rf, rr
 
 
 def check_view(summary: dict, view: str | None) -> str | None:
@@ -470,7 +517,8 @@ def value_head_trained(summary: dict, ds: P.Dataset) -> bool:
 
 
 def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
-                 crit5: bool = True, view: str | None = None, log=print) -> dict:
+                 crit5: bool = True, view: str | None = None, log=print,
+                 features: str = "a1", regime: bool = False, err_states: bool = False) -> dict:
     """Score one trained run on test (one pass per model) and apply the five rules."""
     from . import chains as C
     from . import progress as G
@@ -484,6 +532,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
         raise ValueError("embedding runs key embeddings by task id; not supported by the stream view")
     summ = wm.summary or {}
     run_view = check_view(summ, view)
+    check_inputs(summ, features, regime)
     trained_v = value_head_trained(summ, ds)
     tr, va, te = ds.ids("train"), ds.ids("val"), ds.ids("test")
     m_tr, m_va, m_te = main_ids(ds, "train"), main_ids(ds, "val"), main_ids(ds, "test")
@@ -526,7 +575,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
         reasons[2] = UNTRAINED
 
     # 3. workflow ranking
-    chain_vals = C.workflow_values(ds, m_tr)
+    chain_vals = C.workflow_values(ds, m_tr, err_states=err_states)
     real = C.realized(ds, m_te)
     rk_chain = C.ranking_accuracy(chain_vals, real)
     if trained_v:
@@ -550,7 +599,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     if not trained_v:
         reasons[5] = UNTRAINED
     if crit5 and labeled_test:
-        chain = chain or C.fit_tasks(ds, m_tr)
+        chain = chain or C.fit_tasks(ds, m_tr, err_states=err_states)
         tune = m_tr + m_va
         scores = G.detector_scores(ds, tune + m_te, chain, seed=seed)
         dets = ("zeno", "stalled", "rho")
@@ -569,6 +618,7 @@ def evaluate_run(run, ds: P.Dataset, base: dict, sp, seed: int = 0, chain=None,
     return {
         "run_id": wm.run_dir.name, "seed": wm.cfg.seed, "device": wm.cfg.device,
         "w_reg": wm.cfg.w_reg, "best_epoch": summ.get("best_epoch"), "view": run_view,
+        "features": _cfg_inputs(wm.cfg)[0], "regime": _cfg_inputs(wm.cfg)[1],
         "value_head_trained": trained_v, "reasons": reasons,
         "val_ce": val_ce,                                  # incl. step 0, as the baselines
         "val_next_ce_excl_step0": (summ.get("best") or {}).get("val_next_ce"),   # E3's readout
@@ -598,8 +648,12 @@ def _base_rate(ds, ids) -> float:
 
 def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, cpu: bool = True,
                base_seed: int = 0, overrides: dict | None = None, tag: str = "steps",
-               log=print) -> dict:
-    """Train k GPU seeds (seed 0 = the sweep winner when --sweep) + one CPU replay run."""
+               log=print, sweep_every_epoch: bool = False, w_reg_grid=None) -> dict:
+    """Train k GPU seeds (seed 0 = the sweep winner when --sweep) + one CPU replay run.
+    ``overrides`` may set the A2-F/A2-D inputs (``features``, ``regime``); ``sweep_every_epoch``
+    is A2-W; ``w_reg_grid`` the sweep grid (default ``train.W_REG_GRID``). With no qualifying
+    w_reg the seeds train the default w_reg and carry the sweep table (its ``note`` says C4 fails
+    by construction)."""
     from dataclasses import asdict
     from . import train as T
     tds = to_train_dataset(ds, source)
@@ -610,14 +664,17 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
     reuse = None
     if sweep:
         t0 = time.perf_counter()
-        sw = T.sweep_w_reg(cfg, tds, run_id=f"{prefix}-sweep-s{base_seed}", log=log)
+        sw = T.sweep_w_reg(cfg, tds, values=tuple(w_reg_grid or T.W_REG_GRID),
+                           run_id=f"{prefix}-sweep-s{base_seed}", log=log,
+                           every_epoch=sweep_every_epoch)
         out["timings"]["sweep_s"] = time.perf_counter() - t0
         out["sweep"] = sw
         if sw["chosen_w_reg"] is not None:
             cfg = T.TrainConfig.from_dict({**asdict(cfg), "w_reg": sw["chosen_w_reg"]})
             reuse = next(r["run_id"] for r in sw["candidates"] if r["chosen"])
         else:
-            log("sweep: no w_reg within the collapse bounds — training with the default w_reg")
+            log(f"sweep: {sw.get('note') or 'no w_reg within the collapse bounds'} — training "
+                f"with the default w_reg {cfg.w_reg:g}")
     for k in range(seeds):
         s = base_seed + k
         if k == 0 and reuse:
@@ -627,6 +684,8 @@ def train_runs(ds: P.Dataset, source: str, seeds: int = 2, sweep: bool = False, 
         c = T.TrainConfig.from_dict({**asdict(cfg), "seed": s, "device": "gpu"})
         rid = f"{prefix}-s{s}-gpu"
         T.train(c, tds, run_id=rid, log=log)
+        if sweep:
+            T.record_sweep(rid, out["sweep"])
         out["timings"][rid] = time.perf_counter() - t0
         out["runs"].append(rid)
     if cpu:
@@ -744,7 +803,7 @@ def record_test_scoring(card: dict, home: Path | None = None) -> dict:
     _append_ledger([{"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                      "invocation": card.get("created"), "manifest_sha256": m.get("sha256"),
                      "steps_sha256": m.get("steps_sha256"), "tasks_sha256": m.get("tasks_sha256"),
-                     "run_id": r, "view": card.get("view"),
+                     "run_id": r, "view": card.get("view"), "ablations": card.get("ablations"),
                      "git_sha": (card.get("git") or {}).get("sha")} for r in runs], home)
     same = [r for r in _ledger_rows(home) if r.get("manifest_sha256") == m.get("sha256")]
     return {"path": str(ledger_path(home)), "manifest_sha256": m.get("sha256"),
@@ -765,16 +824,36 @@ def save(card: dict, home: Path | None = None) -> Path:
 
 # ---- the scorecard --------------------------------------------------------------------------------
 
+def ablations_of(features: str = "a1", regime: bool = False, err_states: bool = False,
+                 sweep_every_epoch: bool | None = None) -> dict:
+    """Which attempt-2 ablations a scoring has on (A2-W: None when no sweep ran)."""
+    return {"A2-F": features == "a2f", "A2-E": bool(err_states), "A2-D": bool(regime),
+            "A2-W": sweep_every_epoch, "features": features}
+
+
+def annotate_regime(ds: P.Dataset) -> int:
+    """A2-D: the causal day-regime annotation on every step, all sequences of a session together."""
+    from . import features as F
+    return F.annotate_regime(ds.steps, {t: ds.sid(t) for t in ds.tasks})
+
+
 def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0, training=None,
-              view: str = "streams", log=print) -> dict:
-    sp = start_prior(ds, ds.ids("train"))
-    t0 = time.perf_counter()
-    base = fit_baselines(ds, sp, seed)
-    t_base = time.perf_counter() - t0
+              view: str = "streams", log=print, features: str = "a1", regime: bool = False,
+              err_states: bool = False) -> dict:
+    from . import features as F
+    F.check_feature_set(features)
     for r in list(runs) + ([cpu_run] if cpu_run else []):      # refuse before ANY test pass
         check_view(_run_summary(r), view)
-    per = [evaluate_run(r, ds, base, sp, seed, view=view, log=log) for r in runs]
-    replay = (evaluate_run(cpu_run, ds, base, sp, seed, crit5=False, view=view, log=log)
+        check_inputs(_run_summary(r), features, regime)
+    if regime:
+        annotate_regime(ds)
+    sp = start_prior(ds, ds.ids("train"))
+    t0 = time.perf_counter()
+    base = fit_baselines(ds, sp, seed, regime=regime, err_states=err_states)
+    t_base = time.perf_counter() - t0
+    kw = dict(view=view, log=log, features=features, regime=regime, err_states=err_states)
+    per = [evaluate_run(r, ds, base, sp, seed, **kw) for r in runs]
+    replay = (evaluate_run(cpu_run, ds, base, sp, seed, crit5=False, **kw)
               if cpu_run else None)
     verdicts = {k: combine(p["verdicts"][k] for p in per) for k in range(1, 6)}
     labs = {s: {"gold": len(main_ids(ds, s, gold_only=True)),
@@ -815,11 +894,20 @@ def scorecard(ds: P.Dataset, desc: str, runs: list, cpu_run=None, seed: int = 0,
         "per_run": per, "cpu_replay": replay,
         "c1_rel_seeds": {"values": rels, "mean": float(np.mean(rels)) if rels else None,
                          "spread": float(np.max(rels) - np.min(rels)) if len(rels) > 1 else None},
+        "ablations": ablations_of(features, regime, err_states,
+                                  (training or {}).get("sweep_every_epoch")),
+        "chain_steps": None,
+        "w_reg_grid": ((training or {}).get("sweep") or {}).get("grid"),
+        "c4_by_construction": (((training or {}).get("sweep") or {}).get("note")
+                               if ((training or {}).get("sweep") or {}).get("every_epoch") else None),
         "verdicts": verdicts, "g1": overall(verdicts), "blockers": blockers, "rules": RULES,
         "seed_rule": "a criterion PASSes only if it PASSes on every seed; any FAIL → FAIL",
         "expected": "first G1 attempt on today's data is expected to FAIL on at least one "
                     "criterion (RESEARCH-FIT-BACKLOG P6) — this card says which and why",
     }
+    if err_states:   # A2-E / H2: both chains' E[steps] ± sd vs observed, train main streams only
+        from . import chains as C
+        card["chain_steps"] = C.expected_steps_report(ds, main_ids(ds, "train"))
     # every scoring of the real test split is recorded (synthetic data has no test to protect)
     card["ledger"] = None if synthetic else record_test_scoring(card)
     return card
@@ -862,6 +950,12 @@ def render(card: dict) -> str:
                               f"{p['w_reg']:g}, best epoch {p['best_epoch']})" for p in per)]
     if card.get("cpu_replay_run"):
         L.append(f"cpu replay run (exact replay, not in the verdict): {card['cpu_replay_run']}")
+    ab = card.get("ablations") or {}
+    on = [k for k in ("A2-F", "A2-E", "A2-D", "A2-W") if ab.get(k)]
+    L.append("attempt-2 ablations: " + (", ".join(on) if on else "none (attempt-1 configuration)")
+             + f"  (features {ab.get('features', 'a1')}, sweep rule "
+             + ("every epoch" if ab.get("A2-W") else "n/a (no sweep)" if ab.get("A2-W") is None
+                else "best epoch") + ")")
     b = card["baselines"]
     L += ["", "next-action CE on test (nats/step, 95% session-cluster CI); step 0 of every sequence "
               "from one train start prior",
@@ -925,11 +1019,15 @@ def render(card: dict) -> str:
                     + (" …" if len(bad) > 6 else "") if bad else ""))
     if len(per) > 1:
         L.append(f"C4 {v[4]:<12} (across seeds)")
+    if card.get("c4_by_construction"):
+        L.append(f"   {card['c4_by_construction']}; the seeds trained the default w_reg")
     L.append(f"   rule: {card['rules'][4]}")
     alone = ", ".join(f"{p['run_id']} {'within' if p['collapse'][-1]['within_bounds'] else 'OUTSIDE'}"
                       for p in per)
-    L.append(f"   (info) the scored checkpoint alone (its test z): {alone}; note the w_reg sweep "
-             "checks the bounds at the best epoch only, the rule above checks every epoch")
+    L.append(f"   (info) the scored checkpoint alone (its test z): {alone}; "
+             + ("the w_reg sweep checked every epoch (A2-W), as the rule above does"
+                if ab.get("A2-W") else "note the w_reg sweep checks the bounds at the best epoch "
+                                       "only, the rule above checks every epoch"))
     c5 = p0["criterion5"]
     if 5 in p0["reasons"]:
         L.append(f"C5 {v[5]:<12} Zeno on value head: not scored — {p0['reasons'][5]}")
@@ -985,9 +1083,21 @@ def render(card: dict) -> str:
                   + ", ".join(f"C{k} {x}" for k, x in c["verdicts"].items()
                               if not (str(k) == "5" and not c.get("criterion5")))
                   + " (C5 not re-scored; not in the verdict)"]
+    cs = card.get("chain_steps")
+    if cs:
+        L += ["", "absorbing chain E[steps] ± sd vs observed (train main streams, labeled walks; A2-E)"]
+        for name, r in cs.items():
+            if not r:
+                L.append(f"  {name:<12} no chain")
+                continue
+            L.append(f"  {name:<12} {r['states']} states: E[steps] {_f(r['expected_steps'], 1)} ± "
+                     f"{_f(r['sd_steps'], 1)} vs observed {_f(r['observed_mean'], 1)} ± "
+                     f"{_f(r['observed_sd'], 1)} (sd ratio {_f(r['sd_ratio'], 2)}), n {r['n_tasks']}"
+                     + (" [singular]" if r["singular"] else ""))
     tr = card.get("training") or {}
     if tr.get("sweep"):
-        L += ["", "w_reg sweep (val only): " + "; ".join(
+        L += ["", f"w_reg sweep (val only; grid {tr['sweep'].get('grid')}, rule: "
+                  f"{tr['sweep'].get('rule')}): " + "; ".join(
             f"{r['w_reg']:g}: val CE {_f(r['val_next_ce'])}, erank {_f(r['effective_rank'], 1)}, SIGReg "
             f"{_f(r['sigreg'])}{' within' if r['within_bounds'] else ' OUTSIDE'}{' <- chosen' if r['chosen'] else ''}"
             for r in tr["sweep"]["candidates"])]
@@ -1012,11 +1122,34 @@ def cmd_evaluate(argv=None) -> int:
     ap.add_argument("--synthetic", type=int, metavar="N", help="N synthetic sessions (fixtures.py)")
     ap.add_argument("--view", choices=("streams", "task"), default="streams",
                     help="sequence unit: one per (task, agent) stream (default) or the raw task order")
+    ap.add_argument("--features", choices=("a1", "a2f"), default="a1",
+                    help="JEPA inputs: a1 (attempt 1, default) or a2f (A2-F: + cross-step state); "
+                         "a --run trained on other inputs is refused")
+    ap.add_argument("--regime", action="store_true",
+                    help="A2-D: day-regime feature for the logistic baseline and the JEPA")
+    ap.add_argument("--err-states", action="store_true",
+                    help="A2-E: error-conditioned <class>!err states in the absorbing chain")
+    ap.add_argument("--sweep-every-epoch", action="store_true",
+                    help="A2-W: with --sweep, reject a w_reg whose ANY epoch is outside the bounds")
+    ap.add_argument("--w-reg-grid", default=None, metavar="LIST",
+                    help="with --sweep: comma-separated w_reg values (default 1,3,10 = attempt 1)")
     ap.add_argument("--no-save", action="store_true", help="do not write the scorecard JSON")
     ap.add_argument("--json", action="store_true")
     g.add_argument("--backfill-ledger", action="store_true",
                    help="only seed eval/ledger.jsonl from the saved scorecards (scores nothing)")
     a = ap.parse_args(list(argv or []))
+    if (a.sweep_every_epoch or a.w_reg_grid) and not (a.train and a.sweep):
+        print("apex-router worldmodel evaluate: --sweep-every-epoch / --w-reg-grid need "
+              "--train --sweep", file=sys.stderr)
+        return 2
+    grid = None
+    if a.w_reg_grid:
+        from .train import parse_grid
+        try:
+            grid = parse_grid(a.w_reg_grid)
+        except ValueError as e:
+            print(f"apex-router worldmodel evaluate: --w-reg-grid: {e}", file=sys.stderr)
+            return 2
     if a.backfill_ledger:
         n = backfill_ledger()
         print(f"ledger: {n} line(s) backfilled into {ledger_path()}" if n else
@@ -1044,18 +1177,22 @@ def cmd_evaluate(argv=None) -> int:
     t0 = time.perf_counter()
     if a.train:
         ov = {"epochs": a.epochs} if a.epochs else {}
+        ov.update(features=a.features, regime=bool(a.regime))
         src = (f"{P.data_dir() / 'steps.jsonl'}:{a.view}" if tag == "steps"
                else f"synthetic-fixtures:{a.synthetic}")
         training = train_runs(ds, src,
                               seeds=max(1, a.seeds), sweep=a.sweep, cpu=not a.no_cpu,
-                              base_seed=a.seed, overrides=ov, tag=tag, log=quiet)
+                              base_seed=a.seed, overrides=ov, tag=tag, log=quiet,
+                              sweep_every_epoch=a.sweep_every_epoch, w_reg_grid=grid)
+        training["sweep_every_epoch"] = bool(a.sweep_every_epoch) if a.sweep else None
         runs, cpu_run = training["runs"], training["cpu_run"]
     else:
         runs = a.run
     t_train = time.perf_counter() - t0
     try:
         card = scorecard(ds, desc, runs, cpu_run=cpu_run, seed=a.seed, training=training,
-                         view=a.view, log=quiet)
+                         view=a.view, log=quiet, features=a.features, regime=a.regime,
+                         err_states=a.err_states)
     except ViewMismatch as e:
         print(f"apex-router worldmodel evaluate: {e}", file=sys.stderr)
         return 2

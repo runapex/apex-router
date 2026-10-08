@@ -22,6 +22,18 @@ step index             7      one-hot bucket: 0, 1, 2-3, 4-7, 8-15, 16-31, >=32
 run length             4      one-hot bucket of steps merged into this one: 1, 2, 3-4, >=5
 =====================  =====  ==============================================================
 
+Attempt-2 ablations (``docs/research/2026-10-08-p6-attempt-2-predeclaration.md``), appended
+after the attempt-1 block and selected by config so attempt 1 stays reproducible:
+
+- ``features="a2f"`` (A2-F) adds the cross-step state ``baselines.prefix_features`` carries, per
+  sequence (stream) and causal (steps <= t): f_ref-normalised test progress 1 − failing/f_ref
+  (f_ref = the first non-zero failing count, carried forward) and whether it is defined, the
+  cumulative error share, tests-ran-so-far (a parsed test result seen), spawned-so-far (any
+  subagent so far, 0/1, as the baseline) and log1p(position). ``A2F_NAMES``.
+- ``regime=True`` (A2-D) adds the day regime read off the ``_regime`` annotation
+  (``annotate_regime``): log1p(errors in the session over the last 15 min), the session-day error
+  rate so far. ``REGIME_NAMES``. The same two numbers feed the logistic baseline.
+
 The prediction target of position t is the action class of step t + 1 (``-1`` on the last step
 of a task: there is no successor, and the position is masked out of the next-action loss). The
 first action of a task is therefore never predicted from the model; E4 scores it with the
@@ -29,6 +41,7 @@ START prior (train first actions, ``start_prior``) for every model alike (``trai
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -56,6 +69,30 @@ FEATURE_NAMES: tuple[str, ...] = (
     + ("run=1", "run=2", "run<5", "run>=5")
 )
 N_FEAT = len(FEATURE_NAMES)
+
+# A2-F: cross-step task state (attempt 2). A2-D: day regime (attempt 2).
+A2F_NAMES: tuple[str, ...] = ("a2f.progress", "a2f.progress_defined", "a2f.err_share",
+                              "a2f.tests_ran", "a2f.spawned", "a2f.log1p_pos")
+REGIME_NAMES: tuple[str, ...] = ("regime.err15m_log1p", "regime.day_err_rate")
+FEATURE_SETS = ("a1", "a2f")
+REGIME_KEY = "_regime"           # step annotation written by ``annotate_regime``
+REGIME_WINDOW_S = 900.0          # "the session's last 15 min"
+
+
+def check_feature_set(features: str) -> str:
+    if features not in FEATURE_SETS:
+        raise ValueError(f"features must be one of {FEATURE_SETS}, not {features!r}")
+    return features
+
+
+def feature_names(features: str = "a1", regime: bool = False) -> tuple[str, ...]:
+    check_feature_set(features)
+    return (FEATURE_NAMES + (A2F_NAMES if features == "a2f" else ())
+            + (REGIME_NAMES if regime else ()))
+
+
+def n_feat(features: str = "a1", regime: bool = False) -> int:
+    return len(feature_names(features, regime))
 
 _OFF_ACT = 0
 _OFF_PHASE = _OFF_ACT + N_ACT
@@ -167,14 +204,15 @@ def causal_phases(acts: list[str]) -> list[str]:
 
 # ---- per-step features ---------------------------------------------------------------------------
 
-def task_features(steps: list[dict]) -> np.ndarray:
-    """Feature matrix ``(n, N_FEAT)`` float32 for one task's steps (already in step order).
+def task_features(steps: list[dict], features: str = "a1", regime: bool = False) -> np.ndarray:
+    """Feature matrix ``(n, n_feat(features, regime))`` float32 for one task's steps (already in
+    step order). ``features="a1"`` with ``regime=False`` is attempt 1's ``(n, N_FEAT)``.
 
     The task-so-far counts and the step index come from the position in ``steps`` (not the
     record's ``i``), so the same function serves raw and macro-merged sequences.
     """
     n = len(steps)
-    X = np.zeros((n, N_FEAT), dtype=np.float32)
+    X = np.zeros((n, n_feat(features, regime)), dtype=np.float32)
     counts = np.zeros(N_ACT, dtype=np.float32)
     for t, rec in enumerate(steps):
         a = act_index(rec)
@@ -193,7 +231,158 @@ def task_features(steps: list[dict]) -> np.ndarray:
         X[t, _OFF_SOFAR:_OFF_SOFAR + N_ACT] = counts / (t + 1)
         X[t, _OFF_STEP + step_bucket(t)] = 1.0
         X[t, _OFF_RUN + run_bucket(rec.get("_run", 1))] = 1.0
+    o = N_FEAT
+    if features == "a2f":
+        X[:, o:o + len(A2F_NAMES)] = a2f_features(steps)
+        o += len(A2F_NAMES)
+    if regime:
+        X[:, o:o + len(REGIME_NAMES)] = regime_features(steps)
     return X
+
+
+def a2f_features(steps: list[dict]) -> np.ndarray:
+    """A2-F block ``(n, 6)``: row t is the state after steps 0..t of this sequence (inclusive, as
+    every other column of the step vector), the same quantities ``baselines.prefix_features``
+    computes (its row t + 1), by the same rules:
+
+    progress = 1 − failed/f_ref once f_ref (the first non-zero ``failed`` of a parsed test result)
+    exists, carried forward between test runs; progress_defined = 1 from then on; err_share =
+    errors so far / (t + 1); tests_ran = 1 once a parsed test result (``ran`` and an int
+    ``failed``) was seen; spawned = 1 once any step so far spawned a subagent; log1p(t), t = the
+    0-based position in the sequence. Causal: row t reads steps <= t only."""
+    n = len(steps)
+    out = np.zeros((n, len(A2F_NAMES)), dtype=np.float32)
+    errs = spawned = ran = 0
+    f_ref = None
+    prog, has_prog = 0.0, 0
+    for t, rec in enumerate(steps):
+        errs += 1 if _int(rec.get("err")) else 0
+        spawned = max(spawned, 1 if _int(rec.get("spawn")) else 0)
+        tr = rec.get("tests") if isinstance(rec.get("tests"), dict) else {}
+        f = tr.get("failed")
+        if _int(tr.get("ran")) and isinstance(f, int) and not isinstance(f, bool):
+            ran = 1
+            if f_ref is None and f > 0:
+                f_ref = f
+            if f_ref:
+                prog, has_prog = 1.0 - f / f_ref, 1
+        out[t] = (prog, has_prog, errs / (t + 1), ran, spawned, math.log1p(t))
+    return out
+
+
+def regime_features(steps: list[dict]) -> np.ndarray:
+    """A2-D block ``(n, 2)`` from each step's ``_regime`` annotation (``annotate_regime``):
+    log1p(session errors in the last 15 min), session-day error rate so far. A step without the
+    annotation reads 0, 0 (fail-open; ``train.WorldModel`` refuses unannotated input instead)."""
+    out = np.zeros((len(steps), len(REGIME_NAMES)), dtype=np.float32)
+    for t, rec in enumerate(steps):
+        out[t] = regime_values(rec)
+    return out
+
+
+def regime_values(rec) -> tuple[float, float]:
+    """(log1p(errors in the last 15 min), session-day error rate) of one annotated step; (0, 0)
+    when the annotation is missing or malformed. Shared by the JEPA and the logistic baseline."""
+    r = rec.get(REGIME_KEY) if isinstance(rec, dict) else None
+    if isinstance(r, (list, tuple)) and len(r) == 2:
+        try:
+            return math.log1p(max(float(r[0]), 0.0)), float(r[1])
+        except (TypeError, ValueError):
+            pass
+    return 0.0, 0.0
+
+
+def has_regime(rec) -> bool:
+    return isinstance(rec, dict) and REGIME_KEY in rec
+
+
+# ---- A2-D: the day regime (causal, telemetry-free) -------------------------------------------------
+
+def _num_ts(rec) -> float | None:
+    v = rec.get("ts") if isinstance(rec, dict) else None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return None
+    return float(v)
+
+
+def annotate_regime(seqs: dict[str, list[dict]], sid_of: dict[str, str] | None = None,
+                    window_s: float = REGIME_WINDOW_S) -> int:
+    """Write ``rec["_regime"] = [errors_15m, day_rate]`` on every step of ``seqs`` (sequence id ->
+    steps in sequence order: the stream view's streams, or whole tasks in the task view).
+
+    Telemetry-free: only the steps' own ``err`` flags and ``ts``. For step p of sequence k at
+    time t, in session S (``sid_of[k]``, else the steps' ``sid``, else k itself):
+
+    - errors_15m = errors of k's steps at positions <= p (itself included) with ts in
+      [t − 15 min, t], plus errors of the OTHER sequences of S (sibling streams, the session's
+      other tasks) with ts in [t − 15 min, t) — strictly earlier, so a sibling step stamped at
+      the same instant is never read;
+    - day_rate = errors / steps over the same two sets restricted to t's UTC day (00:00 UTC to
+      t): the session's error rate so far today; >= 1 step (itself) by construction.
+
+    Causal: appending steps (later in time, or later in a sequence) never changes an earlier
+    value. A step without a numeric ``ts`` gets [0, 0] and is not counted for others.
+    Idempotent; returns the number of steps annotated."""
+    import bisect
+    by_sess: dict[str, list[str]] = {}
+    for k, st in seqs.items():
+        sid = (sid_of or {}).get(k)
+        if sid is None:
+            sid = next((r.get("sid") for r in (st or [])
+                        if isinstance(r, dict) and r.get("sid") is not None), None)
+        by_sess.setdefault(str(sid if sid is not None else k), []).append(k)
+
+    def window(tl, cum, lo, hi):
+        """(errors, steps) among the sorted times ``tl`` in [lo, hi)."""
+        a, b = bisect.bisect_left(tl, lo), bisect.bisect_left(tl, hi)
+        return float(cum[b] - cum[a]), b - a
+
+    def sorted_cum(rows):
+        rows = sorted(rows)
+        return [x[0] for x in rows], np.concatenate([[0.0], np.cumsum([x[1] for x in rows])])
+
+    n_done = 0
+    for keys in by_sess.values():
+        own_rows = {k: [(_num_ts(r), 1 if _int(r.get("err")) else 0) for r in (seqs[k] or [])
+                        if isinstance(r, dict) and _num_ts(r) is not None] for k in keys}
+        T, ce = sorted_cum([x for k in keys for x in own_rows[k]])
+        for k in keys:
+            ot, oc = sorted_cum(own_rows[k])
+            mono = all(a[0] <= b[0] for a, b in zip(own_rows[k], own_rows[k][1:]))
+            seen_t: list[float] = []                    # own steps at positions <= p
+            seen_e: list[int] = []
+            seen_c: list[float] = [0.0]
+            for r in seqs[k] or []:
+                if not isinstance(r, dict):
+                    continue
+                n_done += 1
+                t = _num_ts(r)
+                if t is None:
+                    r[REGIME_KEY] = [0.0, 0.0]
+                    continue
+                ee = 1 if _int(r.get("err")) else 0
+                seen_t.append(t)
+                seen_e.append(ee)
+                seen_c.append(seen_c[-1] + ee)
+                day0 = math.floor(t / 86400.0) * 86400.0
+                vals = []
+                for lo in (t - window_s, day0):
+                    e_all, n_all = window(T, ce, lo, t)
+                    e_own, n_own = window(ot, oc, lo, t)
+                    e, n = e_all - e_own, n_all - n_own           # siblings, strictly earlier
+                    if mono:                                     # own times sorted: bisect
+                        a = bisect.bisect_left(seen_t, lo)
+                        e += seen_c[-1] - seen_c[a]
+                        n += len(seen_t) - a
+                    else:
+                        for tt, x in zip(seen_t, seen_e):
+                            if lo <= tt <= t:
+                                e += x
+                                n += 1
+                    vals.append((e, n))
+                (e15, _), (ed, nd) = vals
+                r[REGIME_KEY] = [float(e15), float(ed / nd) if nd else 0.0]
+    return n_done
 
 
 def next_action_targets(steps: list[dict]) -> np.ndarray:
@@ -235,6 +424,8 @@ def _merge(group: list[dict]) -> dict:
         "tests": last_tests if last_tests is not None else {"ran": 0, "failed": None, "passed": None},
         "spawn": max(1 if _int(r.get("spawn")) else 0 for r in group),
         "_run": sum(_int(r.get("_run", 1), 1) for r in group),
+        # A2-D: a macro-step carries the regime as of its run's last step
+        **({REGIME_KEY: group[-1][REGIME_KEY]} if REGIME_KEY in group[-1] else {}),
     }
 
 
@@ -326,7 +517,8 @@ def owner_start(p: int, L: int, stride: int) -> int:
 
 def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None = None,
                   L: int = 32, macro: bool = False, extra: dict[str, np.ndarray] | None = None,
-                  stride: int | None = None) -> Windows:
+                  stride: int | None = None, features: str = "a1",
+                  regime: bool = False) -> Windows:
     """Cut every task into overlapping windows of ``L`` positions (default stride ``L // 2``).
 
     ``tasks`` maps task id -> its step records (sorted here by ``i``; non-dict records are
@@ -344,7 +536,7 @@ def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None 
     extra_dim = 0
     if extra:
         extra_dim = len(next(iter(extra.values())))
-    F = N_FEAT + extra_dim
+    F = n_feat(features, regime) + extra_dim
     rows = []
     for ti, tid in enumerate(ids):
         steps = sorted((s for s in (tasks[tid] or []) if isinstance(s, dict)),
@@ -354,7 +546,7 @@ def build_windows(tasks: dict[str, list[dict]], outcomes: dict[str, str] | None 
         if macro:
             steps = macro_steps(steps)
         n = len(steps)
-        X = task_features(steps)
+        X = task_features(steps, features, regime)
         if extra_dim:
             ev = np.asarray(extra.get(tid, np.zeros(extra_dim)), dtype=np.float32).reshape(1, -1)
             X = np.concatenate([X, np.repeat(ev, n, axis=0)], axis=1)

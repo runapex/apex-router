@@ -22,6 +22,13 @@ outcome mix — every row keeps some exit mass, so I − Q is invertible wheneve
 (c_type + β·P_pooled)/(n_type + β), β = 8, on the pooled state set.
 
 The 2-state burst chain over call outcomes stays in `markov.py` (re-exported here as `burst`).
+
+**Error-conditioned states (attempt 2, A2-E; `err_states=True`):** a step with `err=1` is the
+state `<class>!err` instead of `<class>` (`state_of`), so the chain can carry P(fail | fail) ≠
+P(fail | ok). States are ordered `search, search!err, read, read!err, …` (those seen in
+training). Smoothing, absorption, shrinkage and every readout are unchanged; the default
+(`err_states=False`) is attempt 1's class-only chain. `expected_steps_report` puts both chains'
+E[steps] ± sd next to the observed walk lengths (H2 of the attempt-2 pre-declaration).
 """
 from __future__ import annotations
 
@@ -34,6 +41,25 @@ from .protocol import ACTIONS, label, task_type
 
 ABSORBING = ("SUCCESS", "FAIL", "ESCALATE", "ABANDON")
 _A = len(ABSORBING)
+ERR = "!err"
+STATE_ORDER = tuple(x for a in ACTIONS for x in (a, a + ERR))
+
+
+def _norm(a) -> str:
+    """A state name in §2 terms: an unknown class counts as `other` (`other!err` if errored)."""
+    a = str(a)
+    if a.endswith(ERR):
+        b = a[:-len(ERR)]
+        return (b if b in ACTIONS else "other") + ERR
+    return a if a in ACTIONS else "other"
+
+
+def state_of(step: dict, err_states: bool = False) -> str:
+    """The chain state of one step: its action class, `<class>!err` when `err_states` and the
+    step errored (A2-E)."""
+    a = step.get("act") if isinstance(step, dict) else None
+    a = a if a in ACTIONS else "other"
+    return a + ERR if (err_states and isinstance(step, dict) and step.get("err")) else a
 
 
 def absorbing_state(task: dict, steps) -> str | None:
@@ -60,6 +86,7 @@ class Chain:
     lengths: tuple = ()              # observed walk lengths (for the misspecification check)
     n_mapped_other: int = 0          # steps whose class was outside `states` → counted as other
     n_dropped: int = 0               # … and with no `other` state to count them in
+    err_states: bool = False         # A2-E: states are <class> / <class>!err
     _an: dict | None = field(default=None, repr=False)
 
     @property
@@ -77,18 +104,22 @@ class Chain:
             return None
 
 
-def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0) -> Chain | None:
+def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0,
+        err_states: bool | None = None) -> Chain | None:
     """`walks`: [(action names, absorbing state)]. With `prior`, shrink to it on its state set.
 
     A class outside §2 counts as `other` (as in protocol.act_id); with a prior, a class missing
     from the prior's state set also counts as `other` when that state exists — never silently
     dropped. Both are counted (`n_mapped_other`; `n_dropped` when there is no `other` state)."""
     walks = [(list(acts), z) for acts, z in walks if acts and z in ABSORBING]
+    if err_states is None:
+        err_states = prior.err_states if prior is not None else any(
+            str(a).endswith(ERR) for acts, _ in walks for a in acts)
     if prior is not None:
         states = prior.states
     else:
-        seen = {a if a in ACTIONS else "other" for acts, _ in walks for a in acts}
-        states = tuple(a for a in ACTIONS if a in seen)
+        seen = {_norm(a) for acts, _ in walks for a in acts}
+        states = tuple(a for a in STATE_ORDER if a in seen)
     if not states:
         return None
     T = len(states)
@@ -98,7 +129,7 @@ def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0
     pos_all = {}
     for acts, _ in walks:
         for a in acts:
-            a2 = a if a in ACTIONS else "other"
+            a2 = _norm(a)
             if a2 in pos:
                 pos_all[a] = pos[a2]
                 mapped += a2 != a
@@ -136,21 +167,27 @@ def fit(walks, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0
         P = (C + beta * prior.P) / (C.sum(axis=1, keepdims=True) + beta)
         pi0 = (c0 + beta * prior.pi0) / (c0.sum() + beta)
     return Chain(states, P, pi0, len(walks), n_tr, C, tuple(len(a) for a, _ in walks),
-                 mapped, dropped)
+                 mapped, dropped, bool(err_states))
 
 
-def walks_of(ds, ids) -> list:
+def walks_of(ds, ids, err_states: bool = False) -> list:
     out = []
     for tid in ids:
         st = ds.steps[tid]
         z = absorbing_state(ds.tasks[tid], st)
         if z is not None and st:
-            out.append(([s.get("act") for s in st], z))
+            out.append(([state_of(s, err_states) for s in st] if err_states
+                        else [s.get("act") for s in st], z))
     return out
 
 
-def fit_tasks(ds, ids, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0):
-    return fit(walks_of(ds, ids), alpha=alpha, prior=prior, beta=beta)
+def fit_tasks(ds, ids, alpha: float = 0.5, prior: Chain | None = None, beta: float = 8.0,
+              err_states: bool | None = None):
+    """`err_states` None → the prior's setting (False without a prior)."""
+    if err_states is None:
+        err_states = prior.err_states if prior is not None else False
+    return fit(walks_of(ds, ids, err_states), alpha=alpha, prior=prior, beta=beta,
+               err_states=err_states)
 
 
 def spectral_radius(Q) -> float:
@@ -192,7 +229,8 @@ def analyse(chain: Chain) -> dict:
 
 
 def p_success_from(chain: Chain | None, act) -> float | None:
-    """P(absorb in SUCCESS | current state = act) — B[act, SUCCESS]. None if unknown/singular."""
+    """P(absorb in SUCCESS | current state = act) — B[act, SUCCESS]. None if unknown/singular.
+    `act` is a state name (`state_of(step, chain.err_states)` for an error-conditioned chain)."""
     if chain is None:
         return None
     i = chain.index(act)
@@ -202,11 +240,12 @@ def p_success_from(chain: Chain | None, act) -> float | None:
     return float(an["B"][i, 0])
 
 
-def by_key(ds, ids, key=None, alpha: float = 0.5, beta: float = 8.0) -> dict:
+def by_key(ds, ids, key=None, alpha: float = 0.5, beta: float = 8.0,
+           err_states: bool = False) -> dict:
     """{"pooled": Chain, key value: Chain shrunk to pooled} — keys with no labeled task are absent.
     `key(task, steps)` defaults to the task type (tasks without one are pooled only)."""
     key = key or (lambda t, s: task_type(t))
-    pooled = fit_tasks(ds, ids, alpha=alpha)
+    pooled = fit_tasks(ds, ids, alpha=alpha, err_states=err_states)
     out = {"pooled": pooled}
     if pooled is None:
         return out
@@ -252,7 +291,7 @@ def window_rho(chain: Chain | None, steps, w: int = 20, beta: float = 5.0) -> np
     if chain is None:
         return np.full(L, np.nan)
     T = len(chain.states)
-    idx = [chain.index(s.get("act")) for s in steps]
+    idx = [chain.index(state_of(s, chain.err_states)) for s in steps]
     out = np.empty(L)
     for i in range(L):
         lo = max(0, i - w)
@@ -284,10 +323,11 @@ def _group_key(ds, tid):
     return (task_type(ds.tasks[tid]) or "all", workflow_of(ds.tasks[tid], ds.steps[tid]))
 
 
-def workflow_values(ds, ids, lam: float = 0.0, beta: float = 8.0, min_tasks: int = 5) -> dict:
+def workflow_values(ds, ids, lam: float = 0.0, beta: float = 8.0, min_tasks: int = 5,
+                    err_states: bool = False) -> dict:
     """value = P(SUCCESS) − λ·E[steps] per (task type, workflow) from START, chains shrunk to the
     pooled chain. Groups with < `min_tasks` labeled train tasks are left out."""
-    pooled = fit_tasks(ds, ids)
+    pooled = fit_tasks(ds, ids, err_states=err_states)
     if pooled is None:
         return {}
     groups = {}
@@ -340,3 +380,25 @@ def ranking_accuracy(values: dict, real: dict, min_n: int = 5) -> dict:
             pairs.append({"a": a, "b": b, "realized": (ra, rb), "value": (va, vb), "score": s})
     return {"accuracy": score / len(pairs) if pairs else None, "n_pairs": len(pairs),
             "pairs": pairs}
+
+
+# ---- A2-E: both chains' expected steps vs observed -----------------------------------------------
+
+def expected_steps_report(ds, ids) -> dict:
+    """E[steps] ± sd of the class-only chain and of the error-conditioned chain (A2-E), both fitted
+    on `ids`, next to the observed lengths of the same labeled walks (H2: the model sd should move
+    towards the observed sd). `sd_ratio` = model sd / observed sd."""
+    out = {}
+    for name, err in (("classes", False), ("classes+err", True)):
+        ch = fit_tasks(ds, ids, err_states=err)
+        if ch is None:
+            out[name] = None
+            continue
+        r = table({"pooled": ch})[0]
+        obs = r["observed_sd"]
+        out[name] = {"states": len(ch.states), "n_tasks": r["n_tasks"],
+                     "expected_steps": r["expected_steps"], "sd_steps": r["sd_steps"],
+                     "observed_mean": r["observed_mean"], "observed_sd": obs,
+                     "sd_ratio": (r["sd_steps"] / obs if (r["sd_steps"] is not None and obs) else None),
+                     "singular": r["singular"]}
+    return out
