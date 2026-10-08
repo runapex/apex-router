@@ -90,7 +90,15 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # as sent) and streamed back (the raw, still-encoded response body). Per session they are that
 # agent's LLM network traffic; the menu-bar widget sums them (nettop only sees open sockets, and an
 # agent's requests are short-lived connections that close before it can be sampled).
-TELEMETRY_SCHEMA_VERSION = 10
+# v11: added `retry_policy` / `retry_arm` / `retry_propensity` — the retry-action A/B instrument
+# (L1; docs/research/2026-10-08-l1-regime-and-retry-ab.md). Set only on rows whose request took at
+# least one transport retry in send_stream; None everywhere else, so a pre-v11 consumer sees the same
+# shape plus three nulls. retry_policy = the configured APEX_RETRY_POLICY, or "ab" under
+# APEX_RETRY_AB=1; retry_arm = the action actually applied (immediate|wait|switch — switch is a
+# logged placeholder, one upstream per wire today); retry_propensity = P(that arm) at assignment
+# (1.0 when not randomised). Default config logs policy=arm="immediate", propensity 1.0: today's
+# behaviour, now labelled.
+TELEMETRY_SCHEMA_VERSION = 11
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -216,6 +224,9 @@ class TelemetryEvent:
     usage: dict | None = None
     bytes_up: int = 0      # v10: request body bytes forwarded upstream
     bytes_down: int = 0    # v10: response body bytes streamed back (as received, encoded)
+    retry_policy: str | None = None       # v11: configured retry policy ("ab" when randomised)
+    retry_arm: str | None = None          # v11: retry action applied (immediate|wait|switch)
+    retry_propensity: float | None = None  # v11: P(retry_arm) at assignment
 
     @classmethod
     def start(cls, *, apex_version: str, client: str) -> TelemetryEvent:
@@ -225,6 +236,14 @@ class TelemetryEvent:
             turn=0, epoch_id=None, client=client, model_requested=None,
             model_resolved=None, stratum="unknown",
         )
+
+    def record_retry_arm(self, stats: dict) -> None:
+        """Copy the retry-action A/B assignment send_stream left in `stats` (v11). A request that
+        never retried has none, and its three fields stay None."""
+        if stats.get("retry_arm") is not None:
+            self.retry_policy = stats.get("retry_policy")
+            self.retry_arm = stats.get("retry_arm")
+            self.retry_propensity = stats.get("retry_propensity")
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"), ensure_ascii=False)

@@ -72,6 +72,54 @@ def _retry_fast_fail_s() -> float:
     return ms / 1000.0
 
 
+# Retry-action A/B (L1, docs/research/2026-10-08-l1-regime-and-retry-ab.md). The burst chain found
+# that right after a failed call the next one fails 30–40% of the time vs < 4% overall — a HYPOTHESIS
+# that waiting (or switching upstream) before a retry beats retrying at once. These knobs instrument
+# that question without changing behaviour by default:
+#   APEX_RETRY_POLICY = immediate | wait | switch  (default immediate = the jittered backoff below,
+#                       unchanged). wait: each pre-retry sleep is at least APEX_RETRY_WAIT_MS
+#                       (default 1000, clamped to [0, 2000]). switch: a PLACEHOLDER — there is one
+#                       upstream per wire today, so it behaves exactly like immediate and only logs
+#                       the arm (the switch target lands with a second endpoint).
+#   APEX_RETRY_AB = 1  randomises the arm per request (one coin, drawn at the request's first retry),
+#                       over APEX_RETRY_AB_ARMS (default "immediate,wait"); the propensity is logged.
+# Telemetry (v11): retry_policy / retry_arm / retry_propensity, set only on rows that retried.
+RETRY_POLICIES = ("immediate", "wait", "switch")
+_DEFAULT_RETRY_WAIT_MS = 1000.0
+_MAX_RETRY_WAIT_MS = 2000.0
+
+
+def _retry_wait_s() -> float:
+    """APEX_RETRY_WAIT_MS as seconds, clamped to [0, 2 s]; garbage/non-finite → default."""
+    raw = os.environ.get("APEX_RETRY_WAIT_MS")
+    try:
+        ms = float(raw) if raw is not None else _DEFAULT_RETRY_WAIT_MS
+    except ValueError:
+        ms = _DEFAULT_RETRY_WAIT_MS
+    if not math.isfinite(ms):
+        ms = _DEFAULT_RETRY_WAIT_MS
+    return min(max(ms, 0.0), _MAX_RETRY_WAIT_MS) / 1000.0
+
+
+def retry_assignment(rng: random.Random | None = None) -> tuple[str, str, float]:
+    """(retry_policy, retry_arm, retry_propensity) for one request, from the environment.
+
+    Without APEX_RETRY_AB=1 the arm is the configured policy (unknown value → immediate) with
+    propensity 1.0. With it, policy is "ab" and the arm is a uniform draw over APEX_RETRY_AB_ARMS
+    (unknown names dropped, duplicates removed; fewer than two valid arms → immediate,wait)."""
+    r = rng or random
+    if os.environ.get("APEX_RETRY_AB", "").strip() == "1":
+        raw = os.environ.get("APEX_RETRY_AB_ARMS", "immediate,wait")
+        arms = list(dict.fromkeys(a.strip().lower() for a in raw.split(",")
+                                  if a.strip().lower() in RETRY_POLICIES))
+        if len(arms) < 2:
+            arms = ["immediate", "wait"]
+        return "ab", arms[r.randrange(len(arms))], 1.0 / len(arms)
+    pol = os.environ.get("APEX_RETRY_POLICY", "immediate").strip().lower()
+    pol = pol if pol in RETRY_POLICIES else "immediate"
+    return pol, pol, 1.0
+
+
 def _is_completion_request(method: str, url: str) -> bool:
     """True for POST/GET on a stateless completion endpoint (never /batches or /files)."""
     if method.upper() not in _BODY_SENT_RETRY_METHODS:
@@ -310,6 +358,7 @@ class Upstream:
         fast_fail_s = _retry_fast_fail_s()
         completion = _is_completion_request(method, url)
         slept_total = 0.0  # total-duration budget: stop retrying once cumulative backoff hits the cap
+        arm = None  # retry-action A/B arm, drawn lazily at the first retry (see retry_assignment)
         for i in range(attempts):
             # Build a FRESH request each attempt: a consumed/aborted request object must not be
             # re-sent, and the scrub is cheap.
@@ -334,6 +383,17 @@ class Upstream:
                 capped = min(backoff * (2**i), _MAX_CONNECT_BACKOFF_S)
                 half = capped / 2.0
                 delay = half + random.uniform(0.0, half)
+                # Retry-action A/B: the arm is drawn ONCE per request, at its first retry (so only
+                # requests that actually retry carry it). `wait` raises this sleep to at least the
+                # bounded APEX_RETRY_WAIT_MS; `immediate`/`switch` leave it as today.
+                if arm is None:
+                    policy, arm, propensity = retry_assignment()
+                    if stats is not None:
+                        stats["retry_policy"] = policy
+                        stats["retry_arm"] = arm
+                        stats["retry_propensity"] = propensity
+                if arm == "wait":
+                    delay = max(delay, _retry_wait_s())
                 delay = min(delay, _MAX_CONNECT_TOTAL_BACKOFF_S - slept_total)
                 slept_total += delay  # budget accounting uses SCHEDULED delay (the cap's currency)
                 # But telemetry must bill the ELAPSED sleep, not the scheduled one: under event-loop

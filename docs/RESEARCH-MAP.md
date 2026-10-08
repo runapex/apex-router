@@ -1,6 +1,6 @@
 # Research map: every experiment, its evidence, and the layer it belongs to
 
-**Status:** living index. **Date:** 2026-10-07. Cross-validated by `it-entra-gpt-6-astra` (xval
+**Status:** living index. **Date:** 2026-10-08 (L1 regime model + retry A/B instrument). Cross-validated by `it-entra-gpt-6-astra` (xval
 `68db2eb9274f`, NO-GO → findings applied; see §7). Numbers are measured on this workstation unless
 marked otherwise; each row links to the document that owns the detail.
 **Companions:** `RESEARCH-FIT-BACKLOG.md` (P2–P6), `RESEARCH-difficulty-teacher-router.md`,
@@ -16,7 +16,7 @@ method ends up used for the wrong case — which is what happened to Zeno (§3).
 | Layer | Decides | Timescale | Today's owner |
 |---|---|---|---|
 | **L0 Serving & wire** | where bytes go, caching, telemetry | per request (ms) | proxy, `pricing.py`, widget network |
-| **L1 Call reliability** | retry, wait, switch endpoint | seconds | `pressure.py`, retries, `zeno report` §1/1b |
+| **L1 Call reliability** | retry, wait, switch endpoint | seconds | `pressure.py`, retries, `zeno report` §1/1b/1c, `retry-ab report` |
 | **L2 Dispatch routing** | which model tier starts a task / subagent / pi turn | per task start | `classify.py`, `route_resolve`, venue rule, `route_advise` |
 | **L3 Task control** | continue, switch workflow, escalate, stop | minutes, within a task | — (nothing yet) |
 | **L4 Planning & learning** | which workflow / parameters to *learn* for which kind of task | days–weeks (fitting) | xval bandit, learn chain |
@@ -49,7 +49,8 @@ idea it measures works.
 
 | Use | Layer | Evidence | Strength / weakness |
 |---|---|---|---|
-| **Burst chain** over call outcomes (`markov.py`, `zeno report` 1b) | **L1** retry policy | **E2** (both). Claude sessions: r1 0.271 from only 3 fail→fail pairs; held-out Brier 0.081 vs p^n 0.098, paired diff +0.018 [−0.002, +0.040] (not significant). Codex, ad-hoc pseudo-sessions (10-min gap split; session ids missing until today; one-off numbers, not reproducible until the split is stored as a script — owed): r1 0.375, P(fail \| fail) 0.40 vs 0.039 stationary, runs up to 16; held-out Brier 0.398 vs 0.511 | Observed: right after a failure the next call failed 30–40% of the time vs < 4% overall. That is a **hypothesis for the retry policy** (wait or switch rather than retry at once), not a validated policy: the held-out check scores session cleanliness, not competing retry actions; that needs an A/B on the retry action. Both models are badly miscalibrated on Codex because failures cluster by **day** (69 on 10-02, 1 on 10-07) |
+| **Burst chain** over call outcomes (`markov.py`, `zeno report` 1b) | **L1** retry policy | **E2** (both). Claude sessions: r1 0.271 from only 3 fail→fail pairs; held-out Brier 0.081 vs p^n 0.098, paired diff +0.018 [−0.002, +0.040] (not significant). Codex, ad-hoc pseudo-sessions (10-min gap split; session ids missing until today; one-off numbers, not reproducible until the split is stored as a script — owed): r1 0.375, P(fail \| fail) 0.40 vs 0.039 stationary, runs up to 16; held-out Brier 0.398 vs 0.511 | Observed: right after a failure the next call failed 30–40% of the time vs < 4% overall. That is a **hypothesis for the retry policy** (wait or switch rather than retry at once), not a validated policy: the held-out check scores session cleanliness, not competing retry actions; that needs an A/B on the retry action. Both models are badly miscalibrated on Codex because failures cluster by **day** (69 on 10-02, 1 on 10-07). **2026-10-08:** the A/B is now instrumented — **E1** (telemetry v11 `retry_arm`, opt-in `APEX_RETRY_AB=1`, readout `apex-router retry-ab report`; no randomised rows yet). Pre-A/B baseline: 374 retried requests, 73.3% [68.6%, 77.5%] recovered; ~53 retried requests/day → 30/arm in ~1–2 days, but 30/arm only detects a ~32-pt difference (10 pts needs ~308/arm, ~12 days) |
+| **Regime model** — 2-state HMM over the time-ordered call stream, plain and with a per-state burst chain; EM-free day mixture as baseline (`regime.py`, `zeno report` 1c) | **L1** | **E2** (2026-10-08; `docs/research/2026-10-08-l1-regime-and-retry-ab.md`). 28,234 proxy calls: the plain HMM only re-finds the bursts (degraded state 83% fail, mean dwell 3.2 calls → "bursts only"). With a burst chain per state, a slow regime appears: base fail 0.13% vs 2.91% after an ok call, dwell ~340 / ~426 calls, stationary 55.6% degraded; Viterbi marks 08-24 → 10-02 degraded and 10-03 on normal. Held out (cut 10-02 17:57; 94 train / 41 test sessions): Brier iid 0.162, chain 0.116, HMM+burst 0.112, filtered 0.110 — vs chain +0.006 [+0.002, +0.011] (session bootstrap) | The switch on 10-02/03 is the **v8 transport-retry deploy** (SSLError/ReadError now retried), not an upstream recovery: on the post-v8 window (11.6k calls) both HMMs say "bursts only" and no day decodes degraded. So on proxy data the day-level effect was the instrument changing; the small held-out gain is adapting to that level shift. The Codex day clustering (pseudo-sessions, not proxy rows) is untested here |
 | **Absorbing chain** over action classes / latent states | **L3** (expected steps, ρ(Q) → divergence) and **L4** (workflow value) | **E2** prototype: 13,034 tool calls; expected 167 calls START→END; next-action perplexity 6.92 → 5.34 (order 1) → 5.22 (order 2) → 5.63 (order 3 overfits) | Interpretable, closed form (N = (I−Q)⁻¹, P(success) = N·R). Needs absorbing outcome states, i.e. labels |
 | **Markov inside JEPA** (k-means on latents → chain) | **L3/L4** | **E1** (P6) | Turns a learned representation into expected steps, absorption odds and the ρ(Q) divergence test |
 
@@ -116,7 +117,10 @@ calibrate on outcomes) and gates G-A/G-B/G-C in the research note.
 ## 4. What was missing from the list (added here)
 
 1. **Regime model for L1** (normal vs outage, e.g. a 2-state hidden Markov model or a per-day mix):
-   the Codex miscalibration is a day-level effect neither chain can fit. E0.
+   the Codex miscalibration is a day-level effect neither chain can fit. ~~E0~~ **E2** (2026-10-08,
+   §3.2 row, `zeno report` 1c): on proxy data the only slow regime is the v8 retry deploy (degraded
+   08-24 → 10-02, normal since); post-v8 the stream is "bursts only". Re-run 1c after a real upstream
+   incident; the Codex day effect needs Codex session ids in proxy rows first.
 2. **One shared evaluation protocol**: session-level time split, session-cluster bootstrap, tuning
    inside train, test scored once. Every doc above restates it differently. E0.
 3. **One task table** joining transcripts, telemetry, labels, teacher scores and phase, keyed by
@@ -200,7 +204,8 @@ All of these are **hypotheses to test**, not established benefits.
 
 | Experiment | Layer | Evidence | Strongest point | Blocking gap |
 |---|---|---|---|---|
-| Markov burst chain | L1 | E2 | after a failure, 30–40% next-call failure vs < 4% | retry-action A/B; day-level regime model |
+| Markov burst chain | L1 | E2 | after a failure, 30–40% next-call failure vs < 4% | retry-action A/B (instrumented, E1; needs `APEX_RETRY_AB=1` and ~300 retries/arm for a 10-pt effect) |
+| Regime model (HMM) | L1 | E2 | finds a slow regime only with a per-state burst chain; filtered held-out Brier beats the chain by 0.006 [0.002, 0.011] | the one regime found is the v8 proxy change; needs a real upstream incident |
 | Venue rule | L2 | E4 | 1.88× on the eligible slice; the baseline | — |
 | Difficulty teacher | L2 | E2 | repeatable (ρ 0.98), cheap; directional edge over baselines | cheap-tier outcomes |
 | Zeno progress | L3 | E2 (code + synthetic; real data unscored) | right question, closed form; plateau false positives removed | gold labels; only 16/43 test tasks carry parsed test runs |
@@ -213,7 +218,7 @@ All of these are **hypotheses to test**, not established benefits.
 | Shared open weights | L0 → all | E1 | observable KV, model internals, cheap open-model runs (hypotheses) | quality gate per lane; isolation review |
 
 **Order that unblocks the most:** gold labels → one task table + shared eval protocol → Stage B
-calibration layer → L1 regime model and L3 proxy Zeno detector (both cheap, both on data we have) →
+calibration layer → L3 proxy Zeno detector (cheap, on data we have; the L1 regime model is done, E2) →
 S0 local KV sweep → everything that needs scale (teacher at scale, JEPA, shared server).
 
 ## 7. Cross-validation record (xval `68db2eb9274f`)

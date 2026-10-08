@@ -130,6 +130,10 @@ def main(argv=None) -> int:
         # discovery). Own subcommands, so it parses its own args like xval.
         from .zeno import main as _zeno
         return _zeno(raw[1:])
+    if raw[:1] == ["retry-ab"]:
+        # Retry-action A/B readout (telemetry v11): per-arm P(retry recovers). Own subcommands.
+        from .retry_ab import main as _retry_ab
+        return _retry_ab(raw[1:])
     if raw[:1] == ["worldmodel"]:
         # P6 world model (docs/DESIGN-worldmodel-P6.md): one dispatcher; numpy/mlx load lazily inside commands.
         from .worldmodel.cli import main as _worldmodel
@@ -297,6 +301,8 @@ def main(argv=None) -> int:
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)
+    sub.add_parser("retry-ab", help="retry-action A/B readout: per-arm P(transport retry recovers) "
+                                    "with Wilson CIs; `retry-ab report [--json]`", add_help=False)
     sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|snapshot|baseline|chains|progress|"
                                       "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
