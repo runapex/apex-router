@@ -1,0 +1,32 @@
+⚠ claude · demo · aaaa1111 · busy · pid 100 · 220MB · 140% · 3.0MB/s · 25 req/h · out 22.5k/h · cache 99%
+    ctx 282k/1M 28% · r5 2.4/min · last 4s
+  spawned general-purpose · fix the parser · 6 req · in 720 · cached 900.0k · write 12.0k · out 5.4k · cache 99%
+      ctx 152k/1M 15% · running · run 13m · last 2s · depth 1
+    calls claude-fable-5-1 ×6
+  spawned ⚠ Explore · long search [31mred[0m · 3 req · in 360 · cached 450.0k · write 6.0k · out 2.7k · cache 99%
+      ctx 152k/1M 15% · running · run 30m · last 5s · depth 1
+    calls claude-opus-5-5 ×3
+  spawned ⚠ Explore · errors here · 2 req · in 240 · cached 1.0M · write 4.0k · out 1.8k · cache 100% · 1 err 50%
+      ctx 152k/1M 15% · quiet · run 26m · last 4m · depth 2
+    calls claude-opus-5-5 ×2
+  spawned ? · · 1 req · in 120 · cached 150.0k · write 2.0k · out 900 · cache 99% · ctx 152k/1M 15% · ? · no log
+    calls claude-opus-5-5 ×1
+  spawned Explore · quiet | one · 0 req · out 0 · run 9m · quiet 3m · depth 1
+  spawned Plan · -- done plan · 0 req · out 0 · run 20m · done 20m · depth 1
+  runs pytest (pid 103) · 70MB · 50%
+  runs langserver.index (pid 102) · 60MB · 40%
+  runs zsh (pid 101) · 50MB · 30%
+  calls claude-opus-5-5 ×13
+pi · pilot · 0000abcd · active · pid 300 · 210MB · 60% · 0.0MB/s · 1 req/h · out 900/h · cache 77% · ctx 52k/1M 5%
+    r5 0.2/min · last 2m
+  runs node (pid 301) · 110MB · 0%
+  calls it-entra-claude-opus-5-5 ×1
+⚠ claude · demo · bbbb2222 · busy · pid 200 · 70MB · 40% · 0.0MB/s · 5 req/h · out 4.5k/h · cache 99% · ctx 152k/1M 15%
+    last 13m
+  spawned ⚠ general-purpose · hung review · 4 req · in 480 · cached 600.0k · write 8.0k · out 3.6k · cache 99%
+      ctx 152k/1M 15% · run 18m · waiting? 12m · depth 1
+    calls claude-sonnet-5-5 ×4
+  spawned Explore · finished early · 0 req · out 0 · run 15m · done 25m · depth 1
+  calls claude-opus-5-5 ×1
+claude · demo · cccc3333 · idle · pid 250 · 570MB · 50% · 0.0MB/s
+codex · cx · 0000cdef · idle
