@@ -211,7 +211,7 @@ All of these are **hypotheses to test**, not established benefits.
 | Zeno progress | L3 | E2 (code + synthetic; real data unscored) | right question, closed form; plateau false positives removed | gold labels; only 16/43 test tasks carry parsed test runs |
 | Markov absorbing chain | L3/L4 | E2 | interpretable expected steps / odds | absorbing outcome labels |
 | Workflow graph | L4 | E1–E2 | design + day-0 baseline | labels |
-| JEPA | L4 (fit) → L3 (act) | E2 (G1 attempt 1 FAIL) | beats prior and Markov on next action; architecture fits the planner | loses to logistic hand features by 6%; gold labels; data volume |
+| JEPA | L4 (fit) → L3 (act) | E2 (G1 attempts 1–2 FAIL) | beats prior and Markov on next action; C2 PASS on 8 gold tasks | loses to logistic by 4% (was 6%); C4 unreachable through warm-up; gold on test; data volume |
 | xval bandit | L4 (fit) → L2 (pick arm) | E4 code, data insufficient | the only live learning loop | runs per arm |
 | Zeno p^n | L1 (readout) | E4 | honest horizon readout | not a decision tool |
 | Outcome labels | L5 | E4 / data E1 | pipeline + precision accounting | **100 gold labels** |
