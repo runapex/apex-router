@@ -35,8 +35,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import stats
 from .route_conformance import default_conformance_path
-from .route_log import (CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, TIER_RANK, default_labeled_path,
-                        default_log_path, tier_of)
+from .route_log import (ALL_TIER_RANK, CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, GPT_FAMILY,
+                        OTHER_TIER, default_labeled_path, default_log_path, is_cross_family,
+                        tier_family, tier_of)
 from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
 _JOIN_WINDOW_S = 300.0
@@ -194,6 +195,15 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
         "resolved_model": conf_row.get("resolved_model"),
         "matched": conf_row.get("matched"),
     }
+    # The outcome's tier is the model that RAN (route_log `model`): on a subscription overlay a
+    # pi `sonnet` cue runs gpt-5.6-terra, so the row is gpt-terra's, with `family` as the label.
+    tier = tier_of(route_row.get("start_tier")) or tier_of(route_row.get("model"))
+    out["tier"] = tier
+    out["tier_family"] = tier_family(tier)
+    out["cross_family"] = False
+    fam = route_row.get("family")
+    if isinstance(fam, str):
+        out["family"] = fam
     # context_size: conformance preferred, else route_log.
     cs = conf_row.get("context_size")
     if cs is None:
@@ -427,6 +437,9 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
             "resolved_model": resolved,
             "matched": (resolved_tier == requested) if (requested and resolved_tier) else None,
             "effective_tier": effective,
+            "tier": effective,
+            # Asked for a Claude tier, ran a GPT model (or vice versa): not this tier's outcome.
+            "cross_family": is_cross_family(requested, resolved_tier),
             "session_id": r.get("session_id"),
             "agent_id": r.get("agent_id"),
             "tool_use_id": r.get("tool_use_id"),
@@ -462,7 +475,7 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
             a_start = a["requested_tier"]
             if a_start not in CHEAP_START_TIERS:
                 continue
-            ra = TIER_RANK[a_start]
+            ra = ALL_TIER_RANK[a_start]
             da = normalize_description(a["description"])
             if not da:
                 continue
@@ -470,9 +483,16 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
                 dt = b["ts"] - a["ts"]
                 if dt > _ESCALATION_WINDOW_S:
                     break  # sorted by ts: everything later is out of the window too
-                rb = TIER_RANK.get(b["effective_tier"])
-                if dt > 0 and rb is not None and rb > ra \
-                        and normalize_description(b["description"]) == da:
+                tb = b["effective_tier"]
+                rb = ALL_TIER_RANK.get(tb)
+                if not (dt > 0 and rb is not None and normalize_description(b["description"]) == da):
+                    continue
+                if is_cross_family(a_start, tb):
+                    # A redo in the OTHER family: ranks are not comparable across families, so
+                    # this is recorded, never counted as an escalation (and kept out of rates).
+                    a["cross_family"] = True
+                    continue
+                if rb > ra:
                     a["escalated"] = True
                     a["label"] = "hard"
                     a["escalated_by"] = b["tool_use_id"]
@@ -485,6 +505,7 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
         "telemetry_joined": sum(1 for r in out if r["telemetry_joined"]),
         "escalated_inferred": escalated,
         "unlabeled": sum(1 for r in out if r["label_status"] == UNLABELED),
+        "cross_family": sum(1 for r in out if r["cross_family"]),
     }
 
 
@@ -602,6 +623,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 "telemetry_joined": cc_stats["telemetry_joined"],
                 "escalated_inferred": cc_stats["escalated_inferred"],
                 "unlabeled": cc_stats["unlabeled"],
+                "cross_family": sum(1 for r in table if r.get("cross_family") is True),
                 "route_log_error": "route_log" in read_errors,
                 "route_log_error_name": read_errors.get("route_log"),
                 "telemetry_error": "telemetry" in read_errors,
@@ -615,7 +637,10 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
 def cell_rates(table) -> dict:
     """Aggregate a joined table into per-task-type escalation rates with Wilson CIs.
 
-    Returns {task_type: {n, escalated, rate, ci, with_context}}. Fail-safe: any
+    Returns {task_type: {n, escalated, rate, ci, with_context, by_tier}}. The headline
+    n/escalated/rate exclude GPT-tier rows (route_log.read_rates' contract: a GPT outcome is
+    never priced as a Claude one); `by_tier` holds {tier: {n, escalated, rate}} for every tier,
+    "other" for rows with no known tier. cross_family rows count nowhere. Fail-safe: any
     failure yields {}.
     """
     try:
@@ -629,10 +654,21 @@ def cell_rates(table) -> dict:
                 continue
             if row.get("label_status") == UNLABELED:
                 continue
+            if row.get("cross_family") is True:
+                continue
             cell = rates.setdefault(tt, {
                 "n": 0, "escalated": 0, "rate": 0.0,
-                "ci": (0.0, 0.0), "with_context": 0,
+                "ci": (0.0, 0.0), "with_context": 0, "by_tier": {},
             })
+            tier = row.get("tier")
+            if not (isinstance(tier, str) and tier in ALL_TIER_RANK):
+                tier = tier_of(row.get("model"))
+            sub = cell["by_tier"].setdefault(tier or OTHER_TIER, {"n": 0, "escalated": 0, "rate": 0.0})
+            sub["n"] += 1
+            sub["escalated"] += 1 if escalated else 0
+            sub["rate"] = sub["escalated"] / sub["n"]
+            if tier_family(tier) == GPT_FAMILY:
+                continue
             cell["n"] += 1
             if escalated:
                 cell["escalated"] += 1
@@ -772,6 +808,12 @@ def main(argv=None) -> int:
             lo, hi = r["ci"]
             print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f} "
                   f"[{lo:>6.2f},{hi:>6.2f}] {r['with_context']:>9}")
+            by_tier = r.get("by_tier") or {}
+            for tier in sorted(by_tier, key=lambda t: (tier_family(t) or "~", ALL_TIER_RANK.get(t, 99), t)):
+                b = by_tier[tier]
+                print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
+        if st.get("cross_family"):
+            print(f"\n  cross_family rows (Claude <-> GPT, excluded from every rate): {st['cross_family']}")
     except Exception:
         # Fail-safe: never let a readout failure become a caller failure.
         pass

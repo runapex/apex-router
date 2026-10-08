@@ -184,6 +184,19 @@ next tag will carry.
   `worldmodel.readout.COMMANDS` for the `worldmodel` dispatcher.
 
 ### Fixed
+- Route log on the subscription setup: pi's Claude-named families run GPT models there, but
+  `tier_of` knew only the Claude tiers, so those rows had no tier and were mixed into the
+  per-task-type rate with the Claude rows. GPT ids now map to GPT tiers (`gpt-luna` <
+  `gpt-terra` < `gpt-sol` < `gpt-sol-6.1`), and a gpt id never maps to a Claude tier.
+  `read_rates` and `route-join` add per-tier `by_tier` rows. The headline rate that
+  `route-advise` prices at Claude cost leaves GPT rows out. `CHEAP_START_TIERS` adds
+  `gpt-luna` and `gpt-terra`, and escalation is ranked within one family only. A move between
+  Claude and GPT is marked `cross_family` and left out of every rate. `route-log --family`
+  (an additive field) records the cued family next to the model that ran, and the pi
+  extension passes it. `expected_models(..., surface="pi")` reads a pi family's model from the
+  active registry. `route-check --record` uses it for a pi row sent without a `matched`
+  verdict, so a remapped family is not drift. Rows from the extension already carry
+  `matched` (the resolved id against the family's id), so they were never counted as drift.
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh
   deadline is 1.2 s (was 0.45 s); with endpoint security slowing every spawn, the old budget
   skipped launchctl / ioreg / ollama / `/healthz` on about half the refreshes, and a skipped

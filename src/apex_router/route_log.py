@@ -18,6 +18,14 @@ knowable at write time. `route-join` infers it offline (later same-description d
 a strictly higher tier) and writes the resolved labels to the labeled table
 (`labeled_table.jsonl` beside the log). `read_rates` therefore SKIPS pending rows in the raw
 log and folds in the resolved claude-code rows from the labeled table instead.
+
+Two tier families: Claude (haiku < sonnet < opus < fable) and GPT (gpt-luna < gpt-terra <
+gpt-sol < gpt-sol-6.1), each ranked only within itself. A GPT outcome is never counted under a
+Claude tier: `tier_of` resolves a gpt id to a GPT tier or to None, never to a Claude tier; the
+per-task-type headline rate (`n`/`escalated`/`rate`, which route-advise prices at Claude cost)
+excludes GPT-tier rows, which are reported per tier in each cell's `by_tier`. A row whose
+requested and resolved tiers are in different families (`cross_family`) is not an escalation
+and is excluded from every rate.
 """
 from __future__ import annotations
 
@@ -40,10 +48,22 @@ CLAUDE_CODE_SURFACE = "claude-code"
 TIER_RANK = {"haiku": 0, "sonnet": 1, "opus": 2, "fable": 3}
 # Cheap-start tiers: only these claude-code rows enter read_rates (route-advise's question is
 # "when we START cheap, how often does it bounce?"; an opus/fable start is not a cheap start).
-CHEAP_START_TIERS = ("haiku", "sonnet")
+CHEAP_START_TIERS = ("haiku", "sonnet", "gpt-luna", "gpt-terra")
+# GPT tiers (openai-codex), ranked the same way so "escalated" (resolved rank > requested rank)
+# means something WITHIN the GPT family. Names follow model_registry's pi_families keys
+# (gpt-luna/gpt-terra/gpt-sol); gpt-sol-6.1 is the 6.1 Sol above 5.6 Sol. Ranks compare only
+# within a family: a Claude <-> GPT move is `cross_family`, never an escalation.
+GPT_TIER_RANK = {"gpt-luna": 0, "gpt-terra": 1, "gpt-sol": 2, "gpt-sol-6.1": 3}
+CLAUDE_FAMILY = "claude"
+GPT_FAMILY = "gpt"
+TIER_FAMILY = {**{t: CLAUDE_FAMILY for t in TIER_RANK}, **{t: GPT_FAMILY for t in GPT_TIER_RANK}}
+ALL_TIER_RANK = {**TIER_RANK, **GPT_TIER_RANK}
+OTHER_TIER = "other"  # by_tier bucket for a model that maps to no known tier (kimi, local, auto)
 _DESC_MAX = 200
 _OPTIONAL_STR_FIELDS = ("surface", "agent_id", "tool_use_id", "start_tier", "description",
-                        "resolved_model", "parent_agent_id")
+                        "resolved_model", "parent_agent_id", "family")
+_GPT_ID_RE = re.compile(r"gpt-(\d+(?:\.\d+)?)-(luna|terra|sol)(?![a-z])")
+_GPT_TIER_RE = re.compile(r"^gpt-(luna|terra|sol)(?:-(\d+(?:\.\d+)?))?$")
 
 
 def default_log_path() -> Path:
@@ -65,15 +85,48 @@ def default_labeled_path(log_path=None) -> Path:
     return base.parent / "labeled_table.jsonl"
 
 
+def _gpt_tier(size: str, version: str | None) -> str:
+    if size != "sol":
+        return f"gpt-{size}"
+    try:
+        newer = version is not None and float(version) >= 6.1
+    except ValueError:
+        newer = False
+    return "gpt-sol-6.1" if newer else "gpt-sol"
+
+
 def tier_of(name) -> str | None:
-    """Map a tier name or a model id ('claude-sonnet-5', 'opus') to a frontier tier, else None."""
+    """Map a tier name or a model id to a tier, else None.
+
+    Claude: 'claude-sonnet-5', 'it-entra-claude-opus-5-5', 'opus' -> the Claude tier.
+    GPT: 'gpt-5.6-luna' -> gpt-luna, 'gpt-5.6-terra' -> gpt-terra, 'gpt-5.6-sol' -> gpt-sol,
+    'gpt-6.1-sol' (any Sol >= 6.1, any provider prefix) -> gpt-sol-6.1; the GPT tier names map
+    to themselves. Anything else containing 'gpt' is None and is NEVER tried against the Claude
+    names, so a GPT outcome cannot land in a Claude tier."""
     if not isinstance(name, str):
         return None
-    low = name.lower()
+    low = name.strip().lower()
+    if "gpt" in low:
+        m = _GPT_TIER_RE.match(low)
+        if m:
+            return _gpt_tier(m.group(1), m.group(2))
+        m = _GPT_ID_RE.search(low)
+        return _gpt_tier(m.group(2), m.group(1)) if m else None
     for t in TIER_RANK:
         if t in low:
             return t
     return None
+
+
+def tier_family(tier) -> str | None:
+    """'claude' | 'gpt' for a known tier name, else None."""
+    return TIER_FAMILY.get(tier) if isinstance(tier, str) else None
+
+
+def is_cross_family(a, b) -> bool:
+    """True when tiers `a` and `b` are both known and in different families (Claude <-> GPT)."""
+    fa, fb = tier_family(a), tier_family(b)
+    return fa is not None and fb is not None and fa != fb
 
 
 def read_rates(*, log_path=None, labeled_path=None) -> dict:
@@ -143,6 +196,10 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
     # escalated must be a real bool (so bool("false")/1/0 can't inflate the rate).
     if not isinstance(tt, str) or not isinstance(escalated, bool):
         return
+    tier = _row_tier(rec, labeled=labeled)
+    # A Claude <-> GPT move is not an escalation within either family: no rate counts it.
+    if rec.get("cross_family") is True or is_cross_family(tier, tier_of(rec.get("resolved_model"))):
+        return
     ts = rec.get("ts")
     if isinstance(ts, bool):
         bad_ts = True
@@ -152,7 +209,13 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
         bad_ts = not math.isfinite(ts)
     else:
         bad_ts = True
-    cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0, "null_ts": 0})
+    cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0, "null_ts": 0, "by_tier": {}})
+    sub = cell["by_tier"].setdefault(tier or OTHER_TIER, {"n": 0, "escalated": 0, "rate": 0.0})
+    sub["n"] += 1
+    sub["escalated"] += 1 if escalated else 0
+    sub["rate"] = sub["escalated"] / sub["n"]
+    if tier_family(tier) == GPT_FAMILY:
+        return  # GPT outcomes live in by_tier only — never in the Claude-priced headline rate
     cell["n"] += 1
     cell["escalated"] += 1 if escalated else 0
     if bad_ts:
@@ -160,10 +223,23 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
     cell["rate"] = cell["escalated"] / cell["n"]
 
 
+def _row_tier(rec: dict, *, labeled: bool = False) -> str | None:
+    """The tier a row's outcome belongs to: the labeled table's `tier` (route-join), else the
+    tier of the model the attempt started on (`start_tier`, else `model`). The pi `family`
+    field is a label only — on a subscription overlay `sonnet` runs gpt-5.6-terra, and the
+    outcome is gpt-terra's."""
+    t = rec.get("tier")
+    if labeled and isinstance(t, str) and t in ALL_TIER_RANK:
+        return t
+    if labeled:
+        return tier_of(rec.get("effective_tier")) or tier_of(rec.get("requested_tier"))
+    return tier_of(rec.get("start_tier")) or tier_of(rec.get("model"))
+
+
 def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
                 context_size=None, session_id=None, label_pending=False, surface=None,
                 agent_id=None, tool_use_id=None, start_tier=None, description=None,
-                resolved_model=None, parent_agent_id=None) -> bool:
+                resolved_model=None, parent_agent_id=None, family=None) -> bool:
     """Append one outcome record to the log. Returns True on success, False on ANY
     failure (never raises). `outcome` is "ok" (cheap succeeded) or "escalated"
     (re-dispatched heavy); any other value is rejected and nothing is written.
@@ -174,8 +250,9 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
     route-join: `outcome` must then be one of DISPATCH_OUTCOMES (ok|error|empty|async),
     `escalated` is written False, `passed` null, and `label_pending: true` keeps the row out
     of read_rates until route-join resolves it. The optional dispatch fields (surface,
-    agent_id, tool_use_id, start_tier, description, resolved_model, parent_agent_id) must be
-    str or None; they are written only when given."""
+    agent_id, tool_use_id, start_tier, description, resolved_model, parent_agent_id, family) must
+    be str or None; they are written only when given. `family` is the pi family name the user
+    cued (e.g. `sonnet`); `model` stays the resolved model id that ran, which decides the tier."""
     try:
         if ts is None:
             ts = time.time()
@@ -194,7 +271,8 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
             return False
         extras = {"surface": surface, "agent_id": agent_id, "tool_use_id": tool_use_id,
                   "start_tier": start_tier, "description": description,
-                  "resolved_model": resolved_model, "parent_agent_id": parent_agent_id}
+                  "resolved_model": resolved_model, "parent_agent_id": parent_agent_id,
+                  "family": family}
         for v in extras.values():
             if v is not None and not isinstance(v, str):
                 return False

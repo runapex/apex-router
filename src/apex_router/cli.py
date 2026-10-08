@@ -173,6 +173,9 @@ def main(argv=None) -> int:
     route_log_p.add_argument("--agent-id", type=str, default=None)
     route_log_p.add_argument("--tool-use-id", type=str, default=None)
     route_log_p.add_argument("--description", type=str, default=None)
+    route_log_p.add_argument("--family", type=str, default=None,
+                             help="pi family name cued (e.g. sonnet); --start-tier stays the "
+                                  "resolved model id, which decides the tier")
     route_log_p.add_argument("--label-pending", action="store_true",
                              help="dispatch row; escalation inferred later by route-join")
     # Readout: aggregate the outcome log into per-task-type escalation rates — the
@@ -329,7 +332,8 @@ def main(argv=None) -> int:
                                    agent_id=args.agent_id,
                                    tool_use_id=args.tool_use_id,
                                    start_tier=args.start_tier if args.label_pending else None,
-                                   description=args.description)
+                                   description=args.description,
+                                   family=args.family)
         if not ok:
             try:
                 print(f"route-log: not recorded (outcome={args.outcome!r} invalid or "
@@ -384,10 +388,16 @@ def main(argv=None) -> int:
                 print("route-readout: no outcomes logged yet "
                       "(start cheap-eligible subtasks and run route-log)")
             else:
+                # Headline row = Claude-priced rate (GPT excluded); indented rows = per tier.
                 print(f"{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7}")
                 for tt in sorted(rates):
                     r = rates[tt]
                     print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f}")
+                    by_tier = r.get("by_tier") or {}
+                    for tier in sorted(by_tier, key=lambda t: (route_log.tier_family(t) or "~",
+                                                                route_log.ALL_TIER_RANK.get(t, 99), t)):
+                        b = by_tier[tier]
+                        print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
         except Exception:
             pass
         return 0

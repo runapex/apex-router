@@ -166,6 +166,18 @@ codeqa and route conformance still read them. An overlay family that pins an `id
 default `tier` (it no longer deep-merges into it). Check:
 `pi -p --model openai-codex/gpt-6.1-sol --thinking low "say pong"`.
 
+Outcome logging on this setup: the extension logs each pi turn with the model that ran as
+`--start-tier` (e.g. `gpt-5.6-terra`) and the cued family as `--family` (e.g. `sonnet`). The
+tier comes from the model, not the family name, so these rows land in the GPT tiers
+`gpt-luna` < `gpt-terra` < `gpt-sol` < `gpt-sol-6.1`, never in a Claude tier. `route-readout`
+and `route-join` show them as indented per-tier rows under each task type. The headline
+per-task-type rate, which `route-advise` prices at Claude cost, leaves them out. Escalation
+is ranked within one family only: a row that asked for a Claude tier and ran on GPT, or the
+other way round, is marked `cross_family` and is left out of every rate. `route-check` does
+not count a remapped family as drift: the extension checks the resolved id against the
+family's id, and a pi row recorded without a verdict is checked against the family's id in
+the active `models.json`.
+
 The `gpt-*` families use Pi's `openai-codex` provider: `gpt-luna` (low
 reasoning), `gpt-terra` (medium), and `gpt-sol` (high). They use the existing Codex
 provider directly; they are not sent through the Anthropic/Kimi measuring proxy.
