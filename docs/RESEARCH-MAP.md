@@ -55,7 +55,10 @@ idea it measures works.
 
 ### 3.3 JEPA world model (P6) — L4
 
-**E1, with a negative baseline probe** (not a tested JEPA): frozen request embeddings predict the task's action mix only ~1.5% better than the
+**E2 (2026-10-07): first G1 attempt FAIL** on 23.6k steps / 536 tasks — JEPA 1.777 vs logistic
+hand features 1.673 nats/step (rel −6.2% [−7.8%, −3.2%]); beats prior and Markov; early epochs
+outside the SIGReg bound; outcome criteria inconclusive without gold labels
+(`docs/research/2026-10-07-p6-g1-attempt-1.md`). Earlier, **E1 with a negative baseline probe** (not a tested JEPA): frozen request embeddings predict the task's action mix only ~1.5% better than the
 prior (1.798–1.801 vs 1.825 nats/call); action history saturates at order 1–2. Compute is not the
 limit (MLX on M4 Pro: 11.8M params at 1,535 samples/s). Data is: ~13k main-session steps, ~475/day.
 Strength: the right architecture for L4 *if* targets are structured task state (not text), with
@@ -200,10 +203,10 @@ All of these are **hypotheses to test**, not established benefits.
 | Markov burst chain | L1 | E2 | after a failure, 30–40% next-call failure vs < 4% | retry-action A/B; day-level regime model |
 | Venue rule | L2 | E4 | 1.88× on the eligible slice; the baseline | — |
 | Difficulty teacher | L2 | E2 | repeatable (ρ 0.98), cheap; directional edge over baselines | cheap-tier outcomes |
-| Zeno progress | L3 | E1 | right question, closed form | per-step progress signal |
+| Zeno progress | L3 | E2 (code + synthetic; real data unscored) | right question, closed form; plateau false positives removed | gold labels; only 16/43 test tasks carry parsed test runs |
 | Markov absorbing chain | L3/L4 | E2 | interpretable expected steps / odds | absorbing outcome labels |
 | Workflow graph | L4 | E1–E2 | design + day-0 baseline | labels |
-| JEPA | L4 (fit) → L3 (act) | E1 (negative baseline probe) | architecture fits the planner | data volume, structured targets |
+| JEPA | L4 (fit) → L3 (act) | E2 (G1 attempt 1 FAIL) | beats prior and Markov on next action; architecture fits the planner | loses to logistic hand features by 6%; gold labels; data volume |
 | xval bandit | L4 (fit) → L2 (pick arm) | E4 code, data insufficient | the only live learning loop | runs per arm |
 | Zeno p^n | L1 (readout) | E4 | honest horizon readout | not a decision tool |
 | Outcome labels | L5 | E4 / data E1 | pipeline + precision accounting | **100 gold labels** |

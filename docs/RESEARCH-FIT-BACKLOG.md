@@ -153,6 +153,11 @@ E4 evaluates both; E5 wires "converging short" / ρ(Q) as a switch-or-stop trigg
    which a step-count or wall-time cutoff (the baseline) would, at a false-positive rate on
    successful tasks ≤ 10%, on gold labels.
 
+**First G1 attempt (2026-10-07, this workstation): FAIL** — C1 JEPA test CE 1.777 vs logistic
+1.673 (rel −6.2% [−7.8%, −3.2%]; beats prior/Markov), C4 FAIL (early epochs above the SIGReg
+bound), C2/C3/C5 INCONCLUSIVE (0 gold labels). Full card: `docs/research/2026-10-07-p6-g1-attempt-1.md`.
+Code: `apex_router.worldmodel` (E1–E4).
+
 **Schedule and kill criterion:** first G1 attempt on the current ~13k steps (~1-2 weeks of work;
 expected to FAIL — a useful negative that validates the baselines). Second attempt at 50k
 main-session steps (~11 weeks at today's rate) or after Codex pretraining + main-session

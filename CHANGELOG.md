@@ -7,6 +7,69 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router worldmodel train [--synthetic N] [--config JSON] [--epochs E]` and
+  `worldmodel probe <run_id>` (P6 track E3): a small action-conditioned JEPA over agent tool
+  steps, in MLX. A causal transformer encodes each task's steps (classes, phases, size and time
+  buckets, error and test flags, task-so-far counts; never text) into a 64-d latent split into a
+  48-d perceptual and a 16-d control part. Losses: latent prediction 1–4 steps ahead conditioned
+  on the next action (stop-gradient targets, no EMA teacher), SIGReg (Epps–Pulley statistic over
+  random projections; a VICReg-style term as an ablation flag), next-action cross-entropy, and a
+  value head P(success | control latent) on labelled tasks. ~1.75M parameters by default (ceiling
+  12M). Every epoch logs collapse diagnostics (effective rank, SIGReg statistic, mean cosine)
+  against preset bounds; the best checkpoint gets numpy linear probes (next action, outcome,
+  phase, failing-tests bucket; phase and bucket are inputs, so those two are near-tautological
+  and shown beside a raw-feature reference). `WorldModel.load(run).predict(steps)` returns the
+  latents, next-action probabilities and P(success) for E2/E4; it skips malformed step records.
+  Windows overlap (stride L/2) and each step is scored from the window where it has at least
+  L/2 steps of context: on synthetic data the next-action CE on steps right after a former hard
+  cut went from 1.765 to 1.634 nats (n = 151). Step 0 is scored from a start prior fitted on
+  train first actions. The SIGReg weight is picked by `--sweep-w-reg` (1, 3 or 10; a setting
+  outside the collapse bounds is rejected): 1 won on synthetic data. `--device cpu` gives
+  bit-exact reruns for a seed; the GPU default does not (val CE differs by up to ~0.01).
+  Optional macro-step merge (plain run-length, offline evaluation only, since a macro-step
+  closes one step late) and a cached, fail-open nomic-embed request embedding (off by
+  default). Runs go to
+  `~/.apex-router/worldmodel/runs/<run_id>/` (0700/0600). No mlx import outside the training and
+  inference functions, so nothing else in apex-router needs it.
+- `apex-router worldmodel evaluate [--run ID … | --train [--seeds K] [--sweep]] [--synthetic N]
+  [--view streams|task] [--json]` (P6 track E4): the G1 scorecard. Scores the JEPA against E2's
+  baselines (prior, Markov 1/2, logistic) on the test split in one pass per model, with step 0 of
+  every sequence scored from one train start prior and every choice (best baseline, w_reg) made
+  on val. Prints one line per G1 criterion (PASS / FAIL / INCONCLUSIVE, numbers, n,
+  session-bootstrap CI, and the rule), the overall verdict (G1 passes only if all five pass; with
+  several seeds a criterion passes only if it passes on every seed), what blocks the
+  INCONCLUSIVE ones, linear probes on test z, a per-day breakdown, the seed spread and a CPU
+  replay run. Criteria 2 and 5 count gold labels only (weak labels print a provisional line).
+  Sequences are (task, agent) streams by default, since a step's `i` counts within its stream
+  (`--view task` keeps the interleaved order). The scorecard is saved to
+  `~/.apex-router/worldmodel/eval/<ts>-<run>.json` (0600) with the git sha (and whether `src/`
+  was dirty), the hashes of the manifest, `steps.jsonl` and `tasks.jsonl`, the manifest's split
+  bounds, run ids and seeds. Each scoring of the real test split also adds a line to the
+  append-only `eval/ledger.jsonl`, and the card prints how many times the split has been scored
+  for this manifest (`--backfill-ledger` seeds the ledger from saved cards). A run trained on
+  another view than `--view` is refused before any test pass. A run that never saw a labelled
+  train task has an untrained value head, so criteria 2, 3 and 5 are INCONCLUSIVE for it, with
+  that reason. The val CE column scores step 0 the same way for every model.
+  `worldmodel train` now trains on the stream view by default (`--view task` keeps the old
+  per-task order) and records the view in `summary.json`. The first real attempt (2026-10-07; ~23.6k steps — the count grows with the transcripts, no
+  labels yet) is G1 FAIL: on criterion 1 the JEPA is about 7% worse than the logistic baseline on test CE
+  (stream view; +0.7% with a CI spanning 0 in the task view), and criterion 4 fails because
+  the early epochs sit outside the SIGReg bound. Criteria 2, 3 and 5 are INCONCLUSIVE until
+  gold labels exist.
+- Optional extra `worldmodel` (`mlx>=0.32.3` on Apple Silicon only, plus numpy). mlx 0.32.3 and
+  its required `mlx-metal` were vetted before the install: from PyPI, MIT (LICENSE checked in
+  the wheel), released 2026-09-29, and the OSV query returned no advisories for either (`{}`).
+- `apex-router worldmodel build|stats` (P6 E1): a step dataset for the world-model experiment.
+  Every tool call in pi sessions, Claude Code sessions and their subagents becomes one record —
+  action class, tool name, error flag, parsed test counts, size buckets, time gap, workflow phase,
+  model — grouped into tasks (the same user turns `labels` uses, with their outcome label) and
+  split train / val / test by session start time. It is written to `~/.apex-router/worldmodel/`
+  with a manifest, stores no prompt, command or file text, and rebuilds idempotently. The action
+  classifier reads a bash command segment by segment, so `cd`, `echo`, `timeout` and `VAR=`
+  prefixes no longer hide the real command, and `.venv/bin/pytest`, `python -m pytest`,
+  `uv run`, `npm test`, `make test`, `go test` and `cargo test` count as tests. It agrees with a
+  300-command validation set that the implementer labeled; the owner has not yet reviewed those
+  labels.
 - `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
   upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
   Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local
@@ -91,6 +154,24 @@ next tag will carry.
   subscription OAuth to extra usage (`400 … Third-party apps now draw from your extra usage`), so
   Claude stays in Claude Code. The `learn` spec accepts explicit `validate`/`explain` ids. See
   RUNBOOK-pi-integration.md.
+- `apex-router worldmodel baseline | chains | progress [--synthetic N] [--json]` (P6 track E2,
+  needs numpy + scipy): the baselines and the Markov/Zeno layer the world model has to beat.
+  `baseline` scores a unigram prior, Markov order 1–3 (Dirichlet α = 0.5 backed off to the lower
+  order, per-task-type rows shrunk to the pooled chain) and a logistic regression on hand features
+  on held-out sessions: next-action cross-entropy and perplexity, outcome Brier and 10-bin ECE
+  after the first 8 steps, each with n and a session-bootstrap 95% CI, plus a BIC order test and
+  a per-day breakdown. `chains` fits an absorbing chain over action classes (SUCCESS / FAIL /
+  ESCALATE / ABANDON) per task type: expected steps, absorption odds, ρ(Q), and a workflow
+  ranking, with model vs observed task-length spread as a misspecification check. `progress` runs
+  the Zeno detector (geometric fit of failing-test progress over the last 4 test runs, limit
+  v_∞ = v_t + Δ_t/(1 − r) with a residual-bootstrap CI widened by the signal's resolution; flag
+  when the CI stays below all-tests-passing; plateaus and regressions never flag), a separate
+  stalled (stuck) detector and a sliding-window ρ(Q) detector, each against step-count and
+  wall-time cutoffs (G1 criterion 5: wins vs losses, FPR, steps saved — rule pending owner
+  sign-off). The best baseline for each G1 bar is chosen on val. Outcome numbers are marked gold,
+  provisional (weak labels) or inconclusive. Reads `~/.apex-router/worldmodel/` read-only;
+  `--synthetic N` generates data with known (planted) dynamics. The commands are exposed as
+  `worldmodel.readout.COMMANDS` for the `worldmodel` dispatcher.
 
 ### Fixed
 - Menu bar widget: a loaded machine no longer misreports live services. The shared refresh

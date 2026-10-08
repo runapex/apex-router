@@ -25,6 +25,11 @@ embed = []
 # carries a platform marker — `pip install apex-router[ornith]` is a clean no-op on Linux/Intel
 # (installs nothing) instead of failing on an unavailable wheel.
 ornith = ["mlx-lm>=0.19.0; platform_system == 'Darwin' and platform_machine == 'arm64'"]
+# P6 latent world model (apex_router.worldmodel: JEPA + trainer). MLX is Apple-Silicon only, hence
+# the marker; numpy is shared with [proxy]. Every mlx import is lazy, so nothing else needs it.
+# vetted 2026-10-07: mlx 0.32.3 + mlx-metal 0.32.3 from PyPI, MIT (LICENSE file in the wheel),
+# released 2026-09-29, OSV query {} for both (no known advisory).
+worldmodel = ["mlx>=0.32.3; platform_system == 'Darwin' and platform_machine == 'arm64'", "numpy>=1.26", "scipy>=1.13"]
 # The measuring PROXY (apex_router.proxy_engine): an ASGI server that fronts the provider,
 # measures composition/usage, and runs the offline policy tuner. Heavy deps live ONLY here, so the
 # routing core stays pure-stdlib — install with `pip install apex-router[proxy]` to run the proxy.
