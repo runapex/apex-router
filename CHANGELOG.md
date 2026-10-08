@@ -31,6 +31,23 @@ next tag will carry.
   default). Runs go to
   `~/.apex-router/worldmodel/runs/<run_id>/` (0700/0600). No mlx import outside the training and
   inference functions, so nothing else in apex-router needs it.
+- `apex-router worldmodel evaluate [--run ID … | --train [--seeds K] [--sweep]] [--synthetic N]
+  [--view streams|task] [--json]` (P6 track E4): the G1 scorecard. Scores the JEPA against E2's
+  baselines (prior, Markov 1/2, logistic) on the test split in one pass per model, with step 0 of
+  every sequence scored from one train start prior and every choice (best baseline, w_reg) made
+  on val. Prints one line per G1 criterion (PASS / FAIL / INCONCLUSIVE, numbers, n,
+  session-bootstrap CI, and the rule), the overall verdict (G1 passes only if all five pass; with
+  several seeds a criterion passes only if it passes on every seed), what blocks the
+  INCONCLUSIVE ones, linear probes on test z, a per-day breakdown, the seed spread and a CPU
+  replay run. Criteria 2 and 5 count gold labels only (weak labels print a provisional line).
+  Sequences are (task, agent) streams by default, since a step's `i` counts within its stream
+  (`--view task` keeps the interleaved order). The scorecard is saved to
+  `~/.apex-router/worldmodel/eval/<ts>-<run>.json` (0600) with the git sha, the dataset
+  manifest hash, run ids and seeds. The first real attempt (2026-10-07; 23,554 steps, no
+  labels yet) is G1 FAIL: on criterion 1 the JEPA is about 7% worse than the logistic baseline on test CE
+  (stream view; +0.7% with a CI spanning 0 in the task view), and criterion 4 fails because
+  the early epochs sit outside the SIGReg bound. Criteria 2, 3 and 5 are INCONCLUSIVE until
+  gold labels exist.
 - Optional extra `worldmodel` (`mlx>=0.32.3` on Apple Silicon only, plus numpy). mlx 0.32.3 and
   its required `mlx-metal` were vetted before the install: from PyPI, MIT (LICENSE checked in
   the wheel), released 2026-09-29, and the OSV query returned no advisories for either (`{}`).

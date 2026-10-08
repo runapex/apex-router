@@ -135,7 +135,13 @@ def cmd_probe(argv: list[str]) -> int:
     return 0
 
 
-COMMANDS = {"train": cmd_train, "probe": cmd_probe}
+def cmd_evaluate(argv: list[str]) -> int:
+    """E4: the G1 scorecard (evaluate.py; numpy is imported only when the command runs)."""
+    from .evaluate import cmd_evaluate as _run
+    return _run(argv)
+
+
+COMMANDS = {"train": cmd_train, "probe": cmd_probe, "evaluate": cmd_evaluate}
 # E2: baselines, absorbing chains, Zeno progress (readout imports numpy/scipy inside each command).
 from .readout import COMMANDS as _E2_COMMANDS  # noqa: E402
 
