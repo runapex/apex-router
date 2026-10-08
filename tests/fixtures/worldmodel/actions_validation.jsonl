@@ -203,7 +203,7 @@
 {"cmd": "/<path>/.venv/bin/python - << EOF\n<body>\nEOF\nwc -l <path> ; grep -n \"<msg>\" <path>", "tool": "Bash", "cls": "run", "src": "transcript"}
 {"cmd": ".venv/bin/pytest -q 2>&1 | grep <arg> ; .venv/bin/pytest -q <path> 2>&1 | grep -E \"<msg>\" | head <arg>", "tool": "Bash", "cls": "test", "src": "transcript"}
 {"cmd": "PYTHONDONTWRITEBYTECODE=<arg> python3 <path> 2>&1 | tail <arg> ; echo \"<msg>\" ; git diff --stat -- <path> <path> ; git status --short", "tool": "Bash", "cls": "vcs", "src": "transcript"}
-{"cmd": "stat -f '<msg>' <path> ; cd <path> ; grep -i pressure <path> <path> <path> ; cat <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
+{"cmd": "stat -f '<msg>' <path> ; cd <path> ; grep -i \"<msg>\" <path> <path> <path> ; cat <path>", "tool": "Bash", "cls": "search", "src": "transcript"}
 {"cmd": "command -v pi && pi --help | head <arg>", "tool": "bash", "cls": "run", "src": "transcript"}
 {"cmd": "mv <path> <path> ; claude plugin test plugin 2>&1 | grep -i \"<msg>\" | head <arg> ; /<path>/.venv/bin/pytest -q <path> 2>&1 | tail <arg> ; mv <path> <path> ; claude plugin test plugin 2>&1 | grep \"<msg>\"", "tool": "Bash", "cls": "test", "src": "transcript"}
 {"cmd": "doctl <arg> <arg> --help 2>&1 | head <arg> ; doctl <arg> <arg> --help 2>&1 | grep -E \"<msg>\" | head <arg> ; doctl <arg> <arg> --text 2>&1 | head <arg>", "tool": "Bash", "cls": "remote", "src": "transcript"}
