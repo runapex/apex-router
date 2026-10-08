@@ -7,6 +7,8 @@ the JEPA's own inputs beats the JEPA head, the loss sits after `run`/`test`/`vcs
 longer or larger training overfits. This file fixes what attempt 2 changes and how it is
 scored, so nothing is tuned against the test split.
 
+Resolutions by the implementer (accepted 2026-10-08): spawned-so-far is 0/1; log1p(t) 0-based; `progress_defined` added (6 A2-F columns); regime scoped to the session's own day; sibling steps count only if strictly earlier; 15-min error count fed as log1p; A2-E applies to every absorbing-chain use in evaluate; all ablations off by default.
+
 ## Changes to the registered model (each a named ablation; the gate text is unchanged)
 
 | id | change | why (evidence from attempt 1) |
@@ -14,7 +16,7 @@ scored, so nothing is tuned against the test split.
 | A2-F | JEPA inputs gain the cross-step state the hand features carry: f_ref-normalised test progress, cumulative error share, tests-ran-so-far, spawned-so-far, log1p(stream position) | the −10–14% deficit after run/test/vcs steps; these are structured task state, never text |
 | A2-E | absorbing chain gets an error-conditioned state (`<class>!err` for steps with `err=1`) | retries are state-dependent (P(fail\|fail) 46% vs 3%); `chains.py` states were classes only |
 | A2-D | a day-regime feature (errors in the session's last 15 min; the day's error rate so far) for the logistic baseline **and** the JEPA | per-day CE moves together across models; the regime is unmodelled |
-| A2-W | w_reg sweep bounds checked on **every** epoch (as C4 reads), so the sweep cannot choose a run that fails C4 by construction | sweep/gate mismatch found in review; C4 stays strict by owner decision |
+| A2-W | w_reg sweep bounds checked on **every** epoch (as C4 reads), so the sweep cannot choose a run that fails C4 by construction; grid **{1, 3, 10, 30, 100}** (amended 2026-10-08 before any real scoring: on synthetic data no candidate in {1, 3, 10} stays within bounds through warm-up, so stronger candidates are added; if none qualifies, the run trains the default w_reg 10 and C4 fails by construction) | sweep/gate mismatch found in review; C4 stays strict by owner decision |
 
 Baselines receive A2-D too, so the comparison stays fair; A2-F only gives the JEPA what the
 logistic model already has.
@@ -38,7 +40,7 @@ logistic model already has.
   by 5% — the data (≈15k train steps) is the limit, not the inputs. Expected: C1 FAIL, narrower.
 - H2: A2-E lowers the chain's expected-steps variance toward the observed task-length variance
   (attempt 1: model sd ≈ 2× observed).
-- H3: C4 PASS under A2-W at w_reg 10, at a C1 cost ≤ 1%.
+- H3: some w_reg in {10, 30, 100} stays within bounds on every epoch (C4 PASS) at a C1 cost ≤ 2% vs w_reg 1; if none does, C4 FAIL by construction and the warm-up itself is the finding.
 - H4: C2/C3/C5 become scorable; the untrained-value-head caveat disappears once ≥ 1 labelled
   train task exists; no prediction on their verdicts.
 
