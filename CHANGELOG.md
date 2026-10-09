@@ -75,9 +75,11 @@ next tag will carry.
 - Owner gold by cross-validation: all 182 model-made gold rows were re-labelled blind by two
   independent Opus 5.5 labelers (κ 0.84), 40 new tasks added, the 36 disagreements ruled from the
   evidence and refuted once by a fresh reviewer; 222 rows now carry `by=user` (15 outcomes
-  corrected, mostly at the rule 3 / rule 6 boundaries). Re-scored on the corrected holdout at
-  0.8, the adopted judge is 0.92 (54/59) [0.82, 0.96]; emitted-label precision 0.90, partial
-  precision 0.33 → 0.64 (`docs/research/2026-10-08-gold-xval.md`).
+  corrected, mostly at the rule 3 / rule 6 boundaries). A GPT-family re-label of the 36
+  disagreements (Codex CLI) agreed on 16; 3 of its contests held at ground truth and were
+  applied, the rest were rubric deviations. Re-scored on the corrected holdout at 0.8, the
+  adopted judge is 0.92 (54/59) [0.82, 0.96]; emitted-label precision 0.90, partial precision
+  0.33 → 0.64 (`docs/research/2026-10-08-gold-xval.md`).
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
   (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
