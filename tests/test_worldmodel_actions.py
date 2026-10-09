@@ -22,7 +22,7 @@ def _predict(r):
 
 
 def test_validation_set_agreement():
-    """Implementer-labeled (owner sign-off still owed, DESIGN-worldmodel-P6.md §2): >= 95%."""
+    """Owner-signed 2026-10-08 after two blind re-labels (DESIGN-worldmodel-P6.md §2): >= 95%."""
     rows = _rows()
     assert len(rows) == 306                 # 300 + the six review additions (2026-10-07)
     assert all(r["cls"] in A.CLASSES for r in rows)

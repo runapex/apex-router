@@ -89,7 +89,7 @@ calibrate on outcomes) and gates G-A/G-B/G-C in the research note.
 
 | Item | Evidence | Note |
 |---|---|---|
-| Outcome labels (`labels.py`) | **E4** pipeline, **E1** data: 818 tasks; judge results kept for 781; **16 emitted** (posterior ≥ 0.8), **gold 0** / target 100 | `apex-router labels review` is the single highest-leverage action in this map |
+| Outcome labels (`labels.py`) | **E4** pipeline, **E1** data: 533 tasks; 447 decided (84%); **gold 222, all owner (cross-validated 2026-10-08)**; judge 0.92 held out | gold target met; next: a cross-family re-label of the disagreements, and a random verdict-hidden batch for the 0.8 bin (`2026-10-08-gold-xval.md`) |
 | Shadow A/B labeler | **E1** spec, not built | turn-level grades ≠ task-level routing outcomes (xval finding) — screening signal only |
 | codeqa grounding oracle | **E4**: ledger (458 asks) 1,687 grounded / 0 stale / 136 hallucinated citations (7.5%) | a fact check, not a quality score |
 | xval reviews (Codex) | **E4**: 22 runs in 24 h, 19 reached a verdict | its bandit is §3.7 |

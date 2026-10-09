@@ -278,3 +278,8 @@ stored votes 0.90 [0.83, 0.94] (n 134); decided coverage 82% (439/533). Gain: ba
 labelled with the verdict hidden, scored once at 0.8, before the 0.8 numbers are quoted as
 out-of-sample. A clean protocol would have pre-declared the calibration rule before labelling
 the holdout, or split the holdout into tune/confirm halves.
+
+**Update 2026-10-08 (later):** the holdout gold was re-labelled blind by two independent
+labelers and reconciled (`2026-10-08-gold-xval.md`); re-scored at 0.8 on the corrected rows the
+adopted judge is **0.92 (54/59) [0.82, 0.96]**, fail recall still 2/3. Quote that number, not
+the 0.95 above.

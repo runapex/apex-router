@@ -89,8 +89,14 @@ class each (arguments and paths replaced by placeholders; never a literal path, 
 hostname), assembled by the implementer from the local transcripts. **Signed off 2026-10-08
 (owner-delegated):** an independent blind re-label by the §2 rules agreed on 295/306 (96.4%);
 the 11 disagreements were rule ambiguities, resolved in the paragraph above, not fixture
-errors; the classifier agrees 306/306. Thin classes (remote 9, build 6, edit 4, other 3, ask 2,
-delegate 1, plan 1) are the next thing to grow. Target agreement ≥ 95%.
+errors; the classifier agrees 306/306. **Owner sign-off 2026-10-08 (second, post-rule-fix
+check, cross-validated):** a second fresh blind re-label (Opus 5.5, rules above as the only
+input) agreed on 305/306 (99.7%); the one split (`mdfind … ; <cmd> --version ; node --version`,
+fixture `run`, re-label `search`) resolves to the fixture by the priority rule (`node` is an
+interpreter run, and run > search); the placeholder scan found 0 literal paths, URLs, addresses
+or tokens; the classifier agrees 306/306 (`tests/test_worldmodel_actions.py`). Thin classes
+(remote 9, build 6, edit 4, other 3, ask 2, delegate 1, plan 1) are the next thing to grow.
+Target agreement ≥ 95%.
 
 Phase is **causal** — computed from steps ≤ t only (amended 2026-10-07 after the E3 review found
 the tail rule leaked task length): `explore` (search/read before the first edit of the task so

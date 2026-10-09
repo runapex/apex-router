@@ -72,6 +72,12 @@ next tag will carry.
   (38/40 votes). That matches the in-sample 0.90. Always-success scores 37/40 on the same tasks.
   Fail recall is 1/3, and bad (fail or partial) recall at 0.9 is 2/11. The judge's minimum confidence was then moved 0.9 → 0.8 by a coordinator ruling on pooled gold (28/35 in the [0.8, 0.9) bin) — this consumed the holdout as a tuning set: the 0.95 [0.83, 0.99] figure is at 0.9, there is no out-of-sample estimate at 0.8 yet (in-sample emitted-label precision at 0.8 is 0.93 vs 0.98 at 0.9), and a fresh gold batch is owed to measure it
   (`docs/research/2026-10-08-label-judge-holdout.md`).
+- Owner gold by cross-validation: all 182 model-made gold rows were re-labelled blind by two
+  independent Opus 5.5 labelers (κ 0.84), 40 new tasks added, the 36 disagreements ruled from the
+  evidence and refuted once by a fresh reviewer; 222 rows now carry `by=user` (15 outcomes
+  corrected, mostly at the rule 3 / rule 6 boundaries). Re-scored on the corrected holdout at
+  0.8, the adopted judge is 0.92 (54/59) [0.82, 0.96]; emitted-label precision 0.90, partial
+  precision 0.33 → 0.64 (`docs/research/2026-10-08-gold-xval.md`).
 - `apex-router worldmodel snapshot [--home] [--dry-run] [--json]` mirrors pi, Claude Code
   (main sessions + `subagents/**`) and Codex transcripts into `~/.apex-router/transcripts/`
   (dir 0700, files 0600; copy only when missing/smaller/older; never deletes or truncates; tmp
@@ -180,8 +186,8 @@ next tag will carry.
   classifier reads a bash command segment by segment, so `cd`, `echo`, `timeout` and `VAR=`
   prefixes no longer hide the real command, and `.venv/bin/pytest`, `python -m pytest`,
   `uv run`, `npm test`, `make test`, `go test` and `cargo test` count as tests. It agrees with a
-  300-command validation set that the implementer labeled; the owner has not yet reviewed those
-  labels.
+  306-command validation set that the implementer labeled; the owner signed it off on
+  2026-10-08 after two blind re-labels (96.4% and 99.7% agreement; design doc §2).
 - `apex-router snapshot [--json|--menubar]`: one read-only readout for a menu bar widget —
   upstream pressure and errors in the last 15 min, the newest 5h/7d limit meter and its age, the
   Claude Code / pi / Codex sessions active (< 5 min) or idle (< 60 min) by log mtime, the local
