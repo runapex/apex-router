@@ -8,6 +8,7 @@ and bust=False; later milestones fill the transform/guard/ccr fields.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -98,7 +99,12 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # logged placeholder, one upstream per wire today); retry_propensity = P(that arm) at assignment
 # (1.0 when not randomised). Default config logs policy=arm="immediate", propensity 1.0: today's
 # behaviour, now labelled.
-TELEMETRY_SCHEMA_VERSION = 11
+# v12: added `stop_reason` / `refusal` — the provider's terminal reason as received (Anthropic stop_reason,
+# chat finish_reason, Responses status[:incomplete reason]; bounded string, None when not reported) and a
+# bool that is True when the provider refused (Anthropic `refusal`, chat `content_filter` or a refusal
+# field, a Responses refusal part / content_filter). A refusal arrives as HTTP 200, so before v12 it was
+# indistinguishable from a success. Usage is now also captured from non-SSE JSON bodies (ollama).
+TELEMETRY_SCHEMA_VERSION = 12
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -227,6 +233,8 @@ class TelemetryEvent:
     retry_policy: str | None = None       # v11: configured retry policy ("ab" when randomised)
     retry_arm: str | None = None          # v11: retry action applied (immediate|wait|switch)
     retry_propensity: float | None = None  # v11: P(retry_arm) at assignment
+    stop_reason: str | None = None  # v12: provider terminal reason, as received (bounded)
+    refusal: bool = False           # v12: the provider refused (HTTP 200, so not an error)
 
     @classmethod
     def start(cls, *, apex_version: str, client: str) -> TelemetryEvent:
@@ -267,9 +275,21 @@ class TelemetryWriter:
     """
 
     ROTATE_BYTES = 64 * 1024 * 1024  # 64 MB — rename + reopen threshold (operator-invoked)
+    # Rotated generations are append-only: each rotation renames the live file to `.<N>`, N = highest existing
+    # + 1, so a HIGHER number is NEWER and no file is ever renumbered or overwritten. Before 2026-10-12 rotation
+    # did `replace(.1)`, silently destroying the previous `.1` (the 09-27..09-30 rows were lost); a first fix
+    # that shifted `.k -> .k+1` needed a staging step whose crash recovery could itself drop history
+    # (cross-validation), so the renumbering was removed. A pre-existing `.1` simply becomes the oldest
+    # generation. The KEEP newest generations are kept (20 x 64 MB ~ 1.3 GB, ~6 months at today's volume);
+    # override APEX_TELEMETRY_KEEP (>= 1).
+    DEFAULT_KEEP = 20
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        try:
+            self.KEEP = max(1, int(os.environ.get("APEX_TELEMETRY_KEEP", self.DEFAULT_KEEP)))
+        except (TypeError, ValueError):
+            self.KEEP = self.DEFAULT_KEEP
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # lightweight running counters for the heartbeat (a dead proxy emits nothing; a live-idle
         # one emits heartbeats with unchanging counters — the TUI shows "alive, 0 rpm").
@@ -301,12 +321,25 @@ class TelemetryWriter:
         except OSError:
             pass
 
+    def _gens(self) -> list[int]:
+        import re as _re
+        pat = _re.compile(_re.escape(self.path.name) + r"\.(\d+)$")
+        return sorted(int(m.group(1)) for q in self.path.parent.iterdir() if (m := pat.fullmatch(q.name)) and q.is_file())
+
     def rotate_if_large(self) -> None:
-        """If the file exceeds ROTATE_BYTES, rename it aside (`.1`) so a fresh file starts. Invoked
-        off the hot path (lifespan tick), never from `emit`. Fail-open — a rotation failure leaves
-        the current file in place and appends continue."""
+        """If the file exceeds ROTATE_BYTES, rename it to `.<highest+1>` (one rename: it happens or it doesn't),
+        then delete the oldest generations beyond KEEP. A failed rename touches nothing; a failed prune only
+        leaves extra files, retried next tick. Invoked off the hot path (lifespan tick), never from `emit`
+        (which reopens by path, so the next write starts a fresh live file). Fail-open."""
         try:
-            if self.path.exists() and self.path.stat().st_size >= self.ROTATE_BYTES:
-                self.path.replace(self.path.with_suffix(self.path.suffix + ".1"))
+            if not (self.path.exists() and self.path.stat().st_size >= self.ROTATE_BYTES):
+                return
+            gens = self._gens()
+            target = self.path.with_name(f"{self.path.name}.{(gens[-1] if gens else 0) + 1}")
+            if target.exists():  # never overwrite (single writer per file, so this is a should-not-happen guard)
+                return
+            self.path.replace(target)
+            for n in self._gens()[:-self.KEEP]:
+                self.path.with_name(f"{self.path.name}.{n}").unlink()
         except OSError:
             pass

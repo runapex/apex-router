@@ -125,7 +125,7 @@ def test_assignment_env_parsing(monkeypatch):
 
 
 def test_schema_v11_fields_default_none():
-    assert TELEMETRY_SCHEMA_VERSION == 11
+    assert TELEMETRY_SCHEMA_VERSION == 12  # v12 (stop_reason, refusal) added on top of v11
     ev = TelemetryEvent.start(apex_version="t", client="claude-code")
     assert ev.retry_policy is None and ev.retry_arm is None and ev.retry_propensity is None
     ev.record_retry_arm({"connect_retries": 0})

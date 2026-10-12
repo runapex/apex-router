@@ -17,6 +17,14 @@ Two wires, both SSE:
   - OpenAI/Codex (`/v1/chat/completions`, `/v1/responses`): a terminal chunk carries
     `usage.{prompt_tokens,completion_tokens,...}` (only when `stream_options.include_usage`); the
     scanner reads it if present and leaves the fields zero otherwise (honest absence, not a guess).
+  - A NON-SSE JSON body (non-streamed chat completion, e.g. ollama): no `data:` lines at all. Up to
+    JSON_BODY_CAP decoded bytes are kept and parsed once by `finish()` (v12; before, usage was lost).
+
+Stop reason (v12): the provider's own terminal reason, stored as received (bounded string) — Anthropic
+`stop_reason` (message_delta.delta / non-stream top level), chat `choices[].finish_reason`, Responses
+`response.status` (+ `:incomplete_details.reason`). `refusal` is True on Anthropic `refusal`, chat
+`content_filter` or a non-empty `refusal` field, a Responses `refusal` content part, or an incomplete
+reason of `content_filter`. A refusal is an HTTP 200, so without this the proxy saw it as a success.
 
 PLANE-CLEAN: stdlib + `apex_router.proxy_engine.telemetry` types only; no tuner, no tokenizer. Bytes are counted, never
 tokenized — the usage NUMBERS come from the provider, which is the whole point (the wire is the
@@ -200,10 +208,19 @@ class UsageScanner:
     are captured we keep scanning only for the output-token final delta (cheap). Bounded memory: the
     text buffer holds at most one incomplete line."""
 
+    JSON_BODY_CAP = 1 << 20  # 1 MiB of decoded text kept for a non-SSE body; larger bodies are not parsed
+    _STOP_MAX = 64
+
     def __init__(self, content_encoding: str = "") -> None:
         self._decoder = _Decoder(content_encoding)
         self._buf = ""
         self.usage = ProviderUsage()
+        self.stop_reason: str | None = None
+        self.refusal = False
+        self._sse = False           # saw a `data:`/`event:` line -> SSE; stop keeping the raw body
+        self._raw: list[str] = []   # decoded text of a non-SSE body, up to JSON_BODY_CAP
+        self._raw_len = 0
+        self._finished = False
 
     def feed(self, chunk: bytes) -> None:
         """Consume a copy of one forwarded chunk. Never raises (fail-open)."""
@@ -211,7 +228,16 @@ class UsageScanner:
             text = self._decoder.feed(chunk)
             if not text:
                 return
-            self._buf += text.decode("utf-8", "ignore")
+            decoded = text.decode("utf-8", "ignore")
+            if not decoded:
+                return
+            if not self._sse:
+                if self._raw_len + len(decoded) <= self.JSON_BODY_CAP:
+                    self._raw.append(decoded)
+                    self._raw_len += len(decoded)
+                else:
+                    self._raw, self._raw_len = [], self.JSON_BODY_CAP + 1  # over the cap: give up, free memory
+            self._buf += decoded
             # process complete lines; keep the last partial fragment buffered
             *lines, self._buf = self._buf.split("\n")
             for line in lines:
@@ -219,10 +245,72 @@ class UsageScanner:
         except Exception:  # noqa: BLE001 — capture must never break the data plane
             return
 
+    def finish(self) -> None:
+        """End of body. For a non-SSE body, parse the kept text as ONE JSON document (usage + stop reason).
+        Idempotent, never raises. Call before reading `usage` / `stop_reason`."""
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            if self._sse or self._raw_len > self.JSON_BODY_CAP or not self._raw:
+                return
+            text = "".join(self._raw).strip()
+            self._raw = []
+            if text.startswith("{"):
+                obj = json.loads(text)
+                if isinstance(obj, dict):
+                    self._extract(obj)
+        except Exception:  # noqa: BLE001 — capture must never break the data plane
+            return
+
+    def _set_stop(self, v) -> None:
+        if isinstance(v, str) and v:
+            self.stop_reason = v[: self._STOP_MAX]
+
+    def _extract_stop(self, obj: dict) -> None:
+        # Anthropic: non-stream top-level stop_reason; stream message_delta.delta.stop_reason.
+        if obj.get("type") in ("message", "message_delta") or "stop_reason" in obj:
+            self._set_stop(obj.get("stop_reason"))
+        delta = obj.get("delta")
+        if isinstance(delta, dict):
+            self._set_stop(delta.get("stop_reason"))
+        # OpenAI chat: choices[].finish_reason; refusal text in message/delta.refusal
+        choices = obj.get("choices")
+        if isinstance(choices, list):
+            for ch in choices:
+                if not isinstance(ch, dict):
+                    continue
+                self._set_stop(ch.get("finish_reason"))
+                for k in ("delta", "message"):
+                    part = ch.get(k)
+                    if isinstance(part, dict) and part.get("refusal"):
+                        self.refusal = True
+        # OpenAI Responses: response.status (+ incomplete reason), refusal content parts. Streamed events nest
+        # the response under `response`; a non-streamed body IS the response object (top level).
+        resp = obj.get("response") if isinstance(obj.get("response"), dict) else (obj if obj.get("object") == "response" else None)
+        if isinstance(resp, dict) and isinstance(resp.get("status"), str) and resp["status"] not in ("in_progress", "queued"):
+            reason = (resp.get("incomplete_details") or {}).get("reason") if isinstance(resp.get("incomplete_details"), dict) else None
+            self._set_stop(resp["status"] + (f":{reason}" if isinstance(reason, str) and reason else ""))
+            if reason == "content_filter":
+                self.refusal = True
+            for item in resp.get("output") or []:
+                for part in (item.get("content") or []) if isinstance(item, dict) else []:
+                    if isinstance(part, dict) and part.get("type") == "refusal":
+                        self.refusal = True
+        if self.stop_reason in ("refusal", "content_filter"):
+            self.refusal = True
+
     def _scan_line(self, line: str) -> None:
         line = line.strip()
+        if line.startswith("event:"):
+            self._sse = True
+            self._raw, self._raw_len = [], 0
+            return
         if not line.startswith("data:"):
             return
+        if not self._sse:
+            self._sse = True
+            self._raw, self._raw_len = [], 0
         payload = line[5:].strip()
         if not payload or payload == "[DONE]":
             return
@@ -234,6 +322,10 @@ class UsageScanner:
             self._extract(obj)
 
     def _extract(self, obj: dict) -> None:
+        try:
+            self._extract_stop(obj)
+        except Exception:  # noqa: BLE001 — a stop-reason parse must never cost the usage capture
+            pass
         # Anthropic: message_start → {message:{usage:{...}}}; message_delta → {usage:{...}} with
         # ONLY output_tokens. OpenAI: terminal {usage:{prompt_tokens,completion_tokens,...}}. Route
         # by the field VOCABULARY, not by presence of input_tokens — the Anthropic message_delta

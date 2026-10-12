@@ -7,6 +7,34 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Telemetry retention. Rotation (64 MB) is append-only: the live file is renamed to `telemetry.jsonl.<N>`, N =
+  highest + 1 (higher = newer), and the oldest generations beyond `APEX_TELEMETRY_KEEP` (default 20, ~1.3 GB)
+  are deleted. Nothing is renumbered or overwritten. Before, rotation did `replace(.1)` and silently destroyed
+  the previous `.1` (the 2026-09-27..30 rows were lost). `apex doctor`, `retry-ab report` and `zeno report`
+  now read the live file plus the newest rotated file (`telemetry_path.iter_telemetry_lines`), so a window right
+  after a rotation is no longer 0.7 h. The reader opens the live file first and skips a rotated file with the
+  same inode, so a rotation mid-read neither skips nor double-counts. An existing `.1` becomes the oldest
+  generation. `pressure` still reads only the live file (15-minute window).
+- Telemetry v12: `stop_reason` (the provider's terminal reason as received: Anthropic `stop_reason`, chat
+  `finish_reason`, Responses `status[:incomplete reason]`) and `refusal` (True for Anthropic `refusal`, chat
+  `content_filter` or a refusal field, a Responses refusal part or `content_filter`). A refusal is an HTTP 200,
+  so before v12 the proxy counted it as a success. `apex doctor` prints a REFUSALS panel with the spend on
+  refused calls and the pricing regimes behind it.
+- Usage capture from non-SSE JSON bodies (non-streamed chat completions, e.g. ollama): the scanner keeps up to
+  1 MiB of decoded text and parses it once at the end of the response. Before, only `data:` lines were read, so
+  the local proxy recorded usage on 393 of 4,011 qwen rows. A streamed chat completion still reports usage only
+  when the client sends `stream_options.include_usage` (the proxy does not edit requests for this).
+- Pricing: `APEX_PRICING_OVERRIDES` (or `$APEX_HOME/pricing_overrides.json`) supplies negotiated rates per exact
+  model id and endpoint; every dollar on them reads `negotiated:<source>(<model>)`. Malformed or non-finite
+  entries fail open to the list table.
+
+### Changed
+- GPT tier SKUs (`gpt-5.6-luna/terra/sol`, `gpt-6-*`) are labelled `provisional:gpt-tier-as-gpt-5/...` instead
+  of `list:gpt-5/...`. The numbers are unchanged; the label no longer implies an audited price for tiers that
+  are known to differ (the self-hosting doc lists Luna at $0.10 / $0.50 per 1M tokens against gpt-5's $15 / $60).
+- `apex-router` installed with `uv tool install --editable` must include the extra (`'<repo>[proxy]'`), or
+  `apex doctor` loses its calibration section (numpy).
+
 - P6 JEPA collapse-recipe options in `TrainConfig`, all off by default; with defaults, attempt
   2 replays bit-exactly on CPU. The options:
   - `z_norm` = `layernorm` / `whiten` / `center`. For `whiten` and `center`, training uses

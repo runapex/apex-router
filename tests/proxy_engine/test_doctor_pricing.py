@@ -60,8 +60,10 @@ def test_gpt6_is_priced_provisionally_and_labeled_as_such():
     r = rates_for("it-entra-gpt-6-astra", "openai")
     assert (r.input, r.cache_read, r.cache_write, r.output) == (15.0, 1.5, 0.0, 60.0)
     assert r.pricing_regime.startswith("provisional:"), "gpt-6 rate is assumed, must not read as audited list"
-    # gpt-5.x must still bind to the audited gpt-5 row, not the provisional gpt-6 one
-    assert "list:gpt-5/openai" in rates_for("it-entra-gpt-5.6-sol", "openai").pricing_regime
+    # gpt-5.x must still bind to the gpt-5 row, not the gpt-6 one. A tier SKU (sol/luna/terra) is labelled
+    # provisional since 2026-10-12: one gpt-5 rate cannot stand for tiers priced ~150x apart.
+    r5 = rates_for("it-entra-gpt-5.6-sol", "openai").pricing_regime
+    assert "gpt-5/openai" in r5 and "gpt-6" not in r5 and r5.startswith("provisional:")
 
 
 def test_endpoint_disambiguates_same_model_shape():

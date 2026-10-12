@@ -18,8 +18,12 @@ number.
 """
 from __future__ import annotations
 
+import json
+import math
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,52 @@ def _has_variant_token(model: str) -> bool:
     return bool(tokens & _UNPRICED_VARIANT_MARKERS)
 
 
+# GPT tier SKUs (`gpt-5.6-luna`, `gpt-6-astra`, ...): the table has ONE gpt-5 rate, and tiers are known to differ
+# by far more than rounding (the self-hosting doc lists Luna at $0.10 in / $0.50 out vs gpt-5's $15 / $60). They
+# keep the placeholder numbers but are labelled `provisional:`, never `list:` (F-i doctrine; same as gpt-6).
+_GPT_TIER_TOKENS = frozenset({"luna", "terra", "sol", "astra", "nova"})
+
+# Negotiated-rate overrides: APEX_PRICING_OVERRIDES (file) > $APEX_HOME/pricing_overrides.json > ~/.apex/...
+#   {"source": "azure-ea-2026-10", "rates": {"<exact model id>": {"endpoint": "openai"|"anthropic",
+#     "input": n, "cache_read": n, "cache_write": n, "output": n}}}   ($ per 1M tokens, all >= 0)
+# A listed (model, endpoint) wins over the table and every dollar on it reads `negotiated:<source>(<model>)`.
+# Anything malformed fails open to the table (a pricing file must never break a readout). Cached per mtime.
+_overrides_cache: dict = {}
+
+
+def _overrides_path() -> Path:
+    env = os.environ.get("APEX_PRICING_OVERRIDES")
+    if env:
+        return Path(env).expanduser()
+    home = os.environ.get("APEX_HOME")
+    return (Path(home).expanduser() if home else Path.home() / ".apex") / "pricing_overrides.json"
+
+
+def _load_overrides() -> dict:
+    p = _overrides_path()
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return {}
+    key = (str(p), mt)
+    if key in _overrides_cache:
+        return _overrides_cache[key]
+    out: dict = {}
+    try:
+        d = json.loads(p.read_text())
+        src = str(d.get("source") or "overrides")[:40] if isinstance(d, dict) else None
+        for model, r in (d.get("rates") or {}).items() if isinstance(d, dict) else []:
+            ep = _ENDPOINT_ALIASES.get(str(r.get("endpoint", "")).lower(), str(r.get("endpoint", "")).lower())
+            vals = [float(r[k]) for k in ("input", "cache_read", "cache_write", "output")]
+            if ep and all(math.isfinite(v) and v >= 0 for v in vals):
+                out[(str(model).lower(), ep)] = Rates(*vals, f"negotiated:{src}({model})")
+    except Exception:  # noqa: BLE001 — malformed overrides fail open to the list table
+        out = {}
+    _overrides_cache.clear()
+    _overrides_cache[key] = out
+    return out
+
+
 def rates_for(model: str | None, endpoint_id: str | None) -> Rates:
     """Look up $/M rates for a (model, endpoint). Endpoint exact; model family matched by SUBSTRING
     (to strip vendor prefixes), EXCEPT a delimited differently-priced variant token
@@ -101,10 +151,15 @@ def rates_for(model: str | None, endpoint_id: str | None) -> Rates:
     m = (model or "").lower()
     ep = (endpoint_id or "").lower()
     ep = _ENDPOINT_ALIASES.get(ep, ep)  # normalize deployment endpoint label → pricing endpoint key
+    ov = _load_overrides().get((m, ep))
+    if ov is not None:
+        return ov
     if not _has_variant_token(m):
         for sub, endpoint, base in _TABLE:
             if sub in m and endpoint == ep:
                 # Rebuild the regime to carry the ACTUAL model, not just the family substring.
                 regime = f"{base.pricing_regime}({model})"
+                if regime.startswith("list:") and set(re.split(r"[^a-z0-9]+", m)) & _GPT_TIER_TOKENS:
+                    regime = "provisional:gpt-tier-as-" + regime[len("list:"):]
                 return Rates(base.input, base.cache_read, base.cache_write, base.output, regime)
     return Rates(0.0, 0.0, 0.0, 0.0, f"unknown:{model!r}/{endpoint_id!r}")
