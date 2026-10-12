@@ -199,6 +199,9 @@ async def handle(
                     "body": err_scanner.text(),
                     "headers": capture_error_headers(response.headers),
                 }
+            scanner.finish()  # v12: parse a non-SSE JSON body once; idempotent, never raises
+            event.stop_reason = scanner.stop_reason
+            event.refusal = scanner.refusal
             if scanner.usage.captured:
                 event.usage = scanner.usage.to_dict()
                 event.tokens_in = scanner.usage.input_tokens  # provider truth, not a token guess

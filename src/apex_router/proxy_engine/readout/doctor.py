@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from apex_router.proxy_engine.readout.pricing import Rates
 
-SUPPORTED_SCHEMA = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11}  # v11 retry_policy/retry_arm/retry_propensity; v10 bytes_up/bytes_down; v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; v7 error_detail; v8 upstream_rejected; v9 cache_key_rewrite; doctor's fields are v2-compatible
+SUPPORTED_SCHEMA = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}  # v12 stop_reason/refusal; v11 retry_policy/retry_arm/retry_propensity; v10 bytes_up/bytes_down; v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; v7 error_detail; v8 upstream_rejected; v9 cache_key_rewrite; doctor's fields are v2-compatible
 
 # Cache-served floor below which a large session is flagged for prefix instability. A BOUND, not a
 # policy: derived from CORRECTED two-wire data (the reference window, served = read/(read+FRESH), wire-aware —
@@ -177,18 +177,18 @@ def load_rows(path: str) -> list[dict]:
     via
     `unsupported_schema_versions` (the TUI rule: don't guess field meanings on an unknown
     version)."""
+    from apex_router.telemetry_path import iter_telemetry_lines
     out = []
-    with open(path, encoding="utf-8") as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                d = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(d, dict) and d.get("ev") != "hb":
-                out.append(d)
+    for raw in iter_telemetry_lines(path, generations=1):  # live file + the newest rotated generation
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("ev") != "hb":
+            out.append(d)
     return out
 
 
@@ -544,6 +544,31 @@ def _window(rows: list[dict]) -> dict:
     }
 
 
+def refusal_panel(rows: list[dict]) -> dict:
+    """v12: provider refusals. A refusal is an HTTP 200, so it is NOT in the error panel; before v12 it was
+    invisible. Counts only rows that carry the v12 field (`observed_rows`), so older rows are not read as
+    'no refusals'. Dollars are LIST price at each row's regime (unknown rates contribute 0, counted apart)."""
+    from collections import Counter
+
+    from apex_router.proxy_engine.readout.pricing import rates_for
+    seen = [d for d in rows if _supported(d) and "refusal" in d]
+    ref = [d for d in seen if d.get("refusal") is True]
+    dollars, unpriced, regimes = 0.0, 0, Counter()
+    for d in ref:
+        r = rates_for(d.get("model_resolved"), d.get("endpoint_id"))
+        if r.pricing_regime.startswith("unknown:"):
+            unpriced += 1
+            continue
+        regimes[r.pricing_regime.split("(")[0]] += 1
+        u = d.get("usage") or {}
+        fresh = (u.get("input_tokens") or 0) - ((u.get("cache_read_tokens") or 0) if d.get("endpoint_id") == "openai" else 0)
+        dollars += (fresh * r.input + (u.get("cache_read_tokens") or 0) * r.cache_read
+                    + (u.get("cache_creation_tokens") or 0) * r.cache_write + (u.get("output_tokens") or 0) * r.output) / 1e6
+    return {"total": len(ref), "observed_rows": len(seen), "dollars": dollars, "unpriced": unpriced, "regimes": dict(regimes),
+            "by_model": dict(Counter(d.get("model_resolved") for d in ref)),
+            "stop_reasons": dict(Counter(d.get("stop_reason") or "none" for d in seen))}
+
+
 def build_report(rows: list[dict]) -> dict:
     """Assemble the full doctor report as a structured dict (the `--json` payload). Pure function of
     the telemetry rows; the text renderer consumes this same dict, so text/JSON can't diverge."""
@@ -607,6 +632,7 @@ def build_report(rows: list[dict]) -> dict:
         # + errors) — the request population the error rate is a fraction OF. Errors have usage=null,
         # so they never touch the dollar total; the timeout wait is reported as latency hours.
         "errors": error_panel(err, len(gen) + len(aux) + len(err)),
+        "refusals": refusal_panel(rows),  # v12: HTTP-200 refusals, never in the error panel
     }
 
 
@@ -682,6 +708,16 @@ def format_report(report: dict) -> str:
                      f"only {100*a['cache_served']:.0f}% cache-served, up to "
                      f"${a['recoverable_ceiling_dollars']:,.2f} recov. [{a['pricing_regime']}]")
             L.append(f"    likely: {a['causes'][0]}; {a['next']}")
+    # ---- refusal panel (v12) ----
+    rf = report.get("refusals")
+    if rf and rf["observed_rows"]:
+        L.append("")
+        L.append(f"REFUSALS (this window, v12+ rows): {rf['total']} / {rf['observed_rows']:,} requests"
+                 + (f" · ${rf['dollars']:,.2f} spent on refused calls [" + ", ".join(f"{k} x{v}" for k, v in sorted(rf["regimes"].items())) + "]" if rf["total"] else "")
+                 + (f" · {rf['unpriced']} unpriced" if rf["unpriced"] else "")
+                 + "  — HTTP 200, so not counted as errors")
+        for m, n in sorted(rf["by_model"].items(), key=lambda t: -t[1]):
+            L.append(f"  {n:4d}  {m}")
     # ---- error / timeout panel (A2b) ----
     e = report.get("errors")
     if e and e["total"]:

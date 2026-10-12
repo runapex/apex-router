@@ -342,8 +342,16 @@ def _jsonl(path: Path):
 
 def _request_rows(path: Path, since_ts: float):
     """Proxy request rows only: heartbeats (ev=hb) and rows without an is_error verdict are skipped."""
-    for r in _jsonl(path):
-        if r.get("ev") or r.get("is_error") is None:
+    from .telemetry_path import iter_telemetry_lines
+    for line in iter_telemetry_lines(path, generations=1):  # live file + the newest rotated generation
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("ev") or r.get("is_error") is None:
             continue
         ts = r.get("ts")
         if isinstance(ts, (int, float)) and ts >= since_ts:
