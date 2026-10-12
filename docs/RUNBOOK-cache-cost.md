@@ -155,6 +155,29 @@ writes a proposed index to `~/.claude/handoffs/memory-<slug>.md`, and nudges —
 **never mutates** the memory dir. Tunables: `MEMORY_COMPACT_INDEX_BYTES` (8192),
 `MEMORY_COMPACT_FILE_COUNT` (50).
 
+## 3c. Context compaction threshold (pi + Claude Code) — measured 2026-10-12
+
+**Why:** Opus 5.5 spend is driven by huge contexts, not by output. On 5,341 Opus 5.5 proxy requests
+(list $3,700): requests above 400k tokens were 31% of calls but 63% of cost; the median request carried 240k
+tokens, p90 630k, max 946k. pi had **zero** auto-compactions in every session: it compacts at
+`contextWindow − reserveTokens`, and the foundry Claude models were registered with a 1M window, so it would
+only compact near 984k. Claude Code compacted at `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75` (≈750k).
+
+**Setting (applied on the owner's machine 2026-10-12, backups `*.bak-<ts>`):**
+- pi: `~/.pi/agent/models.json` → `providers.foundry.models[*].contextWindow` = `400000` for the Opus and Sonnet
+  models (Haiku stays 200k). pi then compacts at ≈384k (`reserveTokens` 16384, `keepRecentTokens` 20000). In
+  pi, `contextWindow` only drives the compaction trigger; it was checked end to end on a tiny-window local model
+  (a compaction entry was written and the run continued).
+- Claude Code: `~/.claude/settings.json` → `env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` = `40` (≈400k on a 1M window).
+
+**Expected effect (upper bound, same calls):** capping context at 400k removes ≈$441 of $3,700 (12%) of cache
+reads; at 250k ≈$925 (25%). Real saving is lower (each compaction costs one summary call plus a cache rewrite,
+which pays back after ~3 turns) and the trade-off is quality: older detail is summarized. 400k was chosen as the
+conservative point (still ≈2x Claude Code's classic 200k window). **Re-measure** after a week: the share of
+Opus requests above 400k should fall sharply and pi sessions should contain `compaction` entries.
+
+**Revert:** restore `~/.pi/agent/models.json.bak-<ts>` / `~/.claude/settings.json.bak-<ts>` (or set 1000000 / 75).
+
 ## 4. Codex per-session cache cost — `codex_session_report.py`
 
 ```bash

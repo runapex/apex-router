@@ -7,6 +7,18 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `watch install-serve` keeps the installed unit's settings. The unit was rebuilt only from the installing
+  shell's environment, so a reinstall from a shell without `APEX_CODEX_CACHE_KEY` / `APEX_RETRY_*` silently
+  dropped them (and those keys were not carried at all). Now every `APEX_*` the proxy reads is carried, and
+  keys already in the installed launchd plist or systemd unit survive unless the shell sets them (an explicitly
+  empty value removes the key, including the upstream derived from `ANTHROPIC_FOUNDRY_BASE_URL`). Foreign,
+  malformed or non-string entries are ignored; quoted systemd `Environment="K=V"` lines are parsed.
+- `pressure` spans a rotation: when the live file is exhausted before the window is covered (it was just
+  rotated), it continues into the newest rotated generation, skipping it if it is the same inode as the live
+  file it already read (rotation racing the read).
+- `docs/RUNBOOK-cache-cost.md` §3c: the context-compaction threshold for pi and Claude Code, with the Opus 5.5
+  cost-by-context measurement behind it (31% of requests above 400k = 63% of cost; pi never auto-compacted).
+
 - Telemetry retention. Rotation (64 MB) is append-only: the live file is renamed to `telemetry.jsonl.<N>`, N =
   highest + 1 (higher = newer), and the oldest generations beyond `APEX_TELEMETRY_KEEP` (default 20, ~1.3 GB)
   are deleted. Nothing is renumbered or overwritten. Before, rotation did `replace(.1)` and silently destroyed

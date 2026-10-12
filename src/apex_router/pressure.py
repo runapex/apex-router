@@ -148,57 +148,80 @@ def _parse(line: bytes):
 
 def tail_rows(path, since_ts: float, block: int = 1 << 16, slack_s: float = ORDER_SLACK_S,
               stop_after: int = STOP_AFTER_OLD_ROWS, hard_stop_s: float = HARD_STOP_S):
+    """Yield request rows with ts >= since_ts, newest-first: the live file read backwards, then — only if the
+    live file ran out before the window was passed (it was just rotated) — the newest rotated generation
+    (`telemetry.jsonl.<N>`, highest N). Raises OSError if the LIVE file cannot be opened (caller reports UNKNOWN)."""
+    live = open(path, "rb")  # OSError propagates: the caller reports UNKNOWN
+    with live:
+        live_id = os.fstat(live.fileno())[1:3]  # (st_ino, st_dev)
+        done = yield from _tail_one(live, since_ts, block, slack_s, stop_after, hard_stop_s)
+    if done:
+        return
+    from .telemetry_path import telemetry_files
+    rotated = [f for f in telemetry_files(path, None) if Path(f) != Path(path)]
+    if not rotated:
+        return
+    try:
+        with open(rotated[-1], "rb") as f:
+            if os.fstat(f.fileno())[1:3] == live_id:
+                return  # the live file was rotated while we read it: already read through the live handle
+            yield from _tail_one(f, since_ts, block, slack_s, stop_after, hard_stop_s)
+    except OSError:
+        return
+
+
+def _tail_one(f, since_ts: float, block: int = 1 << 16, slack_s: float = ORDER_SLACK_S,
+              stop_after: int = STOP_AFTER_OLD_ROWS, hard_stop_s: float = HARD_STOP_S):
     """Yield request rows with ts >= since_ts, newest-first, reading the file backwards in
     blocks. A trailing line without a newline (writer mid-append) is dropped.
 
     Rows are appended at request END but carry the request START ts, so the file is only roughly
     ordered. With ``stop_ts = since_ts - slack_s``, the scan stops after ``stop_after``
     CONSECUTIVE rows older than stop_ts, or on any row older than ``stop_ts - hard_stop_s``.
-    Raises OSError if the file cannot be opened (the caller reports UNKNOWN)."""
-    f = open(path, "rb")
-    with f:
-        f.seek(0, os.SEEK_END)
-        pos = f.tell()
-        carry = b""
-        first = True
-        stop_ts = since_ts - slack_s
-        hard_ts = stop_ts - hard_stop_s
-        old_run = 0
-        while pos > 0:
-            step = min(block, pos)
-            pos -= step
-            f.seek(pos)
-            data = f.read(step) + carry
-            if first:
-                # Drop an unterminated last line; if this block has no newline at all, the whole
-                # block is part of that partial line — keep it in carry and drop it later.
-                cut = data.rfind(b"\n")
-                if cut == -1:
-                    carry = data
-                    continue
-                data = data[:cut + 1] if not data.endswith(b"\n") else data
-                first = False
-            lines = data.split(b"\n")
-            carry = lines[0] if pos > 0 else b""
-            body = lines[1:] if pos > 0 else lines
-            for line in reversed(body):
-                if not line.strip():
-                    continue
-                row = _parse(line)
-                if row is None:
-                    continue
-                ts = row["ts"]
-                if ts < stop_ts:
-                    if ts < hard_ts:
-                        return
-                    old_run += 1
-                    if old_run >= stop_after:
-                        return
-                    continue
-                old_run = 0
-                if ts >= since_ts:
-                    yield row
-        # if `first` is still set the file was one unterminated line: nothing to yield
+    `f` is an open binary file (the caller owns it)."""
+    f.seek(0, os.SEEK_END)
+    pos = f.tell()
+    carry = b""
+    first = True
+    stop_ts = since_ts - slack_s
+    hard_ts = stop_ts - hard_stop_s
+    old_run = 0
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        f.seek(pos)
+        data = f.read(step) + carry
+        if first:
+            # Drop an unterminated last line; if this block has no newline at all, the whole
+            # block is part of that partial line — keep it in carry and drop it later.
+            cut = data.rfind(b"\n")
+            if cut == -1:
+                carry = data
+                continue
+            data = data[:cut + 1] if not data.endswith(b"\n") else data
+            first = False
+        lines = data.split(b"\n")
+        carry = lines[0] if pos > 0 else b""
+        body = lines[1:] if pos > 0 else lines
+        for line in reversed(body):
+            if not line.strip():
+                continue
+            row = _parse(line)
+            if row is None:
+                continue
+            ts = row["ts"]
+            if ts < stop_ts:
+                if ts < hard_ts:
+                    return True
+                old_run += 1
+                if old_run >= stop_after:
+                    return True
+                continue
+            old_run = 0
+            if ts >= since_ts:
+                yield row
+    # if `first` is still set the file was one unterminated line: nothing to yield
+    return False  # reached the start of the file without passing the window
 
 
 # ---- aggregation -----------------------------------------------------------------------------

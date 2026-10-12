@@ -48,7 +48,77 @@ _SERVE_ENV_KEYS = (
     # Shadow posture, if the operator runs the managed proxy in shadow mode.
     "APEX_SHADOW",
     "APEX_POLICY_PATH",
+    # Request shaping + transport + telemetry knobs the proxy reads (2026-10-12: these were missing, so an
+    # install-serve silently dropped e.g. the live APEX_CODEX_CACHE_KEY from the unit).
+    "APEX_CODEX_CACHE_KEY",
+    "APEX_CODEX_CACHE_KEY_SHARDS",
+    "APEX_RETRY_POLICY",
+    "APEX_RETRY_AB",
+    "APEX_RETRY_AB_ARMS",
+    "APEX_RETRY_WAIT_MS",
+    "APEX_RETRY_FAST_FAIL_MS",
+    "APEX_CONNECT_RETRIES",
+    "APEX_CONNECT_BACKOFF",
+    "APEX_CONNECT_TIMEOUT",
+    "APEX_READ_TIMEOUT",
+    "APEX_TTFT_BUDGET_MS",
+    "APEX_HEARTBEAT_S",
+    "APEX_RETENTION_DAYS",
+    "APEX_TELEMETRY_KEEP",
+    "APEX_PRICING_OVERRIDES",
 )
+
+
+def _carried(env) -> dict:
+    """Only allowlisted keys with plain string/int (not bool) values, no newline injection."""
+    if not isinstance(env, dict):
+        return {}
+    out = {}
+    for k, v in env.items():
+        if k in _SERVE_ENV_KEYS and isinstance(v, (str, int)) and not isinstance(v, bool):
+            v = str(v)
+            if v and "\n" not in v and "\r" not in v:
+                out[k] = v
+    return out
+
+
+def _installed_serve_env(plist: Path) -> dict:
+    """The carried keys an ALREADY-installed launchd serve unit has (only `_SERVE_ENV_KEYS`, only from a plist
+    whose Label is the serve label). A corrupt, foreign or malformed plist yields {} (2026-10-12)."""
+    import plistlib
+    try:
+        d = plistlib.loads(plist.read_bytes())
+        if not isinstance(d, dict) or d.get("Label") not in (None, LABEL_SERVE):
+            return {}
+        if d.get("Label") is None and plist.name != f"{LABEL_SERVE}.plist":
+            return {}
+        return _carried(d.get("EnvironmentVariables"))
+    except Exception:  # noqa: BLE001 — a damaged unit must not block reinstalling it
+        return {}
+
+
+def _installed_systemd_env(unit: Path) -> dict:
+    """Same as `_installed_serve_env` for the systemd unit's `Environment=K=V` lines."""
+    try:
+        env = {}
+        for line in unit.read_text().splitlines():
+            if line.startswith("Environment="):
+                a = line[len("Environment="):].strip()
+                if len(a) >= 2 and a[0] == a[-1] == '"':  # systemd allows Environment="K=V"
+                    a = a[1:-1]
+                if "=" in a:
+                    k, v = a.split("=", 1)
+                    env[k.strip()] = v
+        return _carried(env)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _merged_serve_env(installed: dict) -> dict:
+    """Installed keys survive a reinstall from a shell that LACKS them; any key PRESENT in the shell (even set to
+    empty, which means "remove it") is decided by the shell; `_serve_env()` (shell + derived upstream) wins."""
+    kept = {k: v for k, v in installed.items() if k not in os.environ}
+    return {**kept, **_serve_env()}
 
 
 def _is_loopback_url(url: str) -> bool:
@@ -81,7 +151,7 @@ def _serve_env() -> dict:
     # proxy itself. In "proxy mode" ANTHROPIC_FOUNDRY_BASE_URL points at http://localhost:8788 (THIS
     # proxy); baking that as the upstream makes the proxy forward to itself (an infinite loop). A
     # loopback foundry URL means "can't derive the upstream" — skip it and leave the config default.
-    if "APEX_ANTHROPIC_UPSTREAM" not in env:
+    if "APEX_ANTHROPIC_UPSTREAM" not in env and "APEX_ANTHROPIC_UPSTREAM" not in os.environ:  # explicit "" = no upstream
         foundry = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL", "").strip()
         if foundry and not _is_loopback_url(foundry):
             env["APEX_ANTHROPIC_UPSTREAM"] = foundry
@@ -241,9 +311,12 @@ def _launchd_install_serve() -> list[str]:
     logs.mkdir(parents=True, exist_ok=True)
     uid = os.getuid()
     plist = agents / f"{LABEL_SERVE}.plist"
+    # MERGE: keys already in the installed unit survive a reinstall from a shell that lacks them; the shell's
+    # value wins on conflict. A key is removed only by editing the unit or uninstalling, never by omission.
+    env = _merged_serve_env(_installed_serve_env(plist))
     plist.write_text(_launchd_plist(
         LABEL_SERVE, [_py(), "-m", "apex_router.cli", "serve"], keepalive=True, calendar=None,
-        extra_env=_serve_env()))   # bake the upstream/port so the gateway is reproducible
+        extra_env=env))   # bake the upstream/port so the gateway is reproducible
     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL_SERVE}"], capture_output=True)
     _launchctl_bootstrap(uid, plist, LABEL_SERVE)
     return [LABEL_SERVE]
@@ -372,7 +445,8 @@ def _systemd_uninstall() -> list[str]:
 def _systemd_serve_unit() -> dict[str, str]:
     py = _py()
     # bake the proxy env into the unit (Environment= lines) so the gateway config is carried.
-    env_lines = "".join(f"Environment={k}={v}\n" for k, v in _serve_env().items())
+    env_lines = "".join(f"Environment={k}={v}\n" for k, v in
+                        _merged_serve_env(_installed_systemd_env(_systemd_dir() / "apex-router-serve.service")).items())
     return {"apex-router-serve.service": f"""[Unit]
 Description=apex-router measuring proxy (serve)
 [Service]
