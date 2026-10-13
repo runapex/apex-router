@@ -152,3 +152,91 @@ the gate engine as the instruments; turn each engagement's output into the evide
 decisions as its first consumer, which keeps β alive at zero marginal cost without
 betting on it. Set one external gate: three paid engagements by 2027-03-31. If zero,
 datapce is a portfolio asset, and the five vendor conversations (Model 3) are the exit.
+
+## Iteration 2 — 2026-10-13 02:11 PDT
+
+Research log check: nothing appended after 23:57 PDT (last commit c694d57); Iteration 1
+already covered the cross-family review, Nomos, arXiv and round 8. The re-test is
+therefore against primary pages fetched tonight (search quota exhausted; all direct fetches).
+
+### (a) Re-test of Iteration 1 conclusions
+
+| # | conclusion | ruling | reason |
+|---|---|---|---|
+| 1 | Market C (compliance evidence) is the best one-builder market | **KEPT, narrowed** | buyer and budget line survive (Strike Graph publishes $21.5k–$35k/yr GRC plans [MEASURED]); but the *regulatory* triggers fail, see 3 |
+| 3 | Dated triggers 2027-01-01 (Colorado) and 2027-12-02 (EU Annex III) fund Model 1 | **DROPPED** | SB 26-189 is "Automated Decision-Making Technology" in *consequential decisions*, signed 2026-05-14, obligations from 2027-01-01, 3-yr records [MEASURED, leg.colorado.gov]; Annex III is 2027-12-02 [MEASURED, artificialintelligenceact.eu; adoption status not stated on-site]. Neither covers an org *using* coding agents. Only SOC 2 / ISO 27001 renewals and customer questionnaires remain as dated triggers [ASSUMED]. |
+| 4 | "Harness vendor has no incentive to emit per-decision evidence" | **REVISED** | Claude Code already exports an OTel `claude_code.tool_decision` event per decision: `decision` accept/reject, `source` config/hook/user_permanent/user_temporary/user_abort/user_reject, `bash_command` with `OTEL_LOG_TOOL_DETAILS=1`; but "the event doesn't indicate which of these sources matched" and no policy version [MEASURED, code.claude.com/docs/en/monitoring-usage]. Enterprise Analytics API: accept/reject counts for four file-edit tools only, no Bash, no permission mode [MEASURED]. Codex: a Compliance API "for audit and investigation records", managed `requirements.toml`, and "MCP hooks do not provide a complete Compliance API audit trail" [MEASURED, learn.chatgpt.com]. Copilot audit log: UNCHECKED (404). Signal #1 of Iteration 1 has half-fired; Model 1's value is now **matched rule + policy version + cross-harness normalisation + auditor narrative**, not the raw decision stream. |
+| 5 | Vanta is the pre-emption risk ("partner-or-die" signal) | **REVISED: it is Drata, now** | Drata "AI Agent Governance", Limited Availability, "shipping first for Anthropic": inline Sensor that "blocks violations inline", a **Trust Ladder "from Training to Recommendation to Active"** (advise→enforce promotion), "Chain of Custody" tamper-evident per-decision record mapped to SOC 2 / ISO 27001 / ISO 42001 / EU AI Act / AIUC-1; no price [MEASURED, drata.com/products/agent-governance]. Vanta AI Governance remains waitlist, names no coding assistant [MEASURED]. |
+| 6 | Model 1 price $5k–$15k/yr | REVISED down | the price slot that exists in GRC budgets is "additional framework" $2k–$8k/yr or a pentest deliverable $3.5k–$10k [MEASURED, below] |
+| 7 | Model 2 services-first, $12k–$30k/engagement | KEPT, re-anchored | pentest comparables ($3.5k autonomous, $10k standard, $20k enhanced) bound the fixed-scope readout; $12k–$30k holds only post-incident |
+| 8 | Model 3 engine licence, binary | KEPT, target changed | Drata shipped the *concept* of promotion without the statistics; it and the AIUC-1 auditors are the conversations, not Vanta |
+| 9 | OSS-incumbent point; β last; D, E excluded; gate 3 engagements by 2027-03-31 | KEPT | nothing new |
+
+New, unforeseen in Iteration 1: **AIUC-1**, "the standard for AI agent security, safety and
+reliability", maintained by the Artificial Intelligence Underwriting Company, updated
+"Q4: Oct 8, 2026", audited by Schellman and Coalfire, certificate valid one year with
+quarterly retests, Cursor/Harvey/Sierra/UiPath certified [MEASURED, aiuc-1.com]. Control
+E015 (Mandatory, Universal): "Maintain logs of AI system processes, actions, and agent
+outputs"; E004: document which changes "require formal review or approval" with
+"supporting evidence" [MEASURED, standard.aiuc-1.com/accountability]. This is a dated,
+recurring budget trigger that applies to companies that *sell* agents — a buyer I missed.
+
+### (b) Market C, concrete
+
+Ten first customers / customer types (trigger → who signs, control → artifact):
+
+1. **Series B–C SaaS, 50–150 devs on Claude Code Team, SOC 2 Type II renewal in ≤ 2 quarters** → CISO/Head of Security signs (< $25k needs no procurement committee [ASSUMED]); CC8.1 change management, CC6.1/6.8 → per-period "AI-agent change evidence pack": every agent-authored change with decision, source, matched rule, approver.
+2. **Agent vendor pursuing AIUC-1 (Cursor-class down to seed-stage)** → CTO signs; E015 + E004; auditor Schellman/Coalfire → E015 log evidence and E004 approval records for the agents that build their product, refreshed per quarterly retest.
+3. **Fintech / payments under SOX ITGC** → controller + CISO; ITGC change-control testing by the external auditor → per-change decision record with human approval for AI-authored commits.
+4. **Healthcare SaaS (HIPAA, HITRUST)** → security lead; BAA customer questionnaire "do AI tools touch PHI" → boundary evidence: counts of agent actions outside approved paths, derived features only.
+5. **FedRAMP Moderate / CMMC L2 contractor** → ISSO; AU-2/AU-12 audit events, CM-3 change control; 3PAO/C3PAO assessment → AU-family evidence for agents on developer endpoints.
+6. **ISO 42001 pursuer (220 certs)** → CISO; AIMS Annex A lifecycle/logging controls [ASSUMED IDs] → AI-tools-in-development evidence section.
+7. **Org after an agent incident (#95426 class)** → VP Eng; incident budget → readiness engagement with 0.3 s ruleset replay and evidence cards (Model 2).
+8. **EU deployer that is itself Annex III (credit, HR)** → DPO/compliance; Art. 12 logging, 2027-12-02 → only if their high-risk system is agent-built; minority [ASSUMED].
+9. **SOC 2 audit firms and vCISO practices** → practice lead; clients asking the AI question → white-label report module; a channel more than a customer.
+10. **Cyber insurers / underwriters** (AIUC itself is an underwriter) → underwriting lead; application questions on agent controls → attested evidence summary [ASSUMED, no page read].
+
+Procurement reality: the buyer's TPRM applies to datapce too; local-first with no upload
+means no subprocessor/DPA change — its strongest procurement argument [ASSUMED].
+
+Comparables with real prices:
+- **Strike Graph** Scale $21,500/yr, Enterprise $35,000/yr; additional framework
+  $2k–$8k/yr; assessment services $4k–$8k/yr; pentest $10k, enhanced $20k;
+  ISO 27001 internal audit $7k–$8k/yr [MEASURED, strikegraph.com/pricing].
+- **IBM watsonx.governance** Risk & Compliance Basic from $3,500/mo, Advanced $6,450/mo,
+  AWS Marketplace from $42,000 [MEASURED, ibm.com].
+- **Cobalt** autonomous pentest $3,500/test (promo to 2026-12-31); credit price unpublished
+  [MEASURED, cobalt.io/pricing]. Also: Aembit $20/agent/mo [MEASURED, Iteration 1];
+  ISO 27001 audit $8k–$30k, surveillance $8k–$15k/yr [MEASURED, isms.online; ISO 42001
+  ASSUMED similar]; SOC 2 Type II fee $10k–$50k [PLAUSIBLE; cost pages 404ed]. Vanta,
+  Drata, Secureframe, Oneleet, Thoropass publish no prices [MEASURED].
+
+### (c) Revenue, recommendation, two assumptions
+
+12-month ranges [ASSUMED]: Model 1 evidence pack **$0–$40k** (was $0–$60k; 0–5 orgs at
+$2k–$8k, Drata and OTel compress it). Model 1b AIUC-1 evidence kit for agent vendors
+**$0–$30k** (new; $3k–$8k per cert cycle). Model 2 services **$30k–$120k** (was
+$40k–$150k; 4–8 fixed-scope readouts at $3.5k–$10k plus 1–2 post-incident at $12k–$30k).
+Model 3 **$0–$50k**, binary (unchanged; targets Drata, Schellman/AIUC, Vanta).
+Total **$30k–$190k** (was $40k–$260k).
+
+Recommendation (revised): keep services-first for the GRC buyer, but drop the regulatory
+story — sell **audit-period evidence** (SOC 2 CC8.1, AIUC-1 E015/E004), and make the
+first instrument a free **cross-harness decision normaliser**: Claude OTel `tool_decision`
++ Codex Compliance API + the plugin ledger → one record carrying the field the vendor's
+event explicitly lacks (matched rule, policy version). Apply to Drata's early-access
+program as a prospect to read the Chain of Custody record ($0). Gate unchanged.
+
+Two assumptions whose failure flips this:
+- **A1 — SOC 2 auditors now sample AI-agent changes and ask for approval evidence.** If
+  false, Market C has no 2026 trigger and Model 1b (AIUC-1) is the only dated buyer. Test
+  in two weeks, < $500: email five audit firms (Prescient, Johanson, Schellman, A-LIGN,
+  Sensiba) and two GRC communities with one question — "in audits closed this year, did
+  you request evidence for AI-coding-tool changes under CC8.1?"; buy one auditor hour
+  (~$300) if replies are thin. Pass: ≥ 2 of 5 say yes with a specific request.
+- **A2 — An org with Claude Code Enterprise + OTel cannot already satisfy that ask.** If
+  the raw `tool_decision` stream passes an auditor, the normaliser is a free feature and
+  Model 1 is $0. Test: two days to convert own OTel/ledger data into a one-page CC8.1
+  evidence pack; send to three early-access security leads and one auditor with "would
+  this pass; what would you pay"; cost $0–$200. Pass: ≥ 1 auditor says the matched-rule
+  and cross-harness columns are needed, ≥ 1 lead names a price ≥ $2k.
