@@ -1315,7 +1315,7 @@ Judge: Claude Opus; 50 actions human-verified; "44/50 cases (88%), yielding a Co
 19.8 % stands with the scope "all actions". Edit/Write: 93 of 253 (36.8 %) routed through
 Tier 2, "not evaluated by the classifier", 100 % FNR on those by construction — VERIFIED.
 
-## Round 8 (00:05 PDT 2026-10-13) — what the "engine" reframing would mean in this repo [MEASURED code map]
+## Round 8 (23:57 PDT 2026-10-12) — what the "engine" reframing would mean in this repo [MEASURED code map]
 
 For owner decision 1. Read-only map of what a sequential-gate engine with an evidence
 card already is in-repo:
