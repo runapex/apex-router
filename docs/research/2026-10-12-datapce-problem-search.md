@@ -546,3 +546,28 @@ n = 52 caveat; proposals ship as `permissions.deny` (hard) and `autoMode.hard_de
 > diffs in the vendor's own formats with the evidence that justifies each, and measures
 > the effect after a human ships them. Enforcement stays with the vendor; the data and
 > the computation are the product.
+
+### R4-a: what the harness exports per decision (claude-code-guide over official docs) [MEASURED per the agent]
+
+- `claude_code.tool_decision`: `decision` accept|reject; `source` config|hook|
+  user_permanent|user_temporary|user_abort|user_reject; `tool_name`, `tool_use_id`,
+  `tool_source`; `tool_parameters` only when `OTEL_LOG_TOOL_DETAILS=1`. `tool_result`
+  carries `decision_source`. No matched-rule or classifier-reason field anywhere.
+- OTel is enabled by env (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`,
+  endpoint/headers); an org can force it through the managed `env` block.
+- `autoMode` keys: `environment` (prose trust descriptions), `allow`, `soft_deny`,
+  `hard_deny`, `classifyAllShell`; lives in user settings or managed settings, never
+  project settings. Classifier verdicts are not exposed in logs, UI or `/permissions`.
+- `/fewer-permission-prompts` reads transcripts (commands run, not message text) and
+  proposes allow rules only.
+- Managed settings ship `autoMode` and `permissions.deny` org-wide; a developer's local
+  `allow` can override an org `soft_deny`. Enterprise Analytics API and dashboard report
+  usage, PRs, lines, cost — not permission outcomes. No per-org classifier accuracy, no
+  decision distribution, published or exposed.
+
+Fit check for v3: the data source exists org-wide without installing anything per
+developer (managed `env` → OTLP collector → datapce ingest), and locally with richer
+derived features via the plugin's hooks. The proposal targets exist (`permissions.deny`,
+`autoMode.hard_deny`, `autoMode.soft_deny`, `autoMode.allow`). The one thing the vendor
+withholds — reasons and matched rules — datapce reconstructs from its own derived features
+and outcome joins, which is the computation the product sells.
