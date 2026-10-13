@@ -740,3 +740,26 @@ Round-5 probes: (a) verify the Analytics API accept/reject claim and `claude aut
 critique` scope; (b) incumbents for ruleset dry-run (deny-probe, Nomos replay, AGT policy
 test fixtures, Cursor, Codex execpolicy check) and for local judge-based session audits;
 (c) advisor round on v4; (d) refutation of v4.
+
+### R5-local: throwaway replay of a candidate ruleset on this machine (`/tmp/v4-replay/replay.py`, 2026-10-12) [MEASURED; semantics approximated]
+
+Candidate ruleset: 6 deny rules (rm -rf on root/home, force push, reset --hard), 8 ask
+rules (git push, rm -rf, launchctl, kill, curl, installs), 33 allow prefixes (git, ls,
+cat, grep, python3, .venv/bin/…). Semantics approximated from the docs: prefix match,
+compound commands split on `&&`, `;`, `|`, every segment must be allowed; deny > ask >
+allow. Replayed over 3,555 recorded Bash calls in 116 active hours:
+
+| readout | value |
+|---|---|
+| would allow / ask / deny | 731 / 2,815 / 9 |
+| prompts the ruleset would add per active hour | 24.3 |
+| top causes of prompts | env-var-prefixed commands (`UV_OFFLINE=1 …`, `PYTHONPATH=… …`, `WS=… …`), heredoc bodies the naive splitter treats as commands, `for` loops, `export` |
+
+Reading: (1) the v4 readout is computable in seconds from local history, no model, no
+text leaving the machine; (2) a ruleset that looks reasonable on paper would prompt 24
+times an hour on this workload — exactly the fatigue failure v4 exists to show before
+rollout; (3) the approximation errors (env-var prefixes, heredocs) are themselves the
+product's content: the real matcher must reproduce the harness's semantics faithfully
+(the docs describe a shell parser that traces paths and treats untraceable commands as
+prompts), which is a fidelity test, not a research risk. Runtime 0.3 s. Code stays in
+/tmp; throwaway.
