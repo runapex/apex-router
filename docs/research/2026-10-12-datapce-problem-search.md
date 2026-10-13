@@ -763,3 +763,43 @@ product's content: the real matcher must reproduce the harness's semantics faith
 (the docs describe a shell parser that traces paths and treats untraceable commands as
 prompts), which is a fidelity test, not a research risk. Runtime 0.3 s. Code stays in
 /tmp; throwaway.
+
+### R5-a/b/c: incumbents for v4 (agent; docs pages read [MEASURED], repos mostly via summaries)
+
+(A) Analytics API (`/v1/organizations/usage_report/claude_code`): per user per day,
+`tool_actions.edit_tool.accepted/rejected`, `multi_edit_tool`, `write_tool`,
+`notebook_edit_tool`, plus sessions, lines, commits, PRs, cost. **No Bash, MCP or
+auto-mode decisions.** So the v3 refuter's "Analytics API already ships accept/reject
+rates" holds only for file-edit tools. `claude auto-mode critique` critiques rule *text*
+("ambiguous, redundant, or likely to cause false positives"); no history replay.
+`/auto-mode-setup` drafts entries from recent sessions' commands; `PermissionDenied` hook
+receives `tool_input`.
+
+(B) Ruleset dry-run before rollout — partially served, the team case open:
+| tool | replays against | reports | team | licence |
+|---|---|---|---|---|
+| Nomos | real local transcripts (`--replay-transcripts`) + a 1,526-command corpus, against **its own** profiles | allow/deny/ask counts, why calls ask, top asking programs | no | Apache-2.0 [PLAUSIBLE] |
+| claude-perm-sim | one call or hook JSON; `diff` of two settings files on built-in samples | deciding rule, lint, bypass findings (SARIF) | no | MIT |
+| deny-probe | synthetic bypass routes; live canary | HOLD/LEAK per route | no | — |
+| AGT `agt test` | captured decision traces and fixtures | pass/fail diffs | Studio what-if proposed, unshipped | MIT |
+| Codex `execpolicy check` | one command; `match`/`not_match` examples per rule | strictest decision + matched rules | no | Apache-2.0 |
+Copilot, Cursor: none found. Open feature request anthropics/claude-code **#39971 "unit
+test permissions rules"**. Nothing replays a Claude Code `permissions`/`autoMode` ruleset
+against recorded team history and aggregates prompts-added / blocked per team.
+
+(C) Local judge for unrequested harmful actions — open. Anthropic's method: flagged
+production sessions (May–June 2026, opted-in accounts) re-graded by a model on two 0–10
+scales (severity; how directly the user requested it); at severity ≥ 7, 6.3 % of manually
+approved vs 2.4 % of auto-mode sessions had an unrequested harmful action — **a rate within
+flagged sessions**, grader and n undisclosed. arXiv 2604.04978's judge is Claude Opus
+(88 % agreement with a human on 50 actions, κ 0.82). OS-Harm's judge is configurable
+(F1 0.76–0.79 vs humans). Local auditors: claudit (Ollama judge, secrets/PII only),
+clauditor (off-role actions, no LLM), sessionscope, cc-audit-log (risky-command flags).
+No severity + user-directness grader on open-weight models over Claude Code and Codex
+transcripts exists.
+
+Reading for v4: the deterministic half (ruleset replay on local history, team
+aggregation) is open with a first-party feature request and a near-miss OSS (Nomos, own
+format); the judge half is open and has a published method to copy (two 0–10 scales)
+and a published agreement bar to beat (κ 0.82 vs a human on 50 actions). Both halves
+are measurable with the assets on hand.
