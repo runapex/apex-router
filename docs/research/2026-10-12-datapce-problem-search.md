@@ -1293,3 +1293,15 @@ Verdict after cross-family review: **no candidate validated**; β is the cheapes
 experiment and is unvalidated on existing data; the sequential-gate library remains the
 fallback framing. The night's durable outputs are the refutations, the verified facts,
 the local measurement scripts, and the corrected numbers.
+
+### Post-report verification (23:27 PDT): Nomos README read directly [MEASURED]
+
+Nomos = deny-wins PreToolUse policy hook for Claude Code and Codex (also SDK, LangGraph,
+MCP server, HTTP gateway); `--replay-transcripts` over the user's own transcripts and
+`--suggest` (allow rules from approved asks) are both on the page; 1,526-command corpus
+with a golden CI test; hash-linked (not signed) audit log; Apache-2.0; README pins
+v0.19.0. **Stars: 19, 1 fork.** Nuance for the morning report: the free incumbent that
+closes α and half of v4 exists but has essentially no adoption, so "served" means "the
+capability is available at $0", not "the market has chosen it". That does not revive α
+(the vendor still owns the semantics) but it is a datum that demand for ruleset replay
+is thin on the OSS side too.
