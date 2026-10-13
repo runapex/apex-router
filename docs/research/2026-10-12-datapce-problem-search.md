@@ -1263,3 +1263,33 @@ no fresh session started; the cron safety net was re-created (87b0116f).
 3. Still pending from the previous handoff: E-D randomisation on live work; the
    co-author trailer rule (this run followed the memory rule: none).
 4. Delete or keep the throwaway probes in /tmp (v4-replay, v4-judge, v6-capacity).
+
+### Cross-family review of the morning report (GPT via `codex exec`, read-only, 23:23 PDT) — corrections applied
+
+1. Weakest inference: β "STANDS as a feature" rests on R7-β-local's 1,098 → ~180 figure,
+   which reroutes opus to fable and assumes fable's observed 429 rate transfers — a
+   **cross-arm counterfactual**, exactly the limitation the same-arm restriction
+   excludes. Correlated error windows establish predictive signal, not intervention
+   benefit; waiting/retrying on opus (the same-arm policy) was not measured.
+   **Correction**: the 1,098 → 180 figure is relabelled ASSUMED (cross-arm); β is
+   downgraded from "STANDS as a feature" to **UNVALIDATED**.
+2. The ranking β > α > γ is defensible as an ordering of cheap next experiments for this
+   builder, not as an evidence-backed ranking of product opportunities; no
+   willingness-to-pay evidence establishes it; R7-spike0 (error 969 vs 11, n = 2 days)
+   goes against β's distinctive replay claim and gives no affirmative support.
+   **Correction**: the verdict table's rank column now reads "order of cheap experiments".
+3. The platform-owner lesson is over-generalised: the log documents overlap and
+   constraints in the wedges investigated, some from independent tools, not platform
+   owners. **Correction**: narrowed to "these proposals lack demonstrated differentiation
+   given this builder's assets; in the permission wedge specifically, the vendor and free
+   OSS covered each gap within the night's evidence window".
+4. First thing tomorrow: ask one external multi-key proxy operator to walk through their
+   most recent throttling incident and commit to a bounded pilot comparing β against a
+   trailing-rate persistence rule, using the real incident to identify which decision a
+   receipt would have changed — test external value before another two weeks of an
+   internally convenient experiment. **Adopted as owner decision 2's recommended form.**
+
+Verdict after cross-family review: **no candidate validated**; β is the cheapest next
+experiment and is unvalidated on existing data; the sequential-gate library remains the
+fallback framing. The night's durable outputs are the refutations, the verified facts,
+the local measurement scripts, and the corrected numbers.
