@@ -667,3 +667,76 @@ pass-through count outside boundaries. The FN-rate CI is an org-scale deliverabl
 (≥ ~50 developers at 1e-3, ≥ ~500 at 1e-4) and belongs to the pilot, not the spike.
 Spike criterion rewritten accordingly in the outline (K1 stays; the CI test moves to K2
 at pilot scale).
+
+### R4-f: adversarial refutation of v3 (fresh reviewer) — verdict WEAKENED; method refuted, problem stands
+
+- **Base rates make FN measurement ill-posed.** Anthropic, with thousands of internal
+  users and every decision and reason at hand, curated only **52** real overeager actions
+  over months; one heavy user saw 19 classifier stops in 2,205 sessions / 90 days. A
+  "CI excludes zero" gate is passed by k = 1 and discriminates nothing; ranking rule diffs
+  needs dozens of events, about a year per org. Anthropic's own session-level LLM judge
+  found 2.4 % of auto-mode sessions contained an unrequested harmful action (severity ≥ 7)
+  — a usable base rate, but from a judge, not from outcomes.
+- **The proxies do not measure "should have been denied".** FN is defined against user
+  intent; arXiv 2604.04978 got 81 % only with an ex-ante oracle of authorised targets;
+  OS-Harm's judge reaches F1 0.76–0.79 against humans given the full trace; MonitoringBench
+  and the misuse benchmark label with LLM raters, never reverts. Reverts flag bad code;
+  session failure is orthogonal; destructive-op detection is circular (if detectable, put
+  it in deny); deny → retry measures friction, the FP side.
+- **Vendor pre-emption is one query away.** The server-side classifier already produces
+  a severity score, matched rule name and reasoning; since September the block reason
+  names the rule; the Analytics API already ships per-org tool accept/reject rates
+  [PLAUSIBLE, to verify]; Datadog Agent Console computes AI-vs-non-AI change failure rate
+  from the same OTLP stream.
+- **Buyers buy control, not accuracy.** September 2026 moved the market to deterministic
+  rails around the probabilistic guard (Copilot managed block/approve/allow, Cursor run-mode
+  policies, Claude `disableAutoMode`/`hard_deny`, Codex guardian tiers). A free report
+  reading "≈ 0 incidents, wide CI" converts to nothing; "which rules would have stopped
+  it" is the only valuable clause and it needs command text.
+- **Privacy blocks the org-wide rule diff.** Without `OTEL_LOG_TOOL_DETAILS`, decisions
+  carry tool name, decision and source only; command text exists only in local hooks.
+- Minor: "every Team/Enterprise org by default" is loose (`-p` and the SDK start Manual;
+  most calls are approved by tier rules, not the classifier).
+- **Alternative offered: permission-policy regression testing.** Replay a candidate
+  `permissions.deny` / `autoMode` / execpolicy ruleset against recorded tool calls before
+  rollout; report what it would block, the friction it adds, whether the three-consecutive-
+  block kill switch would trip. Deterministic, local, needs no outcome labels, events are
+  abundant (FPs, not FNs), exercises the single-step replay bench and gates directly.
+- Most-moving evidence: the 52.
+
+### Round 4 ruling
+
+Ruling: v3's method (per-org FN rate from outcome proxies) is REFUTED; the problem
+("no org can compute what auto-approval lets through") stands but is not computable by
+anyone from outcomes at org scale. Keep what survived from every round and recombine:
+(1) per-decision replay is valid and events are abundant on the FP/friction side
+(R1 synthesis, R4-f); (2) command text must stay on the developer's machine (R2-e,
+R4-f), so computation is federated and only counts travel; (3) the only published way to
+get harm labels at scale is a session-level judge (Anthropic's 2.4 %), and datapce already
+has judge and local-tier machinery (label_judge_bench, outcome judge AUROC 0.82, Ornith
+tiers); (4) hybrid authorship fits exactly: humans write rulesets, the machine computes
+their consequences on history before rollout and proposes tightenings from judged-harmful
+and destructive-class events, humans approve, effect is replayed before and measured
+after. — advisor: the v3 advisor's conditions are superseded by this refutation; a new
+advisory round applies to v4 — cost if wrong: another round — reversal: none.
+
+## Round 5 — v4: permission-policy what-if with a local session audit
+
+> Platform teams now ship permission rulesets org-wide (Copilot managed permissions,
+> Claude managed `permissions`/`autoMode`, Codex `requirements.toml`) with no way to test
+> a ruleset against their own history before rollout, the way IAM, Kubernetes and OPA
+> operators dry-run policy. A ruleset that is too tight recreates the prompt fatigue that
+> drives developers to bypass mode; one that is too loose is invisible until an incident.
+> datapce replays a candidate ruleset on each developer's locally recorded tool calls
+> (command text never leaves the machine), returns only counts — what it would block, by
+> class; prompts it would add per developer-day; kill-switch trips — with confidence
+> intervals, and grades sessions with a local judge for unrequested harmful actions to
+> show what the ruleset would and would not have caught. The same engine proposes
+> tightenings from judged-harmful and destructive-class events, in the vendor's format,
+> with the evidence card; a human approves; the effect is replayed before and measured
+> after rollout.
+
+Round-5 probes: (a) verify the Analytics API accept/reject claim and `claude auto-mode
+critique` scope; (b) incumbents for ruleset dry-run (deny-probe, Nomos replay, AGT policy
+test fixtures, Cursor, Codex execpolicy check) and for local judge-based session audits;
+(c) advisor round on v4; (d) refutation of v4.
