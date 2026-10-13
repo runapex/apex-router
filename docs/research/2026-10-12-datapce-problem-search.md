@@ -1020,3 +1020,7 @@ per request against the developer's own history, with an explicit list of what i
 observed and what is assumed. The same machinery supports "which of N candidate policies
 minimises 429s at ≤ X % cost increase" and a per-decision receipt ("shed because opus
 429 rate 43.8 % over 15 min, n = 80").
+Pricing for the cost side of the receipt exists in-repo (`proxy_engine/tuner/cachesim.Pricing`,
+`APEX_PRICING_OVERRIDES`, the digest's "unpriced" accounting) but was not wired into the
+throwaway; a real β probe would price the 2,924 shed requests from their recorded
+token counts. Noted, not done tonight.
