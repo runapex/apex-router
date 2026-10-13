@@ -1353,3 +1353,11 @@ criterion.
 Not started: no code was written tonight (brainstorming gate: the owner approves a spec
 before a plan). Ruling: record the map as input to decision 1 — advisor n/a (read-only
 map) — cost if wrong: none — reversal: none.
+
+## Research loop closed (06:12 PDT 2026-10-13)
+
+No rounds after round 8; the only additions after the 23:25 morning report were the
+post-report verifications (Nomos README, arXiv 2604.04978 full text) and the round-8 code
+map, all recorded above. Research cron 87b0116f deleted. The independent
+business-intelligence loop ran four iterations in its own file; the Correlation section
+below is the first and only point the two are compared.
