@@ -946,3 +946,51 @@ Score γ (provisional): demand 2, value 2, fit 3 (gates, nightly proposals, Anal
 ingest), differentiation 2, feasibility 2. **11/15**, and the validity note cuts both
 ways: the product's honest output at 50 devs is mostly "inconclusive", which is what the
 owner's own nightly already reports for its skill edits.
+
+### R6-β: sharpened real-time spend/capacity policy, re-scored (agent; GitHub issues and Cloudflare/OpenAI pages [MEASURED], vendors [PLAUSIBLE])
+
+- Enforcement bugs are real and unfixed: LiteLLM #19105 (team member budgets not blocking)
+  auto-closed "not planned" 2026-09-22 after a partial fix; #27735 (stale spend → false
+  BudgetExceeded as 429) OPEN, active 2026-09-14; #38087 (budget gauge flapping) OPEN;
+  #44555 (per-team token budgets) OPEN 2026-10-05, community PR, no maintainer commitment;
+  overshoot from in-flight calls and under-counting when providers omit usage noted.
+  Cloudflare spend limits: eventually consistent, cost recorded after completion, 20 rules,
+  429 or dynamic fallback, no alerting on the page.
+- But vendors already enforce caps in real time: Anthropic Team/Enterprise monthly dollar
+  limits at org/group/member since April 2026, blocked at the limit, plus 5-hour and weekly
+  windows [PLAUSIBLE]; OpenAI workspace/group/individual credit limits for Codex, spend
+  controls 2026-06-18 [MEASURED]; Cursor team-wide hard cap, per-member Enterprise-only
+  [PLAUSIBLE]; TrueFoundry circuit breakers on cost velocity, repeated prompts, error rate,
+  context growth, with 75/90/100 % actions [PLAUSIBLE, vendor blog]. So "cannot stop in
+  real time" is WEAK.
+- The receipts ask (LiteLLM #25295) was withdrawn by its author as off-topic; one
+  commenter's signal, not demand.
+- Replay / what-if of routing, budget or retry policy against history, or proposals with
+  significance tests: none found across LiteLLM, Portkey, Helicone, TrueFoundry, Kong,
+  Cloudflare, Braintrust, Langfuse, Vantage, CloudZero [PLAUSIBLE, absence]. Closest: Ramp
+  Router Shadow Mode (live mirrored sampling at real inference cost, not history replay)
+  [MEASURED]. Only hobby repos replay.
+- 429 pain for Claude Code teams is current (#96872 2026-09-24: 429s at 26–27 % plan usage
+  with 6+ sessions; #44481 closed not planned; #22876) [MEASURED]. Capacity pooling across
+  subscriptions/keys exists as OSS rotators (TeamClaude, CLIProxyAPI, claude-proxy
+  mid-stream failover) [MEASURED] with ToS risk for consumer subscriptions.
+- Price pressure downward: LiteLLM OSS free, Ramp Router free through 2026; Portkey Pro
+  $49/mo, Enterprise estimates $2–10k/mo; typical spend $150–250 per developer-month
+  [PLAUSIBLE].
+- Stripe–OpenRouter (2026-08-19, ~$7–8B): Collison on "routing requests intelligently and
+  spending tokens efficiently"; no explicit budget-product statement [MEASURED/ASSUMED].
+- Verdict: partially served; the open remainder is explainability (receipts) and
+  history replay with gated proposals, with thin market signal and commoditising caps.
+
+Score β (re-scored): demand 3 (spend and 429 pain MEASURED and current), value 2, fit 3,
+differentiation 1–2 (caps commoditised; replay/proposals open but unasked-for),
+feasibility 3. **12–13/15**, down from 13 on differentiation. The honest shape is a
+*feature of the proxy the owner already runs* — per-request replay of capacity policies
+with receipts and gated proposals — not a standalone product.
+
+### Rotation note (22:43 PDT)
+
+Session handoff nudge received; handoff written and validated
+(`~/.claude/handoffs/9cdb5f6e-e831…md` state block). Round 6 data is complete (α from
+R5-r, β above, γ in R6-γ). Remaining for the fresh session: one adversarial refutation
+ranking α/β/γ, one advisor round on the ruling, the morning report by 06:00.
