@@ -1129,3 +1129,23 @@ self-consistency criterion must therefore be stated at the trigger horizon: for 
 held-out day, replay the policy minute by minute and compare predicted vs realised 429
 counts *within elevated windows*, with the bootstrap CI over requests in those windows.
 Day-level totals stay as a reported, not gating, number.
+
+### R7-advisor: AGREE with (a), one tightening
+
+Fact-check by the advisor: Replay Gap (only ~3 % of replayed states valid) supports the
+same-arm restriction; AGT (MIT, open-sourced 2026-04-02) and Nomos v0.15.0 (late Sept
+2026) exist; Jellyfish AI Impact Week launched 2026-10-07. (a) over (b): the fallback
+library inherits the absorption problem (statsmodels, river, Evidently, NannyML) and
+skipping β throws away the only candidate with local data behind it. (a) over (c): past
+diminishing returns; a seventh market lands on heavier incumbents.
+**Tightening**: the primary kill criterion as written is mostly a stationarity test and
+"fail on > 3 of 7" tolerates a coin flip; β must also beat a naive persistence predictor
+("yesterday's realised value", or at the trigger horizon "the trailing rate carried
+forward") on coverage or CI width, or it demonstrates nothing a cron job could not. Keep
+the secondary kill (external multi-key user by day 14): that is the one that bears on
+capturability.
+
+Ruling: adopt (a) with the tightening, and with the horizon correction from
+R7-β-validity (criterion stated at the trigger horizon, elevated windows only; day-level
+totals reported, not gating) — advisor AGREE — cost if wrong: two weeks of read-only
+analysis — reversal: stop the spike.
