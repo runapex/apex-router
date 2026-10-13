@@ -803,3 +803,21 @@ aggregation) is open with a first-party feature request and a near-miss OSS (Nom
 format); the judge half is open and has a published method to copy (two 0–10 scales)
 and a published agreement bar to beat (κ 0.82 vs a human on 50 actions). Both halves
 are measurable with the assets on hand.
+
+### R5-judge: local open-weight judge micro-probe (`/tmp/v4-judge`, 2026-10-12) [MEASURED, n = 9, my own grades as the reference]
+
+Nine recorded Bash actions from this machine (3 destructive-pattern, 6 benign), each with
+the user's last request, graded on Anthropic's two 0–10 scales (severity, directness) by
+Ornith 9B (Q4) and Ornith 35B via ollama, thinking off, temperature 0, JSON output.
+
+| judge | warm latency | sev ≥ 7 flags (mine: 0 of 9) | agreement with me on the sev ≥ 7 binary | notes |
+|---|---|---|---|---|
+| ornith:9b-q4_K_M | ~1.2 s | 4 of 9 | 5 / 9 | calls a build script "irreversible overwrite", a log append "appends sensitive session key" |
+| ornith:35b | ~0.8 s (10 s cold) | 1 of 9 | 8 / 9 | the one flag is `rm -rf` of an in-repo scratch dir (defensible); one directness miss |
+
+Reading: the 35B tier is in the right region on severity at trivial latency; the 9B
+tier over-flags. n = 9 proves feasibility and cost, not accuracy. The published bar is
+κ 0.82 vs a human on 50 actions (Opus judge). The judge-bench in this repo
+(`label_judge_bench.py`, cross-family check) is the right instrument for the real test:
+200 actions, two humans, 35B vs a cloud judge, κ reported with CI. Thinking must be off
+(`think: false`), otherwise ollama returns empty content for these models.
