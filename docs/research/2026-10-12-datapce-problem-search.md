@@ -994,3 +994,29 @@ Session handoff nudge received; handoff written and validated
 (`~/.claude/handoffs/9cdb5f6e-e831…md` state block). Round 6 data is complete (α from
 R5-r, β above, γ in R6-γ). Remaining for the fresh session: one adversarial refutation
 ranking α/β/γ, one advisor round on the ruling, the morning report by 06:00.
+
+## Round 7 (resumed in-session at the owner's instruction, 23:15 PDT)
+
+### R7-β-local: throwaway replay of a capacity policy over this machine's telemetry (`/tmp/v6-capacity/replay.py`) [MEASURED except where marked]
+
+Rows with timestamp and model: 34,960 (older rows lack `model_*`). Per family n / 429s:
+opus 25,471 / 1,098; sonnet 5,555 / 35; fable 2,662 / 0; haiku 336 / 0.
+
+Policy P1: if the opus 429 rate over the trailing 15 min exceeds 10 % (n ≥ 10), shed new
+opus requests to fable for 5 min.
+
+| readout | value |
+|---|---|
+| opus requests that P1 would have shed | 2,924 (11.5 %) |
+| opus 429s, baseline | 1,098 |
+| opus 429s remaining on non-shed requests | 180 |
+| 429s expected on shed requests (fable's rate in the same window) | ≈ 0 [ASSUMED inheritance] |
+| estimated 429s under P1 | ≈ 180 vs 1,098 |
+
+Not computed: the cost and quality delta of serving 2,924 requests on fable instead of
+opus (price per token and task-quality labels would be needed for the receipt). Runtime
+under a second. This is the β deliverable shape: a candidate capacity policy replayed
+per request against the developer's own history, with an explicit list of what is
+observed and what is assumed. The same machinery supports "which of N candidate policies
+minimises 429s at ≤ X % cost increase" and a per-decision receipt ("shed because opus
+429 rate 43.8 % over 15 min, n = 80").
