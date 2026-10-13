@@ -296,3 +296,44 @@ could compute. 2 of 9 (freeze, two approvals) are *state* predicates over data t
 does not hold. None needs an LLM to evaluate; all need computation before the call. This is
 the strongest single argument for G2: the incidents were not rule-authoring failures, they
 were rule-expressiveness failures.
+
+### R2-a: harness capability for G1/G2 (claude-code-guide over official docs, 2026-10-12) [MEASURED per the agent]
+
+- `PermissionRequest` hook fires when a tool call needs a permission decision; input has
+  session_id, cwd, permission_mode, tool_name, tool_input; output `decision.behavior`
+  allow|deny with optional `updatedInput`. No `ask`. The hook does not see the human's
+  answer when it returns nothing.
+- `PreToolUse` hook: output `permissionDecision` allow|deny|ask|defer plus
+  `permissionDecisionReason` and `updatedInput`; default timeout 600 s; a timed-out hook
+  does not block unless `onFailure: block` (v2.1.295+).
+- `PermissionDenied` hook fires when auto mode denies a call (tool_name, tool_input).
+- Rules: "A rule like `Bash(command:rm *)` would be bypassable by a compound command, so
+  Claude Code ignores it and emits a startup warning." Content matching is hooks-only.
+- Managed settings can ship hooks and deny rules org-wide (hooks need user security
+  approval). Audit log covers settings changes, not per-session decisions. No dashboard of
+  which rules matched in which sessions.
+
+Reading: the human's allow/deny is reconstructable by joining `PermissionRequest` (no
+decision returned) with the following `PostToolUse` (allowed) or the "user doesn't want
+to proceed" rejection (denied). So G1's label stream exists for default-mode users. G2's
+evaluator fits in `PreToolUse` with a reason string and can rewrite input (`updatedInput`),
+which no rule can. The per-session decision ledger the docs lack is G3.
+
+## Round 2 synthesis
+
+G2 (computed predicates) is the core; G1 (approvals as labels) is its label source; G3
+(per-decision evidence) is its export; G4 (spend breaker) is one policy family that needs the
+proxy; G5 (layer above AGT/OPA/Cedar) is the positioning question. Problem statement after
+round 2:
+
+> Coding-agent harnesses decide tool calls with prefix rules, a prompt, or a classifier.
+> Seven of nine public data-destruction incidents needed a predicate computed from the
+> resolved command (path outside the tree, target is `$HOME` or a drive root, URL matches
+> production); none of the shipped rule languages, including Microsoft's AGT, can express
+> one. The human's prompt answers and the classifier's denials are the labels for the
+> rules that should exist, and nobody learns from them. datapce computes the predicates,
+> proposes the rules, records the evidence.
+
+Round 3: (1) adversarial refutation of this statement by a fresh heavy-tier advisor;
+(2) positioning variants (standalone plugin vs layer above AGT); (3) Anthropic-builds-it
+risk; (4) buyer and price.
