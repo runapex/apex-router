@@ -1314,3 +1314,42 @@ Judge: Claude Opus; 50 actions human-verified; "44/50 cases (88%), yielding a Co
 **both figures are in the paper**; R7-check's "CONTRADICTED" is withdrawn and R4-b's
 19.8 % stands with the scope "all actions". Edit/Write: 93 of 253 (36.8 %) routed through
 Tier 2, "not evaluated by the classifier", 100 % FNR on those by construction — VERIFIED.
+
+## Round 8 (00:05 PDT 2026-10-13) — what the "engine" reframing would mean in this repo [MEASURED code map]
+
+For owner decision 1. Read-only map of what a sequential-gate engine with an evidence
+card already is in-repo:
+- `core/` is stdlib-only (math, random): `stats.py` (wilson_ci, benjamini_hochberg,
+  paired_bootstrap_ci/pvalue, welford, ewma, nearest_rank), `routing.py` (cell state
+  machine COLD→WARMING→READY→DRIFTING, MIN_N=30, TARGET=0.9), `drift.py` (cusum_lower,
+  penalty ramp), `anomaly.py` (robust z, PCA Q/T², `explain` → {score, term, q, t2}),
+  `cost.py`, `linalg.py`. TypeScript mirror `plugin/hooks/core/*.ts` with generated
+  fixtures (`core/fixtures.py` → `plugin/tests/fixtures/core.ts`, parity tests both sides);
+  the copy in ~/src/datapce/plugin has drifted on all six files; TS lacks BH and the
+  bootstrap.
+- Two real gates exist: `gate.run_gate` (out-of-sample, FDR, replication windows,
+  healing; frozen dataclasses CellEvidence → CellVerdict → GateResult; thresholds
+  caller-supplied; nothing persisted) and `route_advise._rec` ({verdict, rate, ci_low,
+  ci_high, break_even, n, significant, tested, p_value, assumes, reason}; MIN_N=30,
+  COST_RATIO=5, BH α=0.05; CLI prints, exits 0, persists nothing).
+- Two decision modules on the capacity stream: `retry_ab.report()` (Newcombe CI on
+  retry arms; dict already card-like with mde and days_to_min_n; not persisted) and
+  `pressure.compute()` (GREEN/AMBER/RED threshold rule, no CI; persisted to
+  `~/.apex-router/pressure.json`; exit codes act as a gate).
+- No shared verdict/card schema: four incompatible shapes (dataclasses, `_rec` dict,
+  retry_ab dict, pressure dict; `pvalue` vs `p_value`). `core/routing.py` re-exports
+  `gate`/`route_advise`, inverting the layering.
+
+What is missing for the reframing: one verdict schema; an advise→enforce promotion
+state that persists; a generic JSONL-decision-stream adapter (every module has its own
+reader); one CLI; the layering fix. A spike would touch three files: new
+`core/verdict.py` (card dataclass + to_json, `_rec` as template), `retry_ab.py` (emit the
+card; a stats-backed retry policy the proxy's 429 path consumes), `pressure.py` (attach
+the card; Wilson CIs instead of raw thresholds; persistence and exit-code gate already
+there). This is also the honest, same-arm form of β: the first consumer of the engine is
+the proxy's own retry/wait/shed decision, judged against persistence by the tightened
+criterion.
+
+Not started: no code was written tonight (brainstorming gate: the owner approves a spec
+before a plan). Ruling: record the map as input to decision 1 — advisor n/a (read-only
+map) — cost if wrong: none — reversal: none.
