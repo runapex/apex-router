@@ -335,16 +335,27 @@ def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> D
     keyed: Dict[Tuple[str, str], Dict[str, Any]] = {}
     loose: List[Tuple[float, bool]] = []  # (ts, is_plugin) for rows that cannot pair
     workflow: List[float] = []
+    plugin_sessions: set = set()   # every session the plugin wrote ANY row for (paired, loose or Workflow)
+    first_plugin_ts: Optional[float] = None
+    hook_last_ts: Dict[str, float] = {}
+    newest_ts: Optional[float] = None
     for r in rows:
         ts = r.get("ts")
         if not _is_finite_ts(ts):
             continue
         ts = float(ts)
+        newest_ts = ts if newest_ts is None else max(newest_ts, ts)
         is_plugin = "inject_arm" in r
+        sid, tuid = r.get("session_id"), r.get("tool_use_id")
+        if is_plugin:
+            first_plugin_ts = ts if first_plugin_ts is None else min(first_plugin_ts, ts)
+            if isinstance(sid, str):
+                plugin_sessions.add(sid)
+        elif isinstance(sid, str):
+            hook_last_ts[sid] = max(hook_last_ts.get(sid, ts), ts)
         if is_plugin and r.get("source") == "workflow":
             workflow.append(ts)
             continue
-        sid, tuid = r.get("session_id"), r.get("tool_use_id")
         if not (isinstance(sid, str) and isinstance(tuid, str)):
             loose.append((ts, is_plugin))
             continue
@@ -357,11 +368,23 @@ def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> D
 
     days: Dict[str, Dict[str, int]] = {}
     disagree: set = set()
+    # Hook keys from sessions the plugin wrote nothing for are reported apart, in two bins:
+    # `pre_plugin` (the session's hook rows all predate the first plugin row anywhere: history from
+    # before the install) and `plugin_absent` (after the install: consistent with a process the plugin
+    # was not loaded in — started before the install and carried on by /clear or resume, or headless
+    # outside the plugin's scope — or a plugin that missed every dispatch of that session; the two are
+    # not distinguishable here). Both still break the streak: retiring the hook would lose those rows.
+    absent_sessions: set = set()
+    absent_keys = 0
+    absent_days: set = set()
+    pre_sessions: set = set()
+    pre_keys = 0
+    mixed_disagree: set = set()  # a day with a miss from a session the plugin DID write rows for
 
     def _d(day: str) -> Dict[str, int]:
         return days.setdefault(day, {"plugin": 0, "hook": 0, "workflow": 0})
 
-    for k in keyed.values():
+    for (sid, _), k in keyed.items():
         day = _utc(k["plugin"] if k["plugin"] is not None else k["hook"])
         d = _d(day)
         if k["plugin"] is not None:
@@ -370,6 +393,15 @@ def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> D
             d["hook"] += 1
             if k["plugin"] is None:
                 disagree.add(day)
+                if sid in plugin_sessions:
+                    mixed_disagree.add(day)
+                elif first_plugin_ts is None or hook_last_ts.get(sid, k["hook"]) < first_plugin_ts:
+                    pre_sessions.add(sid)
+                    pre_keys += 1
+                else:
+                    absent_sessions.add(sid)
+                    absent_keys += 1
+                    absent_days.add(day)
     for ts, is_plugin in loose:
         d = _d(_utc(ts))
         if is_plugin:
@@ -377,6 +409,7 @@ def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> D
         else:
             d["hook"] += 1
             disagree.add(_utc(ts))
+            mixed_disagree.add(_utc(ts))  # a loose hook row is a real pairing failure, not absence
     for ts in workflow:
         _d(_utc(ts))["workflow"] += 1
     ordered = sorted(days)
@@ -394,7 +427,15 @@ def writer_parity(rows: List[Dict[str, Any]], today: Optional[date] = None) -> D
     gate_open = bool(streak) and span >= 14 and len(streak) >= 10 \
         and (today - date.fromisoformat(until)).days <= 2
     return {"days": {k: days[k] for k in ordered}, "parity_since": streak[-1] if streak else None,
-            "parity_until": until, "parity_span_days": span, "parity_days": len(streak), "gate_open": gate_open}
+            "parity_until": until, "parity_span_days": span, "parity_days": len(streak), "gate_open": gate_open,
+            "disagree_days": sorted(disagree),
+            "disagree_days_absent_only": sorted(absent_days - mixed_disagree),
+            "plugin_absent": {"sessions": len(absent_sessions), "hook_keys": absent_keys,
+                              "days": sorted(absent_days),
+                              "recent_sessions": sorted(
+                                  s[:8] for s in absent_sessions
+                                  if newest_ts is not None and hook_last_ts.get(s, 0) >= newest_ts - 3 * 86400)},
+            "pre_plugin": {"sessions": len(pre_sessions), "hook_keys": pre_keys}}
 
 
 def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
@@ -797,6 +838,22 @@ def main(argv=None) -> int:
               f"until {wp.get('parity_until')} ({wp.get('parity_span_days', 0)} d span, "
               f"{wp.get('parity_days', 0)} clean days; gate {'OPEN' if wp.get('gate_open') else 'closed'}: the 0.4.2 hook "
               f"retirement needs span >= 14, matched >= 10 and the last matched day within 2 days)")
+        ab = wp.get("plugin_absent") or {}
+        if ab.get("sessions"):
+            only = wp.get("disagree_days_absent_only") or []
+            recent = ab.get("recent_sessions") or []
+            print(f"  plugin absent:      {ab['sessions']} session(s) with hook dispatches and no plugin row "
+                  f"({ab['hook_keys']} dispatches; days {', '.join(ab.get('days') or [])}); "
+                  f"{len(only)} of {len(wp.get('disagree_days') or [])} disagreeing day(s) come only from "
+                  f"such sessions. Consistent with a process the plugin was not loaded in (started before "
+                  f"the install — /clear and resume do not load plugins — or headless outside its scope), "
+                  f"or a plugin that missed every dispatch of that session."
+                  + (f" Active in the last 3 days: {', '.join(recent)} — if one is a live interactive "
+                     f"Claude Code process, restart it." if recent else ""))
+        pp = wp.get("pre_plugin") or {}
+        if pp.get("sessions"):
+            print(f"  pre-plugin history: {pp['sessions']} session(s) / {pp['hook_keys']} hook dispatches "
+                  f"predate the first plugin row (not a parity signal)")
         for k in ("route_log", "telemetry"):
             if st.get(f"{k}_error"):
                 print(f"  WARNING: {k} read failed ({st.get(f'{k}_error_name')})")

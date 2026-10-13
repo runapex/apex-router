@@ -172,7 +172,13 @@ def cmd_evaluate(argv: list[str]) -> int:
     return _run(argv)
 
 
-COMMANDS = {"train": cmd_train, "probe": cmd_probe, "evaluate": cmd_evaluate}
+def cmd_curve(argv: list[str]) -> int:
+    """P6 learning curve on TRAIN/VAL only (evaluate.py; the test split is stripped first)."""
+    from .evaluate import cmd_curve as _run
+    return _run(argv)
+
+
+COMMANDS = {"train": cmd_train, "probe": cmd_probe, "evaluate": cmd_evaluate, "curve": cmd_curve}
 # E2: baselines, absorbing chains, Zeno progress (readout imports numpy/scipy inside each command).
 from .readout import COMMANDS as _E2_COMMANDS  # noqa: E402
 
@@ -291,7 +297,8 @@ COMMANDS.update({"build": cmd_build, "stats": cmd_stats, "snapshot": cmd_snapsho
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
-        order = ["build", "stats", "snapshot", "baseline", "chains", "progress", "train", "probe", "evaluate"]
+        order = ["build", "stats", "snapshot", "baseline", "chains", "progress", "train", "probe",
+                 "evaluate", "curve"]
         names = [c for c in order if c in COMMANDS] + sorted(set(COMMANDS) - set(order))
         print("usage: apex-router worldmodel {" + ",".join(names) + "} ...")
         return 0 if (not argv or argv[0] in ("-h", "--help")) else 2

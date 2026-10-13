@@ -1521,4 +1521,350 @@ def cmd_evaluate(argv=None) -> int:
     return 0
 
 
-COMMANDS = {"evaluate": cmd_evaluate}
+# ---- learning curve (TRAIN/VAL only) -------------------------------------------------------------
+#
+# `apex-router worldmodel curve`: would more data change the JEPA-vs-logistic verdict? For each
+# (train-session fraction f, seed s) the train sessions are subsampled (protocol.subsample_train,
+# nested per seed), the baselines are fitted and the JEPA trained on that subset, and every model
+# is scored on VAL under the scorecard's convention (step 0 from the shared start prior, as in
+# evaluate_run's val CE). The test split is stripped from the dataset before anything runs: no
+# test pass, no scorecard, no ledger line — it cannot be scored even by accident.
+
+CURVE_KEYS = ("prior", "markov1", "markov2", "logistic", "jepa", "raw_probe")
+TEST_STRIPPED = "stripped before any training or scoring (loaded, then dropped)"
+
+
+def strip_test(ds: P.Dataset) -> P.Dataset:
+    """The dataset without its test split (train/val sequences only; rows are not copied)."""
+    tasks = {t: r for t, r in ds.tasks.items() if r.get("split") in ("train", "val")}
+    return P.Dataset(tasks=tasks, steps={t: ds.steps[t] for t in tasks if t in ds.steps},
+                     dropped=ds.dropped)
+
+
+def _baseline_key(name: str) -> str:
+    n = str(name).lower()
+    if n.startswith("prior"):
+        return "prior"
+    if n.startswith("markov order "):
+        return "markov" + n.rsplit(" ", 1)[1]
+    if n.startswith("logistic"):
+        return "logistic"
+    return n
+
+
+def _split_losses(model, ds: P.Dataset, ids) -> tuple:
+    """(per-step NLL, session per step) of a protocol model over ``ids`` (val here)."""
+    loss, sids = [], []
+    for t in ids:
+        lp = model.task_logprobs(ds.steps[t], ds.tasks[t])
+        loss.extend((-np.maximum(lp, math.log(P.EPS))).tolist())
+        sids.extend([ds.sid(t)] * len(lp))
+    return np.array(loss, dtype=float), sids
+
+
+def curve_cell(ds: P.Dataset, fraction: float, seed: int, overrides: dict, device: str = "gpu",
+               source: str = "curve", log=print, boot_seed: int = 0) -> dict:
+    """One (fraction, seed) cell on train/val only. ``ds`` must hold no test sequence."""
+    import tempfile
+    from dataclasses import asdict
+    from . import train as T
+    if ds.ids("test"):
+        raise ValueError("curve_cell: the dataset still holds test sequences (strip_test first)")
+    regime = bool(overrides.get("regime", False))
+    sub = P.subsample_train(ds, fraction, seed)
+    tr, va = sub.ids("train"), sub.ids("val")
+    sp = start_prior(sub, tr)
+    base = fit_baselines(sub, sp, seed, regime=regime)
+    losses = {_baseline_key(m.name): _split_losses(m, sub, va) for m in base["models"]}
+    cfg = T.TrainConfig.from_dict({**asdict(T.TrainConfig()), **overrides, "seed": seed,
+                                   "device": device})
+    t0 = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="p6-curve-") as td:      # weights never persist
+        rd = Path(td) / "run"
+        summ = T.train(cfg, to_train_dataset(sub, source), run_dir=rd,
+                       run_id=f"curve-f{fraction:g}-s{seed}", log=log)
+        wm = T.WorldModel(rd)
+        jepa = Jepa(wm, sp, base_rate=_base_rate(sub, main_ids(sub, "train")))
+        jepa.prepare(sub, va)                                          # val only
+        losses["jepa"] = _split_losses(jepa, sub, va)
+    t_train = time.perf_counter() - t0
+    raw = ((summ.get("probes") or {}).get("next_action") or {}).get("raw") or {}
+    val_ce = {k: (float(np.mean(v[0])) if len(v[0]) else None) for k, v in losses.items()}
+    val_ce["raw_probe"] = None if raw.get("skipped") else raw.get("ce")
+    lj, sids = losses["jepa"]
+    ll, sids_l = losses["logistic"]
+    if len(lj) != len(ll) or sids != sids_l:
+        raise RuntimeError("JEPA and logistic scored different val steps")
+    d, lo, hi = P.weighted_mean_ci(lj - ll, sids, seed=boot_seed) if len(lj) else (None, None, None)
+    best = summ.get("best") or {}
+    return {"fraction": float(fraction), "seed": int(seed),
+            "train_sessions": len({sub.sid(t) for t in tr}), "train_sequences": len(tr),
+            "train_steps": int(sum(len(sub.steps[t]) for t in tr)),
+            "val_steps": int(len(lj)), "val_sessions": len(set(sids)),
+            "val_ce": {k: val_ce.get(k) for k in CURVE_KEYS},
+            "jepa_minus_logistic": {"mean": d, "ci": [lo, hi]},
+            "jepa": {"best_epoch": summ.get("best_epoch"),
+                     "train_readout_val_ce": best.get("val_next_ce"),
+                     "collapse_outside_bounds_epochs": summ.get("collapse_outside_bounds_epochs"),
+                     "train_seconds": t_train},
+            "best_baseline_on_val": _baseline_key(base["best"])}
+
+
+def curve_slope(cells) -> dict:
+    """Least-squares slope of (JEPA − logistic val CE) against ln(train_steps) over the cells
+    with a finite gap. Needs ≥ 2 *distinct* train sizes (a column of equal sizes, e.g. several
+    seeds at fraction 1, has no slope). ``gap_zero_train_steps`` is where the fitted line crosses
+    gap 0 — reported only when that crossing lies *beyond* the largest measured train size (a
+    crossing inside or before the measured range is not a prediction about more data), with the
+    direction and the distance in e-folds past the data. Per-seed slopes show the spread."""
+    def _pts(cs):
+        out = []
+        for c in cs:
+            n = c.get("train_steps")
+            g = (c.get("jepa_minus_logistic") or {}).get("mean")
+            if n and g is not None and math.isfinite(float(g)):
+                out.append((math.log(n), float(g)))
+        return out
+
+    def _fit(pts):
+        if len({round(x, 9) for x, _ in pts}) < 2:
+            return None
+        x, y = np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+        sxx = float(np.sum((x - x.mean()) ** 2))
+        a = float(np.sum((x - x.mean()) * (y - y.mean())) / sxx)
+        return a, float(y.mean() - a * x.mean())
+
+    pts = _pts(cells)
+    out = {"gap_vs_log_train_steps": None, "intercept": None, "zero_gap_train_steps": None,
+           "crossing": None, "efolds_beyond_data": None, "n_cells": len(pts),
+           "cells_dropped_nonfinite": sum(1 for c in cells if (c.get("jepa_minus_logistic") or {})
+                                          .get("mean") is not None and not math.isfinite(
+                                              float(c["jepa_minus_logistic"]["mean"]))),
+           "measured_train_steps": ([int(round(math.exp(min(x for x, _ in pts)))),
+                                     int(round(math.exp(max(x for x, _ in pts))))] if pts else None),
+           "per_seed": {},
+           "note": "nats/step of (JEPA − logistic) val CE per e-fold of train steps, least squares "
+                   "over every (fraction, seed) cell with ≥ 2 distinct train sizes; < 0 = the gap "
+                   "shrinks as data grows. zero_gap_train_steps extrapolates the line to gap 0 and "
+                   "is reported only when that point lies beyond the measured range — it is a "
+                   "guess, not a forecast; efolds_beyond_data says how far"}
+    for sd in sorted({c.get("seed") for c in cells if c.get("seed") is not None}):
+        f = _fit(_pts([c for c in cells if c.get("seed") == sd]))
+        out["per_seed"][str(sd)] = None if f is None else f[0]
+    fit = _fit(pts)
+    if fit is None:
+        return out
+    a, b = fit
+    out.update(gap_vs_log_train_steps=a, intercept=b)
+    if a != 0.0:
+        z = -b / a
+        xmax = max(x for x, _ in pts)
+        if z > xmax:
+            out["zero_gap_train_steps"] = math.exp(z) if z < 700 else float("inf")
+            out["crossing"] = "gap falls to 0 from above" if a < 0 else "gap rises to 0 from below"
+            out["efolds_beyond_data"] = z - xmax
+    return out
+
+
+def _stats(vals) -> dict:
+    v = [float(x) for x in vals if x is not None]
+    if not v:
+        return {"mean": None, "min": None, "max": None, "sd": None, "n": 0}
+    return {"mean": float(np.mean(v)), "min": min(v), "max": max(v),
+            "sd": float(np.std(v, ddof=1)) if len(v) > 1 else None, "n": len(v)}
+
+
+def curve_by_fraction(cells) -> list:
+    """Per fraction: mean / min / max / sd over seeds of train size, every val CE and the gap."""
+    out = []
+    for f in sorted({c["fraction"] for c in cells}):
+        cs = [c for c in cells if c["fraction"] == f]
+        out.append({"fraction": f, "seeds": [c["seed"] for c in cs],
+                    "train_sessions": _stats(c["train_sessions"] for c in cs),
+                    "train_steps": _stats(c["train_steps"] for c in cs),
+                    "val_ce": {k: _stats(c["val_ce"][k] for c in cs) for k in CURVE_KEYS},
+                    "jepa_minus_logistic": _stats(c["jepa_minus_logistic"]["mean"] for c in cs),
+                    "gap_ci_per_seed": [c["jepa_minus_logistic"]["ci"] for c in cs]})
+    return out
+
+
+def learning_curve(ds: P.Dataset, fractions=(0.25, 0.5, 1.0), seeds=(0, 1, 2),
+                   overrides: dict | None = None, device: str = "gpu", source: str = "curve",
+                   log=print, boot_seed: int = 0, on_cell=None) -> dict:
+    """Every (fraction, seed) cell on train/val; the test split is stripped first. ``on_cell``
+    (if given) is called with the list of finished cells after each one, so a caller can
+    checkpoint partial results before a later cell fails."""
+    ds = strip_test(ds)
+    ov = dict(overrides or {})
+    if ov.get("regime"):
+        annotate_regime(ds)          # per-session causal annotation: unchanged by subsampling
+    t0 = time.perf_counter()
+    cells = []
+    for f in fractions:
+        for s in seeds:
+            log(f"curve: fraction {f:g}, seed {s}")
+            cells.append(curve_cell(ds, f, s, ov, device=device, source=source, log=log,
+                                    boot_seed=boot_seed))
+            if on_cell:
+                on_cell(list(cells))
+    tr, va = ds.ids("train"), ds.ids("val")
+    return {"kind": "worldmodel-learning-curve", "schema": 1,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "fractions": [float(f) for f in fractions], "seeds": [int(s) for s in seeds],
+            "cells": cells, "by_fraction": curve_by_fraction(cells), "slope": curve_slope(cells),
+            "config": ov, "device": device, "source": source, "test_scored": False,
+            "splits": {"train": {"sequences": len(tr), "sessions": len({ds.sid(t) for t in tr}),
+                                 "steps": sum(len(ds.steps[t]) for t in tr)},
+                       "val": {"sequences": len(va), "sessions": len({ds.sid(t) for t in va}),
+                               "steps": sum(len(ds.steps[t]) for t in va)},
+                       "test": TEST_STRIPPED},
+            "notes": ["val CE: nats/step on every val step, step 0 from the shared start prior "
+                      "(train first actions of the subset), as evaluate_run's val CE",
+                      "raw_probe: train()'s linear probe on the raw step features (fit on the "
+                      "subset's train windows, scored on val windows): steps with a next-action "
+                      "target only, no step 0 — not the same steps as the other columns",
+                      "jepa_minus_logistic: paired per-step val difference, val-session "
+                      f"bootstrap ({P.N_BOOT} draws, seed {boot_seed}, protocol.weighted_mean_ci)",
+                      "w_reg fixed from --config (no sweep); JEPA training seed = subsample seed "
+                      "(data and init noise are confounded; at fraction 1 seeds differ by init only)",
+                      "raw_probe is fit on at most 20,000 randomly sampled train rows and scored on "
+                      "at most 20,000 val rows (train.cap): above that it stops growing with data "
+                      "and its val subset differs per seed",
+                      "every val CE is measured on the split that selected the JEPA checkpoint "
+                      "epoch and the logistic penalty: optimistic, and not equally so for both"],
+            "timings": {"total_s": time.perf_counter() - t0}}
+
+
+def render_curve(res: dict) -> str:
+    L = [f"P6 learning curve (TRAIN/VAL only; test {res['splits']['test']})",
+         f"  train {res['splits']['train']['sessions']} sessions / {res['splits']['train']['steps']} "
+         f"steps, val {res['splits']['val']['sessions']} sessions / {res['splits']['val']['steps']} steps; "
+         f"device {res['device']}; config {json.dumps(res['config'], sort_keys=True)}", "",
+         "cells (val CE nats/step; gap = JEPA − logistic, 95% val-session CI)",
+         f"  {'frac':>5} {'seed':>4} {'sess':>5} {'steps':>7}  "
+         + " ".join(f"{k:>9}" for k in CURVE_KEYS) + "   gap [CI]"]
+    for c in res["cells"]:
+        g = c["jepa_minus_logistic"]
+        L.append(f"  {c['fraction']:>5g} {c['seed']:>4} {c['train_sessions']:>5} {c['train_steps']:>7}  "
+                 + " ".join(f"{_f(c['val_ce'][k]):>9}" for k in CURVE_KEYS)
+                 + f"   {_f(g['mean'])} {_ci(g['ci'])}")
+    L += ["", "per fraction (mean over seeds, [min, max])"]
+    for r in res["by_fraction"]:
+        def mm(s):
+            return f"{_f(s['mean'])} [{_f(s['min'])}, {_f(s['max'])}]"
+        L.append(f"  f {r['fraction']:g}: train steps {_f(r['train_steps']['mean'], 0)}, "
+                 f"logistic {mm(r['val_ce']['logistic'])}, jepa {mm(r['val_ce']['jepa'])}, "
+                 f"raw_probe {mm(r['val_ce']['raw_probe'])}, gap {mm(r['jepa_minus_logistic'])}")
+    s = res["slope"]
+    ps = ", ".join(f"s{k} {_f(v, 4)}" for k, v in (s.get("per_seed") or {}).items())
+    mr = s.get("measured_train_steps")
+    L += ["", f"slope of gap vs ln(train steps): {_f(s['gap_vs_log_train_steps'], 4)} nats/step "
+              f"per e-fold (n {s['n_cells']} cells, measured {mr[0]}–{mr[1]} train steps"
+              + (f"; per seed {ps}" if ps else "") + ")"
+              + (f"; the line crosses gap 0 at ~{s['zero_gap_train_steps']:.3g} train steps, "
+                 f"{s['efolds_beyond_data']:.1f} e-folds past the data ({s['crossing']}; an "
+                 "extrapolation, not a forecast)" if s.get("zero_gap_train_steps") is not None
+                 else "; no crossing beyond the measured range")]
+    L += ["  val CE is the split that chose the JEPA epoch and the logistic penalty: optimistic "
+          "for both, not by the same amount (the G1 test split exists for the unbiased number)"]
+    return "\n".join(L)
+
+
+def _parse_list(text: str, kind, what: str) -> list:
+    try:
+        vals = [kind(x) for x in str(text).split(",") if x.strip()]
+    except ValueError:
+        raise ValueError(f"{what}: comma-separated {kind.__name__}s, not {text!r}") from None
+    if not vals:
+        raise ValueError(f"{what}: empty")
+    return sorted(set(vals))
+
+
+def curve_parser():
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="apex-router worldmodel curve",
+        description="Learning curve on TRAIN/VAL only (test stripped, never scored, no ledger): "
+                    "val next-action CE of every model vs the fraction of train sessions.")
+    ap.add_argument("--fractions", default="0.25,0.5,1.0", help="train-session fractions in (0, 1]")
+    ap.add_argument("--seeds", default="0,1,2", help="subsample + training seeds")
+    ap.add_argument("--epochs", type=int, help="override TrainConfig.epochs (default: early stop)")
+    ap.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
+    ap.add_argument("--config", metavar="JSON|PATH",
+                    help="TrainConfig fields (w_reg is fixed here: no sweep); flags win over it")
+    ap.add_argument("--features", choices=("a1", "a2f"), default=None)
+    ap.add_argument("--regime", action="store_true", default=None)
+    ap.add_argument("--view", choices=("streams", "task"), default="streams")
+    ap.add_argument("--synthetic", type=int, metavar="N", help="N synthetic sessions (fixtures.py)")
+    rg = ap.add_argument_group("C4 collapse recipe (as `evaluate`)")
+    rg.add_argument("--z-norm", choices=("none", "layernorm", "whiten", "center"))
+    rg.add_argument("--w-reg-schedule", choices=("const", "anneal"))
+    rg.add_argument("--w-reg-start", type=float, metavar="W")
+    rg.add_argument("--w-reg-anneal-epochs", type=int, metavar="K")
+    rg.add_argument("--lr-warmup-epochs", metavar="E|none")
+    rg.add_argument("--rank-floor-init", choices=("off", "orthogonal", "centered"))
+    ap.add_argument("--out", help="output JSON (default <home>/worldmodel/eval/curve-<ts>.json)")
+    ap.add_argument("--json", action="store_true")
+    return ap
+
+
+def cmd_curve(argv=None) -> int:
+    import sys
+    from . import train as T
+    from .readout import _clean, _json_default
+    err = (lambda m: print(f"apex-router worldmodel curve: {m}", file=sys.stderr))
+    a = curve_parser().parse_args(list(argv or []))
+    try:
+        fractions = _parse_list(a.fractions, float, "--fractions")
+        seeds = _parse_list(a.seeds, int, "--seeds")
+        if any(not (0.0 < f <= 1.0) for f in fractions):
+            raise ValueError(f"--fractions: each in (0, 1], not {a.fractions!r}")
+        cfgd = eval_config(a)
+    except ValueError as e:
+        err(e)
+        return 2
+    from .jepa import mlx_available
+    if not mlx_available():
+        err("mlx is not installed: `pip install 'apex-router[worldmodel]'` (Apple Silicon only)")
+        return 2
+    if a.synthetic:
+        from .fixtures import dataset
+        raw, _ = dataset(a.synthetic, seed=0)
+        src = f"synthetic-fixtures:{a.synthetic}"
+    else:
+        raw = P.load()
+        src = f"{P.data_dir() / 'steps.jsonl'}:{a.view}"
+    raw = strip_test(raw)                    # before anything else: test cannot be scored
+    ds = stream_view(raw) if a.view == "streams" else raw
+    if not ds.ids("train") or not ds.ids("val"):
+        err("no train/val sequences — build the dataset first or pass --synthetic N")
+        return 1
+    quiet = (lambda m: None) if a.json else (lambda m: print(m, file=sys.stderr))
+    out = Path(a.out) if a.out else (P.data_dir() / "eval" /
+                                     f"curve-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.json")
+    if not a.out:
+        T._mkdir_private(out.parent.parent)
+        T._mkdir_private(out.parent)
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    partial = out.with_suffix(".partial.json")
+
+    def checkpoint(cells):          # finished cells survive a later cell's failure
+        T._write_private(partial, json.dumps(_clean({"kind": "worldmodel-learning-curve-partial",
+                                                      "cells": cells}), default=_json_default))
+    res = learning_curve(ds, fractions, seeds, overrides=cfgd, device=a.device, source=src,
+                         log=quiet, on_cell=checkpoint)
+    res["view"], res["git"] = a.view, git_sha()
+    res["path"] = str(out)
+    partial.unlink(missing_ok=True)
+    text = json.dumps(_clean(res), indent=1, default=_json_default, sort_keys=True)
+    T._write_private(out, text)
+    if a.json:
+        print(text)
+    else:
+        print(render_curve(res))
+        print(f"\ncurve JSON: {out}  ({res['timings']['total_s']:.1f} s)")
+    return 0
+
+
+COMMANDS = {"evaluate": cmd_evaluate, "curve": cmd_curve}

@@ -7,6 +7,38 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Daily digest (`watch --run-daily` → `nightly.run`) opens with two readouts nobody had to run by
+  hand: the retry-action A/B (per-arm recovery with Wilson CIs, the Newcombe difference and the
+  verdict) and the v12 refusal panel (refusals / observed v12 rows, list dollars on refused calls,
+  by model). Both fail open.
+- `route-join` writer parity names its cause. Hook dispatches from sessions the plugin wrote no row
+  for are reported apart: `pre_plugin` (the session predates the first plugin row anywhere: history,
+  not a parity signal) and `plugin_absent` (after the install: consistent with a process the plugin
+  was not loaded in — started before the install, `/clear` and resume do not load plugins, or
+  headless outside its scope — or a plugin that missed every dispatch; the two are not
+  distinguishable from the log). Any plugin row (paired, loose or Workflow) proves the plugin was
+  loaded for that session. The gate is unchanged — those rows would really be lost if the hook
+  retired — and the readout lists sessions active in the last 3 days so the operator knows which
+  live process to restart. Measured 2026-10-12: the Claude Code process in this repo predates the
+  2026-10-04 install and has been carried by `/clear` since; it explains every disagreeing day
+  after the install.
+- `worldmodel curve`: a val-only learning curve for P6. Subsamples train *sessions* at
+  `--fractions` × `--seeds` (nested per seed), strips the test split before anything trains,
+  fits the attempt-3 recipe per cell and reports the JEPA − logistic val-CE gap with a
+  val-session bootstrap CI, the slope of the gap against ln(train steps) and the zero-gap
+  extrapolation. Never scores test, never touches the ledger (asserted by test). Measured
+  2026-10-12 on a copy of the data: gap 0.264 → 0.225 → 0.132 nats at 3.3k / 4.5k / 14.5k train
+  steps, slope −0.089 per e-fold; ruling and the pre-declared next experiments in
+  `docs/research/2026-10-12-rsi-next-steps.md`, literature scans in `2026-10-12-lit-*.md`.
+- `python -m apex_router.worldmodel.outcome`: task-outcome predictor prototype (P6 side study,
+  numpy only). Nested stratified 5×3 CV over the gold-labelled tasks (P6 test split excluded by
+  default), models prior / length / judge-only / structure / +Markov surprise / stacked with the
+  judge, at fraction and absolute first-k-step prefixes, task-bootstrap CIs, paired ΔAUROC, ECE.
+  First run (n 147, 39 bad): judge-only 0.82, 8-step structure-only 0.68, stack 0.86 (+0.045 over
+  the judge, CI includes 0 → not adopted by the pre-declared rule); `2026-10-12-rsi-next-steps.md`.
+- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=40` applied on this machine too (runbook §3c); local
+  counterfactual in `docs/research/2026-10-12-compaction-counterfactual-local.md` (7d: 9.9% of
+  Claude Code requests ≥ 400k carry 29.5% of input tokens; a 400k cap trims 8.7%, 250k 20.1%).
 - `watch install-serve` keeps the installed unit's settings. The unit was rebuilt only from the installing
   shell's environment, so a reinstall from a shell without `APEX_CODEX_CACHE_KEY` / `APEX_RETRY_*` silently
   dropped them (and those keys were not carried at all). Now every `APEX_*` the proxy reads is carried, and

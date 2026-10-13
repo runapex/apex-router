@@ -190,10 +190,69 @@ def _codex_context_watch(now: float, *, days: float = 14,
             f"{vpol.get('downshift_model', 'the downshift model')}\n```")
 
 
+def _retry_ab_section() -> str:
+    """The retry-action A/B readout (`retry-ab report`) as digest lines, so the verdict is seen
+    daily without anyone running the readout by hand. Never raises."""
+    try:
+        from . import retry_ab
+        rep = retry_ab.report()
+    except Exception as e:  # noqa: BLE001
+        return f"  (retry-ab unavailable: {type(e).__name__})"
+    arms = rep.get("arms") or {}
+    if not arms:
+        return ("  (no randomised rows in the window: no transport retry has run under retry_policy=ab "
+                "yet, or APEX_RETRY_AB is unset on the serve unit; window = live telemetry + newest "
+                "rotated file)")
+    lines = []
+    for name, st in arms.items():
+        lines.append(f"  {name:<10} n={st['n']:<4} recovered={retry_ab._pct(st['p_recovered'])} "
+                     f"{retry_ab._ci(st['recovered_ci'])}  clean={retry_ab._pct(st['p_clean'])}")
+    for c in rep.get("comparisons") or []:
+        r = c["recovered"]
+        lines.append(f"  {c['arm']} − {c['vs']} (recovered): {retry_ab._signed(r['diff'])} "
+                     f"{retry_ab._ci(r['ci'])} → {r['verdict']}")
+    lines.append(f"  verdict: {rep.get('verdict')} (min {rep.get('min_n')}/arm; "
+                 f"{rep.get('source', {}).get('requests', 0)} requests read from the live telemetry + "
+                 f"newest rotated file)")
+    return "\n".join(lines)
+
+
+def _refusals_section() -> str:
+    """The v12 refusal panel (`apex doctor` REFUSALS): refusals are HTTP 200, so nothing else
+    in the digest shows them. Counts only rows carrying the v12 field. Never raises."""
+    try:
+        from .proxy_engine.readout.doctor import load_rows, refusal_panel
+        from .telemetry_path import telemetry_path
+        rf = refusal_panel(load_rows(str(telemetry_path())))
+    except Exception as e:  # noqa: BLE001
+        return f"  (refusals unavailable: {type(e).__name__})"
+    if not rf.get("observed_rows"):
+        return "  (no v12 rows yet: refusals are visible only from telemetry v12 on)"
+    # observed_rows = every v12 row carrying the field, errored requests included (the field defaults
+    # to False), so the denominator is "v12 requests", not "responses read".
+    line = (f"  refusals {rf['total']} / {rf['observed_rows']} v12 requests "
+            f"(live telemetry + newest rotated file, not since last night)")
+    if rf["total"]:
+        by = ", ".join(f"{k} x{v}" for k, v in sorted(rf.get("by_model", {}).items(), key=str))
+        line += f" · ${rf['dollars']:,.2f} list on refused calls"
+        if rf.get("unpriced"):
+            line += f" · {rf['unpriced']} unpriced (unknown rate, counted as $0)"
+        line += f" · by model: {by}"
+    return line
+
+
 def run(*, now: float | None = None) -> str:
     """Run all nightly steps; return the Markdown digest section. Never raises."""
     now = time.time() if now is None else now
     parts = ["\n## nightly adaptivity\n"]
+
+    parts.append("### retry A/B (transport retry: wait vs immediate)\n```")
+    parts.append(_retry_ab_section())
+    parts.append("```")
+
+    parts.append("### refusals (v12)\n```")
+    parts.append(_refusals_section())
+    parts.append("```")
 
     parts.append("### route-join (claude-code dispatch labels)\n```")
     parts.append(_route_join_section())

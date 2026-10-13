@@ -673,3 +673,61 @@ class TestModuleEntryPoint(unittest.TestCase):
             out = json.loads(p.stdout)
             self.assertEqual(out["stats"]["claude_code_rows"], 1)
             self.assertFalse(labeled.exists())
+
+
+class TestWriterParityAbsentSessions(unittest.TestCase):
+    """A session with hook rows and no plugin row at all is a process the plugin never loaded in
+    (a pre-install process carried by /clear, a headless probe). The gate still breaks — retiring
+    the hook really would lose those rows — but the readout must name the cause instead of looking
+    like writer disagreement."""
+
+    def test_absent_sessions_are_named_and_do_not_mask_real_disagreement(self):
+        rows = [
+            _dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"),
+            _plugin(_day(1, 60), "haiku", "A", "a1", "t1"),
+            _dispatch(_day(2), "haiku", "B", "a2", "t2", sid="S2", outcome="async"),  # session S2: plugin absent
+            _dispatch(_day(2, 10), "haiku", "C", "a3", "t3", sid="S2", outcome="async"),
+            _dispatch(_day(3), "haiku", "A", "a4", "t4", outcome="async"),   # session A: plugin loaded, missed one
+        ]
+        p = route_join.writer_parity(rows)
+        ab = p["plugin_absent"]
+        self.assertEqual(ab["sessions"], 1)
+        self.assertEqual(ab["hook_keys"], 2)
+        self.assertEqual(ab["days"], ["2026-10-02"])
+        self.assertEqual(ab["recent_sessions"], ["S2"])
+        self.assertEqual(p["disagree_days"], ["2026-10-02", "2026-10-03"])
+        self.assertEqual(p["disagree_days_absent_only"], ["2026-10-02"])
+        self.assertEqual(p["pre_plugin"], {"sessions": 0, "hook_keys": 0})
+
+    def test_a_workflow_or_loose_plugin_row_proves_the_plugin_was_loaded(self):
+        rows = [
+            _plugin(_day(1, 60), "haiku", "A", "a1", "t1"),
+            _wf(_day(2), "w1"),                                                      # plugin row, sid S1
+            _dispatch(_day(2, 10), "haiku", "B", "a2", "t2", outcome="async"),      # S1 hook, plugin missed
+        ]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["plugin_absent"]["sessions"], 0)
+        self.assertEqual(p["disagree_days"], ["2026-10-02"])
+        self.assertEqual(p["disagree_days_absent_only"], [])
+
+    def test_hook_only_history_before_the_first_plugin_row_is_pre_plugin_not_absent(self):
+        rows = [
+            _dispatch(_day(1), "haiku", "A", "a1", "t1", sid="OLD", outcome="async"),  # before any plugin row
+            _dispatch(_day(3), "haiku", "B", "a2", "t2", outcome="async"),
+            _plugin(_day(3, 60), "haiku", "B", "a2", "t2"),
+            _dispatch(_day(4), "haiku", "C", "a3", "t3", sid="NEW", outcome="async"),  # after: absent
+        ]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["pre_plugin"], {"sessions": 1, "hook_keys": 1})
+        self.assertEqual(p["plugin_absent"]["sessions"], 1)
+        self.assertEqual(p["plugin_absent"]["days"], ["2026-10-04"])
+        self.assertEqual(p["disagree_days"], ["2026-10-01", "2026-10-04"])
+        self.assertEqual(p["disagree_days_absent_only"], ["2026-10-04"])
+
+    def test_no_absent_sessions_when_every_session_has_a_plugin_row(self):
+        rows = [_dispatch(_day(1), "haiku", "A", "a1", "t1", outcome="async"),
+                _plugin(_day(1, 60), "haiku", "A", "a1", "t1")]
+        p = route_join.writer_parity(rows)
+        self.assertEqual(p["plugin_absent"], {"sessions": 0, "hook_keys": 0, "days": [], "recent_sessions": []})
+        self.assertEqual(p["pre_plugin"], {"sessions": 0, "hook_keys": 0})
+        self.assertEqual(p["disagree_days"], [])

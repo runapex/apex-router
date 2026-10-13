@@ -153,6 +153,26 @@ def build(step_rows, task_rows) -> Dataset:
     return Dataset(tasks=tasks, steps=steps, dropped=dropped)
 
 
+def subsample_train(ds: Dataset, fraction: float, seed: int) -> Dataset:
+    """Keep a fraction of the TRAIN sessions (session granularity: all of a session's sequences
+    or none); val/test are untouched. The train sids are sorted, permuted with
+    ``np.random.default_rng(seed)`` and the first max(1, ceil(fraction·n)) kept, so subsets of
+    one seed are nested across fractions. A new Dataset (the input is not mutated)."""
+    f = float(fraction)
+    if not (0.0 < f <= 1.0):
+        raise ValueError(f"fraction must be in (0, 1], not {fraction!r}")
+    sids = sorted({ds.sid(t) for t in ds.ids("train")})
+    keep: set = set()
+    if sids:
+        perm = np.random.default_rng(seed).permutation(len(sids))
+        k = max(1, math.ceil(round(f * len(sids), 9)))   # 0.3·10 is 3, not 4
+        keep = {sids[i] for i in perm[:k]}
+    tasks = {tid: t for tid, t in ds.tasks.items()
+             if t.get("split") != "train" or str(t.get("sid")) in keep}
+    return Dataset(tasks=dict(tasks), steps={tid: ds.steps[tid] for tid in tasks if tid in ds.steps},
+                   dropped=ds.dropped)
+
+
 def load(steps_path=None, tasks_path=None) -> Dataset:
     d = data_dir()
     return build(read_jsonl(steps_path or d / "steps.jsonl"),
