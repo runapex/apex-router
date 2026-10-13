@@ -381,3 +381,50 @@ loses force: there is little engine to sit on. What AGT does give is the *expect
 of an evidence record (policy_version, matched_rule, approver, arguments_hash, outcome) and
 a signal that "replay / what-if" is wanted but unbuilt. datapce's evidence record should
 be a superset of AGT's AuditEntry fields so a GRC buyer can map it.
+
+### R3-b: demand in issue trackers + vendor shipping (agent; issue counts via GitHub API [MEASURED], vendor facts [PLAUSIBLE])
+
+Issues (anthropics/claude-code unless noted; comments/reactions):
+- Path-dependent rules: #28321 directory-scoped allow rules (closed stale, 5c/1r); #70711
+  prompts inside sandbox-allowed paths (closed stale); #25137, #40076 rules vs paths outside
+  the project (closed); **#95426 "deleted ~600 GB, rm -rf on a substitution resolving to a
+  drive root", 2026-09-18, OPEN, 5c/0r, reporter wants resolved targets shown before
+  confirmation.**
+- Production guards: #89014 destructive command against a production host (2026-08-23,
+  OPEN); #27063 wiped production data (closed stale); #14411 (closed autoclose); #36640,
+  #9966, #100449 (2026-10-08) similar.
+- Fewer prompts / learning: **#11380 "continually asks permission even after always
+  allow" (82c/64r, closed completed)** — the only upvote-heavy item; #73587 "Allow always"
+  saves exact strings that never re-match (12c/5r); #98159 persistent always-allow (OPEN,
+  16r); openai/codex #1260 auto-approved commands via execpolicy (60r, completed), #47134
+  excessive approval prompts (OPEN), #50572 "reduce approval fatigue with semantic command
+  risk classification" (2026-10-03, OPEN).
+- Audit of decisions: #96026 "report the deciding permission rule on every decision"
+  (2026-09-22, OPEN, 0r); #95970 "no way to see which rule, hook or classifier decided a
+  tool call" (OPEN, 0r); #40634, #32904, #16622, #37153, #38771 closed stale/duplicate —
+  refiled about six times.
+- Team/org: #89877 team-scoped managed settings (OPEN); #70184 (closed stale); #47741,
+  #26714 governance configuration (completed).
+- No Anthropic staff reply found on 11 checked issues; closures by stale bot.
+
+Vendors 2026: Anthropic auto mode (classifier approver) shipped March, default since
+2026-08-14, classifier moved server-side 2026-09-19, `autoMode.allow`/`soft_deny`,
+`allowManagedPermissionRulesOnly`, OpenTelemetry `tool_decision` events. OpenAI Codex:
+admin-enforced requirements.toml, permission profiles (04-30), auto-review free (10-06),
+prefix-rule "rule amendments" = learned per-pattern allows. GitHub Copilot managed
+permissions deny > ask > allow (09-09), per-team policies. Cursor auto-review (05-29),
+workspace read mode with team read policy (10-01), admin command denylist. Antigravity
+"Strict mode" deny/ask/allow + sandbox. No vendor roadmap statement found.
+
+Reading, with the weakening it implies:
+- "Nobody learns from decisions" is WEAKENED: Codex rule amendments are learned allows;
+  every vendor has a classifier approver. The learning gap that remains is *rules with
+  reasons a human can read and approve*, not auto-allow.
+- Demand is real but diffuse: incidents keep recurring (#95426 in Sept 2026 is incident
+  #3's pattern again), audit requests are refiled six times, but reactions are near zero
+  outside the fatigue complaint. The buyer is not the upvoting individual; it is the
+  platform owner after an incident.
+- "Nobody ships resolved-target semantics" STANDS across all five vendors (Cursor read
+  policy nearest). This is the clause to build on, and it is cheap for a vendor to copy
+  (show resolved targets before confirmation is a UI change). Defensibility must come from
+  the data side (evidence, proposals, replay), not the predicate alone.
