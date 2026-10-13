@@ -907,3 +907,42 @@ across four adaptations and promoted nothing; the retry A/B in the digest is +11
 with a CI crossing 0 after weeks. Config-outcome attribution therefore needs org-scale
 n (teams × weeks), which is exactly what the Analytics API's per-user-day rows give and
 what one developer's history cannot.
+
+### R6-γ: config-outcome attribution scan (agent; all [PLAUSIBLE] — search summaries only, no page read in full; cross-check before citing)
+
+- Demand: finance pressure is about AI spend in general (IBM ~29 % of execs can measure
+  AI ROI; Uber cap). No CFO/CTO survey on coding agents specifically; no HN or issue thread
+  "did my CLAUDE.md change help"; one hobbyist issue proposing CLAUDE.md section ablation.
+  Anthropic's guidance: offline evals + production monitoring; real-traffic A/B is slow;
+  skill-creator has benchmark/A-B modes for skills, not org outcomes.
+- Incumbents: **Jellyfish AI Impact is closest** — skill usage by team, compaction rates,
+  agentic ratio from Claude Code session data, heavy-vs-light skill adopters compared on PR
+  rework and cycle time, self-described "early signals, not proof" (observational
+  cohorts, no change-event attribution, no proposals). Faros: pre-AI baselines and
+  confounder controls, not applied to config. DX (Atlassian, ~$1B): AI Measurement
+  Framework. LaunchDarkly AgentControl / Statsig AI experimentation: gated experiments
+  on app prompts/models via SDK, not harness configs. Analytics API: per-user-day
+  commits/PRs/lines/cost, no config version, no merge/CI outcome. **Copilot metrics API
+  is richer: PRs created/merged, median time to merge, Copilot-created/-reviewed splits,
+  repo-level GA July 2026, `ai_adoption_phase` cohorts May 2026.** Cursor Enterprise
+  analytics: edits, models, skills, spend, no PR outcomes.
+- Validity: METR 2025 RCT (16 devs, 19 % slower); DORA 2025 throughput up and instability
+  up; Faros 2026 (22k devs) review time up 441 % under high adoption; ASE'26 "A Few Pages
+  of Markdown" (441 repos): repos without committed AI config saw ~2× cognitive-complexity
+  growth, 73.8 % of config files never modified after commit; an ETH study: context files
+  +4 % (human-written) / −2 % (LLM-generated) task success at 20 %+ cost. Agent's own
+  reasoning: team-level A/B at 50–500 devs is low-powered; only effects ≥ ~15 % detectable
+  in weeks; model upgrades confound monthly; cost per user-day is the low-variance win.
+- Market: developer-productivity-insight platforms ~$400M growing 40 %+ (Gartner via
+  Uplevel); seats $20–50/dev/month; Jellyfish median ACV ~$36k. A config-attribution niche
+  reads as an add-on to these budgets, not a category.
+- Verdict: open with adjacent coverage; nobody treats a config change as a tracked policy
+  with gates and proposals; Jellyfish closest; risks: low power, no direct ask found,
+  incumbents can add change annotations cheaply, first-party versions possible.
+  Differentiation would rest on rigour (honest "inconclusive") and joining vendor exports
+  to git/CI.
+
+Score γ (provisional): demand 2, value 2, fit 3 (gates, nightly proposals, Analytics API
+ingest), differentiation 2, feasibility 2. **11/15**, and the validity note cuts both
+ways: the product's honest output at 50 devs is mostly "inconclusive", which is what the
+owner's own nightly already reports for its skill edits.
