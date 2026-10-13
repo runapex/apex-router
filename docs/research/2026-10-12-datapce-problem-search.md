@@ -821,3 +821,73 @@ tier over-flags. n = 9 proves feasibility and cost, not accuracy. The published 
 (`label_judge_bench.py`, cross-family check) is the right instrument for the real test:
 200 actions, two humans, 35B vs a cloud judge, κ reported with CI. Thinking must be off
 (`think: false`), otherwise ollama returns empty content for these models.
+
+### R5-r: adversarial refutation of v4 (fresh reviewer) — verdict WEAKENED (premise and fidelity fail; judge unproven; pain survives in modified form)
+
+- **Fidelity is the strongest attack.** Permission semantics moved repeatedly in 2026
+  (compound-command bypass fixes v2.1.98, `cd &&` handling v2.1.111, a 2.1.269 regression,
+  a September fix for `ask` skipped inside subshells in auto mode, the 50-subcommand deny
+  bypass). The autoMode half is a server-side classifier nobody can reproduce locally;
+  the dry-run request **#39097 was closed "not planned"**, #39971 closed stale; executed
+  allows carry no decision reason (#96026). Nomos sidesteps this by *being* the enforcer,
+  so its replay runs the live pipeline. Even Codex's own `execpolicy check` misreports
+  effective decisions (#38318, #52934). A third-party replay is a re-implementation of a
+  moving target with no oracle for allows.
+- **"No way to test" is false at $0.** Nomos (Apache-2.0) ships `--replay-transcripts`
+  and `--suggest` for Claude Code and Codex. Practitioner guides recommend "pilot one team
+  for a week", a human dry-run that is cheap and good enough.
+- **Judge.** Evidence supports small *fine-tuned binary* judges (AgentDoG 1.5–4B at 92 %
+  on R-Judge, arXiv 2605.29801; TrajAD 4B > 8B), not two 0–10 scales at κ ≥ 0.8 from a
+  9–35B generalist (SafetyJudge-LLM local κ 0.61; human IAA ceiling κ 0.84). Base rate
+  again: per-developer-week harmful counts near zero.
+- **Federated counts are moot for the buyer who pays.** `OTEL_LOG_TOOL_DETAILS=1` exports
+  command text; SecOps guides call it the most important switch; Elastic's reference
+  pipeline already parses `tool_input`. The security buyer centralises command text.
+- **Value capture.** Dry-run is a bundled feature in Styra DAS (~$5k/mo), Nirmata
+  ($1.8–4.5k/mo), LaunchDarkly Guardian — never a product. Buyers pay for distribution
+  and enforcement; datapce would own neither.
+- Pain that survives, modified: Copilot's managed `ask` cannot be satisfied by a saved
+  approval, so fatigue is structural there; the first rollout problem practitioners name
+  is "prove which policy reached which session" (billing account, client version).
+- **Alternative offered: post-rollout policy conformance + release-drift alarm.** Record
+  actual allow/deny/executed outcomes (vendor ground truth, no parser re-implementation);
+  gate on prompts/day and block-class counts with CIs; re-run a golden corpus against each
+  harness release to flag "this release changed what your ruleset does"; local post-hoc
+  session grader; wedge "prove the policy reached the session".
+- Most-moving evidence: #39097 closed not-planned next to a changelog shipping
+  permission-semantics fixes every few weeks.
+
+### Round 5 ruling and a lesson
+
+Ruling: v4 is WEAKENED beyond repair as a product (fidelity has no oracle; the free
+incumbent ships both halves; dry-run is a feature). The refuter's alternative (conformance
++ release drift) is feature-sized and vendor-absorbable. Four rounds inside the
+agent-permission cluster have each ended the same way: every wedge is either absorbed by
+the harness vendor within a release, covered by a free Microsoft or Apache project, or
+unmeasurable at the base rate. **Lesson: do not build where the platform owner closes the
+loop faster than a third party can measure it.** Round-1 scoring overstated G's
+differentiation (3 → 1 in hindsight). — advisor n/a (two independent refutations agree;
+re-scoring is bookkeeping) — cost if wrong: none — reversal: none.
+
+Survivors worth carrying into the morning report, ranked by what the night established:
+- (α) conformance + release-drift alarm for managed agent policies (feature; vendor ground
+  truth; low capture);
+- (β) F sharpened: real-time, outcome-aware spend and capacity circuit breakers with
+  receipts, proposals from data, per-request replay valid for cost/capacity (strongest
+  MEASURED demand of the night; crowded; incumbents broken on exactly this);
+- (γ) not yet scanned: **configuration-outcome attribution for coding-agent orgs** —
+  the "policy" is the org's agent configuration (managed settings, CLAUDE.md, skills,
+  hooks, model tiers); the "data" is outcomes the vendor already exports per user per day
+  (Analytics API: commits, PRs, lines, cost) plus git (merge, CI, revert); the computation
+  is gated A/B across teams and time (pce-core, gates), with machine-proposed config
+  changes (what the owner's nightly already does for skills) that a human approves. This
+  is the owner's own stated goal ("RSI workflow optimiser") generalised to an org, and it
+  uses outcome data the vendor exports without command text.
+
+## Round 6 — scan (γ) with the same rigour, re-score (β)
+
+Probes: (a) incumbents and demand for config-outcome attribution (LaunchDarkly AI
+Configs, Jellyfish/DX/Faros/LinearB AI-impact, Braintrust/Langfuse, Anthropic Analytics
+API, GitHub Copilot metrics API, any "measure the effect of a CLAUDE.md / skill / managed
+settings change" asks); (b) refutation; (c) advisor; (d) morning report with the ranked
+verdict.
