@@ -229,3 +229,70 @@ Round-2 probes: (a) harness capability check for G1 (which hooks see permission 
 what fields); (b) verify Microsoft Agent Governance Toolkit scope from its README;
 (c) measure prompt rate on this machine's own sessions (MEASURED number for the pitch);
 (d) list the predicates the nine incidents would have needed.
+
+### R2-b: Microsoft Agent Governance Toolkit (README read 2026-10-12) [MEASURED unless noted]
+
+"Policy enforcement, identity, sandboxing, and SRE for autonomous AI agents." SDK/middleware,
+not a proxy: enforces "at the application middleware layer". Policy YAML
+`governance.toolkit/v1` with expression conditions such as
+`action.type in ['drop', 'delete', 'truncate']`; OPA and Cedar also listed; Rust-core
+decision engine "stateless, deterministic, fail-closed". Harness plugins for Claude Code,
+Copilot CLI, Codex CLI, OpenCode, VS Code; adapters for most agent frameworks; an MCP
+gateway. Audit: tamper-evident records of "what policy was active, what the agent
+requested, and why it was allowed or denied"; Merkle audit; "Decision BOM"; compliance
+mappings (OWASP, NIST AI RMF, EU AI Act, SOC 2); `agt verify --evidence` for CI.
+`require_approval` takes an `approvers` list; collection mechanism not on the page.
+MIT, 6.4k stars, 1.1k forks, Public Preview, Python v4.1.0.
+Not present: computed or statistical predicates, data lookups in conditions, learning or
+proposing policies from behaviour ("Shadow AI Discovery" and RL penalties are not policy
+generation).
+
+Consequence: enforcement plumbing, audit chain and compliance mapping are commoditised by a
+Microsoft MIT project with a Claude Code plugin. datapce must not compete on plumbing.
+New variant **G5: datapce as the computation and learning layer above an enforcement
+engine** — compute predicates the engine cannot (data, statistics, session state), emit
+policies in the engine's language (AGT YAML / Rego / Cedar), consume its decision log as
+the data for proposals and replay, and ship evidence of effect. Pending: AGT schema and
+extension points (R2 agent running).
+
+### R2-c: this machine's own sessions (MEASURED, script over ~/.claude/projects, 2026-10-12)
+
+| quantity | value |
+|---|---|
+| session files (two project directories) | 44 |
+| tool_use blocks | 5,040 |
+| active hours (distinct UTC hours with a tool call) | 119 |
+| tool calls per active hour | 42.4 |
+| user rows by permissionMode | none 5,246; auto 840; acceptEdits 20; default 11; bypass 1 |
+| tool results reading as a denial/refusal (regex, first 300 chars) | 97, of which Bash 76 |
+| explicit "user doesn't want to proceed" rejections | 4 |
+| auto-mode classifier denials ("Permission to use Bash with command …") | 3, all `rm -rf /tmp/<scratch>` cleanups |
+
+Reading: on an auto-mode user the human label stream is thin (7 decisions in 5,040 calls),
+so G1 "approvals as labels" is only rich for default-mode users (the 100-prompts-per-hour
+complaint). The three classifier denials were false positives on scratch-dir cleanups the
+session itself created: a computed predicate "target created by this session under a
+scratch root" would have allowed them with a reason. Both the fatigue case and the
+false-positive case point to G2 (computed predicates) as the core, with G1 as its label
+source where available.
+
+### R2-d: predicates the nine incidents needed (Adversa roundup, read 2026-10-12) [MEASURED]
+
+| # | agent, date | guardrails | predicate that would have caught it |
+|---|---|---|---|
+| 1 | Cursor YOLO, 2025-06 | off | delete target resolves outside the working tree |
+| 2 | Replit, 2025-07-18 | freeze instruction ignored | destructive DB op while freeze flag set |
+| 3 | Claude Code #10077, 2025-10-21 | ON | post-expansion path set includes `/` or `$HOME` |
+| 4 | Gemini CLI, 2025-11 | exit code misparsed | destination exists before each move |
+| 5 | Antigravity Turbo, 2025-11 | off | resolved target is a drive root / outside workspace |
+| 6 | Cursor Plan Mode, 2025-12 | ON, mode bug | any shell execution while mode is plan-only |
+| 7 | Claude Code, 2025-12-08 | not stated | expanded rm argument equals `$HOME` |
+| 8 | Amazon Kiro, 2025-12 | two-person gate bypassed | production target AND approvals < 2 |
+| 9 | Claude Code/Opus 5, 2026-07 | autonomous | shadow/reset DB URL matches production pattern |
+
+Pattern: 7 of 9 are *resolution* predicates (expand the command, resolve the path or URL,
+compare to a boundary) that no prefix/glob rule can express and that the harness itself
+could compute. 2 of 9 (freeze, two approvals) are *state* predicates over data the harness
+does not hold. None needs an LLM to evaluate; all need computation before the call. This is
+the strongest single argument for G2: the incidents were not rule-authoring failures, they
+were rule-expressiveness failures.
