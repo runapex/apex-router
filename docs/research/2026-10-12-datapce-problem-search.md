@@ -350,3 +350,34 @@ risk; (4) buyer and price.
 - The plugin never records command text (§4), so the proposal engine (G1) would have to
   work on *derived features* (resolved path classes, boundary relations, tool, exit code),
   which is also the privacy-preserving design.
+
+## Round 3
+
+### R3-c: AGT internals (agent read a shallow clone, 2026-10-12) [MEASURED per the agent]
+
+- The Claude Code plugin does not use the `governance.toolkit/v1` YAML engine. It has its
+  own JSON policy (`toolPolicies`, `blockedToolCalls` with regex `commandPatterns`, a
+  built-in `recursive-delete` parser) and its own audit log. Hooks: SessionStart,
+  UserPromptSubmit, PreToolUse (node command hooks, 30 s timeout); no PostToolUse.
+  `review` maps to `permissionDecision: ask`. Open issue #4178: the recursive-delete rule
+  never matches `rm -rf` in the Claude plugin; #3831: hooks never fire on Windows.
+- Plugin audit entries carry only timestamp, agentId, action (`tool.Bash`), decision,
+  previousHash, hash: no tool input, no rule id, no reason, no policy version, no approver.
+- The YAML condition DSL is regex-matched, not parsed ("In production, would use a proper
+  expression parser"); `and`/`or` split inside quoted literals (#4291); no functions,
+  webhooks or data lookups; the caller must put everything into `context`. ADR-0004: no
+  LLM in the decision loop. OPA/Cedar backends exist but `govern()` never consults them
+  (#3911).
+- Python `AuditEntry` has the right *shape* (policy_version, matched_rule, approver_did,
+  arguments_hash, outcome, trace_id) but policy_version and approver_did are outside the
+  v1.0 canonical hash; the Decision BOM is reconstructed after the fact (ADR-0018).
+- Nothing proposes or tunes policies from decisions. ADR-0029 lists "test / replay /
+  what-if" as a *proposed* AGT Studio simulator. One closed feature request, #3116
+  "DecisionAssure Governance Learning Loop" (closed 2026-06-19).
+
+Reading: the incumbent's breadth is real, its depth on the coding-agent surface is not
+(a regex JSON policy whose headline rule does not match `rm -rf`). G5 as "layer above AGT"
+loses force: there is little engine to sit on. What AGT does give is the *expected shape*
+of an evidence record (policy_version, matched_rule, approver, arguments_hash, outcome) and
+a signal that "replay / what-if" is wanted but unbuilt. datapce's evidence record should
+be a superset of AGT's AuditEntry fields so a GRC buyer can map it.
