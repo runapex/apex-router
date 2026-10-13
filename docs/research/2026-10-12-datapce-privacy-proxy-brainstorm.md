@@ -1,6 +1,6 @@
 # datapce as a privacy service: semantic-preserving pseudonymisation in the proxy
 
-Status: brainstorm, 2026-10-12. Not a spec. Nothing here is built. Owner approval of the
+Status: REJECTED by the owner 2026-10-12 ("not a good fit"; datapce = data + policy computation engine). Kept as a record. Not a spec. Nothing here is built. Owner approval of the
 design is required before a spec is written (`docs/superpowers/specs/`), and the spec before
 a plan.
 
