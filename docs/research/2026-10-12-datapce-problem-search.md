@@ -643,3 +643,27 @@ Moat per the advisor: the outcome store + cross-harness stats core, not the dash
 Ruling: adopt (a) with both corrections — advisor AGREE-conditional — cost if wrong: two
 weeks of spike effort — reversal: stop the spike. Next: adversarial refutation of v3 with
 the corrections folded in; then the morning write-up.
+
+### R4-e: base-rate check on the advisor's spike criterion (my arithmetic, Wilson 95 %) [MEASURED inputs: 42.4 calls per active hour from R2-c; the rest ASSUMED]
+
+Assume 3 active hours per developer-day; a "bad action" base rate among decisions of
+1e-4 or 1e-3 (unknown; Anthropic's 52 curated cases came from an internal incident log);
+true FN rate 17 %.
+
+| developers | decisions/day | bad rate | bad actions/week | FN CI at 17 % |
+|---|---|---|---|---|
+| 1 | 127 | 1e-4 … 1e-3 | 0.1 … 0.9 | undefined |
+| 50 | 6,360 | 1e-4 | 4.5 | [0.05, 0.70] |
+| 50 | 6,360 | 1e-3 | 44.5 | [0.08, 0.29] |
+| 500 | 63,600 | 1e-4 | 44.5 | [0.08, 0.29] |
+| 500 | 63,600 | 1e-3 | 445 | [0.14, 0.21] |
+
+Consequence: the advisor's spike criterion ("the FN CI excludes 0 on the owner's own
+stream") **cannot pass for one developer** by base rate alone, whatever the product's
+merit. The spike must instead measure what one stream *can* show: (S1) decisions per
+day and the fraction joinable to an outcome by `tool_use_id`; (S2) precision of the
+derived labels against a hand-labelled 200-decision slice; (S3) the destructive-class
+pass-through count outside boundaries. The FN-rate CI is an org-scale deliverable
+(≥ ~50 developers at 1e-3, ≥ ~500 at 1e-4) and belongs to the pilot, not the spike.
+Spike criterion rewritten accordingly in the outline (K1 stays; the CI test moves to K2
+at pilot scale).
