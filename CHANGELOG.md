@@ -7,6 +7,19 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex_router.core.verdict`: one decision card for every arm-vs-arm decision (question, incumbent,
+  per-arm summary, pre-declared contrasts with interval + status + Benjamini-Hochberg, `gate.run_gate`
+  rows, kill criteria, decision). One status vocabulary (better / worse / equivalent — checked first
+  when a margin is declared / no detectable difference / INCONCLUSIVE) and one `decide()` rule (a fired
+  kill beats a gate promotion). `retry-ab report --json` now carries a `card`; its text output, JSON
+  keys and `verdict` are byte-identical to before (checked on a fixture). `newcombe_diff` moved to
+  `core.stats` (re-exported from `retry_ab`).
+- Panel / deliberation study, closed (`docs/research/2026-10-13-panel-hotpot-*.md`,
+  `2026-10-13-debate-vs-sc-*.md`, backlog entry). `scripts/panel_base_rate.py`: panel-candidate turns
+  are 0.53% of proxy requests. `scripts/panel.py` (HotpotQA, n=239): partitioned evidence hurts,
+  rationale exchange does not repair it, evidence exchange beats rationale; nothing promoted.
+  `scripts/panel_debate.py` (MuSiQue, n=356): one full-context exchange round = three more samples;
+  only self-consistency beats a single call (+0.061 Brier). No product behaviour changed.
 - Daily digest (`watch --run-daily` → `nightly.run`) opens with two readouts nobody had to run by
   hand: the retry-action A/B (per-arm recovery with Wilson CIs, the Newcombe difference and the
   verdict) and the v12 refusal panel (refusals / observed v12 rows, list dollars on refused calls,

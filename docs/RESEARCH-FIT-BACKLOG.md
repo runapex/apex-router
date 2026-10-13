@@ -167,6 +167,15 @@ fine-tuning (~2-3 weeks; the distribution shift must be measured). **Drop P6 if 
 ---
 
 ## Entries deliberately NOT parked (rejected as implementation candidates)
+- **Multi-agent panel with partitioned evidence (InfoDelphi, arXiv 2607.01661) — closed 2026-10-13.**
+  Step 1 base rate: panel-candidate turns are 0.53% of proxy requests (strict, since 09-30), ~90% of them
+  `codex_exec` review sessions, so the proxy-arm framing was dropped. PolyGym's evidence was never
+  released, so the engine demo ran on HotpotQA distractor (n=239): real evidence asymmetry hurt
+  (random split +0.037 Brier worse than everyone-sees-everything), rationale exchange did not repair it,
+  evidence exchange beat rationale exchange; the gate promoted nothing (K2). The follow-up (MuSiQue,
+  n=356) tested the one surviving arm fairly: one full-context exchange round = three more independent
+  samples (C1 −0.0001, CI ±0.017), peers = self-review (C2 −0.0007); only self-consistency beat a single
+  call (+0.061). Docs: `docs/research/2026-10-13-panel-hotpot-*.md`, `2026-10-13-debate-vs-sc-*.md`.
 - **P1 (Shared KV / LMCache, 2 vLLM replicas)** — apex owns no replica fleet, no shared KV pool, no
   byte-level KV transfer. Its layered-validation *discipline* is at most a conceptual scaffold for a
   shadow record whose **integrity layer** (KV-transfer ordering/allocation) has no apex referent.
