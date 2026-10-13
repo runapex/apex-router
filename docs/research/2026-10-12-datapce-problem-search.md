@@ -620,3 +620,26 @@ about: this is a feasibility datum, not a rate.
   orgs (nothing to fix → no product); (K3) no pilot org agrees to ship a proposed rule
   within 30 days; (K4) Anthropic ships per-org decision quality with outcomes before the
   pilot ends.
+
+### R4-d: advisor round on the pivot (fresh heavy-tier, read-only) — AGREE, conditional
+
+Agrees (a) beats (b) and (c): (c) is crowded and its counterfactual is unobservable;
+(b) is being absorbed by the vendor and identity vendors; (a) sits where the vendor is
+structurally weak (no per-org measurement, no customer-data loop, never grades Codex
+alongside Claude Code). Two corrections, adopted:
+1. Demand is latent, not demonstrated (0-reaction issues, stale closures). Do not build
+   a product first; build a **free local report** (`datapce decisions report`) and see
+   whether anyone forwards it to a security lead. Gate investment on that.
+2. The label join is the hard, unvalidated part. The ~220 gold labels are task-outcome
+   labels, not per-decision labels; reverts and session failure are weak proxies for
+   "should have been denied"; deny → retry is a weak FP proxy. With a 0.4 % FPR and a ~93 %
+   approval base rate, per-org reject counts are tiny and FN CIs wide. Require a
+   **two-week spike** on the owner's own OTel/hook stream: decisions per day, fraction
+   joinable to any outcome, and whether the bootstrap CI on the FN rate ever excludes 0.
+   If not, (a) degrades to "deny-rule proposals from destructive-op detection" without the
+   quality metric — still useful, a different claim.
+Moat per the advisor: the outcome store + cross-harness stats core, not the dashboard.
+
+Ruling: adopt (a) with both corrections — advisor AGREE-conditional — cost if wrong: two
+weeks of spike effort — reversal: stop the spike. Next: adversarial refutation of v3 with
+the corrections folded in; then the morning write-up.
