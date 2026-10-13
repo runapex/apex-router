@@ -322,3 +322,95 @@ First five working days (Tue 2026-10-14 → Mon 10-20), ≈ 4.5 builder-days, ca
 | 2–3 | normaliser v0: OTel `tool_decision` + `managed_settings_resolved` digest + plugin ledger → one JSONL record with `matched_rule` reconstructed by local replay of the resolved settings → one-page CC8.1/E015.2 pack from own data | $0, 2 d | A2; whether the matched rule can be reconstructed locally at all |
 | 4 | pack to 3 early-access leads + 1 auditor hour: "would this pass; what would you pay" | $0–$300, ½ d | price slot $2k–$8k vs $0 |
 | 5 | readout offer at $3.5k / $10k / $20k to the datapce.com list; count replies 2 weeks | $0, ½ d | first Model 2 booking by 2026-11-30, the earliest read on the 2027-03-31 gate |
+
+## Iteration 4 (final) — 2026-10-13 06:11 PDT
+
+Research log closed 06:12, nothing after round 8. Seven pages re-fetched tonight (search
+quota still exhausted; fetch tool summarises and truncates). One correction to Iteration 1:
+portkey.ai/pricing is now bannered "Portkey is now PRISMA AIRS AI Gateway, generally
+available" (July 2026 post), $49/mo Production tier still listed [MEASURED] — market B's
+consolidation is done, not "closing FY-Q4".
+
+### (a) Final position
+
+Best opportunity: **fixed-scope agent-governance readiness readouts (Model 2)** sold to the
+security or platform lead of a 20–300-developer org on Claude Code Team/Enterprise, after
+an incident or inside a SOC 2 Type II cycle [buyer ASSUMED; budget lines MEASURED only as
+comparables]. Artifact: a readout built on the free **cross-harness decision normaliser**
+(Claude OTel `tool_decision` + `managed_settings_resolved` digest + Codex Compliance API +
+plugin ledger → one record with matched rule and policy version — the fields no vendor
+surface carries [MEASURED tonight: code.claude.com still says "The event doesn't indicate
+which of these sources matched"; CHANGELOG 2.1.296 has no matched-rule entry]), plus proxy
+telemetry and the 0.3 s ruleset replay [MEASURED, log R5], delivered as a CC8.1 / AIUC-1
+E015.2 evidence pack with counts and CIs. Price **$3.5k / $10k / $20k** [MEASURED anchors:
+Strike Graph pentest $10k, enhanced $20k, assessments $4k–$8k/yr, re-read tonight; Cobalt
+$3.5k, It-2]; **$12k–$30k post-incident** [ASSUMED]. First paying path: datapce.com list,
+five direct outreaches, one SOC 2 firm as referral; first booking by 2026-11-30; three
+engagements by 2027-03-31 or datapce is a portfolio asset and Model 3 is the exit. Twelve
+months **$30k–$100k, median ≈ $50k** [ASSUMED]. Confidence **medium-low**: gap MEASURED,
+anchors MEASURED, demand for coding-agent decision evidence ASSUMED (It-3 b); no buyer
+contacted tonight.
+
+### (b) Ranked opportunities, all four iterations
+
+| opportunity | buyer | WTP anchor | 12-mo revenue | one-builder capture | vendor pre-emption risk (dated) | rank |
+|---|---|---|---|---|---|---|
+| Model 2 readiness readouts | platform lead post-incident; CISO pre-audit | Strike Graph $10k/$20k pentest, $4k–$8k/yr assessment [MEASURED 10-13]; Cobalt $3.5k [MEASURED] | $30k–$100k | medium-high; ~40 % of time, no compounding | low–medium: Drata partners sell implementation once GA; Drata still LA, Anthropic-only [MEASURED 10-13] | 1 |
+| Cross-harness decision normaliser (free; the A2 test) | none (OSS) | $0 | $0 | high (~2 days) | medium: Anthropic matched-rule field halves it; none at 2.1.296 [MEASURED 10-13] | 2 (instrument) |
+| Model 1 evidence pack (C) | GRC lead, 20–300 devs, SOC 2 cycle | added framework $2k–$8k/yr [MEASURED, strikegraph.com 10-13]; Vanta ACV ~$20k [PLAUSIBLE] | $0–$30k | medium, gated on A1 | high: Drata Trust Ladder + Chain of Custody, LA, no GA date [MEASURED 10-13]; Vanta waitlist, no harness named [MEASURED 10-13] | 3 |
+| Model 1b AIUC-1 E015/E004 kit | agent-vendor CTO | cert cost unpublished [MEASURED absence 10-13]; E015.2 "may" [MEASURED It-3] | $0–$20k | low–medium; 7 certified; Schellman channel | medium: Drata pre-mapped to AIUC-1; next update ~2027-01-15 | 4 |
+| Model 3 engine licence / acqui-hire | Drata, Vanta, TrueFoundry, Jellyfish | none public [ASSUMED] | $0–$50k, binary | low | absorption without a cheque (Statsig, Eppo) [PLAUSIBLE] | 5 |
+| F gate library + evidence card (OSS) | ML-platform / SRE | $0 | $0 | high | low | 6 (asset) |
+| B / β capacity replay in proxy | platform eng, FinOps | Portkey $49/mo [MEASURED 10-13]; Cloudflare free [MEASURED It-1] | $0–$5k | low | realised: Portkey = Prisma AIRS GA, July 2026 [MEASURED 10-13]; spike-0 INCONCLUSIVE n = 2 | 7 |
+| A permission-governance product | platform lead | Aembit $20/agent/mo, free to 3 [MEASURED 10-13] | $0–$10k | low | realised: vendor-native auto mode; AGT 6.4k stars; Nomos free [MEASURED, log] | 8 |
+| D config-outcome intelligence | VP Eng | Jellyfish ACV ~$35.9k [PLAUSIBLE] | $0 | none | realised: Jellyfish AI Impact 2026-10-07 [MEASURED It-1] | 9 |
+| E policy / decision engines | fintech risk ops | Styra ~$5k/mo [PLAUSIBLE] | $0 | none | n/a — wrong buyer | 10 |
+
+### (c) Three load-bearing assumptions, each with a two-week test (< $500)
+
+1. **A1 — SOC 2 auditors already sample AI-coding-tool changes under CC8.1.** Test: one
+   emailed question to Prescient, Johanson, Schellman, A-LIGN, Sensiba and ISACA's Nik
+   Kale; one auditor hour (~$300) if thin. Pass: ≥ 2 of 5 cite a specific 2026 request.
+   **Flip:** < 2 → Market C has no 2026 trigger; services shrink to post-incident; the
+   position becomes F + proxy as portfolio asset, Model 3 the exit.
+2. **A2 — vendor compliance surfaces cannot satisfy that ask without the normaliser.**
+   Test: two builder-days for normaliser v0 over own data (reconstruct `matched_rule` by
+   local replay of resolved settings) → one-page CC8.1/E015.2 pack → three early-access
+   leads + the auditor hour: "would this pass; what would you pay". Cost ≤ $200. Pass:
+   ≥ 1 auditor needs the matched-rule and cross-harness columns, ≥ 1 lead names ≥ $2k.
+   **Flip:** raw `tool_decision` + Compliance API transcript passes → normaliser is a jq
+   script, Model 1 is $0, readouts priced as time only.
+3. **A3 — a buyer pays a one-person, local-first shop at pentest tiers.** Test: post the
+   $3.5k / $10k / $20k offer to the datapce.com list and five contacts; log replies and
+   procurement objections for 14 days. Cost $0. Pass: ≥ 1 booking or ≥ 2 scoping calls.
+   **Flip:** zero replies, or every reply demands datapce's own SOC 2/DPA first → services
+   path closed, the 2027-03-31 gate fails early, vendor conversations start now.
+
+### (d) Watchlist
+
+| cadence | page | watch for (state 2026-10-13) |
+|---|---|---|
+| weekly | https://drata.com/products/agent-governance | "Limited Availability" gone; a name beyond Anthropic; price or GA date |
+| weekly | https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md | `tool_decision` gains matched rule / settings digest (2.1.296: none) |
+| monthly | https://code.claude.com/docs/en/monitoring-usage | "doesn't indicate which of these sources matched" removed |
+| monthly | https://platform.claude.com/docs/en/manage-claude/compliance-sessions | "not what happened on the device" removed |
+| monthly | https://learn.chatgpt.com/docs/enterprise/compliance-api ; https://learn.chatgpt.com/docs/changelog | approval / decision events (newest read 2026-10-08) |
+| monthly | https://www.vanta.com/products/ai-governance | "Join the waitlist" gone; a coding harness named |
+| ~2027-01-15 | https://standard.aiuc-1.com/accountability/log-model-activity ; https://www.aiuc-1.com/ | E015.2 "may" → "should"; "Last Updated" past Q4 Oct 8 2026 |
+| quarterly | https://www.strikegraph.com/pricing | the $2k–$8k framework slot and $10k/$20k pentest anchors |
+
+### (e) Not verified tonight
+
+- **Search quota** exhausted since Iteration 2; Iterations 2–4 rest on summarised fetches;
+  three truncated (Drata page end, CHANGELOG below 2.1.287, `managed_settings_resolved`
+  section of monitoring-usage).
+- **404 / 500 / unreachable**: Vanta, Secureframe, Sprinto, A-LIGN, Thoropass cost pages;
+  Drata's 2026-08-14 "71 %" post; temporal.io Oso page; styra.com — SOC 2 Type II fee
+  ($10k–$50k) stays PLAUSIBLE.
+- **Login walls / non-rendering**: Shared Assessments SIG 2026; AICPA's AI page — no SOC 2
+  AI guidance read, so **A1 is untested**; LinkedIn totals inflated.
+- **Still PLAUSIBLE**: Portkey ~$700M; Vanta ~$20k ACV; Jellyfish ACV; Statsig/Eppo
+  absorption; Salesforce's AIUC-1 procurement claim; Drata's "11 %"; Codex changelog not
+  re-fetched after Iteration 3.
+- **No demand contact**: no org, auditor or vendor was contacted; every WTP figure is a
+  comparable and the revenue ranges are ASSUMED arithmetic over them.
