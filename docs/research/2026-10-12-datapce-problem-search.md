@@ -1361,3 +1361,64 @@ post-report verifications (Nomos README, arXiv 2604.04978 full text) and the rou
 map, all recorded above. Research cron 87b0116f deleted. The independent
 business-intelligence loop ran four iterations in its own file; the Correlation section
 below is the first and only point the two are compared.
+
+## Correlation (06:20 PDT 2026-10-13) — research loop vs independent BI loop, compared once
+
+Sources: this log's morning report and post-report verifications; the BI file
+`docs/research/2026-10-13-datapce-business-intelligence.md` (four iterations, written
+without reading this loop's rulings as authority).
+
+**Where the two agree (independently reached)**
+- Agent-permission *enforcement* and config-outcome attribution are not this builder's
+  markets (BI ranks A #8, D #9, E #10; research refuted v2–v4 and scored γ 11/15).
+- β capacity-policy replay is cheap to try and not a business (research: unvalidated
+  feature; BI: #7, price ceiling $25–$49/mo, "≈ 0 standalone").
+- The stats core + gate (F) is a proof asset or OSS instrument, not a product (research:
+  fallback library, partially served; BI: #6).
+- The vendor withholds the per-decision matched rule (both verified `monitoring-usage`:
+  "doesn't indicate which of these sources matched"); BI adds that
+  `managed_settings_resolved` (v2.1.274+) carries a SHA-256 digest, so a session-level
+  policy version already exists and the gap is the per-decision join.
+- Both corrected the same kinds of over-claims and labelled thin evidence as such.
+
+**Where they disagree**
+1. *Market C (compliance evidence).* Research folded C into G in round 1 ("the evidence
+   export of G") and never ran a refutation on C alone. BI's final position is C-shaped:
+   services-first "agent-governance readiness readouts" for a security/platform lead at
+   a 20–300-developer Claude Code org, $3.5k/$10k/$20k tiers (pentest anchors MEASURED),
+   12-month $30k–$100k, median ≈ $50k, confidence medium-low; BI itself labels demand
+   for *coding-agent decision evidence specifically* as ASSUMED, with AI-governance
+   headcount and agent-vendor certification (AIUC-1, 7 certified vendors) MEASURED.
+   Research has no counter-evidence on C because it never tested it. **Unresolved, and
+   the one genuinely open item of the night.**
+2. *"Free OSS exists" as a kill.* BI: not a kill (Nomos 19 stars; LiteLLM free while
+   Portkey sold). Research's actual kill for v4 was fidelity (no oracle for allows, #39097
+   not-planned), with Nomos as secondary; on re-reading, the research morning report
+   over-weighted "shipped free" in α's row. **BI is right on the framing; the v4 verdict
+   stands on fidelity alone.**
+3. *Feature-sized ≠ failure.* BI treats feature-sized directions as normal for one
+   builder; research treated "feature, not product" as a negative. **Semantic, resolved
+   in BI's favour: the owner's decision 1 should read "which feature-sized direction
+   funds the next cycle", not "product or nothing".**
+4. *Services.* Research never priced services; BI priced them from MEASURED comparables
+   and made them the first revenue path. Research has no evidence against this.
+
+**Combined recommendation for the owner's decisions**
+- Decision 1 (thesis for the next cycle): keep "data + policy computation engine" as the
+  engine (F, stdlib core + gate + one verdict schema, round-8 code map) and make its first
+  two consumers (i) the proxy's same-arm capacity decision (β, zero-cost, judged against
+  persistence) and (ii) the cross-harness decision normaliser BI names as the readout's
+  instrument. Neither loop found a product; both found the same engine.
+- Decision 2 (what to run for two weeks): not the β spike alone. Run BI's A1/A2 tests
+  (five audit firms, one auditor hour, a one-page CC8.1 / AIUC-1 E015.2 pack from the
+  owner's own data; < $500) **and** one fresh adversarial refutation of market C on its
+  own terms, before the five-day services plan. If A1 fails (auditors do not sample
+  AI-coding changes), C collapses and the engine stays an OSS asset; if A1 holds, the
+  research loop's objection to C is void and the services path is the first revenue.
+- The β spike's secondary kill (an external multi-key operator) and BI's A3 (a buyer pays
+  a one-person local-first shop) are the same test from two sides: one conversation with
+  an external operator about their last throttling incident answers both.
+
+**Honesty note**: the BI loop's web-search quota was exhausted from iteration 2, so its
+later evidence is page fetches only; the research loop's reviewers were all one Claude
+family except one GPT cross-check; neither loop contacted a buyer, auditor or vendor.
