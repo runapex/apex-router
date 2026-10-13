@@ -1024,3 +1024,22 @@ Pricing for the cost side of the receipt exists in-repo (`proxy_engine/tuner/cac
 `APEX_PRICING_OVERRIDES`, the digest's "unpriced" accounting) but was not wired into the
 throwaway; a real β probe would price the 2,924 shed requests from their recorded
 token counts. Noted, not done tonight.
+
+### R7-check: primary-page fact-check of ten key numbers (agent; quotes from page fetches and search summaries)
+
+| # | claim | status | correction |
+|---|---|---|---|
+| 1 | Anthropic admin monthly spend limits org/group/member, blocked at limit, "since April 2026" | PARTLY | limits exist (support.claude.com 12005970, 13799932); blocking stated for org and per-user, not group; **April 2026 date NOT FOUND** (page dated 2026-09-04) |
+| 2 | auto mode 0.4 % FPR, 17 % FNR, 5.7 % synthetic; 2.4 % vs 6.3 % sessions | VERIFIED | "FPR drops from 8.5% to 0.4%"; "The 17% false-negative rate … is the honest number"; n=10,000 and n=52 not seen in quotes; the 2.4 %/6.3 % are on claude.com/resources/articles/auto-mode-default-in-claude-code, not the engineering post |
+| 3 | arXiv 2604.04978: 81 % FNR, 19.8 % FPR, n=253, κ 0.82 | PARTLY | 81.0 % (CI 73.8–87.4) and n=253 verified; **FPR is 31.9 % on 160 Tier-3 actions, not 19.8 %**; κ 0.82 / 88 % not in the abstract (full paper unchecked) |
+| 4 | Replay Gap: mispredicts every success-relevant outcome; swaps rewrite 61–94 % | VERIFIED | verbatim |
+| 5 | Jellyfish "early signals, not proof" | VERIFIED | cohort is users of Jellyfish's own Shipmate skill |
+| 6 | Copilot metrics API: PRs merged, time to merge, ai_adoption_phase | VERIFIED | fields named in the 2026-02-25 org-level entry; phases 0–3 over 28 days |
+| 7 | Analytics API field names | VERIFIED | `estimated_cost.amount` in cents USD |
+| 8 | VentureBeat n=107: 20 % / 25 % / 21 % | PARTLY | n=107 and 21 % (logs only) verified; 25 % custom gateway verified; the **20 %** may come from a companion piece (larger enterprises, reactive control only) |
+| 9 | Uber $1,500/employee/tool/month after 4 months | VERIFIED | TechCrunch cites Bloomberg; "four months" is the CTO via The Information |
+| 10 | TrueFoundry circuit breakers | VERIFIED as vendor claim | triggers: cost velocity, repeated prompts, error rate > 50 % in 60 s, growing context |
+
+Corrections applied to earlier sections by reference: R1-G/R4-b FPR for the independent
+study is 31.9 % (Tier-3), not 19.8 %; the "April 2026" spend-limit date is unsupported;
+the VentureBeat 20 % is a companion-piece figure.
