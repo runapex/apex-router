@@ -571,3 +571,52 @@ derived features via the plugin's hooks. The proposal targets exist (`permission
 `autoMode.hard_deny`, `autoMode.soft_deny`, `autoMode.allow`). The one thing the vendor
 withholds — reasons and matched rules — datapce reconstructs from its own derived features
 and outcome joins, which is the computation the product sells.
+
+### R4-c: mini-pilot on this machine's transcripts (script, 2026-10-12) [MEASURED]
+
+| quantity | value |
+|---|---|
+| session files scanned | 46 |
+| Bash tool calls | 3,526 |
+| `rm -rf` calls | 41 (relative target 28, /tmp 7, absolute non-tmp 4) |
+| `rm -rf` followed within two rows by a rejection or classifier denial | 10 of 41 |
+| other destructive classes | kill/pkill 17, launchctl unload 2, git checkout -- . 1 |
+| absolute non-tmp `rm -rf` targets | a `.superpowers/sdd` dir in-repo, `~/src/jkn-tools`, `~/exports/…`, `~/Downloads/kt/render` |
+
+Reading: derived features (destructive verb class, target class: relative / scratch /
+absolute-outside-tree) and decision labels (rejection, classifier denial) are
+computable from transcripts alone, without command text leaving the machine. On one
+auto-mode user, a quarter of `rm -rf` calls drew a denial; two targets outside the tree
+and outside scratch went through. That is the shape of the per-org readout v3 promises
+(denial rate by class, pass-through outside boundary), at n small enough to be honest
+about: this is a feasibility datum, not a rate.
+
+### Candidate outline for v3 (draft, revised after the advisor and refutation)
+
+- **Buyer**: platform or developer-productivity lead at a Team/Enterprise org running
+  Claude Code, Codex or Copilot agents with auto-approval on; second buyer GRC/security
+  after an incident or before an audit. Not the individual developer.
+- **Wedge deliverable**: the per-org "auto-approval safety readout": accepted-by-config
+  calls by derived risk class, pass-through rate outside boundaries, denial false-positive
+  proxies (deny → same action allowed later), drift across harness versions, with CIs.
+  Delivered from the org's own OTLP stream (managed `env`), no per-developer install;
+  richer features with the plugin.
+- **Proposal engine**: rule diffs (`permissions.deny`, `autoMode.hard_deny`/`soft_deny`,
+  `autoMode.allow`, Codex execpolicy) each with an evidence card (n, rate, CI, classes,
+  what it would have changed on the org's own history — per-decision replay is valid
+  here). Human approves; shipped via managed settings; effect measured; retired when
+  insignificant. Hybrid authorship by construction.
+- **Evidence record**: per decision, a superset of AGT's AuditEntry fields (policy
+  version, matched rule or source, derived inputs hash, decision, approver, outcome),
+  exportable for ISO 42001 / EU AI Act Art. 12 / SOC 2 CC6.1–CC7.2 narratives.
+- **What stays with the vendor**: enforcement, the classifier, the prompts.
+- **Defensibility**: vendor-neutral (four harnesses), outcome labels the vendor does not
+  have (reverts, destructive-op detection, session failure), and the proposal/approval
+  ledger. Vendor risk is real: Anthropic could add per-org decision analytics to the
+  Enterprise dashboard; the moat is outcomes and proposals, not counts.
+- **Kill criteria for the candidate** (pre-declared): (K1) outcome labels cannot be
+  derived with precision ≥ 0.8 on a 200-decision hand-labelled slice; (K2) measured
+  per-org pass-through-outside-boundary rate is indistinguishable from zero on two pilot
+  orgs (nothing to fix → no product); (K3) no pilot org agrees to ship a proposed rule
+  within 30 days; (K4) Anthropic ships per-org decision quality with outcomes before the
+  pilot ends.
