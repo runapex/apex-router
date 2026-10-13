@@ -891,3 +891,19 @@ Configs, Jellyfish/DX/Faros/LinearB AI-impact, Braintrust/Langfuse, Anthropic An
 API, GitHub Copilot metrics API, any "measure the effect of a CLAUDE.md / skill / managed
 settings change" asks); (b) refutation; (c) advisor; (d) morning report with the ranked
 verdict.
+
+### R6-local: this machine's evidence for (β) and (γ) [MEASURED, 2026-10-12]
+
+(β) capacity decisions are abundant on one developer: proxy telemetry holds 112,680
+requests; error causes http_429 1,133, SSLError 470, ReadError 393; last 24 h: 2,394
+requests, 150 429s (6.3 %; opus 8.3 %, 145 of 1,751), 59 retried. `pressure --check` was
+RED for most of this night on opus 429s. Every one of these is a per-request decision
+(route, retry, shed, wait) with an exactly observed outcome (status, latency, cost):
+the replay-valid regime the Replay Gap paper leaves intact.
+
+(γ) config effects at one developer are small: the repo's own SKILL.state evaluation
+(docs/DESIGN-skill-state.md) measured *parity* on behaviour, tokens and robustness
+across four adaptations and promoted nothing; the retry A/B in the digest is +11.5 pts
+with a CI crossing 0 after weeks. Config-outcome attribution therefore needs org-scale
+n (teams × weeks), which is exactly what the Analytics API's per-user-day rows give and
+what one developer's history cannot.
