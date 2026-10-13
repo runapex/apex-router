@@ -186,6 +186,19 @@ reviewer yet and is labelled a prototype in the code.
 
 - Restart the Claude Code process in `~/src/apex-router` (session chain started 2026-10-03,
   before the datapce plugin install); until then the parity gate cannot open.
-- Decide whether E-D's randomisation (W0 vs W2 per task) is acceptable on live work; it costs
+- E-D randomisation: ACCEPTED by the owner 2026-10-13. Shipped as plugin `ed.ts` (arm per typed
+  turn as one context block beside the prompt, rows in `labels/ed_arms.jsonl`) + `worldmodel build`
+  join + readout `apex-router worldmodel ed`; opt-in (`ed: true`), so it runs live once the
+  deployed plugin carries it and the option is on. Analysis is intention-to-treat (the arm is the
+  assignment; `workflow` is what ran; compliance is reported). Cost: one ~60-token block per
+  typed turn in the user message; nothing in the system prompt, so no cache break. Independent
+  review (2026-10-13, two passes) refuted the first cuts — the raw FNV-1a low bit alternated with
+  the turn digit (fixed with a murmur3 finaliser; serial independence is tested), subagent tokens
+  were counted twice (now turn.step usage only), and arms were bound to turns by queue order (now
+  by a hash of the text; a prompt with no turn of its own leaves no arm). Holdout sessions of the
+  injection experiment get no arm. Known limits: tokens cover the typed turn and its subagents,
+  not a later continuation turn that integrates background results; a session-level bootstrap
+  needs ≥ 10 sessions per type. Originally: decide whether E-D's randomisation (W0 vs
+  W2 per task) is acceptable on live work; it costs
   nothing in tokens but changes which workflow runs.
 - Retry A/B and refusals: re-check the digest ≈ 2026-10-26.

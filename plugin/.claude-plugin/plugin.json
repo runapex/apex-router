@@ -30,6 +30,12 @@
       "title": "Backend directory",
       "description": "Where the optional apex-router backend keeps its files; the plugin writes its rows here too.",
       "default": "~/.apex-router"
+    },
+    "ed": {
+      "type": "boolean",
+      "title": "Workflow-arm experiment (E-D)",
+      "description": "Opt-in experiment: each typed turn gets a randomised workflow arm (W0: no subagents; W2: delegate separable parts) as one context block beside the prompt; one row per turn under labels/ed_arms.jsonl (ids, times, token counts, the arm). Advise-only.",
+      "default": false
     }
   }
 }

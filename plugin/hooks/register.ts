@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Measure } from '../types/index.d.ts'
 import { start as backendStart } from './backend.ts'
 import { install as band, measureOf, refreshStatus } from './band.tsx'
+import { completeEd, dropPrompt, flushEd, noteCompose, noteEdSpawn, startTurn, submitPrompt } from './ed.ts'
 import { checkHandoff } from './handoff.ts'
 import type { Host } from './host.ts'
 import { composeSections, describe as injectDescribe, endInjection, publishArm, skillSection, start as injectStart } from './inject.ts'
@@ -108,6 +109,7 @@ export const register: Register = (on, raw) => {
   // session.start (engine 2.1.288). After the final flush, per-session state resets; the new session
   // is identified on its first turn.start / prompt.compose.
   on('session.end', async ($, e, next) => {
+    await flushEd(hostOf($), rt)
     await flushDispatches(hostOf($), rt)
     routerEnd(rt)
     await flushAll(hostOf($), rt)
@@ -119,8 +121,29 @@ export const register: Register = (on, raw) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    await ensureSession(hostOf($))
+    const host = hostOf($)
+    await ensureSession(host)
+    try {
+      startTurn(rt, e, await host.now())
+    } catch {
+      // the experiment never breaks a turn
+    }
     return next(e)
+  })
+
+  // Experiment E-D: the user's own prompt gets its arm as one context block beside the prompt (advise-only).
+  on('prompt.submit', async ($, e, next) => {
+    const host = hostOf($)
+    await ensureSession(host)
+    let context: readonly string[] | null = null
+    try {
+      context = submitPrompt(rt, e, await host.now())
+    } catch {
+      context = null
+    }
+    const r = await next(context === null ? e : { ...e, context })
+    if (context !== null && r.drop !== undefined) dropPrompt(rt, e.text)
+    return r
   })
 
   on('session.measure', async ($, e, next) => {
@@ -152,6 +175,7 @@ export const register: Register = (on, raw) => {
     const r = await next(e)
     const host = hostOf($)
     await ensureSession(host)
+    noteCompose(rt, e)
     return { ...r, sections: await composeSections(host, rt, e, r.sections, await host.now()) }
   })
 
@@ -165,6 +189,7 @@ export const register: Register = (on, raw) => {
       d = null
     }
     const res = await next(e)
+    noteEdSpawn(rt, res.deny === undefined ? res.agentId : null)
     if (d !== null) await afterSpawn(host, rt, e, d, res, await host.now())
     return res
   })
@@ -172,7 +197,9 @@ export const register: Register = (on, raw) => {
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     const host = hostOf($)
-    await onComplete(host, rt, e, await host.now())
+    const now = await host.now()
+    await onComplete(host, rt, e, now)
+    await completeEd(host, rt, e, now)
     return r
   })
 

@@ -7,6 +7,25 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Experiment E-D (pre-declared in `docs/research/2026-10-12-rsi-next-steps.md` §3), opt-in
+  (userConfig `ed: true`): the plugin assigns every typed main-session turn a randomised workflow
+  arm — W0 (do it in this session, no subagents) or W2 (delegate the separable parts) — as a mixed
+  hash of (session id, turn number) and hands it to the model as one context block beside the
+  prompt (`prompt.submit` context: read by the model, never shown, no system-prompt cache break;
+  the user's own prompts only, matched to their turn.start by an in-memory hash of the text, never
+  by queue order; a dropped prompt leaves no arm; the evidence experiment's holdout sessions get
+  none). One row per turn to `<backendDir>/labels/ed_arms.jsonl` (ids, times, the arm, whether a
+  fan-out tool was offered, main/subagent tokens from turn.step usage, subagents counted once,
+  background and Workflow agents attributed to the turn that ran them, rows held until the last
+  subagent completes or session end; never text). Advise-only. `worldmodel build`
+  joins the rows to tasks by session id and turn time (`ed_arm`, `ed_tok`; applied rows with a
+  fan-out tool only; what ran stays in `workflow`), manifest `ed_arms`.
+  `apex-router worldmodel ed [--min-n 30] [--json]`: intention-to-treat readout per task type on a
+  `core.verdict` card — success W2 − W0 (Newcombe), A_e = efficiency(W2)/efficiency(W0) with a
+  session-level bootstrap interval, compliance, and the pre-declared rule (keep W2 only where A_e's
+  interval lies above 1 with ≥ min-n tasks per arm and ≥ min-sessions sessions); the decision
+  follows the rule. Two independent review passes refuted the first cuts (hash parity, double
+  counting, queue-order binding); each finding is covered by a test.
 - `apex_router.core.verdict`: one decision card for every arm-vs-arm decision (question, incumbent,
   per-arm summary, pre-declared contrasts with interval + status + Benjamini-Hochberg, `gate.run_gate`
   rows, kill criteria, decision). One status vocabulary (better / worse / equivalent — checked first

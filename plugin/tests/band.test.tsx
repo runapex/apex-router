@@ -9,11 +9,11 @@ const SURFACES = ['terminal', 'desktop'] as const
 
 describe('options', () => {
   test('userConfig defaults; malformed values fall back', () => {
-    const d = { pane: 'command', budgetUsd: 0, band: true, backendDir: '~/.apex-router' }
+    const d = { pane: 'command', budgetUsd: 0, band: true, backendDir: '~/.apex-router', ed: false }
     expect(optionsOf({})).toEqual(d)
     expect(optionsOf({ pane: 'nope', budgetUsd: -3, backendDir: '  ' })).toEqual(d)
-    expect(optionsOf({ pane: 'auto', budgetUsd: 10, band: false, backendDir: '/x' })).toEqual({
-      pane: 'auto', budgetUsd: 10, band: false, backendDir: '/x',
+    expect(optionsOf({ pane: 'auto', budgetUsd: 10, band: false, backendDir: '/x', ed: true })).toEqual({
+      pane: 'auto', budgetUsd: 10, band: false, backendDir: '/x', ed: true,
     })
   })
 })

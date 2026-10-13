@@ -93,6 +93,21 @@ def test_no_code_path_rewrites_the_spawn_model():
     assert not re.search(r"return\s*\{[^}]*\bmodel\s*:", body)
 
 
+def test_prompt_submit_hook_only_attaches_context():
+    """E-D's prompt.submit hook attaches a context block and nothing else: one hook, one next(),
+    the text and origin passed as received, never a drop."""
+    code = _code(_files()["register.ts"])
+    blocks = _blocks(code, "prompt.submit")
+    assert len(blocks) == 1
+    body = blocks[0]
+    assert body.count("next(") == 1
+    args = body[body.index("next(") + 5:]
+    args = args[:args.index(")")]
+    assert re.search(r"\btext\b", args) is None and re.search(r"\borigin\b", args) is None, args
+    assert "drop:" not in body and "...e, text" not in body and "...e, origin" not in body
+    assert "{ ...e, context }" in args
+
+
 def test_privacy_writes_only_under_backend_dir_and_store():
     files = _files()
     for name, src in files.items():
@@ -103,12 +118,16 @@ def test_privacy_writes_only_under_backend_dir_and_store():
                 assert m.group(1).strip() == "`${dir}/.keep`", (name, m.group(1))
         for m in re.finditer(r"appendLines\(\s*host,\s*([^,]+),", code):
             if name != "io.ts":
-                assert re.search(r"observePath\(rt\.backendDir|routeLogPath\(rt\.backendDir", m.group(1)), (name, m.group(1))
+                assert re.search(r"observePath\(rt\.backendDir|routeLogPath\(rt\.backendDir|edPath\(rt\.backendDir",
+                                 m.group(1)), (name, m.group(1))
         for m in re.finditer(r"ensureDir\(\s*host,\s*([^)]+)\)", code):
             if name != "io.ts":
                 assert m.group(1).strip() == "dir", (name, m.group(1))
     obs = _code(files["observe.ts"])
     assert "const dir = observeDir(rt.backendDir)" in obs
+    ed = _code(files["ed.ts"])
+    assert "const dir = edDir(rt.backendDir)" in ed
+    assert "export const edDir = (backendDir: string): string => `${backendDir}/labels`" in ed
     # processes: only tee/tail/rm helpers (appends, tails, retention) and the backend CLI reads
     argvs = set(re.findall(r"host\.run\(\[\s*'([^']+)'", _code(_sources())))
     assert argvs <= {"/usr/bin/tee", "/usr/bin/tail", "/bin/rm"}, argvs

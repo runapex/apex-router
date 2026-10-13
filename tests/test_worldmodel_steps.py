@@ -467,6 +467,51 @@ def test_recorded_workflow_wins(tmp_path):
     assert man["workflows"] == {"W0": 2, "W2": 1, "W1": 1, "W3": 1}
 
 
+def test_ed_arms_join_by_session_and_turn_time(tmp_path):
+    uh, tel = _fixture(tmp_path)
+    home = tmp_path / "ar"
+    t_user0 = T0 + 3600 + 5                       # first user record of the Claude session
+    t_user1 = T0 + 3600 + 5 * 7                   # "second request" (7th item)
+    _write(home / "labels" / "ed_arms.jsonl", [
+        {"ev": "ed_arm", "ts": t_user0 - 30.0, "ts_start": t_user0 - 1.0, "session_id": SID_CL,
+         "turn": 1, "arm": "W2", "applied": True, "fanout": True, "tok_main": 100, "tok_sub": 40},
+        {"ev": "ed_arm", "ts": t_user0 + 2.0, "session_id": SID_CL, "turn": 1, "arm": "W0",
+         "applied": True, "tok_main": 1},                                  # same task: first row wins
+        {"ev": "ed_arm", "ts": t_user1 + 0.5, "session_id": SID_CL, "turn": 2, "arm": "W0",
+         "applied": False, "tok_main": 9},                                 # unapplied: no treatment
+        {"ev": "ed_arm", "ts": t_user1 + 0.6, "session_id": SID_CL, "turn": 2, "arm": "W2",
+         "applied": True, "fanout": False, "tok_main": 9},                 # no fan-out tool: no unit
+        {"ev": "ed_arm", "ts": t_user1 + 0.7, "session_id": SID_CL, "turn": 2, "arm": "W0",
+         "applied": True, "tok_main": "x", "tok_sub": 7},                  # bad token field ignored
+        {"ev": "ed_arm", "ts": T0 + 15, "session_id": "nobody", "arm": "W2", "applied": True},
+        {"ev": "other", "ts": t_user0, "session_id": SID_CL, "arm": "W2", "applied": True},
+        {"ev": "ed_arm", "ts": True, "session_id": SID_CL, "arm": "W2", "applied": True},
+    ])
+    man = S.build(home=home, user_home=uh, telemetry=tel, embed_fn=None)
+    t = {r["task"]: r for r in _read(home / "worldmodel" / "tasks.jsonl")}
+    assert (t[f"{SID_CL}:0"]["ed_arm"], t[f"{SID_CL}:0"]["ed_tok"]) == ("W2", 140)
+    assert (t[f"{SID_CL}:1"]["ed_arm"], t[f"{SID_CL}:1"]["ed_tok"]) == ("W0", 7)
+    assert t[f"{SID_CL}:0"]["workflow"] == "W2"                        # what ran is untouched
+    assert all(r["ed_arm"] is None and r["ed_tok"] is None for k, r in t.items() if SID_PI in k)
+    assert man["ed_arms"] == {"W0": 1, "W2": 1, "none": len(t) - 2}
+    # no file: every task null, manifest counts none
+    man2 = S.build(home=tmp_path / "ar2", user_home=uh, telemetry=tel, embed_fn=None)
+    assert man2["ed_arms"]["W0"] == 0 and man2["ed_arms"]["none"] == man2["counts"]["tasks"]
+
+
+def test_join_ed_arms_window_nearest_and_untimed():
+    tasks = [{"task": "a", "ts": 100.0}, {"task": "b", "ts": 200.0}, {"task": "c", "ts": None}]
+    rows = [(98.5, "W2", 5), (201.0, "W0", 6), (50.0, "W2", 1)]
+    assert S.join_ed_arms(rows, tasks) == {"a": ("W2", 5), "b": ("W0", 6)}
+    assert S.join_ed_arms([(94.0, "W2", 5)], tasks) == {}                 # 6 s early: outside
+    assert S.join_ed_arms([(150.0, "W2", 5)], tasks) == {}                # a turn with no task
+    assert S.join_ed_arms([(103.0, "W2", 5), (99.0, "W0", 6)], tasks) == {"a": ("W2", 5)}
+    assert S.join_ed_arms([(197.0, "W0", 6)], [{"task": "a", "ts": 193.0}, {"task": "b", "ts": 199.0}]) \
+        == {"b": ("W0", 6)}                                                # the nearest wins
+    # a slow UserPromptSubmit hook: turn.start 9 s after the record, submit 1 s before it — the submit time matches
+    assert S.join_ed_arms([(109.0, "W2", 5, (109.0, 99.0))], tasks) == {"a": ("W2", 5)}
+
+
 def test_split_frozen_across_rebuilds(tmp_path, capsys):
     uh = tmp_path / "user"
     sids = [f"0000000{k}-0000-0000-0000-000000000000" for k in range(10)]

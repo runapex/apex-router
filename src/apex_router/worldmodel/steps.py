@@ -33,7 +33,9 @@ transcripts, so it is idempotent.
   refinement via local ollama; the text is never stored), null when it cannot classify;
   **workflow**: a recorded ``workflow`` field for the task wins (``labels/*.jsonl`` or
   ``outcomes.jsonl`` rows, by task id); else ``W2`` when the task spawned a subagent (Agent /
-  Task / Workflow), else ``W0``.
+  Task / Workflow), else ``W0``. **ed_arm** / **ed_tok**: experiment E-D's randomised arm for the
+  task (plugin ``ed.ts`` rows in ``labels/ed_arms.jsonl``, joined by session id and turn time; only
+  rows whose arm section reached a prompt) and the tokens the turn used, else null.
 
 Never stores text: classes, counts, buckets, flags, ids. Every reader fails open per line.
 """
@@ -338,6 +340,55 @@ def load_recorded_workflows(base: Path) -> dict:
     return out
 
 
+def load_ed_arms(base: Path) -> dict:
+    """session id -> [(turn start s, arm, tokens)] from ``labels/ed_arms.jsonl`` (plugin ed.ts), sorted
+    by time. Only rows that were a unit count: ``applied`` (the context block reached the prompt) and
+    not ``fanout: false`` (a render offered a fan-out tool; older rows without the field pass). Each
+    row carries its turn.start time (``ts_start``, null when absent) and its prompt.submit time
+    (``ts``); the join takes whichever is nearer to the task. Fails open per line."""
+    out: dict = {}
+    for r in L._read(base / "labels" / "ed_arms.jsonl"):
+        if not isinstance(r, dict) or r.get("ev") != "ed_arm" or r.get("applied") is not True \
+                or r.get("fanout") is False:
+            continue
+        sid, arm = r.get("session_id"), r.get("arm")
+        times = [float(r[k]) for k in ("ts_start", "ts")
+                 if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)]
+        if not isinstance(sid, str) or not times or arm not in ("W0", "W2"):
+            continue
+        tok = sum(r.get(k) for k in ("tok_main", "tok_sub")
+                  if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool))
+        out.setdefault(sid, []).append((times[0], arm, int(tok), tuple(times)))
+    return {k: sorted(v) for k, v in out.items()}
+
+
+ED_SLACK_S = 5.0        # |turn.start − the user record's timestamp| allowed for a match
+
+
+def join_ed_arms(rows: list, tasks: list, slack: float = ED_SLACK_S) -> dict:
+    """task id -> (arm, tokens): an E-D row ``(t, arm, tokens[, times])`` matches the session's task
+    whose user turn began within ``slack`` seconds of any of its times (the nearest one); a task
+    takes the first row that lands on it. A row with no task that close (a turn without tool calls
+    is no task) matches nothing. Tasks without a timestamp are never matched."""
+    timed = sorted((t["ts"], t["task"]) for t in tasks if t.get("ts") is not None)
+    tss = [x[0] for x in timed]
+    out: dict = {}
+    for row in rows:
+        arm, tok = row[1], row[2]
+        times = row[3] if len(row) > 3 else (row[0],)
+        best, best_d = None, None
+        for ts in times:
+            i = bisect.bisect_left(tss, ts)
+            for j in (i - 1, i):
+                if 0 <= j < len(timed):
+                    d = abs(timed[j][0] - ts)
+                    if d <= slack and (best_d is None or d < best_d):
+                        best, best_d = j, d
+        if best is not None and timed[best][1] not in out:
+            out[timed[best][1]] = (arm, tok)
+    return out
+
+
 def _bounds(order: list, sessions: dict) -> dict:
     """Split boundaries from the session order: start time of the first val / first test
     session (None when that split is empty)."""
@@ -549,6 +600,11 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto",
     tel = load_telemetry(Path(telemetry) if telemetry else telemetry_path(), set(sessions), st)
     outcomes = load_outcomes(base)
     recorded_wf = load_recorded_workflows(base)
+    ed_rows = load_ed_arms(base)
+    ed_by_task: dict = {}
+    for sid, s in sessions.items():
+        if sid in ed_rows:
+            ed_by_task.update(join_ed_arms(ed_rows[sid], s["tasks"]))
     order = sorted(sessions, key=lambda s: (sessions[s]["start"] or 0.0, s))
     prev = read_manifest(home) or {}
     frozen = prev.get("split_bounds") if isinstance(prev.get("split_bounds"), dict) else None
@@ -594,7 +650,9 @@ def build(home=None, user_home=None, telemetry=None, log=None, embed_fn="auto",
                               "t1": max(tss) if tss else None, "steps": len(main),
                               "sub_steps": len(subs), "agents": len(t["subs"]),
                               "outcome": oc, "outcome_src": osrc, "split": split_of[sid],
-                              "task_type": t["task_type"], "workflow": wf})
+                              "task_type": t["task_type"], "workflow": wf,
+                              "ed_arm": ed_by_task.get(t["task"], (None, None))[0],
+                              "ed_tok": ed_by_task.get(t["task"], (None, None))[1]})
 
     L._write(out_dir / "steps.jsonl", steps)
     L._write(out_dir / "tasks.jsonl", task_rows)
@@ -633,6 +691,7 @@ def manifest(steps, task_rows, sessions, linked, unlinked, mstat, st, split_of) 
     oc = Counter(t["outcome_src"] for t in task_rows)
     tt = Counter(t["task_type"] for t in task_rows)
     wf = Counter(t["workflow"] for t in task_rows)
+    ed = Counter(t.get("ed_arm") for t in task_rows)
     return {"schema": SCHEMA, "built_at": _iso(time.time()), "git_sha": _git_sha(),
             "counts": {"steps": len(steps), "tasks": len(task_rows), "sessions": len(sessions),
                        "subagents": len(linked), "subagents_unlinked": unlinked,
@@ -652,6 +711,7 @@ def manifest(steps, task_rows, sessions, linked, unlinked, mstat, st, split_of) 
             "task_types": {**{k: tt.get(k, 0) for k in TASK_TYPES}, "null": tt.get(None, 0)},
             "workflows": {"W0": wf.get("W0", 0), "W2": wf.get("W2", 0),
                           **{k: v for k, v in sorted(wf.items()) if k not in ("W0", "W2")}},
+            "ed_arms": {"W0": ed.get("W0", 0), "W2": ed.get("W2", 0), "none": ed.get(None, 0)},
             "model_source": {k: mstat.get(k, 0) for k in ("telemetry", "transcript", "none")},
             "read_errors": {"malformed_lines": st.malformed, "unreadable_files": st.unreadable}}
 

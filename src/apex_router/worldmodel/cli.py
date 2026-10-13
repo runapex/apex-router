@@ -291,14 +291,33 @@ def cmd_snapshot(argv: list[str]) -> int:
     return 0
 
 
-COMMANDS.update({"build": cmd_build, "stats": cmd_stats, "snapshot": cmd_snapshot})
+def cmd_ed(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="apex-router worldmodel ed",
+                                 description="Experiment E-D readout: W0 vs W2 per task type, "
+                                             "intention-to-treat, token-matched (A_e).")
+    ap.add_argument("--home", default=None)
+    ap.add_argument("--min-n", type=int, default=30, help="tasks per arm before a verdict (default 30)")
+    ap.add_argument("--min-sessions", type=int, default=10,
+                    help="sessions in a group before a verdict (default 10; the bootstrap resamples sessions)")
+    ap.add_argument("--json", action="store_true", help="print the verdict card as JSON")
+    a = ap.parse_args(argv)
+    from . import ed as E
+    from . import steps as S
+    from .. import labels as L
+    tasks = L._read(S.data_home(a.home) / "tasks.jsonl")
+    card = E.readout(tasks, min_n=a.min_n, min_sessions=a.min_sessions)
+    print(E.to_json(card) if a.json else E.render(card))
+    return 0
+
+
+COMMANDS.update({"build": cmd_build, "stats": cmd_stats, "snapshot": cmd_snapshot, "ed": cmd_ed})
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         order = ["build", "stats", "snapshot", "baseline", "chains", "progress", "train", "probe",
-                 "evaluate", "curve"]
+                 "evaluate", "curve", "ed"]
         names = [c for c in order if c in COMMANDS] + sorted(set(COMMANDS) - set(order))
         print("usage: apex-router worldmodel {" + ",".join(names) + "} ...")
         return 0 if (not argv or argv[0] in ("-h", "--help")) else 2

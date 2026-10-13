@@ -4,6 +4,7 @@ import type { AgentSpawnInput, On, SessionMeasureInput, SessionStartInput, TurnS
 import type { Measure, ProfileStore } from '../types/index.d.ts'
 import { measureOf } from './band.tsx'
 import { welfordNew, welfordPush } from './core/stats.ts'
+import { noteEdTokens } from './ed.ts'
 import { asStats, type Stats } from './evidence.ts'
 import type { Host } from './host.ts'
 import { appendLines, ensureDir } from './io.ts'
@@ -143,6 +144,7 @@ export function noteStep(rt: Runtime, e: TurnStepInput, r: TurnStepResult, ttftM
   pushStat(rt.stats, `step|${tier}`, 'output', r.usage?.output_tokens)
   pushStat(rt.stats, `step|${tier}`, 'cache_read', r.usage?.cache_read_input_tokens)
   rt.statsDirty = true
+  if (r.usage !== null) noteEdTokens(rt, e.agentId, r.usage.input_tokens + r.usage.output_tokens + r.usage.cache_read_input_tokens + r.usage.cache_creation_input_tokens)
   if (e.agentId === undefined && r.usage !== null) {
     rt.cacheRead += r.usage.cache_read_input_tokens
     rt.stepFeatures.push([r.usage.cache_read_input_tokens, r.usage.output_tokens, ttftMs ?? stepMs, r.toolUses.length, stepMs])

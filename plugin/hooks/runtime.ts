@@ -12,6 +12,7 @@ import type {
   TokenBucket,
   Welford,
 } from '../types/index.d.ts'
+import { endEd, type EdState } from './ed.ts'
 import type { Host } from './host.ts'
 import { EMPTY_BACKEND, EMPTY_PROFILE_STORE } from './state.ts'
 
@@ -20,16 +21,18 @@ export type Options = {
   budgetUsd: number
   band: boolean
   backendDir: string
+  /** Experiment E-D: a randomised W0/W2 workflow arm per turn (ed.ts). */
+  ed: boolean
 }
 
-export const DEFAULTS: Options = { pane: 'command', budgetUsd: 0, band: true, backendDir: '~/.apex-router' }
+export const DEFAULTS: Options = { pane: 'command', budgetUsd: 0, band: true, backendDir: '~/.apex-router', ed: false }
 
 /** userConfig (§11) as typed options; anything malformed falls back to its default. */
 export function optionsOf(raw: PluginOptions): Options {
   const pane = raw.pane === 'auto' || raw.pane === 'off' ? raw.pane : 'command'
   const budget = typeof raw.budgetUsd === 'number' && Number.isFinite(raw.budgetUsd) && raw.budgetUsd > 0 ? raw.budgetUsd : 0
   const dir = typeof raw.backendDir === 'string' && raw.backendDir.trim() !== '' ? raw.backendDir.trim() : DEFAULTS.backendDir
-  return { pane, budgetUsd: budget, band: raw.band !== false, backendDir: dir }
+  return { pane, budgetUsd: budget, band: raw.band !== false, backendDir: dir, ed: raw.ed === true }
 }
 
 /** One minute of the live signals' raw counts. */
@@ -103,6 +106,12 @@ export type Runtime = {
   backend: BackendView
   /** When this session was identified (ms); 0 between a /clear or resume and its first turn. */
   startedAt: number
+  /** Experiment E-D (ed.ts): the open typed turn, turns submitted but not started, turns done but waiting on background subagents, subagent id -> its turn, and the typed-turn count. */
+  ed: EdState | null
+  edQueue: EdState[]
+  edClosing: EdState[]
+  edAgents: Map<string, EdState>
+  edTurns: number
 }
 
 export function newRuntime(options: Options): Runtime {
@@ -151,6 +160,11 @@ export function newRuntime(options: Options): Runtime {
     anomaly: null,
     backend: EMPTY_BACKEND,
     startedAt: 0,
+    ed: null,
+    edQueue: [],
+    edClosing: [],
+    edAgents: new Map(),
+    edTurns: 0,
   }
 }
 
@@ -216,6 +230,7 @@ export function endSession(rt: Runtime): void {
   rt.lastCostUsd = null
   rt.costAtStart = null
   rt.toastAt.delete('handoff')
+  endEd(rt)
 }
 
 /**
