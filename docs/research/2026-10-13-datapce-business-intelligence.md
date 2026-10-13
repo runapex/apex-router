@@ -240,3 +240,85 @@ Two assumptions whose failure flips this:
   evidence pack; send to three early-access security leads and one auditor with "would
   this pass; what would you pay"; cost $0–$200. Pass: ≥ 1 auditor says the matched-rule
   and cross-harness columns are needed, ≥ 1 lead names a price ≥ $2k.
+
+## Iteration 3 — 2026-10-13 04:11 PDT
+
+Research log unchanged since c694d57 (23:57 PDT). Search quota was exhausted (200/200), so
+everything below is a direct page fetch tonight; the fetch tool summarises, so quotes are
+short. Five cost pages (Vanta, Secureframe, Sprinto, A-LIGN, Thoropass) returned 404/500;
+AICPA's AI page did not render; Shared Assessments is a login wall. Marked UNCHECKED, not filled.
+
+### (a) Re-test of Iteration 2
+
+| # | claim | ruling | reason |
+|---|---|---|---|
+| 1 | Drata AI Agent Governance: LA, Anthropic-first, Trust Ladder, Chain of Custody | **KEPT** | still "Limited Availability" / "Apply for Early Access", built "with select enterprises across financial services, healthcare, and software"; only Anthropic named — no Claude Code, Codex, Copilot; no price, date or customer [MEASURED, drata.com/products/agent-governance]; blog index to 2026-10-08 has no launch post [MEASURED]. GA date ASSUMED unknown. "Only 11% of vendors can substantively prove an audit trail for AI agent decisions" is a vendor survey, method unseen [PLAUSIBLE]. |
+| 2 | AIUC-1 E015/E004 = dated recurring trigger | **KEPT; necessity REVISED down** | E015 (Mandatory, every 12 months) "should include" only input/output logging plus storage with retention — Datadog/Splunk settings pass; the agent record ("approval records with approver identity, timestamp, decision outcome", tool-call entries, tamper-evident hashing: E015.2/E015.4) is **"may include"** [MEASURED, standard.aiuc-1.com]. E004.1 accepts "approval logs from Jira/Linear/GitHub" [MEASURED]. The per-decision record is the strongest form, not a required one. |
+| 3 | AIUC-1 mechanics | **KEPT; market sized** | Schellman "first accredited auditor" (2026-02-03), Coalfire named; 48-h gap assessment, 1,000–5,000 red-team scenarios run by AIUC, quarterly retests, certificate 1 year, "50+ page" report, "4–8 weeks" [MEASURED, aiuc-1.com; Schellman 2026-04-29]. **Cost unpublished** on aiuc-1.com, aiuc.com, schellman.com [MEASURED absence]. Certified: 7 named (Cursor, Fin, ElevenLabs, Harvey, UiPath 2026-03-09, KPMG, Sierra 2026-09-17) + MSCI "adopted"; AIUC raised $55M [MEASURED]. Model 1b is a channel via Schellman/AIUC, not a market. |
+| 4 | Harness event lacks matched rule + policy version | **KEPT; one correction** | monitoring-usage still says "The event doesn't indicate which of these sources matched"; CHANGELOG to 2.1.296 has no matched-rule entry [MEASURED]. Correction: `managed_settings_resolved` (v2.1.274+) carries a SHA-256 digest of managed settings — a session-level **policy version exists**; the gap is the per-decision rule and the join [MEASURED]. |
+| 5 | A2: Enterprise + OTel cannot already satisfy the ask | **KEPT; sharpened** | Claude Enterprise Compliance API returns Claude Code transcripts (`tool_use`/`tool_result`), retained **6 years**, but they "show what Claude was asked to do and what it returned, not what happened on the device" — no decision, mode or rule [MEASURED, compliance-sessions]. Codex Compliance API: `conversation_message`/`codex_log`; "Policy API support does not change Compliance API event coverage" [MEASURED]. Copilot enterprise audit log: 18 `copilot.*` events, all seat/settings [MEASURED]. Cursor Enterprise audit logs exclude agent actions; those go via OTel "Action Recording" [MEASURED]. No vendor's compliance surface carries decision + why-permitted + policy version. |
+| 6–9 | Vanta waitlist; $2k–$8k slot; services $3.5k–$10k / $12k–$30k; regulatory triggers dropped | **KEPT** | Vanta still "Join the waitlist", no coding assistant named [MEASURED]; no new price comparables. |
+
+### (b) Demand side: is anyone paying for agent-governance evidence now?
+
+Plainly: thin. No job posting, RFP or audit program I could read names evidence of
+coding-agent permission decisions. What exists sits one level up.
+
+1. **ISACA Now, 2026-08-24** (Nik Kale): "What is the minimum evidence required to approve a production AI agent?"; logs must capture tool invocations and all write actions; "preserve evidence at each action boundary" [MEASURED]. ISACA Journal 2026 vol. 4, "Addressing Control Gaps in Agentic AI Governance" [MEASURED title]. The AI Audit Toolkit has no agent program [MEASURED].
+2. **AICPA**: no SOC 2 AI/agent guidance verified. UNCHECKED; A1 untested.
+3. **AIUC-1 Q4 (2026-10-08)**: the only standard text found naming "approval records with approver identity, timestamp, decision outcome" for agents (E015.2) [MEASURED]. Buyer: agent vendors; 7 certified.
+4. **UiPath, 2026-03-09**: >2,000 scenarios, quarterly re-evaluation, Schellman; no customer or procurement quote [MEASURED].
+5. **Cursor security page, 2026-08-25**: AIUC-1, ISO 42001, SOC 2 Type II; reports at trust.cursor.com [MEASURED]. Vendor-side proof; buyer demand inferred.
+6. **Procurement**: aiuc-1.com says Salesforce "integrated AIUC-1 into vendor assessments" [PLAUSIBLE, vendor claim]; the only procurement-side statement found.
+7. **CSA AICM v1.1, 2026-06-22**: 247 controls / 18 domains, AI-CAIQ for vendor evaluation, AIUC-1 mapping; STAR for AI Level 2 "Now Available" (ISO 42001 + Valid-AI-ted AI-CAIQ). "Agent" appears on neither page; no submission count [MEASURED]. SIG 2026: UNCHECKED.
+8. **Job postings** (LinkedIn, 2026-10-13; "AI-powered search", totals inflated): MetLife "AVP, Audit – Data, AI Risk, Gov & Tools" (3 h); AKASA "Director, Compliance & AI Governance" (2 d); Vanguard "AI Validation, Senior Specialist" ×2 (3 d); USAA "Director Internal Audit – Data, Information & AI Infrastructure" (3 d); Anthropic "Security Risk & Compliance, Agent Security" (1 w) [MEASURED]. Financial-services buyers hire AI-audit heads; none names coding-agent evidence.
+9. **Drata, 2026-08-14**: "71% responded that AI tools led to a failed audit or lapsed standard" — blog index only; post 404s [PLAUSIBLE].
+10. **Vanta customer stories**: Synthesia ISO 42001 "with a two-person team"; none mentions agents [MEASURED].
+11. **Service prices**: no consultancy publishes an "AI governance readiness" price. Anchors stay Strike Graph $4k–$8k/yr assessments, $2k–$8k/yr added framework (It-2); ISO 27001 audit $8k–$30k, surveillance $8k–$15k/yr [MEASURED, isms.online 2025-07-25]; Cobalt $3.5k.
+
+Verdict: demand for **AI-governance headcount** and **agent-vendor certification** is MEASURED;
+demand for **coding-agent decision evidence** is ASSUMED. The gap in vendors' compliance
+surfaces (row 5) is MEASURED, but a gap is not a budget line.
+
+### (c) What makes services-first obsolete within 6 months
+
+1. Drata GA with Claude Code + Codex sensors and an exportable Chain of Custody: the pack becomes a feature of a $20k+ ACV platform; services survive only as implementation help, which Drata partners already sell.
+2. Anthropic adds a matched-rule field to `tool_decision` and documents the join to the `managed_settings_resolved` digest: the single-harness normaliser becomes a jq script.
+3. Codex Compliance API gains approval events, or Copilot adds agent-action events: cross-harness normalisation becomes a SIEM join.
+4. AIUC-1 Q1-2027 (~2027-01-15 from the Jan 15 / Apr 15 / Jul 14 / Oct 8 cadence) moves E015.2 from "may" to "should": demand rises, but Drata is pre-mapped to AIUC-1.
+5. Vanta GA naming coding assistants.
+
+| cadence | page | watch for |
+|---|---|---|
+| weekly | https://drata.com/products/agent-governance ; https://drata.com/blog | LA badge gone; names beyond Anthropic; launch post |
+| weekly | https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md | `tool_decision` + rule/matched (now 2.1.296) |
+| monthly | https://code.claude.com/docs/en/monitoring-usage | "The event doesn't indicate which of these sources matched" |
+| monthly | https://platform.claude.com/docs/en/manage-claude/compliance-sessions | "not what happened on the device" |
+| monthly | https://learn.chatgpt.com/docs/enterprise/compliance-api ; https://learn.chatgpt.com/docs/changelog | approval/decision events (newest 2026-10-08) |
+| monthly | https://www.vanta.com/products/ai-governance | "Join the waitlist" gone |
+| monthly | https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/audit-log-events-for-your-enterprise ; https://cursor.com/docs/enterprise/compliance-and-monitoring | agent-action events |
+| ~2027-01-15 | https://www.aiuc-1.com/ ; https://standard.aiuc-1.com/accountability/log-model-activity | "Last Updated"; E015.2 should/may |
+| by 2026-12-31 | https://cloudsecurityalliance.org/star/ai | agent questions in AI-CAIQ |
+
+### (d) Revenue and recommendation
+
+12-month [ASSUMED]: Model 1 **$0–$30k** (was $0–$40k; gap confirmed, Drata window compressing);
+Model 1b **$0–$20k** (was $0–$30k; 7 vendors, E015.2 optional); Model 2 **$30k–$100k**
+(was $30k–$120k; no published readiness price, so sell at pentest tiers $3.5k / $10k / $20k,
+post-incident $12k–$30k); Model 3 **$0–$50k**, binary. Total **$30k–$150k** (was
+$30k–$190k); median ≈ $50k — most likely 2–4 paid readouts and no pack licences unless A1 passes.
+
+Recommendation: shape unchanged — services first, the cross-harness normaliser as the free
+instrument — but the demand evidence does not justify building the pack ahead of a paying
+customer. Build the normaliser (it is also the A2 test), sell readouts, treat A1 as the gate;
+2027-03-31 three-engagement gate stands.
+
+First five working days (Tue 2026-10-14 → Mon 10-20), ≈ 4.5 builder-days, cash ≤ $300:
+
+| day | step | cost | decision informed |
+|---|---|---|---|
+| 1 | A1 emails to Prescient, Johanson, Schellman, A-LIGN, Sensiba + ISACA author Kale: "in audits closed this year, did you request evidence for AI-coding-tool changes under CC8.1?" | $0, 2 h | Market C has a 2026 trigger (pass ≥ 2/5 yes with a specific request) |
+| 1 | apply to Drata early access as a prospect; ask for the Chain of Custody schema and GA date | $0, 1 h | whether Model 1 has a 6-month window |
+| 2–3 | normaliser v0: OTel `tool_decision` + `managed_settings_resolved` digest + plugin ledger → one JSONL record with `matched_rule` reconstructed by local replay of the resolved settings → one-page CC8.1/E015.2 pack from own data | $0, 2 d | A2; whether the matched rule can be reconstructed locally at all |
+| 4 | pack to 3 early-access leads + 1 auditor hour: "would this pass; what would you pay" | $0–$300, ½ d | price slot $2k–$8k vs $0 |
+| 5 | readout offer at $3.5k / $10k / $20k to the datapce.com list; count replies 2 weeks | $0, ½ d | first Model 2 booking by 2026-11-30, the earliest read on the 2027-03-31 gate |
