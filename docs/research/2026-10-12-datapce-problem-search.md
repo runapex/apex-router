@@ -428,3 +428,61 @@ Reading, with the weakening it implies:
   policy nearest). This is the clause to build on, and it is cheap for a vendor to copy
   (show resolved targets before confirmation is a UI change). Defensibility must come from
   the data side (evidence, proposals, replay), not the predicate alone.
+
+### R3-a: adversarial refutation of the round-2 statement (fresh heavy-tier reviewer) — verdict WEAKENED, two clauses REFUTED
+
+Refuted, and re-checked by me on the official docs 2026-10-12 [MEASURED]:
+- "No shipped rule language can express a resolved-path predicate." Claude Code defines
+  *critical paths* (root, home, drive roots, cwd and parents, `rm -rf "$VAR"/*`) and
+  "`rm` and `rmdir` removals targeting a critical path, which no allow rule or `PreToolUse`
+  hook `"allow"` approves" (permission-modes.md:41). It also traces paths with a shell
+  parser ("a command the shell parser can't trace … prompts the same way", :45), blocks
+  reads outside working directories (`blockReadsOutsideWorkingDirectories`, v2.1.257+),
+  and auto mode blocks instance-metadata credential reads, reverse shells, host
+  credentials and sibling-container scans by default (:415–422). AGT's Rego backend can
+  express `startswith` on a path. The predicate gap is narrower than claimed and the
+  vendor is iterating on it fast.
+- "Nobody learns from decisions." Codex Smart approvals propose a `prefix_rule` during
+  escalation; Claude Code's built-in `/fewer-permission-prompts` mines the last 50
+  transcripts and proposes an allowlist for human approval. Both learn *allow* rules only.
+- "Seven of nine incidents" → about four are path predicates (1, 3, 5, 7), three are
+  credential/scope failures (2, 8, 9) where credential scoping is the simpler fix, two are
+  not catchable pre-call (4, 6). Adversa's own conclusion is layered defence, not a rule
+  language.
+- Demand: #25972 is one user, closed stale. Aembit and Rein sell enterprise agent
+  identity/runtime security, not developer-harness policy; not comparable buyers. Gartner's
+  guardian-agent guide recommends controls "independent of AI agent platforms", which
+  favours a vendor product, not a local plugin.
+- Capturability: a solo plugin competes with AGT (free, Microsoft) and vendor-native
+  managed deny/hard_deny on trust and on being the enforcement point.
+
+Surviving kernel per the reviewer: no harness learns *deny* rules from classifier denials
+or outcomes, and none records per-decision evidence locally. Reviewer's alternative: the
+uncontested gap is **post hoc** — Anthropic's own auto-mode numbers (0.4 % false positive,
+17 % false negative, per its engineering post [PLAUSIBLE until read]); AGT discussion #276
+(decisions not sealed, portable evidence missing); sequence-level risk that per-call gates
+cannot see; "log commands not just outputs". Use the proxy telemetry, the outcome-label
+store and the statistical gates to measure which classifier/sandbox/rule decisions were
+wrong, and emit evidence: the Evidence leg of datapce, not the Policy leg.
+
+### Round 3 ruling (pivot)
+
+Ruling: drop G2 (pre-call computed predicates) as the wedge; the vendor already ships the
+core predicates and is adding more per release. Pivot the candidate to the Evidence leg:
+**decision-quality measurement and policy proposals for harness permission systems** —
+consume the decisions the harnesses already emit (Claude Code OTel `tool_decision`,
+hooks, Codex logs), join outcomes (datapce's existing label machinery), compute error
+rates with confidence (pce-core), propose rule diffs in the vendor's own formats
+(managed `permissions.deny`, `autoMode.hard_deny`/`soft_deny`, Codex `execpolicy`/prefix
+rules, Copilot managed permissions), a human approves, the effect is measured. The
+enforcement point stays with the vendor; datapce owns the data and the computation.
+This is literally "data + policy computation engine, hybrid authored".
+Advisor round: pending (one fresh heavy-tier read-only advisor on this ruling after the
+R4 facts land). Cost if wrong: a night of research; reversal: none needed.
+
+## Round 4 — stress the pivot
+
+Probes: (a) what the harnesses export per decision (OTel fields; any first-party org
+analytics on decisions); (b) who already measures decision quality post hoc
+(observability vendors, Anthropic's own post, Codex Guardian); (c) advisor round on the
+pivot; (d) refutation of statement v3.
