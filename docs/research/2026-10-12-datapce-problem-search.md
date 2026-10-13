@@ -337,3 +337,16 @@ round 2:
 Round 3: (1) adversarial refutation of this statement by a fresh heavy-tier advisor;
 (2) positioning variants (standalone plugin vs layer above AGT); (3) Anthropic-builds-it
 risk; (4) buyer and price.
+
+### R2-e: local feasibility for G2 (read 2026-10-12) [MEASURED]
+
+- The datapce plugin uses the function-hook module API (`hooks/register.ts`,
+  `on('tool.call', { tool: 'Bash' }, …)`). `hooks/router.ts:269` already consumes a `deny`
+  result on a `tool.call` handler, so the API can block. `hooks/observe.ts:346` states the
+  current contract: "never deny, never rewrite (§10)". Turning G2 on is a product decision
+  to amend §10, not a platform gap.
+- No shell parser on the machine (`shfmt`, `bashlex` absent); a resolution predicate needs
+  a vetted parser or a conservative tokenizer (dependency-vetting applies).
+- The plugin never records command text (§4), so the proposal engine (G1) would have to
+  work on *derived features* (resolved path classes, boundary relations, tool, exit code),
+  which is also the privacy-preserving design.
