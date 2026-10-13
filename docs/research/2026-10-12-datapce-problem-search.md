@@ -486,3 +486,63 @@ Probes: (a) what the harnesses export per decision (OTel fields; any first-party
 analytics on decisions); (b) who already measures decision quality post hoc
 (observability vendors, Anthropic's own post, Codex Guardian); (c) advisor round on the
 pivot; (d) refutation of statement v3.
+
+### R4-b: who measures decision quality post hoc (agent; Anthropic and OpenAI posts fetched [MEASURED], vendor dashboards via search summaries)
+
+Answer: an open gap with the ingredients served. No vendor or OSS joins auto-mode decisions
+to outcomes or reports an org-level false-negative/false-positive rate; none proposes
+deny rules from incidents.
+
+- Anthropic, "How we built Claude Code auto mode" [MEASURED, fetched]: full pipeline
+  0.4 % FPR on real traffic (n = 10,000); **17 % FNR on real overeager actions (n = 52,
+  curated)**; 5.7 % FNR on synthetic exfiltration (n = 1,000). "The honest number." Most
+  misses: the classifier saw the danger but misjudged whether consent covered the action.
+  Nothing on per-org measurement, audit, or learning from customer data; eval data was
+  employee traffic plus an internal incident log. Ask: "tell us when auto mode gets
+  things wrong".
+- Independent: arXiv 2604.04978v2 (2026-04-28): **81.0 % end-to-end FNR (CI 73.8–87.4)**
+  and 19.8 % FPR on 253 deliberately ambiguous scope-escalation actions (Sonnet 4.6);
+  36.8 % of actions were Edit/Write calls the classifier never sees. Code public.
+- Auto mode is the default on Team and Enterprise since 2026-08-14 (R3-b).
+- OTel `tool_decision` event: tool_name, decision accept|reject, `source`, `tool_use_id`,
+  `prompt.id`; classifier verdicts fall under `source: "config"` with no reason field;
+  `tool_result` shares `tool_use_id`; beta trace spans carry `success`/`error_class`;
+  rejected calls produce no tool_result. Outcome joins are possible. [MEASURED per agent]
+- Dashboards: Datadog Agent Console Claude Code dashboard shows accepts vs rejects and
+  DORA-style change-failure for AI vs non-AI work (org stability, not per-decision
+  quality); Grafana community dashboards show decisions by tool/source (counts, edit
+  tools only). [MEASURED via summaries]
+- Proposers: Nomos `--replay-transcripts --suggest` proposes allow rules from approved
+  prompts, no deny, no outcomes; deny-probe is a static bypass check of permissions.deny;
+  built-in `claude auto-mode critique` / `config` and the local "Recently denied" tab.
+  A 90-day log grep over 2,205 sessions found 19 classifier stops in 7,266 operations
+  (0.26 %) — blocks only, no FNR. Backslash: logged blocks are "denials issued, not
+  denials that held" because agents reroute through other tools. [MEASURED via summaries]
+- OpenAI Codex auto-review [MEASURED, fetched]: 99.1 % approval on real escalations,
+  synthetic recall 90.3 % overeagerness; no FPR/FNR, no org-level reporting, no customer
+  loop.
+- Public asks: claude-code #95370 (classifier denies authorised security work, verdicts
+  inconsistent across identical actions), #83611 (allow-listed tool denied by classifier).
+  No HN/Reddit/X thread asking for a decision-quality dashboard found.
+
+Implications recorded by the agent and adopted: FN ground truth must come from our own
+labels (reverts, git history, destructive-op detection, session failure) joined by
+tool_use_id; FP proxies are deny → user retry/approve or the same action allowed later;
+the unclassified Edit/Write lane needs its own coverage; compare to 17 % only with the
+n = 52 caveat; proposals ship as `permissions.deny` (hard) and `autoMode.hard_deny` /
+`soft_deny`.
+
+### Statement v3 (after rounds 3–4)
+
+> Since 2026-08-14 a classifier approves most tool calls for every Team and Enterprise
+> Claude Code org by default; Codex, Copilot and Cursor ship the same pattern. The
+> vendor's own miss rate is 17 % on its curated overeager set and an independent study
+> measured 81 % on ambiguous scope escalations; the vendor exposes decisions
+> (`tool_decision`) but no reasons, no outcomes, and no per-org accuracy. No org can
+> answer "how often does auto-approval let a bad action through here, and which rules
+> would have stopped it" — the question a platform lead must answer before, and an auditor
+> after, an incident. datapce joins the decisions the harnesses already export to
+> outcome labels, computes per-org error rates with confidence, proposes deny/allow rule
+> diffs in the vendor's own formats with the evidence that justifies each, and measures
+> the effect after a human ships them. Enforcement stays with the vendor; the data and
+> the computation are the product.
