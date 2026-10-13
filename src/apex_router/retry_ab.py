@@ -28,7 +28,8 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from .core.stats import wilson_ci
+from .core import verdict as _verdict_card
+from .core.stats import newcombe_diff, wilson_ci  # noqa: F401  (newcombe_diff re-exported)
 
 MIN_N = 30
 RATE_DAYS = 7.0  # window for the retried-requests/day planning rate
@@ -77,30 +78,6 @@ def _arm_stats(rows: list) -> dict:
             "mean_backoff_ms": sum(waits) / n if n else None, "propensities": props}
 
 
-def newcombe_diff(k1: int, n1: int, k0: int, n0: int, z: float = 1.96):
-    """(p1 - p0, lo, hi): Newcombe's hybrid score interval (method 10) for a difference of two
-    independent proportions. None fields when either arm is empty."""
-    if n1 <= 0 or n0 <= 0:
-        return None, None, None
-    p1, p0 = k1 / n1, k0 / n0
-    l1, u1 = wilson_ci(k1, n1, z)
-    l0, u0 = wilson_ci(k0, n0, z)
-    d = p1 - p0
-    lo = d - math.sqrt((p1 - l1) ** 2 + (u0 - p0) ** 2)
-    hi = d + math.sqrt((u1 - p1) ** 2 + (p0 - l0) ** 2)
-    return d, lo, hi
-
-
-def _verdict(a: dict, b: dict, lo, hi, min_n: int) -> str:
-    if a["n"] < min_n or b["n"] < min_n:
-        return "INCONCLUSIVE"
-    if lo is not None and lo > 0:
-        return "better"
-    if hi is not None and hi < 0:
-        return "worse"
-    return "no detectable difference"
-
-
 def mde(p0: float, n: int, z_a: float = 1.96, z_b: float = 0.84) -> float | None:
     """Minimum detectable difference (two-sided 5%, 80% power) for two arms of n each around a base
     rate p0, by the normal approximation — a planning number, not a test."""
@@ -134,15 +111,18 @@ def report(telemetry: Path | None = None, since_days: float | None = None,
 
     arms = {a: _arm_stats(ab[a]) for a in sorted(ab, key=lambda x: (
         _ARMS_ORDER.index(x) if x in _ARMS_ORDER else 9, x))}
-    comparisons = []
+    comparisons, contrasts = [], []
     base = arms.get("immediate")
     for name, st in arms.items():
         if name == "immediate" or base is None:
             continue
         out = {"arm": name, "vs": "immediate"}
         for metric, k in (("recovered", "recovered"), ("clean", "clean")):
-            d, lo, hi = newcombe_diff(st[k], st["n"], base[k], base["n"])
-            out[metric] = {"diff": d, "ci": (lo, hi), "verdict": _verdict(st, base, lo, hi, min_n)}
+            c = _verdict_card.proportion_contrast(f"{name} vs immediate ({metric})", name, "immediate",
+                                                  st[k], st["n"], base[k], base["n"],
+                                                  metric=f"p_{metric}", min_n=min_n)
+            contrasts.append(c)
+            out[metric] = {"diff": c.estimate, "ci": c.ci, "verdict": c.status}
         comparisons.append(out)
 
     # Planning context: how often a request retries at all, and the pre-A/B recovery rate.
@@ -161,13 +141,19 @@ def report(telemetry: Path | None = None, since_days: float | None = None,
     ns = [s["n"] for s in arms.values()] + [0] * (k_arms - len(arms))  # an unseen arm has 0 rows
     # retries split evenly over the arms, so the thinnest arm sets the remaining traffic needed
     need = max(0, min_n - min(ns)) * k_arms
+    primary = contrasts[0] if contrasts else None   # first arm vs immediate, recovered: the headline
+    card = _verdict_card.Verdict(
+        question="does a non-immediate retry action recover more transport retries than retrying at once?",
+        incumbent="immediate", decision=_verdict_card.decide("immediate", primary=primary),
+        arms={a: {k: v for k, v in s.items() if k != "propensities"} for a, s in arms.items()},
+        contrasts=contrasts, meta={"min_n": min_n, "since_days": since_days, "source": str(tel)})
     return {
+        "card": card.to_dict(),
         "source": {"telemetry": str(tel), "since_days": since_days, "requests": len(rows)},
         "min_n": min_n,
         "arms": arms,
         "comparisons": comparisons,
-        "verdict": ("INCONCLUSIVE" if not comparisons
-                    else comparisons[0]["recovered"]["verdict"]),
+        "verdict": primary.status if primary else "INCONCLUSIVE",
         "fixed_policy": {a: _arm_stats(v) for a, v in sorted(fixed.items())},
         "pre_v11_retried": hist,
         "retried_per_day": per_day,

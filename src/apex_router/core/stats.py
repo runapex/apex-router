@@ -1,7 +1,7 @@
 """pce-core stats — the one copy of the numeric primitives (stdlib only).
 
 Moved here unchanged from apex_router.stats (which re-exports them): wilson_ci,
-benjamini_hochberg, paired_bootstrap_ci, paired_bootstrap_pvalue.
+benjamini_hochberg, paired_bootstrap_ci, paired_bootstrap_pvalue; newcombe_diff (from retry_ab).
 New: Welford running moments (scalar and covariance), EWMA (float and Q16 fixed point), and the
 one nearest-rank percentile. plugin/hooks/core/stats.ts mirrors the in-engine subset.
 """
@@ -68,6 +68,20 @@ def benjamini_hochberg(pvalues: List[float], alpha: float = 0.05) -> List[bool]:
         result[original_index] = True
     
     return result
+
+
+def newcombe_diff(k1: int, n1: int, k0: int, n0: int, z: float = 1.96):
+    """(p1 - p0, lo, hi): Newcombe's hybrid score interval (method 10) for a difference of two
+    independent proportions. None fields when either arm is empty. (Moved from retry_ab.)"""
+    if n1 <= 0 or n0 <= 0:
+        return None, None, None
+    p1, p0 = k1 / n1, k0 / n0
+    l1, u1 = wilson_ci(k1, n1, z)
+    l0, u0 = wilson_ci(k0, n0, z)
+    d = p1 - p0
+    lo = d - math.sqrt((p1 - l1) ** 2 + (u0 - p0) ** 2)
+    hi = d + math.sqrt((u1 - p1) ** 2 + (p0 - l0) ** 2)
+    return d, lo, hi
 
 
 def paired_bootstrap_ci(deltas: List[float], n_boot: int = 2000,
