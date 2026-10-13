@@ -1305,3 +1305,12 @@ closes α and half of v4 exists but has essentially no adoption, so "served" mea
 capability is available at $0", not "the market has chosen it". That does not revive α
 (the vendor still owns the semantics) but it is a datum that demand for ruleset replay
 is thin on the OSS side too.
+
+### Post-report verification (23:56 PDT): arXiv 2604.04978 full text read [MEASURED]
+
+Judge: Claude Opus; 50 actions human-verified; "44/50 cases (88%), yielding a Cohen's
+κ=0.82" — VERIFIED (the fact-check's NOT FOUND was abstract-only). FPR: "22/(22+89) =
+19.8%" over all 253 actions and "rises to 31.9%" on classifier-evaluated actions — so
+**both figures are in the paper**; R7-check's "CONTRADICTED" is withdrawn and R4-b's
+19.8 % stands with the scope "all actions". Edit/Write: 93 of 253 (36.8 %) routed through
+Tier 2, "not evaluated by the classifier", 100 % FNR on those by construction — VERIFIED.
