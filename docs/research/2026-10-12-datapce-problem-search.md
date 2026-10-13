@@ -1101,3 +1101,31 @@ window rates, not merely reproduce the log); the sequential-gate library is the 
 Owner decisions: whether a feature-sized direction is acceptable as the datapce thesis
 for the next cycle, and whether to run the 14-day spike on live telemetry (no traffic
 change needed; read-only over telemetry.jsonl).
+
+### R7-β-validity: pre-running the spike's kill test on existing telemetry (`/tmp/v6-capacity/{selfcheck,trigger}.py`) [MEASURED]
+
+Day level (the reviewer's criterion as written): 23 opus days 2026-08-18 → 2026-10-12;
+16 held-out days with ≥ 50 requests; predicting each day's opus 429 rate from the
+trailing 7 days (bootstrap 90 % CI) covered the realised rate on **3 of 16 days (19 %)**.
+429s are regime events: 0 % on most days, 30 % on 2026-10-04, 8.2 % today. A replay that
+predicts *daily* 429 counts from history would fail the criterion before the spike
+starts.
+
+Trigger level (the policy's actual horizon): trailing-15-min opus 429 rate → next-5-min
+429 rate, minute-stepped windows (overlapping, so request counts are weighted, not
+distinct):
+
+| trailing 15-min rate | next-5-min 429 rate | weighted n |
+|---|---|---|
+| 0–2 % | 0.008 | 98,442 |
+| 2–10 % | 0.260 | 3,790 |
+| 10–20 % | 0.155 | 3,789 |
+| > 20 % | 0.389 | 7,008 |
+
+Reading: the 15-minute window is a strong intra-day predictor (0.8 % quiet vs 26–39 %
+elevated), so same-arm reactive policies (shed / wait / retry-later) have a valid
+replay basis at their own horizon, while day-level forecasting does not. The spike's
+self-consistency criterion must therefore be stated at the trigger horizon: for each
+held-out day, replay the policy minute by minute and compare predicted vs realised 429
+counts *within elevated windows*, with the bootstrap CI over requests in those windows.
+Day-level totals stay as a reported, not gating, number.
