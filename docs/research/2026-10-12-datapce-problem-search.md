@@ -1149,3 +1149,45 @@ Ruling: adopt (a) with the tightening, and with the horizon correction from
 R7-β-validity (criterion stated at the trigger horizon, elevated windows only; day-level
 totals reported, not gating) — advisor AGREE — cost if wrong: two weeks of read-only
 analysis — reversal: stop the spike.
+
+### R7-spike0: the tightened criterion run on existing data (`/tmp/v6-capacity/spike0.py`) [MEASURED; INCONCLUSIVE at n = 2 held-out days]
+
+Split 23 opus days 60/40: 13 train, 10 held-out. Learned on train days: trailing-15-min
+bucket → next-5-min 429 rate with bootstrap 90 % CI (0–2 %: 0.016; 2–10 %: 0.064;
+10–20 %: 0.160; > 20 %: 0.247). On held-out days, for every elevated minute (trailing
+> 10 %, n ≥ 10) predict the next-5-min 429 count by (A) the replay model (train bucket
+rate × n) and (B) naive persistence (trailing rate × n, binomial CI); sum per day.
+
+| held-out day | elevated windows | realised 429s | A replay-model (90 % CI) | B naive (90 % CI) |
+|---|---|---|---|---|
+| 2026-10-04 | 102 | 1,668 | 706 (592–830) | 1,663 (1,489–1,837) |
+| 2026-10-12 | 66 | 426 | 419 (319–525) | 432 (297–567) |
+
+Coverage A 1/2, B 2/2; summed absolute error A 969, B 11. Only two held-out days had
+elevated windows at all.
+
+Reading (labelled INCONCLUSIVE for n, but the direction is clear): on this stream, a
+replay model fitted on history does **not** beat carrying the trailing rate forward; the
+2026-10-04 storm was a regime the train buckets had never seen at that intensity. By the
+advisor's tightening, β's distinctive claim — that replaying history yields policy
+proposals a persistence rule could not — is not supported by existing data. A same-arm
+reactive policy's benefit (R7-β-local: 1,098 → ~180 429s) is real but is computed from
+persistence; "a cron job could do it". The 14-day spike would need the storm regime to
+recur to change this picture; the secondary kill (an external multi-key user) is now the
+decisive one.
+
+### R7-lib: sequential-gate library fallback (agent; incumbents mostly [MEASURED] via pages, some UNCHECKED)
+
+Experimentation stats engines are closed and being absorbed (Statsig → OpenAI 2025-09-02
+then Amplitude 2026-05-05; Eppo → Datadog ~$220M; Optimizely proprietary). Open
+statistics-only: Spotify confidence (pandas/statsmodels), zalando/expan, confseq (MIT,
+last release 2023-01, C++ extension, inactive). Drift: evidently (~8k stars, heavy),
+nannyml, alibi-detect (now BSL 1.1), river. Gates without statistics: MLflow
+`MetricThreshold` (point thresholds, no CI/FDR/evidence card); Flagger `thresholdRange`
+and Argo Rollouts `successCondition`/Kayenta (Mann-Whitney, pass 90 / marginal 75),
+Kubernetes-bound. SLO tools (Sloth, Pyrra) are Prometheus alert generators. slo-guard: 2
+stars. Verdict: partially served; no stdlib-only, stack-agnostic layer that is both the
+statistics and the gate with an evidence card. Form: a library or spec/CLI, not a
+product; adoption path via MLflow, Argo/Flagger confirm-promotion webhooks and a CI exit
+code; value in pre-registration discipline and Python/TypeScript parity, not new
+statistics; risk: niche, users accept a hand-rolled threshold.
