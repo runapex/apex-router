@@ -37,8 +37,9 @@ export type EdState = {
   fanout: boolean
   tokMain: number
   tokSub: number
-  /** Subagents spawned in this turn (ids), and how many have not completed. */
+  /** Agents attributed to this turn (ids): those seen at agent.spawn (`spawned`, waited for) and any bound by a step; `open` = spawned ones not yet completed. */
   agents: Set<string>
+  spawned: Set<string>
   open: number
   /** The main turn completed. */
   done: boolean
@@ -97,7 +98,7 @@ export function submitPrompt(rt: Runtime, e: SubmitLike, now: number): readonly 
   rt.edTurns += 1
   const ed: EdState = {
     turn: rt.edTurns, arm: edArmOf(rt.sessionId, rt.edTurns), key: keyOf(e.text), ts: now, tsStart: null, turnId: null, applied: true,
-    fanout: false, tokMain: 0, tokSub: 0, agents: new Set(), open: 0, done: false, tsEnd: null, aborted: false, durationMs: null,
+    fanout: false, tokMain: 0, tokSub: 0, agents: new Set(), spawned: new Set(), open: 0, done: false, tsEnd: null, aborted: false, durationMs: null,
   }
   rt.edQueue.push(ed)
   if (rt.edQueue.length > MAX_QUEUE) rt.edQueue.splice(0, rt.edQueue.length - MAX_QUEUE)
@@ -142,16 +143,18 @@ export function noteCompose(rt: Runtime, e: Pick<PromptComposeInput, 'tools'>): 
 /** agent.spawn result: the subagent belongs to the open turn; its steps and completion are attributed to it, however late. */
 export function noteEdSpawn(rt: Runtime, agentId: string | null | undefined): void {
   const ed = rt.ed
-  if (ed === null || ed.done || typeof agentId !== 'string' || agentId === '') return
+  if (ed === null || ed.done || typeof agentId !== 'string' || agentId === '' || ed.spawned.has(agentId)) return
   ed.agents.add(agentId)
+  ed.spawned.add(agentId)
   ed.open += 1
   rt.edAgents.set(agentId, ed)
 }
 
 /**
  * turn.step usage: the main agent's steps count toward the open turn; a subagent's toward the turn
- * that spawned it. A subagent nobody spawned through agent.spawn (a Workflow agent) is bound to the
- * open turn by its first step.
+ * that spawned it. An agent nobody spawned through agent.spawn (a Workflow agent, an engine fork)
+ * that steps while a typed turn is open has its tokens counted for that turn but never holds the
+ * row open: only agents seen at agent.spawn are waited for.
  */
 export function noteEdTokens(rt: Runtime, agentId: string | undefined, tokens: number): void {
   if (agentId === undefined) {
@@ -162,8 +165,9 @@ export function noteEdTokens(rt: Runtime, agentId: string | undefined, tokens: n
   let ed = rt.edAgents.get(agentId)
   if (ed === undefined) {
     if (rt.ed === null || rt.ed.done || agentId === '') return
-    noteEdSpawn(rt, agentId)
     ed = rt.ed
+    ed.agents.add(agentId)
+    rt.edAgents.set(agentId, ed)
   }
   ed.tokSub += tokens
 }
@@ -212,6 +216,7 @@ export async function completeEd(host: Host, rt: Runtime, e: Pick<TurnCompleteIn
     const ed = rt.edAgents.get(e.agentId)
     if (ed === undefined) return
     rt.edAgents.delete(e.agentId)
+    if (!ed.spawned.has(e.agentId)) return // bound by a step, never waited for
     ed.open = Math.max(0, ed.open - 1)
     if (ed.done && ed.open === 0) {
       rt.edClosing = rt.edClosing.filter(x => x !== ed)

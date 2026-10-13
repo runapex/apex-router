@@ -16,8 +16,9 @@ next tag will carry.
   by queue order; a dropped prompt leaves no arm; the evidence experiment's holdout sessions get
   none). One row per turn to `<backendDir>/labels/ed_arms.jsonl` (ids, times, the arm, whether a
   fan-out tool was offered, main/subagent tokens from turn.step usage, subagents counted once,
-  background and Workflow agents attributed to the turn that ran them, rows held until the last
-  subagent completes or session end; never text). Advise-only. `worldmodel build`
+  background agents attributed to the turn that spawned them and waited for, Workflow agents and
+  engine forks counted but never waited for, rows held until the last spawned subagent completes
+  or session end; never text). Advise-only. `worldmodel build`
   joins the rows to tasks by session id and turn time (`ed_arm`, `ed_tok`; applied rows with a
   fan-out tool only; what ran stays in `workflow`), manifest `ed_arms`.
   `apex-router worldmodel ed [--min-n 30] [--json]`: intention-to-treat readout per task type on a

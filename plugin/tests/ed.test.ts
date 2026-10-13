@@ -109,11 +109,13 @@ describe('ed: arm assignment', () => {
     noteEdSpawn(rt, null)
     noteEdTokens(rt, undefined, 100)
     noteEdTokens(rt, 'agent-1', 40)
-    noteEdTokens(rt, 'wf-agent', 9) // a Workflow agent: no agent.spawn, bound by its first step
-    expect(rt.ed).toMatchObject({ tokMain: 100, tokSub: 49, open: 2 })
+    noteEdTokens(rt, 'wf-agent', 9) // a Workflow agent (or an engine fork): no agent.spawn, counted but never waited for
+    expect(rt.ed).toMatchObject({ tokMain: 100, tokSub: 49, open: 1 })
     expect([...rt.ed!.agents]).toEqual(['agent-1', 'wf-agent'])
+    expect([...rt.ed!.spawned]).toEqual(['agent-1'])
     const ed = rt.ed!
-    await completeEd(NO_HOST, rt, { turnId: 'wf-sub', agentId: 'wf-agent', isAborted: false, durationMs: 1 }, T0 + 1)
+    noteEdSpawn(rt, 'agent-1') // seen twice: counted once
+    expect(ed.open).toBe(1)
     await completeEd(NO_HOST, rt, { turnId: 't1', agentId: undefined, isAborted: false, durationMs: 5 }, T0 + 5)
     expect(rt.ed).toBeNull()
     expect(ed.done).toBe(true)
@@ -122,6 +124,10 @@ describe('ed: arm assignment', () => {
     noteEdTokens(rt, 'late-unknown', 5) // an unknown agent after the turn: nobody's
     expect(ed).toMatchObject({ tokMain: 100, tokSub: 52, open: 1 })
     expect(rt.edClosing).toEqual([ed])
+    // the unspawned agent's completion changes nothing; the spawned one's writes the row
+    await completeEd(NO_HOST, rt, { turnId: 'wf-sub', agentId: 'wf-agent', isAborted: false, durationMs: 1 }, T0 + 6)
+    expect(rt.edClosing).toEqual([ed])
+    expect(ed.open).toBe(1)
   })
 
   test('endSession forgets the open turn, the queue, the agents and the count', () => {
