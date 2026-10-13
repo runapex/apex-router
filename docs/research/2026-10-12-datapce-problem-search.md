@@ -1043,3 +1043,61 @@ token counts. Noted, not done tonight.
 Corrections applied to earlier sections by reference: R1-G/R4-b FPR for the independent
 study is 31.9 % (Tier-3), not 19.8 %; the "April 2026" spend-limit date is unsupported;
 the VentureBeat 20 % is a companion-piece figure.
+
+### R7-rank: adversarial ranking of α/β/γ (fresh reviewer)
+
+Correction first: the "73.8 % of AI config files never modified" figure (R6-γ) could not be
+sourced; MSR 2026 "Context Engineering for AI Agents in OSS" (arXiv 2510.21413) reports
+50 % of 155 AGENTS.md files unchanged after first commit, and a TOSEM study of 2,303
+"Agent READMEs" finds frequent small edits. Treat 73.8 % as unsourced.
+
+- **α**: already shipped free and vendor-adjacent — Nomos has transcript replay, a
+  1,526-command golden corpus whose CI fails "whenever a decision moves", a hash-chained
+  audit log and `--suggest` (PRs #80/#81). The vendor is closing the release-drift gap
+  itself (2.1.214 glob semantics documented; 2.1.267/282/284 managed settings fail closed;
+  2.1.89 PermissionDenied hook). Hooks cannot see classifier *allows*, so "vendor ground
+  truth" is partial. Verdict: a feature (a Nomos PR keyed by harness version + a CI job).
+  Price anchor $0.
+- **β**: "every request has an exactly observed outcome" holds only for the arm taken.
+  Replaying a policy that would have routed to a different key/provider/model is
+  off-policy evaluation of a logged bandit with no exploration — the Replay Gap point
+  again. Validity holds for **same-arm** decisions only: retry/backoff, wait, shed,
+  time-shifted, or downshift where both arms were interleaved in the same hour. (This
+  exactly names the ASSUMED step in R7-β-local: the shed arm's 429 rate was inherited from
+  fable's window.) The live pain (#96872) is subscription concurrency throttling, whose
+  only local lever is key/subscription rotation, ToS-exposed. Vendors enforce caps natively
+  (Anthropic Enterprise Spend Limits API, July 2026 per a third-party page); LiteLLM's bugs
+  are cache staleness, not missing capability; Ramp shadow mode free through 2026.
+  Verdict: a feature of the proxy the builder already runs; a product only if a multi-key
+  team (10+ engineers, mixed API + subscription) pays for receipts. Anchor $0 for solo.
+- **γ**: Jellyfish shipped this five days ago (skills metrics by team, cohorts tied to
+  rework and cycle time, 90M prompts / 150T tokens, same "early signals" disclaimer).
+  Power kills it: single-digit effects, heavy-tailed time-to-merge, 10–50 teams, monthly
+  model upgrades reset the baseline; needs org PR data a local-first builder lacks.
+  Verdict: nothing for this builder.
+
+**Ranking: β > α > γ.** β deserves a two-week spike only in its narrowed, honestly
+replayable form (same-arm policies) on the existing telemetry.
+
+Kill criterion offered (self-consistency): split 14 days into train / held-out; replay
+the deployed policy on held-out days; compare predicted vs realised daily 429 count and
+p95 wait; if realised values fall outside the replay's bootstrap 90 % CI on more than 3 of
+7 held-out days, the replay has no predictive validity and β dies, receipts and proposals
+with it. Secondary kill: no external multi-key proxy user willing to run it by day 14.
+
+Alternative outside the three excluded markets if β dies: package the stdlib stats core
+plus advise → enforce promotion gates as a standalone **sequential-gate library** for any
+logged decision stream (ML eval pipelines, SPC on nightly jobs) — "the one asset here
+with no vendor already shipping it for free".
+
+### Round 7 ruling (pending advisor)
+
+Proposed ruling: the night's verdict is that no candidate survived at product scale in
+the three markets scanned; β in same-arm form is the best-evidenced feature-sized
+direction and gets the two-week spike with the self-consistency kill criterion above
+(amended: the deployed policy is what generated the data, so the held-out test must
+predict a *time-shifted same-arm* variant — e.g. "retry after 5 min" — from train-day
+window rates, not merely reproduce the log); the sequential-gate library is the fallback.
+Owner decisions: whether a feature-sized direction is acceptable as the datapce thesis
+for the next cycle, and whether to run the 14-day spike on live telemetry (no traffic
+change needed; read-only over telemetry.jsonl).
