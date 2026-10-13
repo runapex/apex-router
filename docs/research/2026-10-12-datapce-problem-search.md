@@ -1191,3 +1191,75 @@ statistics and the gate with an evidence card. Form: a library or spec/CLI, not 
 product; adoption path via MLflow, Argo/Flagger confirm-promotion webhooks and a CI exit
 code; value in pre-registration discipline and Python/TypeScript parity, not new
 statistics; risk: niche, users accept a hand-rolled threshold.
+
+## Morning report (written 23:25 PDT 2026-10-12; the loop stays armed until 06:00 and will append only if something changes)
+
+**Branch**: `nightly/2026-10-12`, commits e6d83a5..37cb382 (27 commits, one file:
+this log). Nothing pushed. The rejected privacy-proxy note sits on `main`
+(3622006, 6509fae), committed before the loop started.
+
+**Verdict (honest)**: no candidate survived at product scale in the three markets the
+night could reach with this builder's assets. Ranked survivors:
+
+| rank | candidate | form | status | what it needs |
+|---|---|---|---|---|
+| 1 | β same-arm capacity-policy replay with receipts and gated proposals, in the proxy | feature of the existing proxy | STANDS as a feature; the pre-spike criterion on existing data went against the "replay beats persistence" claim (INCONCLUSIVE, n = 2 storm days) | an external multi-key user; a storm regime recurring during the 14 days |
+| 2 | α conformance + release-drift alarm for managed permission policies | feature / a Nomos PR | shipped free elsewhere; vendor closing the gap | nothing |
+| 3 | γ config-outcome attribution for coding-agent orgs | nothing for this builder | Jellyfish shipped the observational version 2026-10-07; low power | org PR data |
+| fallback | sequential-gate library (stats core + advise→enforce + evidence card) | OSS library / spec | partially served; no stdlib-only stats+gate layer found | adapters (MLflow, Argo/Flagger webhook, CI exit code) |
+
+**What the night established, with labels**
+- Agent-permission governance: every wedge (pre-call computed predicates, per-org miss
+  rate, ruleset dry-run + local judge) was WEAKENED or REFUTED by four fresh adversarial
+  reviewers; the load-bearing refutations were verified on official docs [MEASURED]:
+  critical-path blocking no hook can override, the 52 curated overeager actions, #39097
+  closed not-planned, Nomos replay + suggest at $0.
+- Lesson [ASSUMED, from the pattern]: do not build where the platform owner closes the
+  loop faster than a third party can measure it.
+- Local MEASURED facts worth keeping: 42.4 tool calls per active hour; a plausible
+  ruleset prompts 24×/hour (0.3 s replay); ornith:35b grades severity ≥ 7 in agreement
+  8/9 at 0.8 s (think off), 9B over-flags; proxy telemetry 112,680 requests, opus 429s
+  1,098 of 25,471; trailing-15-min 429 rate predicts next 5 min (0.8 % quiet vs 26–39 %
+  elevated) while day-level rates are unpredictable (3/16 coverage); a shed policy would
+  have cut opus 429s ≈ 1,098 → 180 at 11.5 % shed (cost side unpriced).
+- Fact-check of ten quoted numbers: 5 VERIFIED, 3 PARTLY (independent study FPR is 31.9 %
+  not 19.8 %; "April 2026" spend-limit date unsupported; VentureBeat 20 % is a companion
+  figure), the "73.8 % never modified" config statistic UNSOURCED (replace with MSR 2026:
+  50 % of 155 AGENTS.md unchanged).
+
+**Rulings (all lines, from the blocker log)**
+1. open nightly/2026-10-12 and commit research docs there — advisor n/a (user launch).
+2. pivot to the Evidence leg after v2 was weakened — advisor AGREE-conditional (later
+   superseded).
+3. serialize heavy calls under RED pressure (opus 43.8 % 429s) — advisor n/a.
+4. adopt pivot (a) with the advisor's two corrections — advisor AGREE-conditional.
+5. v3 method REFUTED (the 52); recombine into v4 — advisor: new round.
+6. v4 WEAKENED (fidelity, free incumbent); leave the permission cluster; scan γ — advisor
+   n/a (two refutations agree).
+7. round-7 ruling adopted (no product-scale survivor; β same-arm spike with naive-baseline
+   + trigger-horizon kill criterion; gate library fallback) — advisor AGREE.
+
+**CONTESTED / hard-limit items**: none contested. Hard limits respected: no push, no
+settings edits, no gate changes, no dependency installs; throwaway code only in /tmp.
+Pressure: RED for about an hour on opus; the run serialized heavy calls and used the
+GREEN family for reviewers (all reviewers were the same Claude family — a cross-family
+read is pending below).
+
+**Checks run**: handoff validation PASS; branch audit PASS (one file); local scripts ran
+to completion (replay 0.3 s, judge probes, telemetry replays) — MEASURED where stated;
+fact-check PARTIAL (3 corrections applied by reference); β pre-spike criterion
+INCONCLUSIVE (n = 2). No tests were run (no product code changed): N/A.
+
+**Handoff check**: handoff doc `~/.claude/handoffs/9cdb5f6e-….md` written and validated
+at 22:42; the owner overrode rotation ("resume in same session, don't break") at 22:45;
+no fresh session started; the cron safety net was re-created (87b0116f).
+
+**Decisions for the owner**
+1. Accept a feature-sized direction (β in the proxy) as the next-cycle thesis, or
+   reframe datapce as the engine (the sequential-gate library + evidence card) with the
+   proxy's capacity policy as its first consumer?
+2. Run the 14-day β spike (read-only over telemetry; kill: must beat persistence at the
+   trigger horizon AND find one external multi-key user by day 14)?
+3. Still pending from the previous handoff: E-D randomisation on live work; the
+   co-author trailer rule (this run followed the memory rule: none).
+4. Delete or keep the throwaway probes in /tmp (v4-replay, v4-judge, v6-capacity).
