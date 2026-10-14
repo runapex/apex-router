@@ -608,13 +608,17 @@ at most 400 characters, control and bidi characters stripped; ids, times and nam
 the text. A question stays open until your next line to that agent or to `*`. Every post or send
 rewrites the menu-bar adapter `~/.apex-router/adapters/mail.json` for the run last written to, so
 the widget shows open questions, unread lines and the last few messages, dollar amounts masked
-(see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)).
+(see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)). `mail digest --to ADDR`
+e-mails a plain-text digest (open questions, every agent's state, the lines since the last digest)
+through Mail.app on macOS, falling back to `/usr/sbin/sendmail`; it sends nothing when there is
+nothing new, so it is safe to put on a timer.
 
 ```sh
 apex-router mail inbox --follow                 # the latest run's conversation, live
 apex-router mail agents wf_123                  # per agent: state, last line, open questions, unread
 apex-router mail send wf_123 w-dist/reviewer "why did D-03 die?"
 apex-router mail send wf_123 '*' "all: the floor is 25k"
+apex-router mail digest --to you@example.com      # new lines since the last digest, via Mail.app (or sendmail)
 # agent side (in its prompt via `mail brief`)
 apex-router mail post wf_123 w-dist/reviewer "cycle 2: D-03 killed on K-PREREG" --kind status
 apex-router mail read wf_123 w-dist/reviewer   # unread owner lines, own then broadcast

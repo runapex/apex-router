@@ -45,7 +45,10 @@ next tag will carry.
   `__`, so the broadcast file and the `/`→`__` encoding cannot collide. Every post or send
   rewrites the menu-bar adapter `adapters/mail.json` (dollar amounts masked), so the SwiftBar
   widget shows the bus without a widget change. Delivery is checkpoint-based: an agent sees a
-  message at its next `mail read`. A fresh reviewer refuted the first cut (torn-line glue,
+  message at its next `mail read`. `mail digest [--to ADDR]`: a plain-text digest (open
+  questions, agent states, lines since the last digest) printed or e-mailed through Mail.app
+  (osascript; `/usr/sbin/sendmail` fallback), skipped when nothing is new. A fresh reviewer
+  refuted the first cut (torn-line glue,
   follow-loop re-prints, name collisions, duplicate ids, non-atomic cursor); each finding has a
   test.
 - Experiment E-D (pre-declared in `docs/research/2026-10-12-rsi-next-steps.md` §3), opt-in

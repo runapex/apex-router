@@ -231,3 +231,61 @@ def test_follow_prints_each_row_once_even_when_a_late_row_sorts_earlier(mdir, mo
     assert mail.main(["inbox", "f", "-n", "2", "--follow"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert [l.split(": ", 1)[1] for l in out] == ["s4", "s5", "late-but-earlier", "s6"]
+
+
+def test_digest_lists_questions_agents_and_only_new_lines_then_advances(mdir):
+    mail.post("r", "a", "started", kind="start", now=1.0)
+    mail.post("r", "a", "ruling on D-01?", kind="question", now=2.0)
+    d = mail.digest("r", advance=True)
+    assert d["new"] == 2 and d["questions"] == 1 and "OPEN QUESTIONS" in d["body"]
+    assert "a: ruling on D-01?" in d["body"] and "a [running] question: ruling on D-01?" in d["body"]
+    assert d["subject"] == "[apex-router mail] r: 2 new, 1 question open"
+    d = mail.digest("r")
+    assert d["new"] == 0 and "no new lines" in d["body"]
+    mail.send("r", "a", "no, keep it", now=3.0)
+    d = mail.digest("r")
+    assert d["new"] == 1 and d["questions"] == 0 and "→ a: no, keep it" in d["body"]
+    assert mail.digest("r", since_cursor=False)["new"] == 3
+    assert mail.digest("missing")["run"] is None
+
+
+def test_send_email_uses_mail_app_then_sendmail_and_validates_address(mdir):
+    calls = []
+
+    class R:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    def ok(argv, **kw):
+        calls.append((argv, kw.get("input")))
+        return R(0)
+    assert mail.send_email("x@example.com", 'sub "q"', "body\\line", runner=ok)
+    argv, script = calls[0]
+    assert argv[0] == "/usr/bin/osascript" and 'subject:"sub \\"q\\""' in script
+    assert 'content:"body\\\\line"' in script and 'address:"x@example.com"' in script
+
+    def osa_fails(argv, **kw):
+        calls.append((argv, kw.get("input")))
+        return R(1 if argv[0].endswith("osascript") else 0)
+    calls.clear()
+    assert mail.send_email("x@example.com", "s", "b", runner=osa_fails)
+    assert [c[0][0] for c in calls] == ["/usr/bin/osascript", "/usr/sbin/sendmail"]
+    assert "To: x@example.com\nSubject: s\n" in calls[1][1]
+    with pytest.raises(ValueError):
+        mail.send_email("not an address", "s", "b", runner=ok)
+    with pytest.raises(ValueError):
+        mail.send_email('a@b.com" & do shell script "x', "s", "b", runner=ok)
+
+
+def test_cli_digest_prints_and_sends(mdir, capsys, monkeypatch):
+    mail.post("r", "a", "hi", now=1.0)
+    assert mail.main(["digest", "r"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("[apex-router mail] r: 1 new") and "a [running] status: hi" in out
+    sent = []
+    monkeypatch.setattr(mail, "send_email", lambda to, s, b: sent.append((to, s)) or True)
+    assert mail.main(["digest", "r", "--to", "x@example.com"]) == 0
+    assert sent == [("x@example.com", "[apex-router mail] r: 1 new, 0 questions open")]
+    assert mail.main(["digest", "r", "--to", "x@example.com"]) == 0
+    assert "nothing new" in capsys.readouterr().out and len(sent) == 1
+    assert mail.main(["digest", "nope", "--to", "x@example.com"]) == 1

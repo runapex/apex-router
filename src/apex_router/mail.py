@@ -39,6 +39,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -340,6 +341,87 @@ def write_widget(run: str | None = None) -> bool:
     return True
 
 
+# ---------------------------------------------------------------- e-mail digest
+
+DIGEST_MAX = 60
+
+
+def digest(run: str | None = None, *, since_cursor: bool = True, advance: bool = False) -> dict:
+    """A plain-text digest of a run: per-agent state, open questions, and the conversation lines
+    not yet digested (``<run>/digest.cursor`` = count of ``inbox`` rows already sent; ``advance``
+    moves it). Returns {run, subject, body, new, questions, unread, agents}."""
+    run = run or latest_run()
+    if run is None or not _valid(run, "run") or not _run_dir(run).is_dir():
+        return {"run": None, "subject": "", "body": "", "new": 0, "questions": 0, "unread": 0, "agents": 0}
+    rows = inbox(run)
+    cpath = _run_dir(run) / "digest.cursor"
+    try:
+        sent = int(cpath.read_text(encoding="utf-8")) if since_cursor else 0
+    except (OSError, ValueError):
+        sent = 0
+    new = rows[sent:] if sent <= len(rows) else rows
+    ag = agents(run)
+    q, u = sum(a["questions"] for a in ag), sum(a["unread"] for a in ag)
+    head = (f"run {run}: {len(ag)} agents, {q} question{'s' if q != 1 else ''} open, "
+            f"{u} owner line{'s' if u != 1 else ''} unread, {len(new)} new line{'s' if len(new) != 1 else ''}")
+    lines = [head, ""]
+    if q:
+        lines.append("OPEN QUESTIONS")
+        for r in rows:
+            if r.get("kind") == "question":
+                lines.append(f"  {r.get('agent')}: {r.get('text')}")
+        lines.append("")
+    lines.append("AGENTS")
+    for a in ag:
+        lines.append(f"  {a['agent']} [{a['state']}] {a['last_kind']}: {a['last']}")
+    lines.append("")
+    lines.append("NEW LINES" if new else "no new lines")
+    shown = new[-DIGEST_MAX:]
+    if len(new) > len(shown):
+        lines.append(f"  … {len(new) - len(shown)} earlier lines omitted")
+    for r in shown:
+        lines.append("  " + _fmt(r))
+    lines += ["", f"reply: apex-router mail send {run} <agent|*> \"...\""]
+    if advance:
+        try:
+            cpath.write_text(str(len(rows)), encoding="utf-8")
+        except OSError:
+            pass
+    subject = f"[apex-router mail] {run}: {len(new)} new, {q} question{'s' if q != 1 else ''} open"
+    return {"run": run, "subject": subject, "body": "\n".join(lines), "new": len(new),
+            "questions": q, "unread": u, "agents": len(ag)}
+
+
+def send_email(to: str, subject: str, body: str, *, runner=None) -> bool:
+    """Send through the Mail.app (osascript) on macOS; falls back to /usr/sbin/sendmail. The
+    address is validated; the subject and body reach AppleScript as string literals only."""
+    if not re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", to):
+        raise ValueError(f"not an e-mail address: {to!r}")
+    run = runner or (lambda argv, **kw: subprocess.run(argv, capture_output=True, text=True,
+                                                        timeout=30, check=False, **kw))
+    esc = lambda t: t.replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        'tell application "Mail"\n'
+        f'  set m to make new outgoing message with properties {{subject:"{esc(subject)}", '
+        f'content:"{esc(body)}", visible:false}}\n'
+        f'  tell m to make new to recipient at end of to recipients with properties {{address:"{to}"}}\n'
+        '  send m\n'
+        'end tell'
+    )
+    try:
+        r = run(["/usr/bin/osascript", "-"], input=script)
+        if r.returncode == 0:
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        msg = f"To: {to}\nSubject: {subject}\nContent-Type: text/plain; charset=utf-8\n\n{body}\n"
+        r = run(["/usr/sbin/sendmail", "-t"], input=msg)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ---------------------------------------------------------------- prompt snippet
 
 def brief(run: str, agent: str) -> str:
@@ -396,6 +478,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("run"); p.add_argument("agent")
     p = sub.add_parser("widget", help="rewrite the menu-bar adapter for a run (latest by default)")
     p.add_argument("run", nargs="?")
+    p = sub.add_parser("digest", help="plain-text digest of a run's new lines; --to e-mails it via "
+                                      "Mail.app (or sendmail) and advances the digest cursor")
+    p.add_argument("run", nargs="?"); p.add_argument("--to", default=None)
+    p.add_argument("--all", action="store_true", help="every line, not only those since the last digest")
+    p.add_argument("--even-if-empty", action="store_true")
     return ap
 
 
@@ -446,6 +533,19 @@ def main(argv=None) -> int:
             print(brief(a.run, a.agent))
         elif a.cmd == "widget":
             print("written" if write_widget(a.run) else "no run")
+        elif a.cmd == "digest":
+            d = digest(a.run, since_cursor=not a.all, advance=bool(a.to))
+            if d["run"] is None:
+                print("no run")
+                return 1
+            if a.to:
+                if d["new"] == 0 and not a.even_if_empty:
+                    print("nothing new; not sent")
+                    return 0
+                ok = send_email(a.to, d["subject"], d["body"])
+                print(f"{'sent' if ok else 'NOT sent'}: {d['subject']} -> {a.to}")
+                return 0 if ok else 1
+            print(d["subject"]); print(); print(d["body"])
         return 0
     except ValueError as e:
         print(f"mail: {e}", file=sys.stderr)
