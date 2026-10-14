@@ -310,6 +310,9 @@ def main(argv=None) -> int:
                                 "ladder|frontier`", add_help=False)
     sub.add_parser("retry-ab", help="retry-action A/B readout: per-arm P(transport retry recovers) "
                                     "with Wilson CIs; `retry-ab report [--json]`", add_help=False)
+    sub.add_parser("mail", help="mail bus between a fan-out's agents and the owner: `mail post|read` "
+                                "(agent side), `mail send|inbox [--follow]|runs|agents|brief|widget`",
+                   add_help=False)
     sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|snapshot|baseline|chains|progress|"
                                       "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
@@ -500,6 +503,9 @@ def main(argv=None) -> int:
     if args.cmd == "pressure":
         from .pressure import main as _pressure
         return _pressure(extra)
+    if args.cmd == "mail":
+        from .mail import main as _mail
+        return _mail(extra)
     if args.cmd == "snapshot":
         from .snapshot import main as _snapshot
         return _snapshot(extra)

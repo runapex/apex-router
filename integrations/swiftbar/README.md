@@ -303,7 +303,9 @@ the same way the menu does; delete the directory to remove them.
 
 ## Adapters: your own menu sections
 
-Any program can add a section by writing a JSON file into an adapters directory:
+Any program can add a section by writing a JSON file into an adapters directory
+(`apex-router mail` writes one, `mail.json`: open questions and the last lines of the agent
+conversation of the run last posted or sent to; note the five-file cap below, in name order):
 
 ```json
 {"title": "My metrics", "rows": ["queue 3", "last run ok"], "ts": 1791338846}

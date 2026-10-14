@@ -593,6 +593,33 @@ The hook is fail-safe by contract: it never blocks, prints nothing, always exits
 bounded too. Runbook:
 [`docs/RUNBOOK-route-conformance.md`](docs/RUNBOOK-route-conformance.md).
 
+### `apex-router mail` — short updates from a fan-out's agents, and your replies
+
+A file-backed mail bus between the agents of a run (a Workflow, a nightly loop, any set of
+subagents) and the person who started it. Agents post one-line `start` / `status` / `question` /
+`reply` / `done` lines; you read the run's conversation, answer one agent or all of them, and each agent
+picks your message up at its next checkpoint (its prompt tells it to `mail read` before every
+major decision — `apex-router mail brief <run> <agent>` prints that paragraph). Delivery is
+checkpoint-based, not instant. State lives under `~/.apex-router/mail/<run>/`
+(`$APEX_MAIL_DIR`): `out.jsonl` for agent lines, `in/<agent>.jsonl` (a `/` in the name written
+as `__`) and `in/_all.jsonl` for yours, a cursor per agent; appends are locked, so ids are unique
+per file and a torn line from a crashed writer never swallows the next one. Text is one line of
+at most 400 characters, control and bidi characters stripped; ids, times and names only besides
+the text. A question stays open until your next line to that agent or to `*`. Every post or send
+rewrites the menu-bar adapter `~/.apex-router/adapters/mail.json` for the run last written to, so
+the widget shows open questions, unread lines and the last few messages, dollar amounts masked
+(see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)).
+
+```sh
+apex-router mail inbox --follow                 # the latest run's conversation, live
+apex-router mail agents wf_123                  # per agent: state, last line, open questions, unread
+apex-router mail send wf_123 w-dist/reviewer "why did D-03 die?"
+apex-router mail send wf_123 '*' "all: the floor is 25k"
+# agent side (in its prompt via `mail brief`)
+apex-router mail post wf_123 w-dist/reviewer "cycle 2: D-03 killed on K-PREREG" --kind status
+apex-router mail read wf_123 w-dist/reviewer   # unread owner lines, own then broadcast
+```
+
 ### Proxy: bounded transport retries
 
 The proxy retries a transient connect-phase failure (`SSLError`, `ReadError`,

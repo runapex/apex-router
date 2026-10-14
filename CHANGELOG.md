@@ -32,6 +32,22 @@ next tag will carry.
   agent CLIs, ssh BatchMode, no `sleep` polling while a job runs. It changes command text only when
   it understands the whole command. Replay over 14,659 old bash calls: 43 commands changed, `bash -n`
   accepts all of them.
+- `apex-router mail`: a file-backed mail bus between a fan-out's agents and the owner. Agents post
+  one-line `start` / `status` / `question` / `reply` / `done` messages (`mail post`), read the
+  owner's unread lines at their checkpoints (`mail read`, own then broadcast, cursor per agent);
+  the owner follows a run's two-way conversation (`mail inbox [--follow] [--agent world/]`),
+  answers one agent or all (`mail send <run> <agent|*>`), sees per-agent state, open questions
+  and unread counts (`mail agents`, `mail runs`), and gets the prompt paragraph that enrols an
+  agent (`mail brief`). State under `~/.apex-router/mail/<run>/` (`$APEX_MAIL_DIR`); one line of
+  at most 400 characters, control and bidi characters stripped; locked appends (unique ids per
+  file, a torn tail line is terminated, never glued onto the next row); a question is open until
+  the owner's next line to that agent or to `*`; agent names never start with `_` or contain
+  `__`, so the broadcast file and the `/`→`__` encoding cannot collide. Every post or send
+  rewrites the menu-bar adapter `adapters/mail.json` (dollar amounts masked), so the SwiftBar
+  widget shows the bus without a widget change. Delivery is checkpoint-based: an agent sees a
+  message at its next `mail read`. A fresh reviewer refuted the first cut (torn-line glue,
+  follow-loop re-prints, name collisions, duplicate ids, non-atomic cursor); each finding has a
+  test.
 - Experiment E-D (pre-declared in `docs/research/2026-10-12-rsi-next-steps.md` §3), opt-in
   (userConfig `ed: true`): the plugin assigns every typed main-session turn a randomised workflow
   arm — W0 (do it in this session, no subagents) or W2 (delegate the separable parts) — as a mixed
