@@ -609,9 +609,14 @@ the text. A question stays open until your next line to that agent or to `*`. Ev
 rewrites the menu-bar adapter `~/.apex-router/adapters/mail.json` for the run last written to, so
 the widget shows open questions, unread lines and the last few messages, dollar amounts masked
 (see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)). `mail digest --to ADDR`
-e-mails a plain-text digest (open questions, every agent's state, the lines since the last digest)
-through Mail.app on macOS, falling back to `/usr/sbin/sendmail`; it sends nothing when there is
-nothing new, so it is safe to put on a timer.
+e-mails a short digest (what waits for you, where each agent is, and the decisions, questions and
+finishes since the last digest, never start lines or routine chatter) through Mail.app on macOS,
+falling back to `/usr/sbin/sendmail`; it sends nothing when there is nothing new, so it is safe
+to put on a timer. Agents get friendly names (`w-dist/dist-mean` → "infra researcher (quick)"),
+and each line is condensed into one plain sentence by a local ollama model
+(`APEX_MAIL_PLAIN_MODEL`, default `ornith:35b`; `APEX_MAIL_PLAIN_URL`) under a faithfulness guard:
+a rewrite that adds a number or a question the line did not have is dropped for the original,
+and so is any model failure; `--raw` skips the model.
 
 ```sh
 apex-router mail inbox --follow                 # the latest run's conversation, live

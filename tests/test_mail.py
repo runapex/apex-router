@@ -236,16 +236,20 @@ def test_follow_prints_each_row_once_even_when_a_late_row_sorts_earlier(mdir, mo
 def test_digest_lists_questions_agents_and_only_new_lines_then_advances(mdir):
     mail.post("r", "a", "started", kind="start", now=1.0)
     mail.post("r", "a", "ruling on D-01?", kind="question", now=2.0)
-    d = mail.digest("r", advance=True)
-    assert d["new"] == 2 and d["questions"] == 1 and "OPEN QUESTIONS" in d["body"]
-    assert "a: ruling on D-01?" in d["body"] and "a [running] question: ruling on D-01?" in d["body"]
-    assert d["subject"] == "[apex-router mail] r: 2 new, 1 question open"
-    d = mail.digest("r")
-    assert d["new"] == 0 and "no new lines" in d["body"]
+    d = mail.digest("r", advance=True, raw=True)
+    assert d["new"] == 2 and d["questions"] == 1 and "WAITING FOR YOUR ANSWER" in d["body"]
+    assert "• a: ruling on D-01?" in d["body"] and "• a (working): ruling on D-01?" in d["body"]
+    assert d["subject"] == "[apex-router mail] r: 0/1 finished, 1 question for you"
+    assert "• 02:00 a asks: ruling on D-01?" in d["body"].replace(
+        __import__("time").strftime("%H:%M", __import__("time").localtime(2.0)), "02:00")
+    assert "started" not in d["body"].split("SINCE LAST TIME")[1]      # start lines are noise
+    d = mail.digest("r", raw=True)
+    assert d["new"] == 0 and "Since last time: nothing new." in d["body"]
     mail.send("r", "a", "no, keep it", now=3.0)
-    d = mail.digest("r")
-    assert d["new"] == 1 and d["questions"] == 0 and "→ a: no, keep it" in d["body"]
-    assert mail.digest("r", since_cursor=False)["new"] == 3
+    d = mail.digest("r", raw=True)
+    assert d["new"] == 1 and d["questions"] == 0 and "you → a: no, keep it" in d["body"]
+    assert "Nothing waiting on you." in d["body"]
+    assert mail.digest("r", since_cursor=False, raw=True)["new"] == 3
     assert mail.digest("missing")["run"] is None
 
 
@@ -279,13 +283,83 @@ def test_send_email_uses_mail_app_then_sendmail_and_validates_address(mdir):
 
 def test_cli_digest_prints_and_sends(mdir, capsys, monkeypatch):
     mail.post("r", "a", "hi", now=1.0)
-    assert mail.main(["digest", "r"]) == 0
+    assert mail.main(["digest", "r", "--raw"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("[apex-router mail] r: 1 new") and "a [running] status: hi" in out
+    assert out.startswith("[apex-router mail] r: 0/1 finished") and "• a (working): hi" in out
     sent = []
     monkeypatch.setattr(mail, "send_email", lambda to, s, b: sent.append((to, s)) or True)
-    assert mail.main(["digest", "r", "--to", "x@example.com"]) == 0
-    assert sent == [("x@example.com", "[apex-router mail] r: 1 new, 0 questions open")]
+    assert mail.main(["digest", "r", "--to", "x@example.com", "--raw"]) == 0
+    assert sent == [("x@example.com", "[apex-router mail] r: 0/1 finished, 0 questions for you")]
     assert mail.main(["digest", "r", "--to", "x@example.com"]) == 0
     assert "nothing new" in capsys.readouterr().out and len(sent) == 1
     assert mail.main(["digest", "nope", "--to", "x@example.com"]) == 1
+
+
+def test_plain_rewrites_with_the_model_and_falls_back_when_it_fails(mdir):
+    seen = []
+
+    def model(prompt):
+        seen.append(prompt)
+        return ' "Sentence: The landscape analyst finished round one and kept six ideas." '
+    out = mail.plain("done: cycle 1 table 49 vendors / 17 segments, 6 shortlisted", kind="done", rewriter=model)
+    assert out == "The landscape analyst finished round one and kept six ideas."
+    assert "cycle 1 table 49 vendors" in seen[0] and "not an engineer" in seen[0]
+    # unusable answers and failures fall back to the squeezed original
+    assert mail.plain("status: hello world here", rewriter=lambda p: "") == "hello world here"
+    assert mail.plain("status: hello world here", rewriter=lambda p: "x" * 500) == "hello world here"
+    assert mail.plain("status: hello world here", rewriter=lambda p: (_ for _ in ()).throw(OSError())) == "hello world here"
+    assert mail.plain("hi", rewriter=lambda p: "<think>long</think> Short plain sentence here.") == "Short plain sentence here."
+    # unfaithful rewrites (a number or a question the source does not have) are rejected
+    src = "shortlist B-09 (Cribl $4.8k-84k/yr), B-15 credit caps"
+    assert mail.plain(src, rewriter=lambda p: "Are we ready to spend $4.8k on Cribl?") == src
+    assert mail.plain(src, rewriter=lambda p: "Kept 3 ideas including Cribl at $4.8k-84k a year.") == src
+    assert mail.plain(src, rewriter=lambda p: "Kept two ideas, Cribl at $4.8k-84k a year and credit caps.") == \
+        "Kept two ideas, Cribl at $4.8k-84k a year and credit caps."
+    assert mail.faithful("ruling on D-11?", "Do you want to rule on D-11?")
+
+
+def test_squeeze_drops_prefixes_and_long_parentheses_and_clips():
+    assert mail._squeeze("dist-mean status: ack search-blind (0 searches used, fetch-only). Next.") == \
+        "ack search-blind (0 searches used, fetch-only). Next."
+    assert mail._squeeze("done: kept 6 (" + "x" * 80 + ") rows") == "kept 6 rows"
+    long = "decision: " + "word " * 100
+    out = mail._squeeze(long)
+    assert len(out) <= mail.LINE_MAX and out.endswith("…")
+
+
+def test_pretty_names():
+    assert mail.pretty("w-dist/dist-mean") == "infra researcher (quick)"
+    assert mail.pretty("w-bi-landscape/bi-landscape") == "landscape analyst"
+    assert mail.pretty("w-ml/reviewer") == "ML reviewer"
+    assert mail.pretty("w-market/extra-c2") == "market extra"
+    assert mail.pretty("monitor-c2") == "monitor"
+    assert mail.pretty("reconciler") == "reconciler"
+    assert mail.pretty("w-dist/data-availability") == "infra data availability"
+
+
+def test_digest_uses_the_rewriter_for_agent_lines_but_not_owner_lines(mdir):
+    mail.post("r", "w-dist/dist-mean", "status: decision: dropped D-03 (no MEASURED number)", now=1.0)
+    mail.send("r", "*", "keep going", now=2.0)
+    d = mail.digest("r", rewriter=lambda p: "The quick infra researcher dropped one idea for lack of a measured number.")
+    assert "infra researcher (quick) (working): The quick infra researcher dropped one idea" in d["body"]
+    assert "you → everyone: keep going" in d["body"]
+
+
+def test_ollama_call_disables_thinking_and_returns_response(monkeypatch):
+    import io
+    seen = {}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout):
+        seen["body"] = json.loads(req.data.decode())
+        seen["url"] = req.full_url
+        return Resp(b'{"response": "Plain sentence.", "done_reason": "stop"}')
+    monkeypatch.setattr(mail.urllib.request, "urlopen", fake_urlopen)
+    assert mail._ollama("p", url="http://127.0.0.1:1/api/generate", model="m") == "Plain sentence."
+    assert seen["body"]["think"] is False and seen["body"]["stream"] is False and seen["body"]["model"] == "m"

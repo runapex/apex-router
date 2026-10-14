@@ -42,6 +42,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 TEXT_MAX = 400
@@ -341,15 +342,105 @@ def write_widget(run: str | None = None) -> bool:
     return True
 
 
-# ---------------------------------------------------------------- e-mail digest
+# ---------------------------------------------------------------- plain-language rendering
 
 DIGEST_MAX = 60
+LINE_MAX = 200
+PLAIN_URL = os.environ.get("APEX_MAIL_PLAIN_URL", "http://127.0.0.1:11434/api/generate")
+PLAIN_MODEL = os.environ.get("APEX_MAIL_PLAIN_MODEL", "ornith:35b")
+_NUM = re.compile(r"\d[\d,.]*")
+NAMES = {
+    "dist-significant": "infra researcher (deep)", "dist-mean": "infra researcher (quick)",
+    "dist-significant-baseline": "control researcher", "ml-significant": "ML researcher (deep)",
+    "ml-mean": "ML researcher (quick)", "bi-demand": "demand analyst", "bi-landscape": "landscape analyst",
+    "mkt-problem": "problem scout", "mkt-validation": "validation designer", "reviewer": "reviewer",
+    "reconciler": "reconciler", "devils-advocate": "devil's advocate", "orchestrator": "orchestrator",
+}
+WORLDS = {"w-dist": "infra", "w-ml": "ML", "w-bi-demand": "demand", "w-bi-landscape": "landscape",
+          "w-market": "market", "w-control": "control"}
+_PREFIX = re.compile(r"^(?:[\w./-]+ )?(?:c\d+ )?(?:status|decisions?|done|start(?:ed|ing)?|update)\s*[:—-]\s*", re.IGNORECASE)
 
 
-def digest(run: str | None = None, *, since_cursor: bool = True, advance: bool = False) -> dict:
-    """A plain-text digest of a run: per-agent state, open questions, and the conversation lines
-    not yet digested (``<run>/digest.cursor`` = count of ``inbox`` rows already sent; ``advance``
-    moves it). Returns {run, subject, body, new, questions, unread, agents}."""
+def pretty(agent: str) -> str:
+    """A human name for an agent key: ``w-dist/dist-mean`` -> ``infra researcher (quick)``."""
+    parts = str(agent).split("/")
+    role = re.sub(r"-c\d+$", "", parts[-1])
+    name = NAMES.get(role) or role.replace("-", " ")
+    world = WORLDS.get(parts[0]) if len(parts) > 1 else None
+    if world and parts[-1] not in NAMES and role not in NAMES:
+        return f"{world} {name}"                     # a check or extra: "infra data availability"
+    if world and role in ("reviewer", "extra"):
+        return f"{world} {name}"
+    return name
+
+
+def _squeeze(text: str) -> str:
+    """Deterministic fallback: drop the agent's own prefix, keep the first sentence or two."""
+    t = _PREFIX.sub("", str(text)).strip()
+    t = re.sub(r"\s*\(([^()]*)\)", lambda m: f" ({m.group(1)})" if len(m.group(1)) < 40 else "", t)
+    t = re.sub(r"\s+", " ", t)
+    if len(t) > LINE_MAX:
+        cut = t[:LINE_MAX]
+        t = cut[:cut.rfind(". ") + 1] if cut.rfind(". ") > 60 else cut[:LINE_MAX - 1] + "…"
+    return t
+
+
+def _ollama(prompt: str, *, url: str = PLAIN_URL, model: str = PLAIN_MODEL, timeout: float = 25.0):
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False, "think": False,
+                       "options": {"temperature": 0.1, "num_predict": 120}}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8")).get("response")
+
+
+def plain(text: str, *, kind: str = "status", rewriter=None) -> str:
+    """One plain sentence for a busy owner. ``rewriter`` (prompt -> text) defaults to the local
+    model; any failure or unusable answer falls back to ``_squeeze``."""
+    squeezed = _squeeze(text)
+    rw = rewriter if rewriter is not None else _ollama
+    prompt = (
+        "You condense a research agent's status line for a busy company owner who is not an engineer. "
+        "Rules: one sentence, at most 25 words, everyday words; keep every fact and number as it is; do "
+        "NOT add, guess, interpret, or turn a report into a question; 'shortlist' = ideas kept for a "
+        "closer look, 'pre-registered kill' = a pass/fail test decided in advance, 'routed C' = handed "
+        "to the compliance track; keep an id only when the line gives no name for it. Output the "
+        f"sentence only.\nKind: {kind}\nLine: {squeezed}\nSentence:")
+    try:
+        out = rw(prompt)
+    except Exception:  # noqa: BLE001 — any transport or model failure means the fallback
+        return squeezed
+    if not isinstance(out, str):
+        return squeezed
+    out = re.sub(r"<think>.*?</think>", "", out, flags=re.DOTALL)
+    out = _WS.sub(" ", out).strip().strip('"').strip()
+    out = re.sub(r"^(sentence|rewritten|rewrite)\s*:\s*", "", out, flags=re.IGNORECASE)
+    if not out or len(out) > LINE_MAX or len(out.split()) < 3 or "\n" in out:
+        return squeezed
+    if not faithful(squeezed, out):
+        return squeezed
+    return out
+
+
+def faithful(source: str, rewrite: str) -> bool:
+    """A rewrite may drop facts but never add them: every number in it must appear in the source
+    (as digits), and it may not be a question unless the source was one."""
+    have = {n.strip(",.") for n in _NUM.findall(source)}
+    for n in _NUM.findall(rewrite):
+        if n.strip(",.") not in have:
+            return False
+    return not (rewrite.rstrip().endswith("?") and "?" not in source)
+
+
+# ---------------------------------------------------------------- e-mail digest
+
+
+def digest(run: str | None = None, *, since_cursor: bool = True, advance: bool = False,
+           rewriter=None, raw: bool = False) -> dict:
+    """A short, plain-language digest of a run: a headline, one line per agent (its latest word,
+    rewritten for a non-engineer), and what happened since the last digest — decisions, questions,
+    finishes and your own replies, never start lines or routine chatter. ``<run>/digest.cursor`` =
+    count of ``inbox`` rows already digested; ``advance`` moves it. ``raw`` skips the rewrite.
+    Returns {run, subject, body, new, questions, unread, agents}."""
     run = run or latest_run()
     if run is None or not _valid(run, "run") or not _run_dir(run).is_dir():
         return {"run": None, "subject": "", "body": "", "new": 0, "questions": 0, "unread": 0, "agents": 0}
@@ -362,32 +453,44 @@ def digest(run: str | None = None, *, since_cursor: bool = True, advance: bool =
     new = rows[sent:] if sent <= len(rows) else rows
     ag = agents(run)
     q, u = sum(a["questions"] for a in ag), sum(a["unread"] for a in ag)
-    head = (f"run {run}: {len(ag)} agents, {q} question{'s' if q != 1 else ''} open, "
-            f"{u} owner line{'s' if u != 1 else ''} unread, {len(new)} new line{'s' if len(new) != 1 else ''}")
+    done = sum(1 for a in ag if a["state"] == "done")
+    say = (lambda t, k: _squeeze(t)) if raw else (lambda t, k: plain(t, kind=k, rewriter=rewriter))
+
+    head = f"{run}: {len(ag)} agents, {done} finished, {len(ag) - done} working."
+    head += f" {q} question{'s' if q != 1 else ''} waiting for you." if q else " Nothing waiting on you."
     lines = [head, ""]
     if q:
-        lines.append("OPEN QUESTIONS")
+        lines.append("WAITING FOR YOUR ANSWER")
         for r in rows:
             if r.get("kind") == "question":
-                lines.append(f"  {r.get('agent')}: {r.get('text')}")
+                lines.append(f"• {pretty(r.get('agent'))}: {say(r.get('text'), 'question')}")
         lines.append("")
-    lines.append("AGENTS")
+    lines.append("WHERE EACH AGENT IS")
     for a in ag:
-        lines.append(f"  {a['agent']} [{a['state']}] {a['last_kind']}: {a['last']}")
+        state = "finished" if a["state"] == "done" else "working"
+        lines.append(f"• {pretty(a['agent'])} ({state}): {say(a['last'], a['last_kind'])}")
     lines.append("")
-    lines.append("NEW LINES" if new else "no new lines")
-    shown = new[-DIGEST_MAX:]
-    if len(new) > len(shown):
-        lines.append(f"  … {len(new) - len(shown)} earlier lines omitted")
+    keep = [r for r in new if r.get("kind") in ("question", "done", "owner", "reply")
+            or (r.get("kind") == "status" and re.search(r"\b(decision|decid|kill|drop|shortlist|keep|kept|route|anomal)", str(r.get("text")), re.IGNORECASE))]
+    lines.append("SINCE LAST TIME" if keep else ("Since last time: only routine progress lines." if new else "Since last time: nothing new."))
+    shown = keep[-DIGEST_MAX:]
+    if len(keep) > len(shown):
+        lines.append(f"  … {len(keep) - len(shown)} earlier lines omitted")
     for r in shown:
-        lines.append("  " + _fmt(r))
-    lines += ["", f"reply: apex-router mail send {run} <agent|*> \"...\""]
+        t = time.strftime("%H:%M", time.localtime(r.get("ts") or 0))
+        if r.get("kind") == "owner":
+            who = "everyone" if r.get("to") == "*" else pretty(r.get("to"))
+            lines.append(f"• {t} you → {who}: {_squeeze(r.get('text'))}")
+        else:
+            tag = {"question": " asks", "done": " finished"}.get(str(r.get("kind")), "")
+            lines.append(f"• {t} {pretty(r.get('agent'))}{tag}: {say(r.get('text'), str(r.get('kind')))}")
+    lines += ["", f"Reply to one agent or all:  apex-router mail send {run} <agent|*> \"...\""]
     if advance:
         try:
             cpath.write_text(str(len(rows)), encoding="utf-8")
         except OSError:
             pass
-    subject = f"[apex-router mail] {run}: {len(new)} new, {q} question{'s' if q != 1 else ''} open"
+    subject = f"[apex-router mail] {run}: {done}/{len(ag)} finished, {q} question{'s' if q != 1 else ''} for you"
     return {"run": run, "subject": subject, "body": "\n".join(lines), "new": len(new),
             "questions": q, "unread": u, "agents": len(ag)}
 
@@ -428,9 +531,11 @@ def brief(run: str, agent: str) -> str:
     """The paragraph to put in an agent's prompt so it uses the bus."""
     run, agent = _name(run, "run"), _name(agent, "agent")
     return (
-        f"MAIL: the owner follows this run and may answer you. Post one line (≤ {TEXT_MAX} chars, no "
-        f"secrets, no prompt text) when you start, at each decision that changes a candidate's fate, "
-        f"when you need a ruling, and when you finish:\n"
+        f"MAIL: the owner follows this run and may answer you. Post one line when you start, at each "
+        f"decision that changes a candidate's fate, when you need a ruling, and when you finish. Write "
+        f"for a busy owner, not an engineer: one plain sentence of at most 30 words that says what "
+        f"happened and what it means; name things in words (an id like D-11 alone means nothing to "
+        f"them); no file paths, no secrets, no prompt text:\n"
         f"  apex-router mail post {run} {agent} \"<one line>\" --kind start|status|question|done\n"
         f"Before every major decision, read the owner's messages and follow them (a message to '*' is "
         f"for everyone):\n"
@@ -483,6 +588,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("run", nargs="?"); p.add_argument("--to", default=None)
     p.add_argument("--all", action="store_true", help="every line, not only those since the last digest")
     p.add_argument("--even-if-empty", action="store_true")
+    p.add_argument("--raw", action="store_true", help="skip the plain-language rewrite (local model)")
     return ap
 
 
@@ -534,7 +640,7 @@ def main(argv=None) -> int:
         elif a.cmd == "widget":
             print("written" if write_widget(a.run) else "no run")
         elif a.cmd == "digest":
-            d = digest(a.run, since_cursor=not a.all, advance=bool(a.to))
+            d = digest(a.run, since_cursor=not a.all, advance=bool(a.to), raw=a.raw)
             if d["run"] is None:
                 print("no run")
                 return 1

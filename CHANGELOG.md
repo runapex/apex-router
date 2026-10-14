@@ -47,7 +47,11 @@ next tag will carry.
   widget shows the bus without a widget change. Delivery is checkpoint-based: an agent sees a
   message at its next `mail read`. `mail digest [--to ADDR]`: a plain-text digest (open
   questions, agent states, lines since the last digest) printed or e-mailed through Mail.app
-  (osascript; `/usr/sbin/sendmail` fallback), skipped when nothing is new. A fresh reviewer
+  (osascript; `/usr/sbin/sendmail` fallback), skipped when nothing is new; friendly agent names,
+  start lines and routine chatter left out, each line condensed to one plain sentence by a local
+  ollama model (`APEX_MAIL_PLAIN_MODEL`, default `ornith:35b`) under a faithfulness guard (no new
+  numbers, no invented questions; failures fall back to the original), `--raw` to skip it. The
+  agents' mail brief now asks for one plain sentence a non-engineer understands. A fresh reviewer
   refuted the first cut (torn-line glue,
   follow-loop re-prints, name collisions, duplicate ids, non-atomic cursor); each finding has a
   test.
