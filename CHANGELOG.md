@@ -23,6 +23,11 @@ next tag will carry.
   cancel of a real `sleep` in a child bash call). One writer per job (owner token, atomic `meta.json`,
   adopt under a lock). Four Codex review passes; the last open edge case (a child that calls `setsid()`
   during SIGTERM handling) is a documented limit on macOS.
+- pi sub-agents and 429 rate limits: a job that pi retried and that recovered now ends as `done`
+  (only the last model message decides the error); a job that stays limited ends `failed` with a
+  "rate limited (429)" reason and the resume command; after a 429, new jobs start one at a time for
+  2 minutes. RUNBOOK: set pi `retry` to 5 × 5 s base (155 s), because the default 2/4/8 s backoff
+  ends before Azure's 60 s output-token window.
 - pi hang guard (`integrations/pi/apex-hangguard.ts`): default bash timeout (600 s), `< /dev/null` for
   agent CLIs, ssh BatchMode, no `sleep` polling while a job runs. It changes command text only when
   it understands the whole command. Replay over 14,659 old bash calls: 43 commands changed, `bash -n`

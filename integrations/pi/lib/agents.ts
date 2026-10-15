@@ -68,6 +68,11 @@ export type Meta = {
 	/** Bytes of events.jsonl already counted into usage (lets an adopter continue without a double count). */
 	events_offset?: number;
 	notify_attempts?: number;
+	/** Error of the LAST assistant message; a later successful message clears it (pi retried and recovered). */
+	model_error?: string;
+	/** Time of the last 429 / rate-limit retry in this job (lowers the cap for new jobs). */
+	rate_limited_at?: number;
+	retries?: number;
 	/** true when 3 deliveries failed; the result stays in result.md and agent_status shows it */
 	notify_failed?: boolean;
 	/** `ps -o lstart=` of the child at spawn. A pid with another start time is a reused pid: not our job. */
@@ -95,6 +100,9 @@ export type Options = {
 
 export const DEFAULT_ROOT = join(homedir(), ".apex-router", "pi-jobs");
 export const RESULT_CAP = 50_000;
+export const RATE_LIMIT = /\b429\b|rate.?limit|RateLimitReached|overloaded/i;
+/** After a 429 in any job, new jobs start one at a time for this long. */
+export const RATE_LIMIT_COOLDOWN_MS = 120_000;
 
 export function readPressure(path = join(homedir(), ".apex-router", "pressure.json"), now = Date.now()): "GREEN" | "AMBER" | "RED" | "UNKNOWN" {
 	try {
@@ -336,11 +344,13 @@ export class JobManager {
 	/** Start queued jobs while the cap (lowered by pressure) allows. */
 	private pump() {
 		const lvl = this.o.pressure();
-		const cap = lvl === "RED" ? 0 : lvl === "AMBER" ? Math.min(this.o.cap, 2) : this.o.cap;
+		const now = this.o.now();
+		const throttled = this.list().some(x => x.rate_limited_at !== undefined && now - x.rate_limited_at < RATE_LIMIT_COOLDOWN_MS);
+		const cap = lvl === "RED" ? 0 : throttled ? 1 : lvl === "AMBER" ? Math.min(this.o.cap, 2) : this.o.cap;
 		let free = cap - this.running().length; // the cap counts every job on the machine
 		for (const m of this.managed().filter(x => x.state === "queued" || x.state === "queued(pressure)")) {
 			if (free <= 0) {
-				const st: JobState = lvl === "RED" || (lvl === "AMBER" && this.running().length < this.o.cap) ? "queued(pressure)" : "queued";
+				const st: JobState = lvl === "RED" || ((lvl === "AMBER" || throttled) && this.running().length < this.o.cap) ? "queued(pressure)" : "queued";
 				if (m.state !== st) this.write({ ...m, state: st });
 				continue;
 			}
@@ -417,6 +427,10 @@ export class JobManager {
 			} catch {
 				continue;
 			}
+			if (e.type === "auto_retry_start") {
+				n.retries = (n.retries ?? 0) + 1;
+				if (RATE_LIMIT.test(String(e.errorMessage ?? ""))) n.rate_limited_at = this.o.now();
+			}
 			if (e.type === "tool_execution_start") n.last_tool = `${e.toolName}: ${JSON.stringify(e.args ?? {}).slice(0, 120)}`;
 			if (e.type === "message_end" && e.message?.role === "assistant") {
 				const u = e.message.usage ?? {};
@@ -426,7 +440,10 @@ export class JobManager {
 				n.usage.cost += u.cost?.total ?? 0;
 				const t = (e.message.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n").trim();
 				if (t) n.final_preview = t.slice(0, 400);
-				if (e.message.stopReason === "error") n.reason = e.message.errorMessage ?? "model error";
+				if (e.message.stopReason === "error") {
+					n.model_error = e.message.errorMessage ?? "model error";
+					if (RATE_LIMIT.test(n.model_error)) n.rate_limited_at = this.o.now();
+				} else delete n.model_error; // a later good message: pi retried and the job recovered
 			}
 		}
 		return n;
@@ -456,9 +473,13 @@ export class JobManager {
 	private finish(m0: Meta) {
 		const m = this.ingest(m0);
 		if (!FINAL.has(m.state)) {
-			const clean = m.kind === "pi" ? m.reason === undefined && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
+			const clean = m.kind === "pi" ? !m.model_error && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
 			m.state = clean ? "done" : "failed";
-			if (!clean && !m.reason) m.reason = m.exit_code === undefined || m.exit_code === null ? "process ended without a final answer" : `exit code ${m.exit_code}`;
+			if (!clean) {
+				if (m.model_error && RATE_LIMIT.test(m.model_error))
+					m.reason = `rate limited (429) after ${m.retries ?? 0} pi retries. Resume later: ${m.resume ?? "agent_spawn again"}`;
+				else m.reason = m.model_error ?? (m.exit_code === undefined || m.exit_code === null ? "process ended without a final answer" : `exit code ${m.exit_code}`);
+			}
 		}
 		m.ended = m.ended ?? this.o.now();
 		writeFileSync(join(this.dir(m.id), "result.md"), this.renderResult(m)); // before the terminal meta: a crash between leaves a re-finishable job

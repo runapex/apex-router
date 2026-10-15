@@ -276,6 +276,8 @@ Sub-agents:
 5. Job files are in `~/.apex-router/pi-jobs/<id>/`: `meta.json`, `events.jsonl`, `result.md`, `stderr.log`.
 6. Limits: 4 jobs at a time (`APEX_AGENT_CAP`), 2 at AMBER pressure, 0 at RED (the jobs wait in a queue).
 7. A sub-agent cannot start a sub-agent (`APEX_AGENT_MAX_DEPTH=1`).
+8a. Rate limits (429): after a 429 in any job, new jobs start one at a time for 2 minutes. A job that pi retried and that recovered ends as `done`. A job that stays limited ends as `failed (rate limited (429) …)` with the resume command.
+8b. pi's default retry (2 s, 4 s, 8 s) is shorter than Azure's 60 s output-token window. Set `"retry": {"enabled": true, "maxRetries": 5, "baseDelayMs": 5000}` in `~/.pi/agent/settings.json` (155 s in total).
 8. Agents: `scout`, `worker`, `reviewer`, `xval` (Codex review). Add more in `~/.pi/agent/agents/*.md`.
 
 After an install or an update, run `/reload` in each open pi session.

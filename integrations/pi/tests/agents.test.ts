@@ -57,6 +57,36 @@ test("model error is failed, not done", async () => {
 	m.stop();
 });
 
+test("429 then recovery (pi retried): done, not failed", async () => {
+	const { m } = mgr();
+	const j = m.spawn({ task: "mode:recover-429" });
+	const [r] = await m.wait([j.id], 10_000);
+	assert.equal(r!.state, "done");
+	assert.equal(r!.model_error, undefined);
+	assert.equal(r!.retries, 1);
+	assert.match(m.result(j.id)!.text, /recovered/);
+	m.stop();
+});
+
+test("429 after all pi retries: failed with a rate-limit reason and the resume command", async () => {
+	const { m } = mgr();
+	const j = m.spawn({ task: "mode:fail-429" });
+	const [r] = await m.wait([j.id], 10_000);
+	assert.equal(r!.state, "failed");
+	assert.match(r!.reason ?? "", /^rate limited \(429\) after 3 pi retries\. Resume later: cd .* pi --session-id apexjob-/);
+	m.stop();
+});
+
+test("after a 429, new jobs start one at a time for the cooldown", async () => {
+	const { m } = mgr({ cap: 4 });
+	const a = m.spawn({ task: "mode:recover-429" });
+	await m.wait([a.id], 10_000);
+	const ids = [m.spawn({ task: "mode:slow", timeout_s: 30 }).id, m.spawn({ task: "mode:slow", timeout_s: 30 }).id];
+	assert.deepEqual(ids.map(id => m.read(id)!.state), ["running", "queued(pressure)"]);
+	for (const id of ids) await m.cancel(id);
+	m.stop();
+});
+
 test("crash: failed with exit code and stderr in the result", async () => {
 	const { m } = mgr();
 	const j = m.spawn({ task: "mode:crash" });
