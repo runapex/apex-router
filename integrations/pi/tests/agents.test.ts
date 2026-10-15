@@ -231,6 +231,28 @@ test("a job id is notified exactly once", async () => {
 	m.stop();
 });
 
+test("pi /reload: a new manager in the same process adopts the old manager's running job", async () => {
+	const { m, root } = mgr();
+	const j = m.spawn({ task: "mode:slow", timeout_s: 60 });
+	m.stop(); // session_shutdown of the old extension instance
+	const done: Meta[] = [];
+	const m2 = new JobManager({ root, pressure: () => "GREEN", tickMs: 200, graceMs: 1000, onDone: x => done.push(x) }); // default ownerAlive
+	assert.deepEqual(m2.adopt().map(x => x.id), [j.id]);
+	await m2.cancel(j.id);
+	assert.equal(done.length, 1);
+	m2.stop();
+});
+
+test("a manager that is not stopped keeps its job (same process)", () => {
+	const { m, root } = mgr({ pressure: () => "RED" });
+	const j = m.spawn({ task: "mode:normal" });
+	const m2 = new JobManager({ root, pressure: () => "GREEN" });
+	assert.deepEqual(m2.adopt(), []);
+	assert.equal(m2.read(j.id)!.owner, m.self);
+	m2.stop();
+	m.stop();
+});
+
 test("one writer: a second live manager does not notify, start, or cancel another manager's job", async () => {
 	const { m, root, done } = mgr({ pressure: () => "RED" });
 	const other: Meta[] = [];

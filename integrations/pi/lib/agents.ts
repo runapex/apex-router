@@ -240,9 +240,13 @@ export class JobManager {
 	private tickNo = 0;
 	private tried = new Map<string, number>();
 
+	/** Owner tokens of the managers in this process that are not stopped. */
+	static live = new Set<string>();
+
 	constructor(opts: Options = {}) {
 		this.root = opts.root ?? DEFAULT_ROOT;
 		this.self = opts.self ?? `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+		JobManager.live.add(this.self);
 		this.o = {
 			argv: opts.argv ?? defaultArgv,
 			cap: opts.cap ?? 4,
@@ -253,7 +257,9 @@ export class JobManager {
 			tickMs: opts.tickMs ?? 2000,
 			now: opts.now ?? Date.now,
 			onDone: opts.onDone,
-			ownerAlive: opts.ownerAlive ?? (m => alive(m.parent_pid)),
+			// the owner is gone when its process ended, or when it was a replaced manager in THIS process
+			// (pi /reload builds a new extension instance with a new token in the same pid)
+			ownerAlive: opts.ownerAlive ?? (m => alive(m.parent_pid) && !(m.parent_pid === process.pid && m.owner !== this.self && !JobManager.live.has(m.owner ?? ""))),
 		};
 		mkdirSync(this.root, { recursive: true });
 	}
@@ -399,6 +405,7 @@ export class JobManager {
 	/** Stop monitoring. Running children keep going; a later manager on the same root re-attaches. */
 	stop() {
 		this.stopped = true;
+		JobManager.live.delete(this.self);
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
 	}
@@ -656,6 +663,7 @@ export class JobManager {
 	 * last hour and not yet notified), then monitor them. Returns the adopted jobs. */
 	adopt(): Meta[] {
 		this.stopped = false;
+		JobManager.live.add(this.self);
 		const took = this.adoptOrphans();
 		this.ensureTimer();
 		this.tick();
