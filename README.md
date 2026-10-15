@@ -432,6 +432,9 @@ pieces live under [`integrations/pi/`](integrations/pi/):
 cp integrations/pi/models.json ~/.pi/agent/models.json     # route anthropic+moonshotai via the proxy
 pi install integrations/pi/apex-route.ts                    # the per-task router extension
 pi install integrations/pi/apex-ground.ts                   # citation grounding on every turn
+pi install integrations/pi/apex-ste.ts                      # ASD-STE100 output format (docs/STE.md)
+pi install integrations/pi/apex-hangguard.ts                # bash timeout, < /dev/null, ssh BatchMode
+pi install integrations/pi/apex-agents.ts                   # sub-agents: agent_spawn / wait / cancel
 ```
 
 Full instructions, the family table, and testing steps:

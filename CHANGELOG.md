@@ -7,6 +7,26 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- ASD-STE100 Simplified Technical English is the default format for agent text (`docs/STE.md`).
+  One rules file (`src/apex_router/data/ste_rules.json`) feeds pi (`integrations/pi/apex-ste.ts`
+  appends the rules to the system prompt; `APEX_STE=0` turns it off), sub-agent briefs, Claude Code
+  (`apex-router ste install-claude` writes a marked block into `~/.claude/CLAUDE.md`; `install.sh`
+  does it by default, `--no-ste` skips) and a Claude Code skill (`plugin/skills/ste`).
+  `apex-router ste check` reports the mechanical rules (sentence length, word list, -ing, passive);
+  it does not include the licensed STE dictionary.
+- pi sub-agents (`integrations/pi/apex-agents.ts`, `docs/DESIGN-pi-subagents.md`): `agent_spawn`,
+  `agent_status`, `agent_wait`, `agent_cancel`, `agent_result`. Background jobs with a push message
+  when they end, idle / wall-clock / cost limits, cancel that removes the whole process tree (SIGTERM,
+  then SIGKILL of every descendant process group), a cap of 4 (2 at AMBER, queue at RED), re-attach
+  after a parent restart, and an `xval` agent for Codex review. Tested against a fake child (normal,
+  slow, silent hang, crash, grandchild, ignores SIGTERM) and live (push in rpc mode, wait in -p mode,
+  cancel of a real `sleep` in a child bash call). One writer per job (owner token, atomic `meta.json`,
+  adopt under a lock). Four Codex review passes; the last open edge case (a child that calls `setsid()`
+  during SIGTERM handling) is a documented limit on macOS.
+- pi hang guard (`integrations/pi/apex-hangguard.ts`): default bash timeout (600 s), `< /dev/null` for
+  agent CLIs, ssh BatchMode, no `sleep` polling while a job runs. It changes command text only when
+  it understands the whole command. Replay over 14,659 old bash calls: 43 commands changed, `bash -n`
+  accepts all of them.
 - Experiment E-D (pre-declared in `docs/research/2026-10-12-rsi-next-steps.md` §3), opt-in
   (userConfig `ed: true`): the plugin assigns every typed main-session turn a randomised workflow
   arm — W0 (do it in this session, no subagents) or W2 (delegate the separable parts) — as a mixed

@@ -247,6 +247,39 @@ Those units read `ornith.env` at startup — no plist edits required.
 - `apex-ground` (separate extension) — runs the deterministic grounding oracle on every
   assistant message that cites `file:line`; warns on STALE citations.
 
+## 3b. STE format, hang guard and sub-agents
+
+`install.sh --pi-integration` installs three more extensions. Each one is independent.
+
+| Extension | Function | Off |
+|---|---|---|
+| `apex-ste.ts` | Adds the ASD-STE100 rules to the system prompt (see `docs/STE.md`). `/ste` shows them. | `APEX_STE=0` |
+| `apex-hangguard.ts` | Changes bash calls that can hang (see below). Log: `~/.apex-router/pi-hangguard.jsonl`. | `APEX_HANGGUARD=0`, or `# apex-hangguard: off` in one command |
+| `apex-agents.ts` | Tools `agent_spawn`, `agent_status`, `agent_wait`, `agent_cancel`, `agent_result`, and `/agents`. | remove the package |
+
+Hang guard rules:
+
+1. A bash call with no timeout gets 600 s (`APEX_PI_BASH_TIMEOUT`).
+2. `codex exec`, `apex-router xval`, `claude -p` and `pi -p` get `< /dev/null` if they have no stdin.
+3. `ssh` and `scp` get `-o BatchMode=yes -o ConnectTimeout=15`.
+4. The guard blocks `sleep N` (N > 120) while a sub-agent job runs. Use `agent_wait`.
+
+The guard changes the command text only when it understands the full command (quotes balance, no heredoc).
+A replay over 14,659 old bash calls changed 43 commands. `bash -n` accepts all 43.
+
+Sub-agents:
+
+1. `agent_spawn` starts `pi --mode json -p` in the background and returns a job id at once.
+2. When the job ends, the parent gets an `apex-agent-done` message and starts a new turn.
+3. In `-p` mode no message can arrive after the run ends. The tool result tells the model to call `agent_wait`.
+4. Each job ends in one state: `done`, `failed`, `killed`, `timed_out(idle)`, `timed_out(wall)` or `killed(cost)`.
+5. Job files are in `~/.apex-router/pi-jobs/<id>/`: `meta.json`, `events.jsonl`, `result.md`, `stderr.log`.
+6. Limits: 4 jobs at a time (`APEX_AGENT_CAP`), 2 at AMBER pressure, 0 at RED (the jobs wait in a queue).
+7. A sub-agent cannot start a sub-agent (`APEX_AGENT_MAX_DEPTH=1`).
+8. Agents: `scout`, `worker`, `reviewer`, `xval` (Codex review). Add more in `~/.pi/agent/agents/*.md`.
+
+After an install or an update, run `/reload` in each open pi session.
+
 ## 4. Test
 
 ```bash

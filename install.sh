@@ -31,7 +31,9 @@
 #         --cache-handoff-hook  DEPRECATED (retired in 0.4.2): the datapce plugin's handoff toast and /apex handoff replace it
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
 #         --agent-route-log-hook  DEPRECATED (retired in 0.4.2): the datapce plugin logs every Agent and Workflow dispatch
-#         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`)
+#         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`),
+#                       plus apex-ste (STE format), apex-hangguard (bash hang guard), apex-agents (sub-agents)
+#         --no-ste      do not add the ASD-STE100 format block to ~/.claude/CLAUDE.md
 #         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
 #         --skills-marketplace URL  add another Claude Code skill marketplace (repeatable). The
@@ -65,6 +67,7 @@ DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
 DO_AGENT_ROUTE_LOG=0 # --agent-route-log-hook: wire the Agent-dispatch label PostToolUse hook
 DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
+DO_STE=1             # --no-ste: do not add the ASD-STE100 format block to ~/.claude/CLAUDE.md
 DO_BOOKS=0           # --books-index: install the local booksearch tool + pi/claude commands
 VERIFY_ONLY=0
 SKILLS_ONLY=0   # --skills-only: just (re)wire Claude Code skill marketplaces on an existing install
@@ -108,6 +111,7 @@ while [ $# -gt 0 ]; do
     --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
     --agent-route-log-hook) DO_AGENT_ROUTE_LOG=1 ;; # wire the Agent-dispatch label PostToolUse hook
     --pi-integration) DO_PI=1 ;;                   # install the pi per-task router + models.json wiring
+    --no-ste) DO_STE=0 ;;                          # keep ~/.claude/CLAUDE.md free of the STE block
     --books-index) DO_BOOKS=1 ;;                   # install the local booksearch tool + pi/claude commands
     --install-hooks) HOOK_REPOS="$2"; shift ;;
     # Accumulate NEWLINE-separated (not space) so a local marketplace path containing spaces stays
@@ -648,6 +652,16 @@ setup_proxy() {
     || warn "proxy setup did not complete (routing still works)"
 }
 
+install_ste() {
+  # ASD-STE100 Simplified Technical English is the default format for agent text (docs/STE.md).
+  # Adds the rules block to ~/.claude/CLAUDE.md between apex-router markers. Idempotent; text outside
+  # the markers never changes. Remove: delete the marked block, or reinstall with --no-ste.
+  [ "$DO_STE" = "1" ] || { echo "  STE format block NOT added (--no-ste)."; return 0; }
+  "$INSTALL_DIR/.venv/bin/apex-router" ste install-claude >/dev/null 2>&1 \
+    && ok "STE format block in ~/.claude/CLAUDE.md (apex-router ste rules)" \
+    || warn "STE block not added (run: apex-router ste install-claude)"
+}
+
 install_pi() {
   # Wire the pi coding agent for per-task model/family switching on top of apex-router:
   #   1. install the apex-route extension (persisted in pi's settings), and
@@ -670,6 +684,13 @@ install_pi() {
   else
     warn "pi install failed — add it manually: pi install $src/apex-route.ts"
   fi
+  # STE default format, hang guard, sub-agents (docs/DESIGN-pi-subagents.md). Each one is opt-out by env:
+  # APEX_STE=0, APEX_HANGGUARD=0; apex-agents adds tools only.
+  local ext
+  for ext in apex-ste apex-hangguard apex-agents; do
+    if pi install "$src/$ext.ts" >/dev/null 2>&1; then ok "$ext extension installed"
+    else warn "pi install failed — add it manually: pi install $src/$ext.ts"; fi
+  done
   # models.json: seed only when absent; never overwrite a user's providers.
   local pim="$HOME/.pi/agent/models.json"
   if [ -f "$pim" ]; then
@@ -828,6 +849,7 @@ main() {
   install_agent_route_log_hook
   install_proxy
   setup_proxy
+  install_ste
   install_pi
   install_booksearch
   verify

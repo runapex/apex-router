@@ -130,6 +130,10 @@ def main(argv=None) -> int:
         # discovery). Own subcommands, so it parses its own args like xval.
         from .zeno import main as _zeno
         return _zeno(raw[1:])
+    if raw[:1] == ["ste"]:
+        # ASD-STE100 format: the rules block, the brief template, the mechanical checker. Own subcommands.
+        from .ste import main as _ste
+        return _ste(raw[1:])
     if raw[:1] == ["retry-ab"]:
         # Retry-action A/B readout (telemetry v11): per-arm P(retry recovers). Own subcommands.
         from .retry_ab import main as _retry_ab

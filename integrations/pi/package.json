@@ -1,0 +1,6 @@
+{
+  "name": "apex-router-pi-integrations",
+  "private": true,
+  "type": "module",
+  "description": "pi extensions for apex-router. Tests: node --test integrations/pi/tests/"
+}
