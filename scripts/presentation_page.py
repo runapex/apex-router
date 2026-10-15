@@ -205,7 +205,6 @@ RESULTS = [
     ("gate", "opt-in", "E-D workflow experiment", "Randomly assigns W0 (do it in this session) or W2 (delegate) per turn, to measure which workflow ends better. No turns assigned yet."),
     ("na", "paused", "P6 JEPA world model", "Gate G1 failed 3 times. The hand-feature logistic model is better. Next decision at 50k main-session steps."),
     ("na", "closed", "Multi-agent panel (InfoDelphi)", "Panel candidates are 0.53% of requests. Only self-consistency beats one call (+0.061 Brier). Nothing promoted."),
-    ("risk", "open", "datapce direction", "The research loop and an independent business loop agree on the engine (stats core + gate + one verdict schema). Market C (compliance evidence) is the open item."),
 ]
 
 
@@ -320,7 +319,7 @@ def sec_failures():
 
 
 GROUPS = [
-    (r"^research:", "Research loop: datapce problem search + business loop"),
+    (r"^research:", None),  # datapce market research: not part of this work item, left out of the page
     (r"pi sub-agents|STE|hang guard", "pi sub-agents, hang guard, STE format"),
     (r"E-D", "E-D workflow experiment"),
     (r"verdict|panel|debate", "Decision card + panel study"),
@@ -335,7 +334,8 @@ def sec_delta():
     for c in D["commits"]:
         for pat, name in GROUPS:
             if re.search(pat, c["subject"]):
-                groups.setdefault(name, []).append(c)
+                if name:
+                    groups.setdefault(name, []).append(c)
                 break
     gh = "".join(
         f"<details{' open' if len(cs) < 6 else ''}><summary><b>{E(name)}</b> · {len(cs)} commits</summary><div><table>"
@@ -364,7 +364,7 @@ def sec_delta():
 <p class="lead">{base}</p>
 <div class="grid2"><div><h3>Metrics ({wc[0]}–{wc[1]} vs {wp[0]}–{wp[1]})</h3><table><tr><th>Metric</th><th class="r">Now</th><th class="r">Before</th><th class="r">Δ</th></tr>{t}</table></div>
 <div><h3>Per day (proxy)</h3><table><tr><th>Day</th><th class="r">Requests</th><th></th><th class="r">Out</th><th class="r">429</th></tr>{dt}</table></div></div>
-<h3>Implementation changes (apex-router, last 7 days: {len(D['commits'])} commits)</h3>{gh}
+<h3>Implementation changes (apex-router, last 7 days: {sum(len(v) for v in groups.values())} commits)</h3>{gh}
 </section>"""
 
 
