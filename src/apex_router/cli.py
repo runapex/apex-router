@@ -138,6 +138,16 @@ def main(argv=None) -> int:
         # Retry-action A/B readout (telemetry v11): per-arm P(retry recovers). Own subcommands.
         from .retry_ab import main as _retry_ab
         return _retry_ab(raw[1:])
+    if raw[:1] == ["ask"]:
+        # One advisory question to DeepSeek or the local model, booked for $ accounting. Own parser.
+        from .remote.ask import main_ask as _ask
+        return _ask(raw[1:])
+    if raw[:1] == ["offload-verdict"]:
+        from .remote.ask import main_verdict as _verdict
+        return _verdict(raw[1:])
+    if raw[:1] == ["offload-report"]:
+        from .ornith.offload_report import main_cli as _offload_report
+        return _offload_report(raw[1:])
     if raw[:1] == ["worldmodel"]:
         # P6 world model (docs/DESIGN-worldmodel-P6.md): one dispatcher; numpy/mlx load lazily inside commands.
         from .worldmodel.cli import main as _worldmodel

@@ -109,6 +109,35 @@ DEFAULTS: dict = {
             "deep_ctx_floor": 250_000,
         },
     },
+    # Remote OpenAI-compatible backends for advisory offload (`apex-router ask --backend <name>`).
+    # The API is hosted outside the owner's control: every request passes a hygiene check first
+    # (remote/deepseek_client.check_text). `deny_regex` adds machine-local patterns from the
+    # overlay; private names belong there, never in this public file. The key comes from env
+    # `key_env`, else the macOS Keychain service `keychain_service`; it is never printed or logged.
+    "remote": {
+        "deepseek": {
+            "base_url": "https://api.deepseek.com",
+            "default_model": "deepseek-v4-pro",
+            "models": ["deepseek-v4-pro", "deepseek-flash"],
+            "key_env": "DEEPSEEK_API_KEY",
+            "keychain_service": "deepseek-api",
+            # Peak hours (UTC, Monday-Friday, end exclusive); off-peak bills `offpeak_factor` x price.
+            "peak_utc": [[1, 4], [6, 10]],
+            "offpeak_factor": 0.5,
+            "deny_regex": [],
+        },
+    },
+    # USD per 1M tokens: uncached input, cache-hit input, output. Claude: platform.claude.com
+    # pricing, read 2026-10-17. DeepSeek: api-docs pricing at PEAK, read 2026-10-17.
+    # Used for offload accounting (spent vs the Claude-equivalent), never for routing.
+    "prices": {
+        "claude-haiku-4-5": {"in": 1.0, "cached": 0.10, "out": 5.0},
+        "claude-sonnet-5-5": {"in": 2.0, "cached": 0.10, "out": 10.0},
+        "claude-opus-5-5": {"in": 4.0, "cached": 0.20, "out": 20.0},
+        "claude-fable-5-1": {"in": 10.0, "cached": 0.25, "out": 50.0},
+        "deepseek-v4-pro": {"in": 1.32, "cached": 0.044, "out": 3.96},
+        "deepseek-flash": {"in": 0.30, "cached": 0.006, "out": 1.20},
+    },
 }
 
 
@@ -247,3 +276,24 @@ def learn(*, registry: dict | None = None) -> dict:
         return prefix + mid if mid else mid
 
     return {"provider": provider, "validate": stage("validate", "sonnet"), "explain": stage("explain", "opus")}
+
+
+def remote(name: str, *, registry: dict | None = None) -> dict | None:
+    """A remote backend config (e.g. 'deepseek'), or None if not configured."""
+    reg = DEFAULTS if registry is None else registry
+    r = (reg.get("remote") or {}).get(name)
+    return dict(r) if isinstance(r, dict) else None
+
+
+def price(model: str, *, registry: dict | None = None) -> dict | None:
+    """{"in","cached","out"} USD per 1M tokens for a model id or a tier name, else None."""
+    reg = DEFAULTS if registry is None else registry
+    prices = reg.get("prices")
+    if not isinstance(prices, dict):
+        prices = DEFAULTS["prices"]
+    p = prices.get(model)
+    if p is None and model in (reg.get("tiers") or DEFAULTS["tiers"]):
+        p = prices.get(tier_model(model, registry=reg) or "")
+    if not (isinstance(p, dict) and all(isinstance(p.get(k), (int, float)) for k in ("in", "cached", "out"))):
+        return None
+    return {k: float(p[k]) for k in ("in", "cached", "out")}

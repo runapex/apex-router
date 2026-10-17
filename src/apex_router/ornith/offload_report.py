@@ -134,10 +134,103 @@ def format_report(agg: dict) -> str:
     return "\n".join(lines)
 
 
+def _num(v) -> float:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
+def dollar_summary(log_path: Path, verdict_path: Path) -> dict:
+    """Per-backend $ view of `apex-router ask` calls (rows with a call_id), joined with verdicts.
+
+    spent_usd              every call's cost, failures included (a billed failure is still spend)
+    claude_equiv_used_usd  baseline_cost_usd of USED answers: what the Claude tier would have charged
+                           to write that output
+    gross_saving_used_usd  claude_equiv_used - the cost of those used calls
+    waste_discarded_usd    cost of answers the role discarded (it did the work anyway)
+    pending_usd            cost of answered calls with no verdict yet
+    net_after_remote_usd   claude_equiv_used - spent (all remote spend charged against the used
+                           answers). Still not a true net: the Claude tokens spent reading and
+                           checking each answer are not measured, hence "net unknown".
+    The last verdict booked for a call wins."""
+    verdicts: dict[str, str] = {}
+    for d in _iter_jsonl(verdict_path):
+        cid, v = d.get("call_id"), d.get("verdict")
+        if isinstance(cid, str) and v in ("used", "discarded"):
+            verdicts[cid] = v
+    out: dict[str, dict] = {}
+    for d in _iter_jsonl(log_path):
+        cid = d.get("call_id")
+        if not isinstance(cid, str):
+            continue
+        backend = d.get("backend") if isinstance(d.get("backend"), str) else "unknown"
+        S = out.setdefault(backend, {"calls": 0, "answered": 0, "refused": 0, "failed": 0,
+                                     "used": 0, "discarded": 0, "pending": 0, "spent_usd": 0.0,
+                                     "claude_equiv_used_usd": 0.0, "gross_saving_used_usd": 0.0,
+                                     "waste_discarded_usd": 0.0, "pending_usd": 0.0})
+        S["calls"] += 1
+        cost = _num(d.get("cost_usd"))
+        S["spent_usd"] += cost
+        if d.get("ok") is not True:
+            S["refused" if d.get("refused") else "failed"] += 1
+            continue
+        S["answered"] += 1
+        v = verdicts.get(cid)
+        if v == "used":
+            S["used"] += 1
+            base = _num(d.get("baseline_cost_usd"))
+            S["claude_equiv_used_usd"] += base
+            S["gross_saving_used_usd"] += base - cost
+        elif v == "discarded":
+            S["discarded"] += 1
+            S["waste_discarded_usd"] += cost
+        else:
+            S["pending"] += 1
+            S["pending_usd"] += cost
+    for S in out.values():
+        S["net_after_remote_usd"] = S["claude_equiv_used_usd"] - S["spent_usd"]
+    return out
+
+
+def format_dollars(summary: dict) -> str:
+    lines = ["REMOTE/LOCAL ASK ($; 'saving' is GROSS: Claude read/check tokens not counted -> net unknown)"]
+    if not summary:
+        lines.append("  (no `apex-router ask` calls in the log)")
+        return "\n".join(lines)
+    for backend, S in sorted(summary.items()):
+        lines.append(
+            f"  {backend:9s} calls={S['calls']} answered={S['answered']} refused={S['refused']} "
+            f"failed={S['failed']}  used={S['used']} discarded={S['discarded']} pending={S['pending']}")
+        lines.append(
+            f"  {'':9s} spent=${S['spent_usd']:.4f}  claude_equiv(used)=${S['claude_equiv_used_usd']:.4f}  "
+            f"gross_saving(used)=${S['gross_saving_used_usd']:.4f}  waste(discarded)=${S['waste_discarded_usd']:.4f}  "
+            f"pending=${S['pending_usd']:.4f}  after_remote=${S['net_after_remote_usd']:.4f} (net unknown)")
+    return "\n".join(lines)
+
+
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else DEFAULT_OFFLOAD_LOG
     agg = aggregate_offload(path)
     print(format_report(agg))
+    return 0
+
+
+def main_cli(argv: list[str]) -> int:
+    """`apex-router offload-report [--log PATH] [--verdicts PATH] [--json]`: tokens, then $."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="apex-router offload-report",
+                                 description="Per-lane offload economics, then the $ view of `ask` calls.")
+    ap.add_argument("--log", type=Path, default=None)
+    ap.add_argument("--verdicts", type=Path, default=None)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    log = a.log or Path.home() / ".apex" / "offload_telemetry.jsonl"
+    verd = a.verdicts or Path.home() / ".apex" / "offload_verdicts.jsonl"
+    agg, dollars = aggregate_offload(log), dollar_summary(log, verd)
+    if a.json:
+        print(json.dumps({"tokens": agg, "dollars": dollars}, indent=2))
+    else:
+        print(format_report(agg))
+        print()
+        print(format_dollars(dollars))
     return 0
 
 

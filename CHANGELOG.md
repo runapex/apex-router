@@ -7,6 +7,15 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- DeepSeek as an advisory offload backend (`docs/RUNBOOK-remote-ask.md`). `apex-router ask
+  --backend deepseek|local` asks one question and books the call (tokens, cost, the Claude baseline
+  tier) in the offload log; `apex-router offload-verdict <id> --used|--discarded` books whether the
+  calling role kept the answer; `apex-router offload-report` adds a $ view (spent, Claude-equivalent
+  of used answers, gross saving, waste, pending; "net unknown" because Claude read/check tokens are
+  not measured). The client (`remote/deepseek_client.py`, stdlib only) refuses secrets, e-mail
+  addresses and overlay `deny_regex` patterns before any network call. The key comes from
+  `DEEPSEEK_API_KEY` or the Keychain and is never logged. Registry: `remote` and `prices` sections
+  (Claude and DeepSeek prices with the date read; DeepSeek peak hours and off-peak factor).
 - ASD-STE100 Simplified Technical English is the default format for agent text (`docs/STE.md`).
   One rules file (`src/apex_router/data/ste_rules.json`) feeds pi (`integrations/pi/apex-ste.ts`
   appends the rules to the system prompt; `APEX_STE=0` turns it off), sub-agent briefs, Claude Code
