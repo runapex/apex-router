@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 
 from . import datasets, identity, protocol
@@ -67,8 +68,18 @@ def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0
                                      headers={AUTH_HEADER: protocol.auth_header(
                                          ident, path, peer.node_id)})
         try:
+            end = time.monotonic() + timeout
             with _OPENER.open(req, timeout=timeout) as resp:
-                raw = resp.read(MAX_RESPONSE_BYTES + 1)
+                chunks, size = [], 0
+                while size <= MAX_RESPONSE_BYTES:      # chunked: a trickling peer hits the deadline
+                    if time.monotonic() > end:
+                        return _result(peer, False, error="timeout")
+                    chunk = resp.read(min(65536, MAX_RESPONSE_BYTES + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                raw = b"".join(chunks)
         except urllib.error.HTTPError as e:
             return _result(peer, False, error=f"http {e.code}")
         except (urllib.error.URLError, OSError) as e:
@@ -94,12 +105,20 @@ def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0
 def _self_shared() -> frozenset:
     """Names this node serves: ``shared`` from mesh.pid (``--share``) when present, else all."""
     try:
-        doc = json.loads((identity.mesh_home() / PID_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = (identity.mesh_home() / PID_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return frozenset(datasets.ALLOWLIST)   # no `mesh up` runs: local read of all datasets
+    except OSError:
+        return frozenset()
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return frozenset()
+    if not isinstance(doc, dict):
+        return frozenset()                 # unreadable state of a live node: fail closed
+    if "shared" not in doc:
         return frozenset(datasets.ALLOWLIST)
-    shared = doc.get("shared") if isinstance(doc, dict) else None
-    if shared is None:
-        return frozenset(datasets.ALLOWLIST)
+    shared = doc["shared"]
     if not isinstance(shared, list):
         return frozenset()                 # malformed: fail closed
     return frozenset(n for n in shared if isinstance(n, str))
@@ -127,16 +146,25 @@ def collect(table: PeerTable, ident: Identity, names: list[str], *,
     remote = [p for p in targets if p.node_id != self_id]
     results: dict[str, dict] = {}
     if remote:
-        workers = max(1, min(int(max_workers), len(remote)))
-        ex = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mesh-collect")
-        try:
-            futs = [(p, ex.submit(fetch, p, ident, names, timeout=timeout)) for p in remote]
-            wait([f for _, f in futs], timeout=timeout)
-            for p, fut in futs:
-                results[p.node_id] = (fut.result() if fut.done()
-                                      else _result(p, False, error="timeout"))
-        finally:
-            ex.shutdown(wait=False, cancel_futures=True)
+        # Daemon threads, not a ThreadPoolExecutor: a running urllib read cannot be cancelled, and
+        # executor workers are joined at interpreter exit. A daemon thread never delays exit.
+        done: dict[str, dict] = {}
+        sem = threading.Semaphore(max(1, int(max_workers)))
+
+        def _one(p: Peer) -> None:
+            with sem:
+                done[p.node_id] = fetch(p, ident, names, timeout=timeout)
+
+        threads = [threading.Thread(target=_one, args=(p,), daemon=True,
+                                    name="mesh-collect") for p in remote]
+        end = time.monotonic() + timeout
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(max(0.0, end - time.monotonic()))
+        for p in remote:
+            r = done.get(p.node_id)
+            results[p.node_id] = dict(r) if r is not None else _result(p, False, error="timeout")
     for p in targets:
         if p.node_id == self_id:
             results[p.node_id] = _read_self(p, names)

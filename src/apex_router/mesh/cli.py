@@ -363,7 +363,7 @@ def _cmd_advise(args) -> int:
     for tt, rec in sorted(advice.items()):
         if not isinstance(rec, dict):
             continue
-        print(f"  {tt:<24} {str(rec.get('verdict')):<14} n={rec.get('n', 0):<6} "
+        print(f"  {tt:<24} {rec.get('verdict')!s:<14} n={rec.get('n', 0):<6} "
               f"rate={float(rec.get('rate') or 0):.3f} "
               f"ci=[{float(rec.get('ci_low') or 0):.3f},{float(rec.get('ci_high') or 0):.3f}]")
     return 0 if res["n_ok"] else 1

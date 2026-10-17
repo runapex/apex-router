@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 DROP_KEYS = frozenset({"error", "path", "telemetry", "session", "session_id", "repo", "cwd",
                        "description", "note", "url"})
 NOT_SHARED = {"error": "not_shared"}
 UNAVAILABLE = {"error": "unavailable"}
-_KEY_RE = re.compile(r"\A[A-Za-z0-9_.:-]{1,64}\Z")
+# Keys: route-log task types are free labels ("code review"), so allow space and common
+# punctuation, but never a path separator or "~" (a path or home dir must not leave the node).
+_KEY_RE = re.compile(r"\A[A-Za-z0-9 _.:+#@(),-]{1,128}\Z")
 
 
 def _pressure() -> Any:

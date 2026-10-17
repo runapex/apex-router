@@ -165,9 +165,9 @@ def test_f2_auth_for_other_node_is_401():
 # ---- F3: dict keys are scrubbed -------------------------------------------------------------
 
 def test_f3_scrub_drops_bad_keys():
-    v = {"ok": 1, "/etc/passwd": 1, "~home": 2, "C:\\x": 3, "a b": 4, "k" * 65: 5,
+    v = {"ok": 1, "/etc/passwd": 1, "~home": 2, "C:\\x": 3, "a b": 4, "k" * 129: 5, "a/b": 9,
          "task:code-v1.2": 6, 7: 8, "nested": {"/x": 1, "fine": [{"~y": 1, "z": 2}]}}
-    assert datasets.scrub(v) == {"ok": 1, "task:code-v1.2": 6, "7": 8,
+    assert datasets.scrub(v) == {"ok": 1, "a b": 4, "task:code-v1.2": 6, "7": 8,
                                  "nested": {"fine": [{"z": 2}]}}
 
 
@@ -447,3 +447,78 @@ def test_e2e_two_nodes_peer_collect_pick(tmp_path, monkeypatch, capsys):
             th.join(10)
     assert rcs == {"node-a": 0, "node-b": 0}
     assert not (ha / "mesh.pid").exists() and not (hb / "mesh.pid").exists()
+
+
+# --- cross-validation pass 2 -------------------------------------------------------------------
+
+def test_x2_scrub_keeps_legit_task_types_drops_paths():
+    from apex_router.mesh import datasets
+    rates = {"code review": {"n": 3}, "refactor (big)": {"n": 1}, "x" * 128: {"n": 1},
+             "/Users/you/private": {"n": 9}, "~/x": {"n": 9}, "a\\b": {"n": 9}, "a/b": {"n": 9}}
+    out = datasets.scrub(rates)
+    assert set(out) == {"code review", "refactor (big)", "x" * 128}
+
+
+def test_x2_self_shared_fails_closed_on_bad_pid(tmp_path, monkeypatch):
+    from apex_router.mesh import collect, datasets
+    monkeypatch.setenv("APEX_MESH_HOME", str(tmp_path))
+    assert collect._self_shared() == frozenset(datasets.ALLOWLIST)      # no pid file: all
+    pid = tmp_path / "mesh.pid"
+    for bad in ("{not json", '{"shared": null}', '[1, 2]', '{"shared": "pressure"}'):
+        pid.write_text(bad)
+        assert collect._self_shared() == frozenset(), bad
+    pid.write_text('{"pid": 1}')                                           # legacy: all
+    assert collect._self_shared() == frozenset(datasets.ALLOWLIST)
+    pid.write_text('{"shared": ["pressure"]}')
+    assert collect._self_shared() == frozenset({"pressure"})
+
+
+def test_x2_collect_threads_are_daemon_and_return_by_deadline(monkeypatch):
+    import threading
+    import time as _t
+
+    from apex_router.mesh import collect, peers
+    gate = threading.Event()
+    monkeypatch.setattr(collect, "fetch", lambda p, *a, **k: (gate.wait(5), {})[1])
+    now = _t.time()
+    card = {"node_id": "a" * 32, "name": "a", "host": "127.0.0.1", "port": 1, "version": "0",
+            "roles": [], "load": 0, "started_at": now}
+    table = peers.PeerTable(card)
+    table.update({**card, "node_id": "b" * 32, "name": "b"})
+    t0 = _t.monotonic()
+    res = collect.collect(table, None, ["pressure"], include_self=False, timeout=0.2)
+    assert _t.monotonic() - t0 < 1.0
+    assert res["nodes"][0]["error"] == "timeout"
+    assert all(th.daemon for th in threading.enumerate() if th.name == "mesh-collect")
+    gate.set()
+
+
+def test_x2_slow_dataset_still_answers_after_header_deadline(monkeypatch, tmp_path):
+    """The absolute deadline guards headers only; a slow handler after the headers still answers."""
+    import http.client
+    import time as _t
+
+    from apex_router.mesh import identity, peers, protocol, server
+    monkeypatch.setenv("APEX_MESH_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "REQUEST_DEADLINE_S", 0.3)
+    ident = identity.init(name="s")
+    card = {"node_id": ident.node_id, "name": "s", "host": "127.0.0.1", "port": 1,
+            "version": "0", "roles": [], "load": 0, "started_at": _t.time()}
+    table = peers.PeerTable(card)
+    from apex_router.mesh import datasets
+    monkeypatch.setitem(datasets.ALLOWLIST, "pressure", lambda: (_t.sleep(0.8), {"level": "GREEN"})[1])
+    srv = server.MeshServer(ident, table, lambda: card, host="127.0.0.1", port=0,
+                            shared=frozenset({"pressure"}))
+    srv.start()
+    try:
+        host, port = srv.address
+        path = "/mesh/v1/data?names=pressure"
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        conn.request("GET", path, headers={server.AUTH_HEADER:
+                                           protocol.auth_header(ident, path, ident.node_id)})
+        resp = conn.getresponse()
+        assert resp.status == 200
+        env = protocol.decode(resp.read(), ident, None, max_bytes=1 << 20)
+        assert env["body"]["data"]["pressure"] == {"level": "GREEN"}
+    finally:
+        srv.stop()

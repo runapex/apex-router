@@ -122,6 +122,16 @@ class _Handler(BaseHTTPRequestHandler):
     error_content_type = "application/json"
     error_message_format = '{"error": "http_%(code)d"}'
 
+    deadline: threading.Timer | None = None   # set by _Server.finish_request
+
+    def parse_request(self) -> bool:
+        # The absolute deadline guards only the pre-auth phase (request line + headers). Once the
+        # headers are in, cancel it, so slow dataset work does not lose a valid response.
+        ok = super().parse_request()
+        if self.deadline is not None:
+            self.deadline.cancel()
+        return ok
+
     # -- silence -----------------------------------------------------------------------------
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -240,9 +250,10 @@ class _Server(ThreadingHTTPServer):
         # shut the socket down at an absolute deadline: the blocked read returns, the handler ends.
         timer = threading.Timer(REQUEST_DEADLINE_S, _shutdown, (request,))
         timer.daemon = True
+        handler = type("_TimedHandler", (self.RequestHandlerClass,), {"deadline": timer})
         timer.start()
         try:
-            super().finish_request(request, client_address)
+            handler(request, client_address, self)
         finally:
             timer.cancel()
 
