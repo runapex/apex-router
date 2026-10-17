@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -108,10 +109,23 @@ def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", b
         code = 4
     except ds.RemoteUnavailable as e:
         extra.update(error=e.reason, cost_usd=round(e.cost_usd, 8), cost_known=e.cost_known)
+    except Exception as e:  # noqa: BLE001 — any other failure: no answer, and the spend is unknown
+        extra.update(error=type(e).__name__, cost_known=False)
     finally:
         rec.latency_ms = int((time.monotonic() - t0) * 1000)
         write_offload(log_path or default_log(), rec)
     return code, answer, call_id
+
+
+def same_file(a: Path, b: Path) -> bool:
+    """True if two paths name one file (same path, a symlink or a hard link)."""
+    a, b = Path(a), Path(b)
+    if a.resolve() == b.resolve():
+        return True
+    try:
+        return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def _known_ids(log_path: Path) -> set[str]:
@@ -136,7 +150,7 @@ def record_verdict(call_id: str, verdict: str, *, log_path: Path | None = None,
     if verdict not in VERDICTS:
         raise ValueError(f"verdict must be one of {VERDICTS}")
     lp, vp = Path(log_path or default_log()), Path(verdict_path or default_verdicts())
-    if lp.resolve() == vp.resolve():
+    if same_file(lp, vp):
         raise ValueError("the verdicts file must not be the offload log")
     if call_id not in _known_ids(lp):
         return 2

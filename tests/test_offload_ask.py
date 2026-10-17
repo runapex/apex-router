@@ -226,3 +226,35 @@ def test_ask_rejects_an_unpriced_model(tmp_path):
     with pytest.raises(ValueError):
         ask.run_ask("q", backend="deepseek", model="deepseek-unknown", log_path=tmp_path / "x",
                     chat_fn=_fake_remote())
+
+
+def test_verdicts_cannot_be_a_hard_link_to_the_log(tmp_path):
+    import os
+    log = tmp_path / "off.jsonl"
+    _, _, cid = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=_fake_remote())
+    hard = tmp_path / "hard.jsonl"
+    os.link(log, hard)
+    with pytest.raises(ValueError):
+        ask.record_verdict(cid, "used", log_path=log, verdict_path=hard)
+    assert rep.main_cli(["--log", str(log), "--verdicts", str(hard)]) == 2
+
+
+def test_unexpected_chat_error_books_unknown_cost_and_exit_3(tmp_path):
+    log = tmp_path / "off.jsonl"
+
+    def chat(prompt, **kw):
+        raise RuntimeError("boom")
+
+    code, answer, _ = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=chat)
+    assert (code, answer) == (3, None)
+    [row] = _rows(log)
+    assert row["cost_known"] is False and row["error"] == "RuntimeError"
+
+
+def test_incomplete_spend_wording_names_the_bound_directions():
+    s = {"calls": 1, "answered": 0, "refused": 0, "failed": 1, "used": 0, "discarded": 0, "pending": 0,
+         "spent_usd": 0.0, "claude_equiv_used_usd": 0.0, "gross_saving_used_usd": 0.0,
+         "waste_discarded_usd": 0.0, "pending_usd": 0.0, "net_after_remote_usd": 0.0,
+         "unknown_cost": 1, "duplicates": 0}
+    text = rep.format_dollars({"deepseek": s})
+    assert "spent is a lower bound" in text and "after_remote is an upper bound" in text

@@ -215,3 +215,27 @@ def test_http_error_is_known_zero_cost_but_timeout_is_unknown():
     with pytest.raises(ds.RemoteUnavailable) as e:
         ds.chat("hello", registry=mr.DEFAULTS, transport=slow, key="k")
     assert e.value.cost_known is False
+
+
+@pytest.mark.parametrize("text", ["password=ab'cdefgh", 'secret: "x"yzabc12'])
+def test_hygiene_secret_values_with_inner_quotes(text):
+    with pytest.raises(ds.RemoteRefused):
+        ds.check_text(text, registry=mr.DEFAULTS)
+
+
+@pytest.mark.parametrize("bad", [False, 0, {}, "", None])
+def test_hygiene_falsy_wrong_type_deny_rules_fail_closed(bad):
+    with pytest.raises(ds.RemoteRefused) as e:
+        ds.check_text("harmless", registry=_reg(deny_regex=bad))
+    assert e.value.reason == "invalid deny rule"
+
+
+def test_incomplete_read_is_unknown_cost():
+    import http.client
+
+    def transport(req, timeout):
+        raise http.client.IncompleteRead(b"partial")
+
+    with pytest.raises(ds.RemoteUnavailable) as e:
+        ds.chat("hello", registry=mr.DEFAULTS, transport=transport, key="k")
+    assert e.value.cost_known is False

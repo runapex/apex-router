@@ -10,6 +10,7 @@ Cost: DeepSeek bills cache-hit input, cache-miss input and output at the registr
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -26,7 +27,7 @@ BACKEND = "deepseek"
 
 _BUILTIN_DENY = [
     (re.compile(r"sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|"
-                r"(?i:password|passwd|secret|token|api[_-]?key)[\"']?\s*[:=]\s*[\"']?[^\s\"']{6,}"), "secret"),
+                r"(?i:password|passwd|secret|token|api[_-]?key)[\"']?\s*[:=]\s*[\"']?\S{6,}"), "secret"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "e-mail address"),
 ]
 
@@ -113,7 +114,7 @@ def check_text(text: str, *, registry: dict | None = None) -> None:
     for rx, what in _BUILTIN_DENY:
         if rx.search(text):
             raise RemoteRefused(what)
-    rules = _cfg(registry).get("deny_regex") or []
+    rules = _cfg(registry).get("deny_regex", [])
     if not isinstance(rules, list):
         raise RemoteRefused("invalid deny rule")  # a broken deny rule fails closed
     for pat in rules:
@@ -172,7 +173,7 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
     except urllib.error.HTTPError as e:
         note = ", no credit" if e.code == 402 else ""
         raise RemoteUnavailable(f"HTTP {e.code}{note}") from None
-    except (OSError, ValueError) as e:  # URLError, timeout, bad JSON: may have billed
+    except (OSError, ValueError, http.client.HTTPException) as e:  # timeout, drop, bad JSON: may have billed
         raise RemoteUnavailable(type(e).__name__, cost_known=False) from None
     ms = int((time.monotonic() - t0) * 1000)
     usage = data.get("usage") if isinstance(data, dict) and isinstance(data.get("usage"), dict) else {}

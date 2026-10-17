@@ -56,8 +56,8 @@ apex-router offload-report [--log PATH] [--verdicts PATH] [--json]
 | `after_remote` | `claude_equiv(used)` − `spent` |
 
 - A timeout or a dropped connection after the request was sent may have billed with no usage
-  returned. The row has `cost_known: false` and the report says "spend incomplete": `spent` and
-  `after_remote` are then lower bounds. An HTTP error response is not billed.
+  returned. The row has `cost_known: false` and the report says "spend incomplete": `spent` is then a
+  lower bound and `after_remote` an upper bound. An HTTP error response is not billed.
 - Each `call_id` counts once; duplicate rows are ignored and reported.
 - All $ savings are GROSS. The Claude tokens spent to read and check each answer are not measured,
   so the report says "net unknown". Do not quote `after_remote` as a net saving.

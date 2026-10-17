@@ -213,7 +213,7 @@ def format_dollars(summary: dict) -> str:
             f"pending=${S['pending_usd']:.4f}  after_remote=${S['net_after_remote_usd']:.4f} (net unknown)")
         if S.get("unknown_cost"):
             lines.append(f"  {'':9s} spend incomplete: {S['unknown_cost']} call(s) may have billed with no usage "
-                         "returned; spent and after_remote are lower bounds")
+                         "returned; spent is a lower bound and after_remote is an upper bound")
         if S.get("duplicates"):
             lines.append(f"  {'':9s} {S['duplicates']} duplicate call row(s) ignored")
     return "\n".join(lines)
@@ -237,7 +237,8 @@ def main_cli(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     log = a.log or Path.home() / ".apex" / "offload_telemetry.jsonl"
     verd = a.verdicts or Path.home() / ".apex" / "offload_verdicts.jsonl"
-    if log.resolve() == verd.resolve():
+    from ..remote.ask import same_file
+    if same_file(log, verd):
         print("apex-router offload-report: the verdicts file must not be the offload log", file=sys.stderr)
         return 2
     agg, dollars = aggregate_offload(log), dollar_summary(log, verd)
