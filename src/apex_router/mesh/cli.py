@@ -1,8 +1,10 @@
 """``apex-router mesh ...`` subcommands (contract: docs/DESIGN-lan-mesh.md, both "CLI" sections).
 
-``up`` is the only command that opens sockets. It writes ``peers.json`` (atomic, 0600) each
-beacon cycle; ``peers``, ``leader``, ``pick``, ``collect`` and ``advise`` read that file and drop
-entries older than PEER_TTL_S. The secret is printed only by ``init --export``.
+``up`` is the only command that opens a listening socket. It writes ``peers.json`` (atomic, 0600)
+each beacon cycle; ``peers``, ``leader``, ``pick``, ``models``, ``ask``, ``collect`` and ``advise``
+read that file and drop entries older than PEER_TTL_S. ``ask`` sends one prompt to the ollama of
+a node that serves the model (``up --serve-model``). The secret is printed only by
+``init --export``.
 """
 from __future__ import annotations
 
@@ -19,10 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from . import collect as collect_mod
-from . import datasets, identity
+from . import datasets, identity, infer, protocol
 from .identity import Identity, MeshNotInitialized
-from .peers import PeerTable, parse_card
-from .protocol import BEACON_INTERVAL_S, DEFAULT_HTTP_PORT, MCAST_PORT, PEER_TTL_S
+from .peers import LOAD_MAX, MODELS_MAX, PeerTable, parse_card, valid_model
+from .protocol import (
+    BEACON_INTERVAL_S,
+    DEFAULT_HTTP_PORT,
+    MAX_DATAGRAM,
+    MCAST_PORT,
+    PEER_TTL_S,
+)
 
 PEERS_FILE = "peers.json"
 PID_FILE = "mesh.pid"
@@ -97,10 +105,13 @@ def _submodule(name: str):
 
 
 def _self_card(ident: Identity, host: str, port: int, roles: list[str], started_at: float,
-               load: int = 0) -> dict:
-    return {"node_id": ident.node_id, "name": ident.name, "host": host, "port": port,
+               load: int = 0, models: list[str] | None = None) -> dict:
+    card = {"node_id": ident.node_id, "name": ident.name, "host": host, "port": port,
             "version": _version(), "roles": list(roles), "load": int(load),
             "started_at": started_at}
+    if models:
+        card["models"] = list(models)     # optional key: old nodes ignore it
+    return card
 
 
 def _local_load() -> int:
@@ -369,6 +380,91 @@ def _cmd_advise(args) -> int:
     return 0 if res["n_ok"] else 1
 
 
+# ---- model calls ----------------------------------------------------------------------------
+
+def _model_rows(view: dict | None) -> list[dict]:
+    rows = []
+    for r in (view or {}).get("peers", []):
+        for m in r.get("models") or []:
+            rows.append({"node_id": r["node_id"], "name": r["name"], "model": m,
+                         "load": r["load"], "self": bool(r.get("self"))})
+    rows.sort(key=lambda x: (x["name"], x["model"], x["node_id"]))
+    return rows
+
+
+def _cmd_models(args) -> int:
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    view = read_peers(ident, home)
+    rows = _model_rows(view)
+    if args.json:
+        _dump({"models": rows})
+        return 0
+    if view is None:
+        print("no fresh peers.json: run `apex-router mesh up`")
+        return 0
+    if not rows:
+        print("no alive node serves a model (`mesh up --serve-model NAME`)")
+    for r in rows:
+        print(f"{'*' if r['self'] else ' '} {r['node_id'][:12]}  {r['name'][:20]:<20}  "
+              f"load={r['load']:<4} {r['model']}")
+    return 0
+
+
+def _pick_model(view: dict, model: str, node: str | None) -> dict | None:
+    cands = [r for r in view["peers"] if model in (r.get("models") or [])]
+    if node:
+        cands = [r for r in cands if node in (r["name"], r["node_id"])]
+    return min(cands, key=lambda r: (r["load"], r["node_id"])) if cands else None
+
+
+def _cmd_ask(args) -> int:
+    if not valid_model(args.model):
+        _err(f"bad --model {args.model!r}")
+        return 2
+    if not 1 <= args.max_tokens <= infer.MAX_TOKENS:
+        _err(f"bad --max-tokens {args.max_tokens}: use 1..{infer.MAX_TOKENS}")
+        return 2
+    prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
+    if not prompt or not prompt.strip():
+        _err("empty prompt")
+        return 2
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    view = read_peers(ident, home)
+    if view is None:
+        _err("no fresh peers.json: run `apex-router mesh up`")
+        return 1
+    row = _pick_model(view, args.model, args.node)
+    if row is None:
+        where = f" named {args.node!r}" if args.node else ""
+        _err(f"no alive node{where} serves model {args.model!r}")
+        if args.json:
+            _dump({"ok": False, "model": args.model, "error": "none"})
+        return 1
+    peer = parse_card(row, now=float(row["last_seen"]))
+    messages = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+    messages.append({"role": "user", "content": prompt})
+    opener = collect_mod._pinned_opener(collect_mod._local_ip())   # stay on the LAN interface
+    res = infer.ask(peer, ident, args.model, messages, args.max_tokens,
+                    timeout=args.timeout, opener=opener)
+    if args.json:
+        _dump(res)
+    elif res["ok"]:
+        print(res["content"])
+        print(f"[{res['name']} {str(res['node_id'])[:12]} {res['model']} "
+              f"{res.get('latency_s')}s finish={res.get('finish_reason')}]", file=sys.stderr)
+    else:
+        _err(f"ask {res['name']} failed: {res.get('error')}")
+    return 0 if res["ok"] else 1
+
+
 # ---- up -------------------------------------------------------------------------------------
 
 def _parse_peer(spec: str) -> tuple[str, int] | None:
@@ -415,6 +511,21 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             _err(f"bad --peer {spec!r}: use HOST or HOST:PORT (UDP beacon port)")
             return 2
         targets.append(got_t)
+    models = list(dict.fromkeys(getattr(args, "serve_model", None) or []))
+    bad_m = [m for m in models if not valid_model(m)]
+    if bad_m or len(models) > MODELS_MAX:
+        _err(f"bad --serve-model: at most {MODELS_MAX} names of [A-Za-z0-9._:/-], <= 128 chars")
+        return 2
+    slots = getattr(args, "infer_slots", 1)
+    if not isinstance(slots, int) or not 1 <= slots <= 4:
+        _err(f"bad --infer-slots {slots}: use 1..4")
+        return 2
+    if models:
+        try:
+            infer.ollama_url()
+        except ValueError as e:
+            _err(str(e))
+            return 2
     started = time.time()
     if not 0 <= args.port <= 65535:
         _err(f"bad --port {args.port}")
@@ -422,19 +533,41 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
     # --port 0 = OS picks; the card needs a valid port until the server reports the real one.
     # load is computed once per beacon cycle (it may run launchctl); card_fn only reads it, so
     # an unauthenticated GET /card never starts a process.
-    state = {"port": args.port or DEFAULT_HTTP_PORT, "load": _local_load()}
+    # While model calls run, the card load also counts them (server.infer_running).
+    state: dict[str, Any] = {"port": args.port or DEFAULT_HTTP_PORT, "load": _local_load(),
+                             "server": None}
 
     def card_fn() -> dict:
-        return _self_card(ident, host, state["port"], args.role or [], started, state["load"])
+        load = state["load"]
+        srv = state["server"]
+        running = getattr(srv, "infer_running", 0) if srv is not None else 0
+        if isinstance(running, int) and running > 0:
+            load = min(LOAD_MAX, load + running)
+        return _self_card(ident, host, state["port"], args.role or [], started, load, models)
 
     try:
         table = PeerTable(card_fn())
     except ValueError as e:
         _err(f"bad self card: {e}")
         return 2
+    if models:
+        # The beacon drops an announce larger than one datagram: refuse at start, not silently.
+        probe = _self_card(ident, host, 65535, args.role or [], started, LOAD_MAX, models)
+        if len(protocol.encode("announce", probe, ident)) > MAX_DATAGRAM:
+            _err(f"--serve-model names make the beacon card > {MAX_DATAGRAM} bytes; "
+                 "serve fewer or shorter names")
+            return 2
     server_mod, beacon_mod = _submodule("server"), _submodule("beacon")
-    server = server_mod.MeshServer(ident, table, card_fn, host=host, port=args.port,
-                                   shared=shared)
+    server_kw: dict[str, Any] = {"shared": shared}
+    if models:
+        server_kw.update(models=tuple(models), infer_slots=slots)
+    try:
+        server = server_mod.MeshServer(ident, table, card_fn, host=host, port=args.port,
+                                       **server_kw)
+    except ValueError as e:
+        _err(str(e))
+        return 2
+    state["server"] = server
     beacon = None
     pid_path, peers_path = home / PID_FILE, home / PEERS_FILE
     lock_fd = _take_lock(home)
@@ -452,7 +585,8 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         _write_json(pid_path, {"pid": own_pid, "host": host, "port": state["port"],
                                "started_at": started, "shared": sorted(shared)})
         print(f"mesh up: {ident.name} {ident.node_id[:12]} on {host}:{state['port']} "
-              f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s))", flush=True)
+              f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s), "
+              f"serving {len(models)} model(s))", flush=True)
         while True:
             table.update(card_fn())     # refresh self.last_seen so readers see us alive
             snap = table.snapshot()
@@ -524,6 +658,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="extra unicast beacon target; PORT = its UDP beacon port "
                         f"(default {MCAST_PORT}), not the HTTP port")
     p.add_argument("--share", action="append", default=[], metavar="NAME")
+    p.add_argument("--serve-model", action="append", default=[], metavar="NAME",
+                   help="serve this local ollama model to the mesh (POST /mesh/v1/infer); "
+                        "repeatable. Default: no model calls")
+    p.add_argument("--infer-slots", type=int, default=1, metavar="N",
+                   help="parallel model calls (1..4, default 1); more get 429 busy")
     p.set_defaults(fn=_cmd_up)
 
     for name, fn, hlp in (("peers", _cmd_peers, "list alive peers"),
@@ -537,6 +676,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("role")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_pick)
+
+    p = sub.add_parser("models", help="list node, model for every served model")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_models)
+
+    p = sub.add_parser("ask", help="run one chat prompt on a node that serves --model "
+                                   "(exit 0 ok, 1 none or failed, 2 usage)")
+    p.add_argument("--model", required=True)
+    p.add_argument("--node", metavar="NAME", help="node name or node_id")
+    p.add_argument("--max-tokens", type=int, default=1024)
+    p.add_argument("--system", metavar="S")
+    p.add_argument("--timeout", type=float, default=infer.UPSTREAM_TIMEOUT_S)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("prompt", metavar="PROMPT", help='prompt text, or "-" to read stdin')
+    p.set_defaults(fn=_cmd_ask)
 
     p = sub.add_parser("collect", help="fetch and pool datasets from all alive nodes")
     p.add_argument("names", nargs="*", metavar="NAME")

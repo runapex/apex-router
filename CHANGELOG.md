@@ -22,6 +22,10 @@ next tag will carry.
   `errors15m`, `measure`, `route_rates`, `route_advice`, `worker`. Payloads scrubbed of prompt
   text, paths, session ids. Full wire contract, Python API and CLI in
   [docs/DESIGN-lan-mesh.md](docs/DESIGN-lan-mesh.md). No network calls unless you opt in.
+- LAN mesh model calls (opt-in): `mesh up --serve-model NAME` serves the local ollama on
+  `POST /mesh/v1/infer` (signed auth with `body_sha256`, 256 KiB body cap, `--infer-slots` 1..4,
+  429 when full, 502 on upstream error). `mesh models` lists served models; `mesh ask --model M
+  PROMPT` runs one prompt on the least-loaded node. Prompts cross the LAN signed, not encrypted.
 - ASD-STE100 Simplified Technical English is the default format for agent text (`docs/STE.md`).
   One rules file (`src/apex_router/data/ste_rules.json`) feeds pi (`integrations/pi/apex-ste.ts`
   appends the rules to the system prompt; `APEX_STE=0` turns it off), sub-agent briefs, Claude Code

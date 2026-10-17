@@ -7,30 +7,37 @@ Routes (GET only, exact paths):
 - ``/mesh/v1/leader`` -> signed envelope kind ``leader``, body = the leader Peer dict.
 - ``/mesh/v1/data?names=a,b`` -> signed envelope kind ``data``,
   body = ``{"node_id": ..., "data": {name: value}}``. Not-shared names give ``not_shared``.
-- Anything else -> 404. Other methods -> 501.
+- ``POST /mesh/v1/infer`` (only with ``models``, i.e. ``mesh up --serve-model``; else 404) ->
+  signed envelope kind ``infer``. See "Model calls" in the design doc and ``infer.py``.
+- Anything else -> 404. Other methods (and POST to other paths) -> 501.
 
 ``/peers``, ``/leader`` and ``/data`` need header ``X-Apex-Mesh`` = signed envelope kind ``auth``
 with body ``{"path": "<path?query>", "to": "<server node_id>"}``. The server checks MAC, skew,
 kind, path, recipient and replay. Any
 failure gives a plain 401 ``{"error": "unauthorized"}`` with no reason (no oracle).
 
-The socket faces the LAN, so: one bind address (never the wildcard), a request body is never
-read, a 5 s socket timeout, an absolute 5 s deadline per connection, a cap on parallel
-connections, no request log, no traceback.
+The socket faces the LAN, so: one bind address (never the wildcard), a request body is read only
+for an authenticated POST /infer (auth header first, then Content-Length <= 256 KiB, then the body
+under its own 10 s deadline), a 5 s socket timeout, an absolute 5 s deadline for the request line
+and headers, a cap on parallel connections, no request log, no traceback.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import json
 import re
 import socket
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs
 
-from . import datasets, protocol
+from . import datasets, infer, protocol
+from .peers import MODELS_MAX, valid_model
 from .protocol import (  # noqa: F401 -- re-export
     DEFAULT_HTTP_PORT,
     ProtocolError,
@@ -48,12 +55,16 @@ MAX_AUTH_BYTES = 4096            # one auth envelope is ~250 bytes
 MAX_PATH_BYTES = 2048
 MAX_NAMES = 16
 MAX_CONNECTIONS = 32
+BODY_DEADLINE_S = 10.0           # absolute, for the POST body read
+MAX_INFER_SLOTS = 4
+_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_.-]{1,64}\Z")
 
 P_CARD = "/mesh/v1/card"
 P_PEERS = "/mesh/v1/peers"
 P_LEADER = "/mesh/v1/leader"
 P_DATA = "/mesh/v1/data"
+P_INFER = infer.INFER_PATH
 
 
 class _HTTPError(Exception):
@@ -63,31 +74,52 @@ class _HTTPError(Exception):
         self.error = error
 
 
+def _verify_auth(header: str | None, request_path: str, ident: Identity, *,
+                 with_body: bool, now: float | None = None) -> dict | None:
+    """The signed ``auth`` envelope if ``header`` is valid for ``request_path``, else None.
+
+    Checks size, MAC + skew (no replay guard), kind, body keys, body.path, body.to. A GET auth
+    body is exactly ``{path, to}``; a POST auth body is exactly ``{path, to, body_sha256}``. So a
+    header for one method never opens the other. Never raises. The caller does the replay check.
+    """
+    try:
+        if not isinstance(header, str) or not header:
+            return None
+        raw = header.encode("latin-1")         # http.client headers are latin-1 str
+        if len(raw) > MAX_AUTH_BYTES:
+            return None
+        env = protocol.decode(raw, ident, None, now=now, max_bytes=MAX_AUTH_BYTES)
+        if env["kind"] != "auth":
+            return None
+        body = env["body"]
+        want = {"path", "to", "body_sha256"} if with_body else {"path", "to"}
+        if set(body) != want or not isinstance(body["path"], str):
+            return None
+        if body["path"] != request_path or body["to"] != ident.node_id:
+            return None
+        if with_body and not (isinstance(body["body_sha256"], str)
+                              and _SHA256_RE.match(body["body_sha256"])):
+            return None
+        return env
+    except (ProtocolError, UnicodeError, KeyError, TypeError, ValueError):
+        return None
+    except Exception:  # noqa: BLE001 -- fail closed
+        return None
+
+
 def check_auth(header: str | None, request_path: str, ident: Identity,
                guard: protocol.ReplayGuard, *, now: float | None = None) -> bool:
-    """True if ``header`` is a valid ``auth`` envelope for ``request_path``. Never raises.
+    """True if ``header`` is a valid GET ``auth`` envelope for ``request_path``. Never raises.
 
     Order: size, MAC + skew (decode without the guard), kind, body.path, body.to, then replay.
     So a signed message of another kind, path or recipient never takes a slot in the replay
     memory.
     """
-    try:
-        if not isinstance(header, str) or not header:
-            return False
-        raw = header.encode("latin-1")         # http.client headers are latin-1 str
-        if len(raw) > MAX_AUTH_BYTES:
-            return False
-        env = protocol.decode(raw, ident, None, now=now, max_bytes=MAX_AUTH_BYTES)
-        if env["kind"] != "auth":
-            return False
-        body = env["body"]
-        if set(body) != {"path", "to"} or not isinstance(body["path"], str):
-            return False
-        if body["path"] != request_path or body["to"] != ident.node_id:
-            return False
-        return not guard.seen(env["nonce"], float(env["ts"]))
-    except (ProtocolError, UnicodeError, KeyError, TypeError, ValueError):
+    env = _verify_auth(header, request_path, ident, with_body=False, now=now)
+    if env is None:
         return False
+    try:
+        return not guard.seen(env["nonce"], float(env["ts"]))
     except Exception:  # noqa: BLE001 -- fail closed
         return False
 
@@ -208,7 +240,102 @@ class _Handler(BaseHTTPRequestHandler):
     def _not_allowed(self) -> None:
         self._try_error(501, "not_implemented")
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _not_allowed
+    do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _not_allowed
+
+    def do_POST(self) -> None:
+        self.close_connection = True
+        try:
+            target = self.path
+            if not isinstance(target, str) or not target.startswith(P_INFER):
+                raise _HTTPError(501, "not_implemented")    # unchanged v1 behavior
+            if target != P_INFER or not self.server.mesh.models:
+                raise _HTTPError(404, "not_found")
+            self._infer()
+        except _HTTPError as e:
+            self._try_error(e.status, e.error)
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
+        except Exception:  # noqa: BLE001 -- never send a traceback
+            self._try_error(500, "internal")
+
+    # -- POST /mesh/v1/infer -----------------------------------------------------------------
+    def _content_length(self) -> int:
+        if self.headers.get_all("Transfer-Encoding"):
+            raise _HTTPError(411, "length_required")    # chunked bodies are not accepted
+        vals = self.headers.get_all("Content-Length") or []
+        if not vals:
+            raise _HTTPError(411, "length_required")
+        if len(vals) != 1:
+            raise _HTTPError(400, "bad_length")
+        v = vals[0].strip()
+        if not v.isascii() or not v.isdigit() or len(v) > 12:
+            raise _HTTPError(400, "bad_length")
+        n = int(v)
+        if n > infer.MAX_REQUEST_BYTES:
+            raise _HTTPError(413, "too_large")
+        return n
+
+    def _read_body(self, n: int) -> bytes:
+        """Read exactly ``n`` bytes under an absolute BODY_DEADLINE_S. Raises _HTTPError(408)."""
+        timer = threading.Timer(BODY_DEADLINE_S, _shutdown, (self.connection,))
+        timer.daemon = True
+        timer.start()
+        end = time.monotonic() + BODY_DEADLINE_S
+        chunks, got = [], 0
+        try:
+            while got < n:
+                try:
+                    chunk = self.rfile.read1(min(65536, n - got))
+                except (TimeoutError, OSError):
+                    chunk = b""
+                if not chunk or time.monotonic() > end:
+                    raise _HTTPError(408, "body_timeout")
+                chunks.append(chunk)
+                got += len(chunk)
+        finally:
+            timer.cancel()
+        return b"".join(chunks)
+
+    def _infer(self) -> None:
+        mesh = self.server.mesh
+        # 1. Auth header BEFORE any body byte is read (MAC, skew, kind, path, to, body_sha256).
+        hdrs = self.headers.get_all(AUTH_HEADER) or []
+        env = _verify_auth(hdrs[0], P_INFER, mesh.ident, with_body=True) \
+            if len(hdrs) == 1 else None
+        if env is None:
+            raise _HTTPError(401, "unauthorized")
+        # 2. Length rules, 3. body under its own deadline.
+        n = self._content_length()
+        raw = self._read_body(n)
+        # 4. Body hash, then replay. A wrong body does not burn the nonce of the real request.
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), env["body"]["body_sha256"]):
+            raise _HTTPError(401, "unauthorized")
+        if mesh.guard.seen(env["nonce"], float(env["ts"])):
+            raise _HTTPError(401, "unauthorized")
+        # 5. Request shape, served set, slot.
+        try:
+            req = infer.parse_request(raw)
+        except infer.RequestError as e:
+            raise _HTTPError(400, e.code) from None
+        if req["model"] not in mesh.models:
+            raise _HTTPError(403, "not_served")
+        if not mesh.infer_sem.acquire(blocking=False):
+            raise _HTTPError(429, "busy")
+        try:
+            mesh._running(+1)
+            t0 = time.monotonic()
+            try:
+                out = infer.call_upstream(mesh.ollama_url, req)
+            except infer.UpstreamError as e:
+                raise _HTTPError(502, e.reason) from None
+            latency = round(time.monotonic() - t0, 3)
+        finally:
+            mesh._running(-1)
+            mesh.infer_sem.release()
+        self._send_signed("infer", {"node_id": mesh.ident.node_id, "model": req["model"],
+                                    "content": out["content"], "reasoning": out["reasoning"],
+                                    "finish_reason": out["finish_reason"], "usage": out["usage"],
+                                    "latency_s": latency})
 
 
 class _Server(ThreadingHTTPServer):
@@ -276,11 +403,17 @@ class _Server6(_Server):
 
 
 class MeshServer:
-    """HTTP interface of one node. ``shared`` = served dataset names (``datasets.parse_share``)."""
+    """HTTP interface of one node. ``shared`` = served dataset names (``datasets.parse_share``).
+
+    ``models`` = model names served on POST /mesh/v1/infer (empty = route off, 404).
+    ``infer_slots`` = parallel upstream calls (1..4); a full set gives 429 at once.
+    ``ollama`` = upstream base URL (default: $APEX_MESH_OLLAMA or http://127.0.0.1:11434).
+    """
 
     def __init__(self, ident: Identity, table: PeerTable, card_fn: Callable[[], dict], *,
                  host: str, port: int = DEFAULT_HTTP_PORT,
-                 shared: frozenset = frozenset()) -> None:
+                 shared: frozenset = frozenset(), models: tuple | list | frozenset = (),
+                 infer_slots: int = 1, ollama: str | None = None) -> None:
         try:
             addr = ipaddress.ip_address(host)
         except (TypeError, ValueError):
@@ -297,8 +430,29 @@ class MeshServer:
         self.shared = frozenset(n for n in shared if n in datasets.ALLOWLIST)
         self.guard = protocol.ReplayGuard()
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        models = tuple(dict.fromkeys(models or ()))
+        if len(models) > MODELS_MAX or not all(valid_model(m) for m in models):
+            raise ValueError(f"models: at most {MODELS_MAX} names of [A-Za-z0-9._:/-], <= 128 chars")
+        if isinstance(infer_slots, bool) or not isinstance(infer_slots, int) \
+                or not 1 <= infer_slots <= MAX_INFER_SLOTS:
+            raise ValueError(f"infer_slots must be 1..{MAX_INFER_SLOTS}")
+        self.models = frozenset(models)
+        self.ollama_url = infer.ollama_url(ollama) if models else ""
+        self.infer_sem = threading.BoundedSemaphore(infer_slots)
+        self._run_lock = threading.Lock()
+        self._infer_running = 0
         self._httpd: _Server | None = None
         self._thread: threading.Thread | None = None
+
+    def _running(self, delta: int) -> None:
+        with self._run_lock:
+            self._infer_running += delta
+
+    @property
+    def infer_running(self) -> int:
+        """Number of upstream model calls that run now (added to the card ``load``)."""
+        with self._run_lock:
+            return self._infer_running
 
     def card(self) -> dict:
         card = self.card_fn()

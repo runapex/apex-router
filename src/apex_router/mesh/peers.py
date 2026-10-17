@@ -21,11 +21,19 @@ HOST_MAX = 64
 ROLE_MAX = 32
 ROLES_MAX = 16
 LOAD_MAX = 1_000_000
+MODELS_MAX = 16
+MODEL_MAX = 128
 MAX_PEERS = 256                     # bound memory if a key holder floods fake node ids
 _STARTED_MIN, _STARTED_MAX = 0.0, 32503680000.0   # 1970 .. 3000
 
 _NODE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _ROLE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,31}\Z")
+MODEL_RE = re.compile(r"\A[A-Za-z0-9._:/-]{1,128}\Z")
+
+
+def valid_model(v: Any) -> bool:
+    """True for a model name: str, 1..128 chars of ``[A-Za-z0-9._:/-]``."""
+    return isinstance(v, str) and bool(MODEL_RE.match(v))
 
 
 @dataclass
@@ -39,11 +47,13 @@ class Peer:
     load: int
     started_at: float
     last_seen: float
+    models: tuple[str, ...] = ()          # served models (`mesh up --serve-model`); optional
 
     def to_dict(self) -> dict:
         return {"node_id": self.node_id, "name": self.name, "host": self.host,
                 "port": self.port, "version": self.version, "roles": list(self.roles),
-                "load": self.load, "started_at": self.started_at, "last_seen": self.last_seen}
+                "load": self.load, "started_at": self.started_at, "last_seen": self.last_seen,
+                "models": list(self.models)}
 
 
 def _is_int(v: Any) -> bool:
@@ -83,9 +93,14 @@ def parse_card(card: Any, *, now: float) -> Peer | None:
         if isinstance(started, bool) or not isinstance(started, (int, float)) \
                 or not math.isfinite(started) or not _STARTED_MIN <= started <= _STARTED_MAX:
             return None
+        models = card.get("models", [])          # optional: old cards have no models
+        if not isinstance(models, (list, tuple)) or len(models) > MODELS_MAX:
+            return None
+        if not all(valid_model(m) for m in models):
+            return None
         return Peer(node_id=node_id, name=name, host=host, port=port, version=version,
                     roles=tuple(dict.fromkeys(roles)), load=load, started_at=float(started),
-                    last_seen=float(now))
+                    last_seen=float(now), models=tuple(dict.fromkeys(models)))
     except Exception:   # noqa: BLE001 -- contract: a bad card never raises
         return None
 

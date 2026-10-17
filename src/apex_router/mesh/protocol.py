@@ -122,13 +122,18 @@ def encode(kind: str, body: dict, ident: Identity, *, now: float | None = None) 
         raise ProtocolError(f"body is not JSON-safe: {e}") from e
 
 
-def auth_header(ident: Identity, path: str, to: str, *, now: float | None = None) -> str:
+def auth_header(ident: Identity, path: str, to: str, *, now: float | None = None,
+                body_sha256: str | None = None) -> str:
     """``X-Apex-Mesh`` header value: signed ``auth`` envelope, body ``{"path", "to"}``.
 
     ``path`` = request path + query. ``to`` = node_id of the recipient server (no replay of one
-    header to another node of the mesh).
+    header to another node of the mesh). ``body_sha256`` (POST only) = hex sha256 of the exact
+    request body; it is added to the auth body, so the header signs the body too.
     """
-    return encode("auth", {"path": path, "to": to}, ident, now=now).decode("utf-8")
+    body: dict = {"path": path, "to": to}
+    if body_sha256 is not None:
+        body["body_sha256"] = body_sha256
+    return encode("auth", body, ident, now=now).decode("utf-8")
 
 
 def decode(data: bytes, ident: Identity, guard: ReplayGuard | None,

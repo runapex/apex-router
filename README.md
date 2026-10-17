@@ -781,6 +781,10 @@ other node (default 47777), not its HTTP port. Each HTTP request carries a signe
 that names the recipient node, so it cannot be replayed to another node. Use `--role R` and
 `mesh pick R` to send work to the least-loaded node with that role. `mesh leader` shows the elected leader.
 
+Model calls (opt-in): `mesh up --serve-model qwen3:8b` lets mesh nodes run prompts on this node's local ollama.
+`apex-router mesh models` lists the served models; `apex-router mesh ask --model qwen3:8b "PROMPT"` runs one prompt on the least-loaded node.
+Prompts cross the LAN in plain text (signed, not encrypted): use model calls only on a trusted LAN.
+
 ### Served datasets (allowlist)
 
 Each dataset is an aggregate (numbers and enums only). No prompt text, no file paths, no session ids.
