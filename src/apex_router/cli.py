@@ -125,6 +125,10 @@ def main(argv=None) -> int:
         # Task outcome labels (weak rules + local judge + gold). Own subcommands, like zeno.
         from .labels import main as _labels
         return _labels(raw[1:])
+    if raw[:1] == ["mesh"]:
+        # Opt-in LAN mesh (docs/DESIGN-lan-mesh.md): discovery, leader, pooled metrics. Own subcommands.
+        from .mesh.cli import main as _mesh
+        return _mesh(raw[1:])
     if raw[:1] == ["zeno"]:
         # Zeno frontier report (diminishing reliability returns, horizon compounding, failure-mode
         # discovery). Own subcommands, so it parses its own args like xval.
@@ -315,6 +319,8 @@ def main(argv=None) -> int:
                                   "export-review --k N --out FILE|import-gold FILE --by NAME|"
                                   "judge-bench [--models a,b] [--contexts] [--prompts]`",
                    add_help=False)
+    sub.add_parser("mesh", help="opt-in LAN mesh: `mesh init|up|peers|leader|pick|status|collect|advise` "
+                                "(signed, default OFF)", add_help=False)
     sub.add_parser("zeno", help="Zeno frontier: cost per extra nine, p^n horizon vs observed sessions, "
                                 "failure-mode discovery + per-stratum coverage; `zeno report|horizon|"
                                 "ladder|frontier`", add_help=False)

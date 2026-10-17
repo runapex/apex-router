@@ -25,6 +25,9 @@ claude plugin install datapce@datapce
 
 **Privacy.** datapce writes only under `~/.apex-router/` and its own plugin store. It never stores prompt text, file contents, or command text; descriptions are truncated dispatch labels. No network calls. No telemetry to anyone. Repos are counted by a token salted per install, so tokens can't be matched across machines or against precomputed hashes; anyone who can read the local plugin store can still test candidate paths against them. Rows also keep the dispatch description (a label of up to 120 characters that may name a repo or path) and the session id, which Claude Code's local transcript folders map back to a directory. Nothing leaves the machine. (0.4.0 stored an unsalted repo hash; 0.4.1 drops those values on first load.)
 
+The plugin never opens a socket. The optional LAN mesh in the pip backend is the only network
+listener, and it stays off until you run `apex-router mesh up` (see [LAN mesh](#lan-mesh-opt-in)).
+
 The pip package `apex-router` documented below is the optional backend: local model lanes,
 cross-client proxy telemetry, nightly learning. The plugin works without it.
 
@@ -46,6 +49,7 @@ cross-client proxy telemetry, nightly learning. The plugin works without it.
 - [Team skills (private marketplace)](#team-skills-private-marketplace)
 - [Telemetry — reading and sharing it](#telemetry--reading-and-sharing-it)
 - [Pressure gate, review pre-read, and the route-label hook](#pressure-gate-review-pre-read-and-the-route-label-hook)
+- [LAN mesh (opt-in)](#lan-mesh-opt-in)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [Security posture](#security-posture)
@@ -728,6 +732,80 @@ in `input_clipped_chars`. Treat reports as sensitive, including diagnostic tails
 Pure-stdlib; only your configured panel commands call out, receiving the supplied
 diff, requirements, and test output. With no `--panel`/`CLASSIFIER_PANEL` it prints
 an example and exits.
+
+---
+
+## LAN mesh (opt-in)
+
+Find peers on the local network, organize as a cluster, and pool metrics from all machines.
+The mesh is opt-in and default OFF. Nothing listens until you run `apex-router mesh up`.
+
+**Quick start:** Set up a mesh in 6 steps.
+
+1. **Init on machine A.** Create the mesh.
+   ```bash
+   apex-router mesh init --name machine-a
+   ```
+
+2. **Export from A.** Copy the secret to B out of band.
+   ```bash
+   apex-router mesh init --export
+   ```
+
+3. **Import on machine B.** Paste the secret you got from A.
+   ```bash
+   apex-router mesh init --name machine-b --import apexmesh1:...
+   ```
+
+4. **Start mesh on both.** Open the LAN interface on each.
+   ```bash
+   apex-router mesh up   # on A, in the foreground
+   apex-router mesh up   # on B, in another terminal
+   ```
+
+5. **Check peers.** List the nodes each machine sees.
+   ```bash
+   apex-router mesh peers --json
+   ```
+
+6. **Collect metrics.** Pool data from all alive peers.
+   ```bash
+   apex-router mesh collect pressure errors15m measure
+   apex-router mesh advise    # route verdicts over the pooled n of every machine
+   ```
+
+`mesh up` binds one private LAN address, never `0.0.0.0`. Use `--bind IP` to choose it.
+Use `--share NAME` (repeatable, or `none`) to limit the datasets this node serves.
+Use `--peer HOST:PORT` when the network drops multicast. Use `--role R` and `mesh pick R` to
+send work to the least-loaded node with that role. `mesh leader` shows the elected leader.
+
+### Served datasets (allowlist)
+
+Each dataset is an aggregate (numbers and enums only). No prompt text, no file paths, no session ids.
+
+| Name | Source | Contents |
+|---|---|---|
+| `pressure` | `snapshot.pressure_block()` | Level (GREEN/AMBER/RED), causes, families. |
+| `errors15m` | `snapshot.errors_block()` | Error counts by cause (last 15 min). |
+| `measure` | `snapshot.measure_block()` | Limit %, cost, context %. |
+| `route_rates` | `route_log.read_rates()` | Per–task-type: n, escalated, rate, null_ts?. |
+| `route_advice` | `route_advise.advise()` | Local route verdicts. |
+| `worker` | `agents.worker()` | Job counts only; error and label keys dropped. |
+
+### Never served
+
+These are filtered out (scrubbed) and never sent on the LAN:
+- `agents` (repo, session_id).
+- Widget history (session ids).
+- `adapters` (free text).
+- `quality`, `labels/`, `worldmodel/`, raw `route_log.jsonl` rows.
+- Any telemetry rows.
+- Keys named `error`, `path`, `telemetry`, `session`, `session_id`, `repo`, `cwd`, `description`, `note`, `url`.
+- Strings that start with `/` or `~` or contain `\\`.
+
+Every dataset that fails to compute returns `{"error": "unavailable"}` for that name.
+
+**Design:** See [docs/DESIGN-lan-mesh.md](docs/DESIGN-lan-mesh.md) for the full security model, wire protocol, Python API, and CLI reference.
 
 ---
 

@@ -16,6 +16,12 @@ next tag will carry.
   addresses and overlay `deny_regex` patterns before any network call. The key comes from
   `DEEPSEEK_API_KEY` or the Keychain and is never logged. Registry: `remote` and `prices` sections
   (Claude and DeepSeek prices with the date read; DeepSeek peak hours and off-peak factor).
+- LAN mesh (opt-in, default OFF): apex-router nodes find each other on the local network,
+  organize as a cluster, and pool metrics. Run `apex-router mesh init` on machine A, export
+  the secret, import on B, then `apex-router mesh up` on both. Served datasets: `pressure`,
+  `errors15m`, `measure`, `route_rates`, `route_advice`, `worker`. Payloads scrubbed of prompt
+  text, paths, session ids. Full wire contract, Python API and CLI in
+  [docs/DESIGN-lan-mesh.md](docs/DESIGN-lan-mesh.md). No network calls unless you opt in.
 - ASD-STE100 Simplified Technical English is the default format for agent text (`docs/STE.md`).
   One rules file (`src/apex_router/data/ste_rules.json`) feeds pi (`integrations/pi/apex-ste.ts`
   appends the rules to the system prompt; `APEX_STE=0` turns it off), sub-agent briefs, Claude Code
