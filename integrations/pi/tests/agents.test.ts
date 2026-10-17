@@ -402,3 +402,11 @@ test("builtin coordinator: high thinking, depth 2, mentions xval and cwd", () =>
 	assert.match(c.prompt, /xval/);
 	assert.match(c.prompt, /cwd/);
 });
+
+test("childEnv: depth never passes MAX_TREE_DEPTH + 1, even from a bad parent depth (xval pass 2)", () => {
+	for (const bad of ["junk", "NaN", "-1", "-Infinity", "0.5", "99"]) {
+		const e = childEnv({ APEX_AGENT_DEPTH: bad }, "x", 9);
+		assert.ok(Number(e.APEX_AGENT_DEPTH) <= 4, bad);
+		assert.ok(Number(e.APEX_AGENT_DEPTH) >= Number(e.APEX_AGENT_MAX_DEPTH), bad); // cannot spawn
+	}
+});

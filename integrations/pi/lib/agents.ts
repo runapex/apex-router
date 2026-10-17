@@ -123,7 +123,7 @@ export function readPressure(path = join(homedir(), ".apex-router", "pressure.js
 export const MAX_TREE_DEPTH = 3;
 export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number): NodeJS.ProcessEnv {
 	const parent = Number(env.APEX_AGENT_DEPTH ?? "0");
-	const depth = (Number.isInteger(parent) && parent >= 0 ? parent : MAX_TREE_DEPTH) + 1;
+	const depth = Math.min((Number.isInteger(parent) && parent >= 0 ? parent : MAX_TREE_DEPTH) + 1, MAX_TREE_DEPTH + 1);
 	const extra = maxDepth !== undefined && Number.isInteger(maxDepth) && maxDepth > 1 ? maxDepth - 1 : 0;
 	const max = Math.min(depth + extra, MAX_TREE_DEPTH);
 	return { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_MAX_DEPTH: String(max), APEX_AGENT_JOB: jobId };

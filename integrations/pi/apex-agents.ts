@@ -22,7 +22,11 @@ import { FINAL, JobManager, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
-const depth = () => Number(process.env.APEX_AGENT_DEPTH ?? "0");
+// A bad depth value (junk, NaN, negative, fraction) counts as "at the ceiling": it can never spawn.
+const depth = () => {
+	const n = Number(process.env.APEX_AGENT_DEPTH ?? "0");
+	return Number.isInteger(n) && n >= 0 ? n : 3;
+};
 // Clamp: a bad or huge env value never allows more than 3 levels.
 const maxDepth = () => {
 	const n = Number(process.env.APEX_AGENT_MAX_DEPTH ?? "1");
