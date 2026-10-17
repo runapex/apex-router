@@ -117,17 +117,16 @@ export function readPressure(path = join(homedir(), ".apex-router", "pressure.js
 	}
 }
 
-/** Env of a child job: depth + 1. A per-job max depth may only RAISE the inherited limit for that
- *  subtree up to MAX_DEPTH_CAP, and a child's max is never above the cap, so a tree stays bounded. */
+/** Env of a child job. The child's spawn limit comes ONLY from its own agent definition, never from the
+ *  inherited env: a plain child (no maxDepth) gets max = its depth, so it cannot spawn; a child with
+ *  maxDepth N may nest N - 1 more levels. Hard ceiling MAX_TREE_DEPTH, and bad inputs mean "leaf". */
+export const MAX_TREE_DEPTH = 3;
 export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number): NodeJS.ProcessEnv {
-	const depth = Number(env.APEX_AGENT_DEPTH ?? "0") + 1;
-	const inherited = Number(env.APEX_AGENT_MAX_DEPTH ?? "1");
-	const out: NodeJS.ProcessEnv = { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_JOB: jobId };
-	if (maxDepth !== undefined && Number.isFinite(maxDepth)) {
-		// The coordinator runs at `depth`; it may start children while depth < its max.
-		out.APEX_AGENT_MAX_DEPTH = String(Math.min(Math.max(depth + maxDepth - 1, inherited), 3));
-	}
-	return out;
+	const parent = Number(env.APEX_AGENT_DEPTH ?? "0");
+	const depth = (Number.isInteger(parent) && parent >= 0 ? parent : MAX_TREE_DEPTH) + 1;
+	const extra = maxDepth !== undefined && Number.isInteger(maxDepth) && maxDepth > 1 ? maxDepth - 1 : 0;
+	const max = Math.min(depth + extra, MAX_TREE_DEPTH);
+	return { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_MAX_DEPTH: String(max), APEX_AGENT_JOB: jobId };
 }
 
 export function defaultArgv(spec: Spec, meta: Meta, dir: string): string[] {

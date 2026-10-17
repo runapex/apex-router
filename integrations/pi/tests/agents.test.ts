@@ -348,25 +348,35 @@ test("no fake child left after the suite", () => {
 import { BUILTIN, loadAgents, parseDepth } from "../lib/agentdefs.ts";
 import { childEnv } from "../lib/agents.ts";
 
-test("childEnv: plain job inherits max depth; depth + 1", () => {
+test("childEnv: plain job is a leaf (max = its depth); depth + 1", () => {
 	const e = childEnv({ APEX_AGENT_DEPTH: "0" }, "j1");
 	assert.equal(e.APEX_AGENT_DEPTH, "1");
-	assert.equal(e.APEX_AGENT_MAX_DEPTH, undefined);
+	assert.equal(e.APEX_AGENT_MAX_DEPTH, "1");
 	assert.equal(e.APEX_AGENT_JOB, "j1");
 });
 
-test("childEnv: coordinator (max_depth 2) from top level may start workers, workers may not", () => {
+test("childEnv: coordinator (max_depth 2) may start workers; its workers are leaves", () => {
 	const coord = childEnv({ APEX_AGENT_DEPTH: "0" }, "c", 2);
-	assert.equal(coord.APEX_AGENT_DEPTH, "1");
-	assert.equal(coord.APEX_AGENT_MAX_DEPTH, "2");              // 1 < 2: may spawn
-	const worker = childEnv(coord, "w");                        // worker inherits max 2
-	assert.equal(worker.APEX_AGENT_DEPTH, "2");
-	assert.ok(Number(worker.APEX_AGENT_DEPTH) >= Number(worker.APEX_AGENT_MAX_DEPTH)); // may not spawn
+	assert.deepEqual([coord.APEX_AGENT_DEPTH, coord.APEX_AGENT_MAX_DEPTH], ["1", "2"]);
+	const worker = childEnv(coord, "w");
+	assert.deepEqual([worker.APEX_AGENT_DEPTH, worker.APEX_AGENT_MAX_DEPTH], ["2", "2"]);
 });
 
-test("childEnv: max depth is capped at 3 and never lowers an inherited limit", () => {
-	assert.equal(childEnv({ APEX_AGENT_DEPTH: "2", APEX_AGENT_MAX_DEPTH: "3" }, "x", 9).APEX_AGENT_MAX_DEPTH, "3");
-	assert.equal(childEnv({ APEX_AGENT_DEPTH: "0", APEX_AGENT_MAX_DEPTH: "3" }, "x", 1).APEX_AGENT_MAX_DEPTH, "3");
+test("childEnv: a max_depth 3 coordinator's default worker is still a leaf (xval P1)", () => {
+	const coord = childEnv({ APEX_AGENT_DEPTH: "0" }, "c", 3);
+	assert.deepEqual([coord.APEX_AGENT_DEPTH, coord.APEX_AGENT_MAX_DEPTH], ["1", "3"]);
+	const worker = childEnv(coord, "w");
+	assert.equal(worker.APEX_AGENT_MAX_DEPTH, worker.APEX_AGENT_DEPTH);
+});
+
+test("childEnv: inherited max is ignored; bad or huge values never exceed depth 3 (xval P1)", () => {
+	for (const bad of ["4", "Infinity", "abc", "-1", "1e9"]) {
+		const e = childEnv({ APEX_AGENT_DEPTH: "1", APEX_AGENT_MAX_DEPTH: bad }, "x");
+		assert.equal(e.APEX_AGENT_MAX_DEPTH, "2");                    // leaf at depth 2
+	}
+	assert.equal(childEnv({ APEX_AGENT_DEPTH: "2" }, "x", 9).APEX_AGENT_MAX_DEPTH, "3");
+	assert.equal(childEnv({ APEX_AGENT_DEPTH: "junk" }, "x", 9).APEX_AGENT_DEPTH, "4"); // bad depth -> beyond cap
+	assert.equal(childEnv({ APEX_AGENT_DEPTH: "junk" }, "x", 9).APEX_AGENT_MAX_DEPTH, "3"); // so it cannot spawn
 });
 
 test("parseDepth and frontmatter: thinking + max_depth; bad values ignored", () => {

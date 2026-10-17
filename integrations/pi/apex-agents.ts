@@ -7,7 +7,8 @@
  * Each job ends in a known state: done, failed, killed, timed_out(idle), timed_out(wall), killed(cost).
  * Briefs and the child system prompt use ASD-STE100 (apex-router default format).
  *
- * Env: APEX_AGENT_CAP (4), APEX_AGENT_MAX_DEPTH (1: children do not start children), APEX_AGENTS_KILL_ON_EXIT=1.
+ * Env: APEX_AGENT_CAP (4), APEX_AGENTS_KILL_ON_EXIT=1. Nesting: a child gets APEX_AGENT_MAX_DEPTH from its agent
+ * definition only (max_depth; default leaf), never from the parent env; hard ceiling depth 3.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
@@ -22,7 +23,11 @@ import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
 const depth = () => Number(process.env.APEX_AGENT_DEPTH ?? "0");
-const maxDepth = () => Number(process.env.APEX_AGENT_MAX_DEPTH ?? "1");
+// Clamp: a bad or huge env value never allows more than 3 levels.
+const maxDepth = () => {
+	const n = Number(process.env.APEX_AGENT_MAX_DEPTH ?? "1");
+	return Number.isInteger(n) && n >= 0 ? Math.min(n, 3) : 1;
+};
 
 const text = (t: string, details: Record<string, unknown> = {}) => ({ content: [{ type: "text" as const, text: t }], details });
 
