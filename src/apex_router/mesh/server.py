@@ -10,11 +10,13 @@ Routes (GET only, exact paths):
 - Anything else -> 404. Other methods -> 501.
 
 ``/peers``, ``/leader`` and ``/data`` need header ``X-Apex-Mesh`` = signed envelope kind ``auth``
-with body ``{"path": "<path?query>"}``. The server checks MAC, skew, kind, path and replay. Any
+with body ``{"path": "<path?query>", "to": "<server node_id>"}``. The server checks MAC, skew,
+kind, path, recipient and replay. Any
 failure gives a plain 401 ``{"error": "unauthorized"}`` with no reason (no oracle).
 
 The socket faces the LAN, so: one bind address (never the wildcard), a request body is never
-read, a 5 s socket timeout, a cap on parallel connections, no request log, no traceback.
+read, a 5 s socket timeout, an absolute 5 s deadline per connection, a cap on parallel
+connections, no request log, no traceback.
 """
 from __future__ import annotations
 
@@ -29,7 +31,11 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs
 
 from . import datasets, protocol
-from .protocol import DEFAULT_HTTP_PORT, ProtocolError
+from .protocol import (  # noqa: F401 -- re-export
+    DEFAULT_HTTP_PORT,
+    ProtocolError,
+    auth_header,
+)
 
 if TYPE_CHECKING:
     from .identity import Identity
@@ -37,6 +43,7 @@ if TYPE_CHECKING:
 
 AUTH_HEADER = "X-Apex-Mesh"
 REQUEST_TIMEOUT_S = 5.0
+REQUEST_DEADLINE_S = 5.0         # absolute, per connection: stops a slowloris client
 MAX_AUTH_BYTES = 4096            # one auth envelope is ~250 bytes
 MAX_PATH_BYTES = 2048
 MAX_NAMES = 16
@@ -60,8 +67,9 @@ def check_auth(header: str | None, request_path: str, ident: Identity,
                guard: protocol.ReplayGuard, *, now: float | None = None) -> bool:
     """True if ``header`` is a valid ``auth`` envelope for ``request_path``. Never raises.
 
-    Order: size, MAC + skew (decode without the guard), kind, body.path, then replay. So a
-    signed message of another kind or path never takes a slot in the replay memory.
+    Order: size, MAC + skew (decode without the guard), kind, body.path, body.to, then replay.
+    So a signed message of another kind, path or recipient never takes a slot in the replay
+    memory.
     """
     try:
         if not isinstance(header, str) or not header:
@@ -73,20 +81,15 @@ def check_auth(header: str | None, request_path: str, ident: Identity,
         if env["kind"] != "auth":
             return False
         body = env["body"]
-        if set(body) != {"path"} or not isinstance(body["path"], str):
+        if set(body) != {"path", "to"} or not isinstance(body["path"], str):
             return False
-        if body["path"] != request_path:
+        if body["path"] != request_path or body["to"] != ident.node_id:
             return False
         return not guard.seen(env["nonce"], float(env["ts"]))
     except (ProtocolError, UnicodeError, KeyError, TypeError, ValueError):
         return False
     except Exception:  # noqa: BLE001 -- fail closed
         return False
-
-
-def auth_header(ident: Identity, path: str, *, now: float | None = None) -> str:
-    """Build the ``X-Apex-Mesh`` header value for a GET of ``path`` (path + query)."""
-    return protocol.encode("auth", {"path": path}, ident, now=now).decode("utf-8")
 
 
 def parse_names(query: str) -> list[str]:
@@ -233,10 +236,25 @@ class _Server(ThreadingHTTPServer):
             request.settimeout(REQUEST_TIMEOUT_S)
         except OSError:
             return
-        super().finish_request(request, client_address)
+        # The timeout is per read; a client that sends 1 byte per 4 s never hits it. So also
+        # shut the socket down at an absolute deadline: the blocked read returns, the handler ends.
+        timer = threading.Timer(REQUEST_DEADLINE_S, _shutdown, (request,))
+        timer.daemon = True
+        timer.start()
+        try:
+            super().finish_request(request, client_address)
+        finally:
+            timer.cancel()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         return                                  # no traceback on stderr
+
+
+def _shutdown(sock: Any) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 class _Server6(_Server):

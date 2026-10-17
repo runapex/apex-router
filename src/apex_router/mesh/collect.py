@@ -7,13 +7,14 @@ locally with ``datasets.read`` (no HTTP). Every remote response is a signed enve
 from __future__ import annotations
 
 import ipaddress
+import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 
-from . import datasets, protocol
+from . import datasets, identity, protocol
 
 if TYPE_CHECKING:
     from .identity import Identity
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 MAX_RESPONSE_BYTES = 1 << 20          # 1 MiB cap on one HTTP response body
 DATA_PATH = "/mesh/v1/data"
 AUTH_HEADER = "X-Apex-Mesh"
+PID_FILE = "mesh.pid"                 # same file as cli.PID_FILE (written by `mesh up`)
 LEVEL_RANK = {"UNKNOWN": 0, "GREEN": 1, "AMBER": 2, "RED": 3}
 
 # Responses are signed envelopes; remember their nonces so a replayed response is rejected.
@@ -48,11 +50,6 @@ def data_path(names: list[str]) -> str:
     return f"{DATA_PATH}?names=" + urllib.parse.quote(",".join(names), safe=",")
 
 
-def auth_header(path: str, ident: Identity) -> str:
-    """Value of the ``X-Apex-Mesh`` header: a signed ``auth`` envelope over ``path``."""
-    return protocol.encode("auth", {"path": path}, ident).decode("ascii")
-
-
 def _result(peer: Peer, ok: bool, data: dict | None = None, error: str | None = None) -> dict:
     out = {"node_id": peer.node_id, "name": peer.name, "ok": ok, "data": data or {}}
     if error is not None:
@@ -67,7 +64,8 @@ def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0
         path = data_path(names)
         url = f"http://{_host_for_url(peer.host)}:{int(peer.port)}{path}"
         req = urllib.request.Request(url, method="GET",
-                                     headers={AUTH_HEADER: auth_header(path, ident)})
+                                     headers={AUTH_HEADER: protocol.auth_header(
+                                         ident, path, peer.node_id)})
         try:
             with _OPENER.open(req, timeout=timeout) as resp:
                 raw = resp.read(MAX_RESPONSE_BYTES + 1)
@@ -93,9 +91,23 @@ def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0
         return _result(peer, False, error=f"error: {type(e).__name__}")
 
 
+def _self_shared() -> frozenset:
+    """Names this node serves: ``shared`` from mesh.pid (``--share``) when present, else all."""
+    try:
+        doc = json.loads((identity.mesh_home() / PID_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset(datasets.ALLOWLIST)
+    shared = doc.get("shared") if isinstance(doc, dict) else None
+    if shared is None:
+        return frozenset(datasets.ALLOWLIST)
+    if not isinstance(shared, list):
+        return frozenset()                 # malformed: fail closed
+    return frozenset(n for n in shared if isinstance(n, str))
+
+
 def _read_self(peer: Peer, names: list[str]) -> dict:
     try:
-        return _result(peer, True, datasets.read(names, datasets.ALLOWLIST))
+        return _result(peer, True, datasets.read(names, _self_shared()))
     except Exception as e:  # noqa: BLE001
         return _result(peer, False, error=f"error: {type(e).__name__}")
 
@@ -105,7 +117,8 @@ def collect(table: PeerTable, ident: Identity, names: list[str], *,
     """Fetch ``names`` from every alive peer in parallel; self is read locally.
 
     Returns ``{"nodes": [fetch results], "pooled": pool(nodes), "n_nodes": int, "n_ok": int}``.
-    Node order follows ``table.alive()`` (sorted by node_id).
+    Node order follows ``table.alive()`` (sorted by node_id). ``timeout`` is also the total
+    deadline of the remote fan-out: a peer with no result by then gives error ``timeout``.
     """
     names = list(names)
     alive = table.alive()
@@ -115,10 +128,15 @@ def collect(table: PeerTable, ident: Identity, names: list[str], *,
     results: dict[str, dict] = {}
     if remote:
         workers = max(1, min(int(max_workers), len(remote)))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mesh-collect") as ex:
-            futs = {p.node_id: ex.submit(fetch, p, ident, names, timeout=timeout) for p in remote}
-            for nid, fut in futs.items():
-                results[nid] = fut.result()
+        ex = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mesh-collect")
+        try:
+            futs = [(p, ex.submit(fetch, p, ident, names, timeout=timeout)) for p in remote]
+            wait([f for _, f in futs], timeout=timeout)
+            for p, fut in futs:
+                results[p.node_id] = (fut.result() if fut.done()
+                                      else _result(p, False, error="timeout"))
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
     for p in targets:
         if p.node_id == self_id:
             results[p.node_id] = _read_self(p, names)

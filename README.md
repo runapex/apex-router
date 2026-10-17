@@ -776,8 +776,10 @@ The mesh is opt-in and default OFF. Nothing listens until you run `apex-router m
 
 `mesh up` binds one private LAN address, never `0.0.0.0`. Use `--bind IP` to choose it.
 Use `--share NAME` (repeatable, or `none`) to limit the datasets this node serves.
-Use `--peer HOST:PORT` when the network drops multicast. Use `--role R` and `mesh pick R` to
-send work to the least-loaded node with that role. `mesh leader` shows the elected leader.
+Use `--peer HOST[:PORT]` when the network drops multicast. PORT is the UDP beacon port of the
+other node (default 47777), not its HTTP port. Each HTTP request carries a signed auth header
+that names the recipient node, so it cannot be replayed to another node. Use `--role R` and
+`mesh pick R` to send work to the least-loaded node with that role. `mesh leader` shows the elected leader.
 
 ### Served datasets (allowlist)
 

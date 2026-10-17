@@ -92,6 +92,8 @@ class ReplayGuard:                       # bounded nonce memory, thread-safe
 def encode(kind: str, body: dict, ident: Identity, *, now: float | None = None) -> bytes
 def decode(data: bytes, ident: Identity, guard: ReplayGuard | None,
            *, now: float | None = None) -> dict            # raises ProtocolError; returns envelope
+def auth_header(ident: Identity, path: str, to: str, *, now: float | None = None) -> str
+    # the only builder of the X-Apex-Mesh header; server.py and collect.py both use it
 
 # peers.py
 @dataclass
@@ -118,7 +120,8 @@ class Beacon:
     def __init__(self, ident, table, card_fn, *, group=MCAST_GROUP, port=MCAST_PORT,
                  iface_ip: str, interval_s=BEACON_INTERVAL_S, targets: list[tuple[str,int]] | None = None)
     def start(self) -> None; def stop(self) -> None       # stop sends `bye`
-    # `targets` = extra unicast destinations (tests, networks with no multicast)
+    # `targets` = extra unicast destinations (tests, networks with no multicast).
+    # Each target is (host, UDP beacon port) of the other node, not its HTTP port.
 
 # server.py
 class MeshServer:
@@ -136,12 +139,15 @@ class MeshServer:
 
 ```
 apex-router mesh init [--name N] [--import TOKEN] [--export] [--force]
-apex-router mesh up [--bind IP] [--port P] [--allow-public] [--role R]... [--peer HOST:PORT]...
+apex-router mesh up [--bind IP] [--port P] [--allow-public] [--role R]... [--peer HOST[:PORT]]...
 apex-router mesh peers [--json]       # reads ~/.apex-router/mesh/peers.json written by `up`
 apex-router mesh leader [--json]
 apex-router mesh pick ROLE [--json]   # exit 0 = found, 1 = none
-apex-router mesh status [--json]      # identity + whether `up` runs (pid file)
+apex-router mesh status [--json]      # identity + whether `up` runs (flock on mesh.lock)
 ```
+
+`--peer` adds a unicast beacon target. PORT is the UDP beacon port of that node (default
+`MCAST_PORT` = 47777), not its HTTP port. Use `[V6]:PORT` for an IPv6 address with a port.
 
 `mesh up` runs in the foreground until SIGINT/SIGTERM. It rewrites `peers.json` (atomic
 replace, 0600) on each beacon cycle, so other tools read the mesh without network access.
@@ -198,8 +204,11 @@ def pool(results: list[dict]) -> dict
 envelope kind `data`, body `{"node_id": ..., "data": {name: value}}`. An unknown or not-shared
 name returns `{"error": "not_shared"}` for that name.
 
-Auth header `X-Apex-Mesh` = signed envelope kind `auth`, body `{"path": "<path?query>"}`.
-The server checks MAC, skew, replay, and that `body.path` equals the request path + query.
+Auth header `X-Apex-Mesh` = signed envelope kind `auth`, body
+`{"path": "<path?query>", "to": "<node_id of the server>"}`. Build it only with
+`protocol.auth_header(ident, path, to)`. The server checks MAC, skew, replay, that `body.path`
+equals the request path + query, and that `body.to` equals its own `node_id`. So a header sent
+to one node cannot be replayed to another node of the mesh.
 
 ### CLI
 

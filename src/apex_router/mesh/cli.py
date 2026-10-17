@@ -7,6 +7,7 @@ entries older than PEER_TTL_S. The secret is printed only by ``init --export``.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib
 import json
 import os
@@ -21,10 +22,11 @@ from . import collect as collect_mod
 from . import datasets, identity
 from .identity import Identity, MeshNotInitialized
 from .peers import PeerTable, parse_card
-from .protocol import BEACON_INTERVAL_S, DEFAULT_HTTP_PORT, PEER_TTL_S
+from .protocol import BEACON_INTERVAL_S, DEFAULT_HTTP_PORT, MCAST_PORT, PEER_TTL_S
 
 PEERS_FILE = "peers.json"
 PID_FILE = "mesh.pid"
+LOCK_FILE = "mesh.lock"            # `up` holds flock(LOCK_EX) on it while it runs
 
 
 # ---- helpers --------------------------------------------------------------------------------
@@ -57,18 +59,36 @@ def _read_json(path: Path) -> Any:
         return None
 
 
-def _pid_alive(pid: Any) -> bool:
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+def _take_lock(home: Path) -> int | None:
+    """Open mesh.lock and take flock(LOCK_EX | LOCK_NB). Returns the fd, or None if held."""
+    identity._ensure_dir(home)
+    fd = os.open(home / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _lock_held(home: Path) -> bool:
+    """True if a live `mesh up` holds mesh.lock. A reused pid cannot fake this."""
+    try:
+        fd = os.open(home / LOCK_FILE, os.O_RDONLY)
+    except OSError:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
         return True
     except OSError:
         return False
-    return True
+    finally:
+        os.close(fd)                       # also drops our shared lock
+    return False
 
 
 def _submodule(name: str):
@@ -87,7 +107,7 @@ def _local_load() -> int:
     """Running agent count for the card ``load``. Never raises."""
     try:
         from .. import agents
-        n = agents.worker().get("running", 0)
+        n = agents.worker().get("queue_running", 0)
         return n if isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 1_000_000 else 0
     except Exception:  # noqa: BLE001
         return 0
@@ -200,7 +220,7 @@ def _cmd_status(args) -> int:
         return 1
     pid_doc = _read_json(home / PID_FILE)
     pid = pid_doc.get("pid") if isinstance(pid_doc, dict) else None
-    running = _pid_alive(pid)
+    running = _lock_held(home)
     view = read_peers(ident, home)
     out = {"initialized": True, "home": str(home), "node_id": ident.node_id,
            "name": ident.name, "mesh_id": ident.mesh_id, "running": running,
@@ -351,6 +371,30 @@ def _cmd_advise(args) -> int:
 
 # ---- up -------------------------------------------------------------------------------------
 
+def _parse_peer(spec: str) -> tuple[str, int] | None:
+    """``HOST``, ``HOST:PORT``, ``[V6]`` or ``[V6]:PORT`` -> (host, UDP beacon port), or None.
+
+    A bare IPv6 address (2+ colons, no brackets) takes the default port.
+    """
+    s = spec.strip()
+    if s.startswith("["):
+        h, sep, rest = s[1:].partition("]")
+        if not sep or (rest and not rest.startswith(":")):
+            return None
+        p = rest[1:] if rest else None
+    elif s.count(":") == 1:
+        h, _, p = s.partition(":")
+    else:
+        h, p = s, None
+    if not h:
+        return None
+    if p is None:
+        return h, MCAST_PORT
+    if not p.isdigit() or not 1 <= int(p) <= 65535:
+        return None
+    return h, int(p)
+
+
 def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S) -> int:
     """Run the node until ``stop`` is set. No signal handling here (testable in a thread)."""
     got = _load_ident()
@@ -366,21 +410,22 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         return 2
     targets = []
     for spec in args.peer or []:
-        h, sep, p = spec.rpartition(":")
-        h = h.strip("[]")
-        if not sep or not h or not p.isdigit() or not 1 <= int(p) <= 65535:
-            _err(f"bad --peer {spec!r}: use HOST:PORT")
+        got_t = _parse_peer(spec)
+        if got_t is None:
+            _err(f"bad --peer {spec!r}: use HOST or HOST:PORT (UDP beacon port)")
             return 2
-        targets.append((h, int(p)))
+        targets.append(got_t)
     started = time.time()
     if not 0 <= args.port <= 65535:
         _err(f"bad --port {args.port}")
         return 2
     # --port 0 = OS picks; the card needs a valid port until the server reports the real one.
-    state = {"port": args.port or DEFAULT_HTTP_PORT}
+    # load is computed once per beacon cycle (it may run launchctl); card_fn only reads it, so
+    # an unauthenticated GET /card never starts a process.
+    state = {"port": args.port or DEFAULT_HTTP_PORT, "load": _local_load()}
 
     def card_fn() -> dict:
-        return _self_card(ident, host, state["port"], args.role or [], started, _local_load())
+        return _self_card(ident, host, state["port"], args.role or [], started, state["load"])
 
     try:
         table = PeerTable(card_fn())
@@ -392,6 +437,11 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
                                    shared=shared)
     beacon = None
     pid_path, peers_path = home / PID_FILE, home / PEERS_FILE
+    lock_fd = _take_lock(home)
+    if lock_fd is None:
+        _err(f"already running (lock {home / LOCK_FILE} is held)")
+        return 1
+    own_pid = os.getpid()
     try:
         server.start()
         state["port"] = int(server.address[1])
@@ -399,7 +449,7 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         beacon = beacon_mod.Beacon(ident, table, card_fn, iface_ip=host,
                                    targets=targets or None)
         beacon.start()
-        _write_json(pid_path, {"pid": os.getpid(), "host": host, "port": state["port"],
+        _write_json(pid_path, {"pid": own_pid, "host": host, "port": state["port"],
                                "started_at": started, "shared": sorted(shared)})
         print(f"mesh up: {ident.name} {ident.node_id[:12]} on {host}:{state['port']} "
               f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s))", flush=True)
@@ -407,9 +457,13 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             table.update(card_fn())     # refresh self.last_seen so readers see us alive
             snap = table.snapshot()
             snap["mesh_id"] = ident.mesh_id
-            _write_json(peers_path, snap)
+            try:
+                _write_json(peers_path, snap)
+            except (OSError, TypeError, ValueError) as e:
+                _err(f"cannot write {PEERS_FILE}: {e}")
             if stop.wait(interval_s):
                 break
+            state["load"] = _local_load()
     finally:
         if beacon is not None:
             try:
@@ -420,10 +474,13 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             server.stop()
         except Exception:  # noqa: BLE001
             pass
-        try:
-            pid_path.unlink()
-        except OSError:
-            pass
+        doc = _read_json(pid_path)
+        if isinstance(doc, dict) and doc.get("pid") == own_pid:
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+        os.close(lock_fd)                  # releases the flock
     print("mesh down", flush=True)
     return 0
 
@@ -435,8 +492,8 @@ def _cmd_up(args) -> int:
         old[sig] = signal.signal(sig, lambda *_: stop.set())
     try:
         return run_up(args, stop)
-    except (OSError, ValueError) as e:
-        _err(f"cannot start: {e}")
+    except Exception as e:  # noqa: BLE001 -- one line, no traceback
+        _err(f"cannot start: {type(e).__name__}: {e}")
         return 1
     finally:
         for sig, h in old.items():
@@ -463,7 +520,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=DEFAULT_HTTP_PORT)
     p.add_argument("--allow-public", action="store_true")
     p.add_argument("--role", action="append", default=[])
-    p.add_argument("--peer", action="append", default=[], metavar="HOST:PORT")
+    p.add_argument("--peer", action="append", default=[], metavar="HOST[:PORT]",
+                   help="extra unicast beacon target; PORT = its UDP beacon port "
+                        f"(default {MCAST_PORT}), not the HTTP port")
     p.add_argument("--share", action="append", default=[], metavar="NAME")
     p.set_defaults(fn=_cmd_up)
 

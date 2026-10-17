@@ -129,7 +129,7 @@ def _get(s, path, headers=None, method="GET"):
 
 
 def _auth(path, ident=None, **kw):
-    return {server.AUTH_HEADER: auth_header(ident or _ident(NODE_B), path, **kw)}
+    return {server.AUTH_HEADER: auth_header(ident or _ident(NODE_B), path, NODE_A, **kw)}
 
 
 def test_server_refuses_wildcard():
@@ -178,7 +178,7 @@ def test_bad_auth_401(srv):
                                              _ident(NODE_B)).decode()},
         {server.AUTH_HEADER: "x" * 5000},
     ]
-    good = auth_header(_ident(NODE_B), p)
+    good = auth_header(_ident(NODE_B), p, NODE_A)
     env = json.loads(good)
     env["body"]["path"] = "/mesh/v1/leader"                             # tampered, MAC stale
     cases.append({server.AUTH_HEADER: json.dumps(env)})
@@ -250,8 +250,8 @@ def test_duplicate_auth_header_401(srv):
     host, port = srv.address
     c = http.client.HTTPConnection(host, port, timeout=5)
     c.putrequest("GET", "/mesh/v1/peers")
-    c.putheader(server.AUTH_HEADER, auth_header(_ident(NODE_B), "/mesh/v1/peers"))
-    c.putheader(server.AUTH_HEADER, auth_header(_ident(NODE_B), "/mesh/v1/peers"))
+    c.putheader(server.AUTH_HEADER, auth_header(_ident(NODE_B), "/mesh/v1/peers", NODE_A))
+    c.putheader(server.AUTH_HEADER, auth_header(_ident(NODE_B), "/mesh/v1/peers", NODE_A))
     c.endheaders()
     assert c.getresponse().status == 401
     c.close()

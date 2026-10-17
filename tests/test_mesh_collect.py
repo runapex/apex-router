@@ -135,7 +135,8 @@ class _Stub:
                 try:
                     env = protocol.decode(self.headers.get("X-Apex-Mesh", "").encode(),
                                           stub.ident, stub.guard)
-                    assert env["kind"] == "auth" and env["body"]["path"] == self.path
+                    assert env["kind"] == "auth" and env["body"] == {"path": self.path,
+                                                                    "to": stub.node_id}
                 except Exception:
                     self.send_response(401)
                     self.end_headers()

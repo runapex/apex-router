@@ -109,10 +109,14 @@ def test_status_uninitialized_and_initialized(home, capsys):
     assert identity.export_secret(ident) not in out and "secret" not in out
     (home / "mesh.pid").write_text(json.dumps({"pid": os.getpid(), "host": "10.0.0.2",
                                                "port": 47778}))
-    rc, out, _ = _run(capsys, "status", "--json")
-    st = json.loads(out)
-    assert st["running"] is True and st["pid"] == os.getpid() and st["bind"] == "10.0.0.2"
-    rc, out, _ = _run(capsys, "status")
+    fd = mesh_cli._take_lock(home)               # a live `up` holds mesh.lock
+    try:
+        rc, out, _ = _run(capsys, "status", "--json")
+        st = json.loads(out)
+        assert st["running"] is True and st["pid"] == os.getpid() and st["bind"] == "10.0.0.2"
+        rc, out, _ = _run(capsys, "status")
+    finally:
+        os.close(fd)
     assert rc == 0 and "running" in out
 
 
@@ -277,7 +281,7 @@ def test_up_port_zero_uses_bound_port(home, monkeypatch):
 def test_up_rejects_bad_peer_and_share(home, monkeypatch, capsys):
     identity.init()
     _fake_modules(monkeypatch, {})
-    for argv in (["up", "--peer", "nohostport"], ["up", "--share", "bogus"], ["up", "--port", "70000"]):
+    for argv in (["up", "--peer", "host:notaport"], ["up", "--share", "bogus"], ["up", "--port", "70000"]):
         args = mesh_cli.build_parser().parse_args(argv)
         assert mesh_cli.run_up(args, threading.Event()) == 2
 

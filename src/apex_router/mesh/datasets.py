@@ -6,12 +6,14 @@ Only aggregates are served. Every value passes through `scrub()`. A failing data
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Iterable
 
 DROP_KEYS = frozenset({"error", "path", "telemetry", "session", "session_id", "repo", "cwd",
                        "description", "note", "url"})
 NOT_SHARED = {"error": "not_shared"}
 UNAVAILABLE = {"error": "unavailable"}
+_KEY_RE = re.compile(r"\A[A-Za-z0-9_.:-]{1,64}\Z")
 
 
 def _pressure() -> Any:
@@ -63,14 +65,15 @@ def _bad_str(s: str) -> bool:
 def scrub(value: Any) -> Any:
     """Drop sensitive keys and path-like strings; recurse into dicts and lists.
 
-    Dict entries with a bad str value are removed; list items that are bad str are removed.
+    Dict entries with a bad key (not ``_KEY_RE``, or a bad str) or a bad str value are removed;
+    list items that are bad str are removed.
     Result is JSON-safe: non-JSON leaf types become str, tuples/sets become lists.
     """
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
             k = k if isinstance(k, str) else str(k)
-            if k in DROP_KEYS:
+            if k in DROP_KEYS or not _KEY_RE.match(k) or _bad_str(k):
                 continue
             if isinstance(v, str) and _bad_str(v):
                 continue
