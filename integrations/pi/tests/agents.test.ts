@@ -343,3 +343,52 @@ test("no fake child left after the suite", () => {
 	const left = execFileSync("ps", ["-A", "-o", "command="], { encoding: "utf8" }).split("\n").filter(l => l.startsWith(process.execPath) && l.includes("fake-pi.mjs"));
 	assert.deepEqual(left, []);
 });
+
+// ---- coordinator: per-agent thinking / max depth -------------------------------------------
+import { BUILTIN, loadAgents, parseDepth } from "../lib/agentdefs.ts";
+import { childEnv } from "../lib/agents.ts";
+
+test("childEnv: plain job inherits max depth; depth + 1", () => {
+	const e = childEnv({ APEX_AGENT_DEPTH: "0" }, "j1");
+	assert.equal(e.APEX_AGENT_DEPTH, "1");
+	assert.equal(e.APEX_AGENT_MAX_DEPTH, undefined);
+	assert.equal(e.APEX_AGENT_JOB, "j1");
+});
+
+test("childEnv: coordinator (max_depth 2) from top level may start workers, workers may not", () => {
+	const coord = childEnv({ APEX_AGENT_DEPTH: "0" }, "c", 2);
+	assert.equal(coord.APEX_AGENT_DEPTH, "1");
+	assert.equal(coord.APEX_AGENT_MAX_DEPTH, "2");              // 1 < 2: may spawn
+	const worker = childEnv(coord, "w");                        // worker inherits max 2
+	assert.equal(worker.APEX_AGENT_DEPTH, "2");
+	assert.ok(Number(worker.APEX_AGENT_DEPTH) >= Number(worker.APEX_AGENT_MAX_DEPTH)); // may not spawn
+});
+
+test("childEnv: max depth is capped at 3 and never lowers an inherited limit", () => {
+	assert.equal(childEnv({ APEX_AGENT_DEPTH: "2", APEX_AGENT_MAX_DEPTH: "3" }, "x", 9).APEX_AGENT_MAX_DEPTH, "3");
+	assert.equal(childEnv({ APEX_AGENT_DEPTH: "0", APEX_AGENT_MAX_DEPTH: "3" }, "x", 1).APEX_AGENT_MAX_DEPTH, "3");
+});
+
+test("parseDepth and frontmatter: thinking + max_depth; bad values ignored", () => {
+	assert.equal(parseDepth("2"), 2);
+	assert.equal(parseDepth("99"), 3);
+	for (const bad of [undefined, "", "0", "-1", "x", "1.5"]) assert.equal(parseDepth(bad), undefined);
+	const dir = mkdtempSync(join(tmpdir(), "agentdefs-"));
+	writeFileSync(join(dir, "c.md"), "---\nname: coord2\ndescription: d\nthinking: high\nmax_depth: 2\n---\nbody\n");
+	writeFileSync(join(dir, "b.md"), "---\nname: bad\nthinking: ultra\nmax_depth: lots\n---\nbody\n");
+	const all = loadAgents(dir);
+	const c = all.find(a => a.name === "coord2")!;
+	assert.equal(c.thinking, "high");
+	assert.equal(c.max_depth, 2);
+	const b = all.find(a => a.name === "bad")!;
+	assert.equal(b.thinking, undefined);
+	assert.equal(b.max_depth, undefined);
+});
+
+test("builtin coordinator: high thinking, depth 2, mentions xval and cwd", () => {
+	const c = BUILTIN.find(a => a.name === "coordinator")!;
+	assert.equal(c.thinking, "high");
+	assert.equal(c.max_depth, 2);
+	assert.match(c.prompt, /xval/);
+	assert.match(c.prompt, /cwd/);
+});

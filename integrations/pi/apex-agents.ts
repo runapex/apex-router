@@ -10,13 +10,13 @@
  * Env: APEX_AGENT_CAP (4), APEX_AGENT_MAX_DEPTH (1: children do not start children), APEX_AGENTS_KILL_ON_EXIT=1.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { loadAgents, type AgentDef } from "./lib/agentdefs.ts";
+import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
 import { FINAL, JobManager, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
@@ -100,6 +100,7 @@ export default function (pi: ExtensionAPI) {
 			worktree: Type.Optional(Type.Boolean({ description: "run in a new git worktree on branch apexjob/<id>" })),
 			model: Type.Optional(Type.String()),
 			provider: Type.Optional(Type.String()),
+			thinking: Type.Optional(Type.String({ description: "off | minimal | low | medium | high | xhigh (default: the agent's, else yours)" })),
 			timeout_s: Type.Optional(Type.Number({ description: "wall-clock limit (default 3600)" })),
 			idle_s: Type.Optional(Type.Number({ description: "no-event limit (default 900; keep above the child's bash timeout)" })),
 			max_cost: Type.Optional(Type.Number({ description: "stop the job above this cost in USD" })),
@@ -109,7 +110,9 @@ export default function (pi: ExtensionAPI) {
 			if (depth() >= maxDepth()) return text(`agent_spawn refused: this is a sub-agent at depth ${depth()} (max ${maxDepth()}). Do the task yourself.`);
 			const def = loadAgents().find(a => a.name === (p.agent ?? "worker"));
 			if (!def) return text(`Unknown agent "${p.agent}". Agents:\n${agentNames()}`);
-			let cwd = p.cwd ?? ctx.cwd;
+			let cwd = p.cwd ? resolvePath(p.cwd.replace(/^~(?=$|\/)/, homedir())) : ctx.cwd;
+			if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return text(`agent_spawn refused: cwd ${cwd} is not a folder.`);
+			if (p.thinking && !THINKING.has(p.thinking)) return text(`agent_spawn refused: thinking must be one of ${[...THINKING].join(", ")}.`);
 			if (p.worktree) {
 				try {
 					cwd = worktree(cwd, `${Date.now().toString(36)}`);
@@ -121,7 +124,8 @@ export default function (pi: ExtensionAPI) {
 				task: p.task, agent: def.name, kind: def.kind ?? "pi", cwd,
 				model: p.model ?? def.model ?? (def.kind === "xval" ? undefined : ctx.model?.id),
 				provider: p.provider ?? def.provider ?? (def.kind === "xval" ? undefined : ctx.model?.provider),
-				thinking: def.kind === "xval" ? undefined : ctx.thinkingLevel,
+				thinking: def.kind === "xval" ? undefined : (p.thinking ?? def.thinking ?? ctx.thinkingLevel),
+				maxDepth: def.kind === "xval" ? undefined : def.max_depth,
 				tools: def.tools, systemPrompt: def.kind === "xval" ? undefined : systemPrompt(def),
 				timeout_s: p.timeout_s, idle_s: p.idle_s, max_cost: p.max_cost,
 			});

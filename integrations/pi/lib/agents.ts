@@ -30,6 +30,7 @@ export type Spec = {
 	provider?: string;
 	tools?: string[];
 	thinking?: string;
+	maxDepth?: number; // APEX_AGENT_MAX_DEPTH for the child; undefined = inherit
 	systemPrompt?: string;
 	timeout_s?: number;
 	idle_s?: number;
@@ -56,6 +57,7 @@ export type Meta = {
 	timeout_s: number;
 	idle_s: number;
 	max_cost?: number;
+	max_depth?: number;
 	session_id: string;
 	resume?: string;
 	exit_code?: number | null;
@@ -113,6 +115,19 @@ export function readPressure(path = join(homedir(), ".apex-router", "pressure.js
 	} catch {
 		return "GREEN";
 	}
+}
+
+/** Env of a child job: depth + 1. A per-job max depth may only RAISE the inherited limit for that
+ *  subtree up to MAX_DEPTH_CAP, and a child's max is never above the cap, so a tree stays bounded. */
+export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number): NodeJS.ProcessEnv {
+	const depth = Number(env.APEX_AGENT_DEPTH ?? "0") + 1;
+	const inherited = Number(env.APEX_AGENT_MAX_DEPTH ?? "1");
+	const out: NodeJS.ProcessEnv = { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_JOB: jobId };
+	if (maxDepth !== undefined && Number.isFinite(maxDepth)) {
+		// The coordinator runs at `depth`; it may start children while depth < its max.
+		out.APEX_AGENT_MAX_DEPTH = String(Math.min(Math.max(depth + maxDepth - 1, inherited), 3));
+	}
+	return out;
 }
 
 export function defaultArgv(spec: Spec, meta: Meta, dir: string): string[] {
@@ -336,7 +351,7 @@ export class JobManager {
 			id, state: "queued", agent: spec.agent ?? "worker", kind: spec.kind ?? "pi", task: spec.task,
 			cwd: spec.cwd ?? process.cwd(), argv: [], created: now,
 			timeout_s: spec.timeout_s ?? this.o.defaultTimeoutS, idle_s: spec.idle_s ?? this.o.defaultIdleS,
-			max_cost: spec.max_cost, session_id: `apexjob-${id}`, usage: { turns: 0, input: 0, output: 0, cost: 0 },
+			max_cost: spec.max_cost, max_depth: spec.maxDepth, session_id: `apexjob-${id}`, usage: { turns: 0, input: 0, output: 0, cost: 0 },
 			parentSession: spec.parentSession, parent_pid: process.pid, owner: this.self,
 		};
 		m.argv = this.o.argv(spec, m, dir);
@@ -374,7 +389,7 @@ export class JobManager {
 		try {
 			const child = spawn(cmd!, args, {
 				cwd: m.cwd, detached: true, stdio: ["ignore", out, err],
-				env: { ...process.env, APEX_AGENT_DEPTH: String(Number(process.env.APEX_AGENT_DEPTH ?? "0") + 1), APEX_AGENT_JOB: m.id },
+				env: childEnv(process.env, m.id, m.max_depth),
 			});
 			pid = child.pid;
 			child.on("error", e => {
