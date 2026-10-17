@@ -26,7 +26,7 @@ BACKEND = "deepseek"
 
 _BUILTIN_DENY = [
     (re.compile(r"sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|"
-                r"(?i:password|passwd|secret|token)\s*[:=]\s*\S{6,}"), "secret"),
+                r"(?i:password|passwd|secret|token|api[_-]?key)[\"']?\s*[:=]\s*[\"']?[^\s\"']{6,}"), "secret"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "e-mail address"),
 ]
 
@@ -43,10 +43,13 @@ class RemoteUnavailable(Exception):
     """No answer (no key, HTTP error, no credit, timeout, empty answer). `cost_usd` is what the
     failed call still billed (an empty or malformed answer that reported usage), else 0."""
 
-    def __init__(self, reason: str, *, cost_usd: float = 0.0):
+    def __init__(self, reason: str, *, cost_usd: float = 0.0, cost_known: bool = True):
         super().__init__(reason)
         self.reason = reason
         self.cost_usd = cost_usd
+        # False when the request may have been processed and billed but no usage came back
+        # (timeout or connection drop after send): the spend is unknown, not zero.
+        self.cost_known = cost_known
 
 
 @dataclass
@@ -77,9 +80,9 @@ def is_peak(now: datetime, *, registry: dict | None = None) -> bool:
 
 def call_cost(model: str, usage: dict, *, peak: bool, registry: dict | None = None) -> float:
     """USD for one call. Without a cache split, all prompt tokens count as cache misses."""
-    p = mr.price(model, registry=registry) or mr.price(model)
+    p = mr.price(model, registry=registry)
     if p is None:
-        return 0.0
+        raise ValueError(f"model {model!r} has no price in the registry")
     hit = int(usage.get("prompt_cache_hit_tokens") or 0)
     miss = usage.get("prompt_cache_miss_tokens")
     miss = int(miss) if miss is not None else max(int(usage.get("prompt_tokens") or 0) - hit, 0)
@@ -96,16 +99,28 @@ def baseline_cost(tier: str, completion_tokens: int, *, registry: dict | None = 
     return None if p is None else completion_tokens * p["out"] / 1e6
 
 
+def check_model(model: str, *, registry: dict | None = None) -> None:
+    """ValueError unless `model` is a listed DeepSeek model with a price (an unpriced call would
+    book as free and inflate the saving)."""
+    if model not in (_cfg(registry).get("models") or []):
+        raise ValueError(f"model {model!r} is not in remote.deepseek.models")
+    if mr.price(model, registry=registry) is None:
+        raise ValueError(f"model {model!r} has no price in the registry")
+
+
 def check_text(text: str, *, registry: dict | None = None) -> None:
     """Raise RemoteRefused if `text` holds a secret, an e-mail address or a denied pattern."""
     for rx, what in _BUILTIN_DENY:
         if rx.search(text):
             raise RemoteRefused(what)
-    for pat in _cfg(registry).get("deny_regex") or []:
+    rules = _cfg(registry).get("deny_regex") or []
+    if not isinstance(rules, list):
+        raise RemoteRefused("invalid deny rule")  # a broken deny rule fails closed
+    for pat in rules:
         try:
             rx = re.compile(pat)
-        except re.error:
-            raise RemoteRefused("denied pattern") from None  # a broken deny rule fails closed
+        except (re.error, TypeError):
+            raise RemoteRefused("invalid deny rule") from None
         if rx.search(text):
             raise RemoteRefused("denied pattern")
 
@@ -139,6 +154,7 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
     """One user-turn chat call. Refuses (before sending) text that fails `check_text`."""
     cfg = _cfg(registry)
     model = model or cfg.get("default_model", "deepseek-v4-pro")
+    check_model(model, registry=registry)
     check_text(prompt, registry=registry)
     key = key or api_key(registry)
     now = now or datetime.now(timezone.utc)
@@ -156,8 +172,8 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
     except urllib.error.HTTPError as e:
         note = ", no credit" if e.code == 402 else ""
         raise RemoteUnavailable(f"HTTP {e.code}{note}") from None
-    except (OSError, ValueError) as e:  # URLError, timeout, bad JSON
-        raise RemoteUnavailable(type(e).__name__) from None
+    except (OSError, ValueError) as e:  # URLError, timeout, bad JSON: may have billed
+        raise RemoteUnavailable(type(e).__name__, cost_known=False) from None
     ms = int((time.monotonic() - t0) * 1000)
     usage = data.get("usage") if isinstance(data, dict) and isinstance(data.get("usage"), dict) else {}
     cost = call_cost(model, usage, peak=peak, registry=registry)

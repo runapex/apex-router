@@ -166,3 +166,63 @@ def test_cli_dispatch_routes_ask_verdict_report(tmp_path, monkeypatch, capsys):
     assert cli.main(["offload-report", "--log", str(log), "--verdicts", str(verd)]) == 0
     out = capsys.readouterr().out
     assert "OFFLOAD ECONOMICS" in out and "REMOTE/LOCAL ASK" in out and "used=1" in out
+
+
+def test_unknown_cost_failure_is_flagged_in_the_report(tmp_path):
+    log, verd = tmp_path / "off.jsonl", tmp_path / "verd.jsonl"
+
+    def chat(prompt, **kw):
+        raise ds.RemoteUnavailable("TimeoutError", cost_known=False)
+
+    code, _, _ = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=chat)
+    assert code == 3
+    [row] = _rows(log)
+    assert row["cost_known"] is False
+    s = rep.dollar_summary(log, verd)["deepseek"]
+    assert s["unknown_cost"] == 1
+    assert "spend incomplete" in rep.format_dollars({"deepseek": s})
+
+
+def test_duplicate_call_rows_count_once(tmp_path):
+    log, verd = tmp_path / "off.jsonl", tmp_path / "verd.jsonl"
+    _, _, cid = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=_fake_remote(cost=0.004))
+    log.write_text(log.read_text() * 2)
+    ask.record_verdict(cid, "used", log_path=log, verdict_path=verd)
+    s = rep.dollar_summary(log, verd)["deepseek"]
+    assert s["calls"] == 1 and s["duplicates"] == 1
+    assert s["gross_saving_used_usd"] == pytest.approx(0.01 - 0.004)
+
+
+def test_verdicts_cannot_share_the_offload_log(tmp_path):
+    log = tmp_path / "off.jsonl"
+    _, _, cid = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=_fake_remote())
+    with pytest.raises(ValueError):
+        ask.record_verdict(cid, "used", log_path=log, verdict_path=log)
+    alias = tmp_path / "alias.jsonl"
+    alias.symlink_to(log)
+    with pytest.raises(ValueError):
+        ask.record_verdict(cid, "used", log_path=log, verdict_path=alias)
+
+
+def test_stray_verdict_rows_in_the_log_are_not_calls(tmp_path):
+    log = tmp_path / "off.jsonl"
+    _, _, cid = ask.run_ask("q", backend="deepseek", log_path=log, chat_fn=_fake_remote())
+    with log.open("a") as f:
+        f.write(json.dumps({"ts_iso": "x", "call_id": cid, "verdict": "used"}) + "\n")
+    assert aggregate_offload(log)["overall"]["n"] == 1
+    assert rep.dollar_summary(log, tmp_path / "none")["deepseek"]["calls"] == 1
+
+
+def test_cli_ask_refuses_remote_on_a_malformed_overlay(tmp_path, monkeypatch, capsys):
+    bad = tmp_path / "models.json"
+    bad.write_text("{not json")
+    monkeypatch.setenv("APEX_MODEL_REGISTRY", str(bad))
+    monkeypatch.setattr(ask, "_backend_chat", lambda backend: (_ for _ in ()).throw(AssertionError("no send")))
+    assert ask.main_ask(["--backend", "deepseek", "q", "--log", str(tmp_path / "off.jsonl")]) == 2
+    assert "overlay" in capsys.readouterr().err
+
+
+def test_ask_rejects_an_unpriced_model(tmp_path):
+    with pytest.raises(ValueError):
+        ask.run_ask("q", backend="deepseek", model="deepseek-unknown", log_path=tmp_path / "x",
+                    chat_fn=_fake_remote())

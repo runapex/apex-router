@@ -36,6 +36,10 @@ apex-router offload-report [--log PATH] [--verdicts PATH] [--json]
   {"remote": {"deepseek": {"deny_regex": ["(?i)private-project-name"]}}}
   ```
 
+- If the overlay exists but cannot be read or parsed, a `deepseek` call stops with exit 2: the
+  private deny patterns would be missing. A deny rule that is not a valid regex refuses every call.
+- `--model` must be in `remote.deepseek.models` and have a price; else exit 2 (an unpriced call
+  would book as free).
 - The key comes from `DEEPSEEK_API_KEY`, else the macOS Keychain service `deepseek-api`. The tool
   never prints or logs it. To store or rotate it:
   `security add-generic-password -U -a "$USER" -s deepseek-api -w`
@@ -51,6 +55,10 @@ apex-router offload-report [--log PATH] [--verdicts PATH] [--json]
 | `pending` | cost of answered calls with no verdict yet |
 | `after_remote` | `claude_equiv(used)` − `spent` |
 
+- A timeout or a dropped connection after the request was sent may have billed with no usage
+  returned. The row has `cost_known: false` and the report says "spend incomplete": `spent` and
+  `after_remote` are then lower bounds. An HTTP error response is not billed.
+- Each `call_id` counts once; duplicate rows are ignored and reported.
 - All $ savings are GROSS. The Claude tokens spent to read and check each answer are not measured,
   so the report says "net unknown". Do not quote `after_remote` as a net saving.
 - In the token table every `ask` row has `gated=false`, so it stays MEASURE-ONLY. Verdicts live in

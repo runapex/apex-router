@@ -151,6 +151,8 @@ def aggregate_offload(log_path: Path) -> dict:
             continue
         if not isinstance(d, dict):            # a bare JSON scalar/list is not a record
             continue
+        if "verdict" in d and "lane" not in d:  # a stray `offload-verdict` row is not a call
+            continue
         n += 1
         lane = d.get("lane") or "unknown"
         if not isinstance(lane, str):

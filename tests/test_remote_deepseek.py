@@ -157,3 +157,61 @@ def test_chat_empty_answer_is_unavailable():
 
     with pytest.raises(ds.RemoteUnavailable):
         ds.chat("hello", registry=mr.DEFAULTS, transport=transport, key="k")
+
+
+@pytest.mark.parametrize("text", [
+    '{"password": "hunter22"}',
+    "{'token': 'abcdefgh123'}",
+    'api_key = "abcdef123456"',
+    "API-KEY: abcdef123456",
+])
+def test_hygiene_refuses_quoted_and_config_secrets(text):
+    with pytest.raises(ds.RemoteRefused) as e:
+        ds.check_text(text, registry=mr.DEFAULTS)
+    assert e.value.reason == "secret"
+
+
+def test_hygiene_broken_or_wrong_type_deny_rules_fail_closed():
+    for bad in (["(unclosed"], "(?i)not-a-list", [123]):
+        with pytest.raises(ds.RemoteRefused) as e:
+            ds.check_text("harmless", registry=_reg(deny_regex=bad))
+        assert e.value.reason == "invalid deny rule"
+
+
+def test_load_strict_raises_on_a_malformed_overlay(tmp_path):
+    p = tmp_path / "models.json"
+    p.write_text('{"remote": {"deepseek": {"deny_regex": ["x"],}}}')
+    with pytest.raises(mr.RegistryError):
+        mr.load_strict(p)
+    p.write_text("[1]")
+    with pytest.raises(mr.RegistryError):
+        mr.load_strict(p)
+    assert mr.load_strict(tmp_path / "missing.json")["remote"]["deepseek"]["deny_regex"] == []
+    p.write_text('{"remote": {"deepseek": {"deny_regex": ["(?i)secretproject"]}}}')
+    assert mr.load_strict(p)["remote"]["deepseek"]["deny_regex"] == ["(?i)secretproject"]
+
+
+def test_chat_rejects_unlisted_or_unpriced_model_before_sending():
+    def transport(req, timeout):
+        raise AssertionError("must not send")
+
+    with pytest.raises(ValueError):
+        ds.chat("hi", model="deepseek-unknown", registry=mr.DEFAULTS, transport=transport, key="k")
+    reg = _reg(models=["deepseek-v4-pro", "deepseek-new"])
+    with pytest.raises(ValueError):
+        ds.chat("hi", model="deepseek-new", registry=reg, transport=transport, key="k")
+
+
+def test_http_error_is_known_zero_cost_but_timeout_is_unknown():
+    def http(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 500, "err", {}, None)
+
+    def slow(req, timeout):
+        raise TimeoutError("read timed out")
+
+    with pytest.raises(ds.RemoteUnavailable) as e:
+        ds.chat("hello", registry=mr.DEFAULTS, transport=http, key="k")
+    assert e.value.cost_known is True and e.value.cost_usd == 0.0
+    with pytest.raises(ds.RemoteUnavailable) as e:
+        ds.chat("hello", registry=mr.DEFAULTS, transport=slow, key="k")
+    assert e.value.cost_known is False

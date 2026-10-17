@@ -157,16 +157,24 @@ def dollar_summary(log_path: Path, verdict_path: Path) -> dict:
         if isinstance(cid, str) and v in ("used", "discarded"):
             verdicts[cid] = v
     out: dict[str, dict] = {}
+    seen: set[str] = set()
     for d in _iter_jsonl(log_path):
         cid = d.get("call_id")
-        if not isinstance(cid, str):
+        if not isinstance(cid, str) or "verdict" in d:   # not an ask call (or a stray verdict row)
             continue
         backend = d.get("backend") if isinstance(d.get("backend"), str) else "unknown"
         S = out.setdefault(backend, {"calls": 0, "answered": 0, "refused": 0, "failed": 0,
                                      "used": 0, "discarded": 0, "pending": 0, "spent_usd": 0.0,
                                      "claude_equiv_used_usd": 0.0, "gross_saving_used_usd": 0.0,
-                                     "waste_discarded_usd": 0.0, "pending_usd": 0.0})
+                                     "waste_discarded_usd": 0.0, "pending_usd": 0.0,
+                                     "unknown_cost": 0, "duplicates": 0})
+        if cid in seen:                                   # a call counts once (first row wins)
+            S["duplicates"] += 1
+            continue
+        seen.add(cid)
         S["calls"] += 1
+        if d.get("cost_known") is False:
+            S["unknown_cost"] += 1
         cost = _num(d.get("cost_usd"))
         S["spent_usd"] += cost
         if d.get("ok") is not True:
@@ -203,6 +211,11 @@ def format_dollars(summary: dict) -> str:
             f"  {'':9s} spent=${S['spent_usd']:.4f}  claude_equiv(used)=${S['claude_equiv_used_usd']:.4f}  "
             f"gross_saving(used)=${S['gross_saving_used_usd']:.4f}  waste(discarded)=${S['waste_discarded_usd']:.4f}  "
             f"pending=${S['pending_usd']:.4f}  after_remote=${S['net_after_remote_usd']:.4f} (net unknown)")
+        if S.get("unknown_cost"):
+            lines.append(f"  {'':9s} spend incomplete: {S['unknown_cost']} call(s) may have billed with no usage "
+                         "returned; spent and after_remote are lower bounds")
+        if S.get("duplicates"):
+            lines.append(f"  {'':9s} {S['duplicates']} duplicate call row(s) ignored")
     return "\n".join(lines)
 
 
@@ -224,6 +237,9 @@ def main_cli(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     log = a.log or Path.home() / ".apex" / "offload_telemetry.jsonl"
     verd = a.verdicts or Path.home() / ".apex" / "offload_verdicts.jsonl"
+    if log.resolve() == verd.resolve():
+        print("apex-router offload-report: the verdicts file must not be the offload log", file=sys.stderr)
+        return 2
     agg, dollars = aggregate_offload(log), dollar_summary(log, verd)
     if a.json:
         print(json.dumps({"tokens": agg, "dollars": dollars}, indent=2))

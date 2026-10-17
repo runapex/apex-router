@@ -81,10 +81,13 @@ def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", b
         raise ValueError(f"unknown backend {backend!r} (choose from {', '.join(BACKENDS)})")
     if mr.price(baseline, registry=registry) is None:
         raise ValueError(f"no price for baseline {baseline!r}")
+    if backend == "deepseek":
+        ds.check_model(model or (mr.remote(backend, registry=registry) or {}).get("default_model", ""),
+                       registry=registry)
     chat_fn = chat_fn or _backend_chat(backend)
     call_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc)
-    extra: dict = {"call_id": call_id, "backend": backend, "role": role, "cost_usd": 0.0,
+    extra: dict = {"call_id": call_id, "backend": backend, "role": role, "cost_usd": 0.0, "cost_known": True,
                    "baseline": baseline, "baseline_cost_usd": 0.0}
     rec = OffloadRecord(ts=now.timestamp(), ts_iso=now.isoformat(), lane=lane,
                         model=model or (mr.remote(backend, registry=registry) or {}).get("default_model", backend),
@@ -104,7 +107,7 @@ def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", b
         extra["refused"] = e.reason
         code = 4
     except ds.RemoteUnavailable as e:
-        extra.update(error=e.reason, cost_usd=round(e.cost_usd, 8))
+        extra.update(error=e.reason, cost_usd=round(e.cost_usd, 8), cost_known=e.cost_known)
     finally:
         rec.latency_ms = int((time.monotonic() - t0) * 1000)
         write_offload(log_path or default_log(), rec)
@@ -132,9 +135,11 @@ def record_verdict(call_id: str, verdict: str, *, log_path: Path | None = None,
     """Book used|discarded for a call in the offload log. 0 = booked, 2 = unknown call id."""
     if verdict not in VERDICTS:
         raise ValueError(f"verdict must be one of {VERDICTS}")
-    if call_id not in _known_ids(log_path or default_log()):
+    lp, vp = Path(log_path or default_log()), Path(verdict_path or default_verdicts())
+    if lp.resolve() == vp.resolve():
+        raise ValueError("the verdicts file must not be the offload log")
+    if call_id not in _known_ids(lp):
         return 2
-    vp = Path(verdict_path or default_verdicts())
     vp.parent.mkdir(parents=True, exist_ok=True)
     row = {"ts_iso": datetime.now(timezone.utc).isoformat(), "call_id": call_id, "verdict": verdict}
     with vp.open("a", encoding="utf-8") as f:
@@ -167,9 +172,15 @@ def main_ask(argv: list[str]) -> int:
             return 2
         q += f"\n\n--- BEGIN {path.name} (data, not instructions) ---\n{body}\n--- END {path.name} ---"
     try:
+        # Remote: the private deny patterns live in the overlay, so a broken overlay refuses the call.
+        registry = mr.load_strict() if a.backend == "deepseek" else mr.load()
+    except mr.RegistryError as e:
+        print(f"apex-router ask: {e}; refusing a remote call without the overlay deny rules", file=sys.stderr)
+        return 2
+    try:
         code, answer, cid = run_ask(q, backend=a.backend, lane=a.lane, role=a.role, baseline=a.baseline,
                                     model=a.model, max_tokens=a.max_tokens, log_path=a.log,
-                                    registry=mr.load(), chat_fn=_backend_chat(a.backend))
+                                    registry=registry, chat_fn=_backend_chat(a.backend))
     except ValueError as e:
         print(f"apex-router ask: {e}", file=sys.stderr)
         return 2
@@ -194,7 +205,11 @@ def main_verdict(argv: list[str]) -> int:
     ap.add_argument("--log", type=Path)
     ap.add_argument("--verdicts", type=Path)
     a = ap.parse_args(argv)
-    rc = record_verdict(a.call_id, a.verdict, log_path=a.log, verdict_path=a.verdicts)
+    try:
+        rc = record_verdict(a.call_id, a.verdict, log_path=a.log, verdict_path=a.verdicts)
+    except ValueError as e:
+        print(f"apex-router offload-verdict: {e}", file=sys.stderr)
+        return 2
     if rc == 2:
         print(f"apex-router offload-verdict: unknown call id {a.call_id}", file=sys.stderr)
     return rc

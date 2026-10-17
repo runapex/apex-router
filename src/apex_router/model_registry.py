@@ -189,6 +189,26 @@ def load(path: Path | None = None) -> dict:
     return dict(DEFAULTS)
 
 
+class RegistryError(Exception):
+    """The overlay exists but cannot be read or parsed (`load_strict` only)."""
+
+
+def load_strict(path: Path | None = None) -> dict:
+    """Like `load`, but an overlay that exists and is unreadable or malformed RAISES RegistryError.
+    For callers whose safety rules live in the overlay (the remote hygiene `deny_regex`): falling
+    back to DEFAULTS there would silently drop the private deny patterns. A missing file is fine."""
+    p = path if path is not None else default_path()
+    if not p.exists():
+        return dict(DEFAULTS)
+    try:
+        overlay = json.loads(p.read_text())
+    except (OSError, ValueError) as e:
+        raise RegistryError(f"cannot read the overlay {p} ({type(e).__name__})") from None
+    if not isinstance(overlay, dict):
+        raise RegistryError(f"the overlay {p} is not a JSON object")
+    return _merge_registry(DEFAULTS, overlay)
+
+
 def tier_model(tier: str, *, registry: dict | None = None) -> str | None:
     """The model id for a frontier tier name ('haiku'|'sonnet'|'opus'|'fable'), else None."""
     reg = DEFAULTS if registry is None else registry
