@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from typing import TYPE_CHECKING, Any
 
-from . import datasets, identity, protocol
+from . import datasets, identity, netif, protocol
 
 if TYPE_CHECKING:
     from .identity import Identity
@@ -31,6 +31,48 @@ LEVEL_RANK = {"UNKNOWN": 0, "GREEN": 1, "AMBER": 2, "RED": 3}
 _RESPONSE_GUARD = protocol.ReplayGuard()
 # LAN traffic must never go through an HTTP(S)_PROXY from the environment.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _pinned_opener(local_ip: str | None):
+    """An opener whose sockets bind to ``local_ip`` and are pinned to its interface.
+
+    A VPN can route the LAN subnet into its tunnel; then a plain connect to a peer goes into the VPN
+    and times out. With no local ip (no `mesh up` runs) this is the plain proxy-free opener.
+    """
+    if not local_ip:
+        return _OPENER
+    import http.client
+    import socket as _socket
+
+    class _Conn(http.client.HTTPConnection):
+        def connect(self) -> None:
+            fam = _socket.AF_INET6 if ":" in local_ip else _socket.AF_INET
+            sock = _socket.socket(fam, _socket.SOCK_STREAM)
+            try:
+                netif.pin_socket(sock, local_ip)
+                sock.settimeout(self.timeout)
+                sock.bind((local_ip, 0))
+                sock.connect((self.host, self.port))
+            except BaseException:
+                sock.close()
+                raise
+            self.sock = sock
+
+    class _Handler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(_Conn, req)
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _Handler)
+
+
+def _local_ip() -> str | None:
+    """The LAN address of the running `mesh up` (mesh.pid ``host``), or None."""
+    try:
+        doc = json.loads((identity.mesh_home() / PID_FILE).read_text(encoding="utf-8"))
+        host = doc.get("host") if isinstance(doc, dict) else None
+        return host if isinstance(host, str) and host else None
+    except (OSError, ValueError):
+        return None
 
 
 def _is_int(v: Any) -> bool:
@@ -58,7 +100,8 @@ def _result(peer: Peer, ok: bool, data: dict | None = None, error: str | None = 
     return out
 
 
-def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0) -> dict:
+def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0,
+          opener: Any = None) -> dict:
     """GET /mesh/v1/data?names=... from one peer. Returns the result dict; never raises."""
     try:
         names = [str(n) for n in names]
@@ -69,7 +112,7 @@ def fetch(peer: Peer, ident: Identity, names: list[str], *, timeout: float = 3.0
                                          ident, path, peer.node_id)})
         try:
             end = time.monotonic() + timeout
-            with _OPENER.open(req, timeout=timeout) as resp:
+            with (opener or _OPENER).open(req, timeout=timeout) as resp:
                 chunks, size = [], 0
                 while size <= MAX_RESPONSE_BYTES:      # chunked: a trickling peer hits the deadline
                     if time.monotonic() > end:
@@ -149,11 +192,12 @@ def collect(table: PeerTable, ident: Identity, names: list[str], *,
         # Daemon threads, not a ThreadPoolExecutor: a running urllib read cannot be cancelled, and
         # executor workers are joined at interpreter exit. A daemon thread never delays exit.
         done: dict[str, dict] = {}
+        opener = _pinned_opener(_local_ip())
         sem = threading.Semaphore(max(1, int(max_workers)))
 
         def _one(p: Peer) -> None:
             with sem:
-                done[p.node_id] = fetch(p, ident, names, timeout=timeout)
+                done[p.node_id] = fetch(p, ident, names, timeout=timeout, opener=opener)
 
         threads = [threading.Thread(target=_one, args=(p,), daemon=True,
                                     name="mesh-collect") for p in remote]

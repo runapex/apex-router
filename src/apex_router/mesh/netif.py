@@ -90,3 +90,66 @@ def choose_bind(bind: str | None, *, allow_public: bool = False) -> str:
         raise ValueError(f"{src} {ip!r} is not a private LAN address; "
                          "pass --allow-public to bind it")
     return out
+
+
+# -- interface pinning (VPN split routes) -----------------------------------------------------
+# A VPN can install a route for the home LAN subnet (for example 10.0.0.0/24 via utun). Then a
+# socket bound to the LAN address still sends its packets into the VPN: bind() sets only the source
+# address, the route table picks the interface. macOS IP_BOUND_IF / IPV6_BOUND_IF pin a socket to
+# one interface, so mesh traffic stays on the LAN. Values from <netinet/in.h> / <netinet6/in6.h>;
+# Python does not export them. On other systems pin_socket is a no-op.
+_IP_BOUND_IF = 25
+_IPV6_BOUND_IF = 125
+
+
+def iface_index_for_ip(ip: str) -> int | None:
+    """Index of the interface that owns ``ip`` (macOS ``ifconfig``), or None. Never raises."""
+    import subprocess
+    import sys
+    if sys.platform != "darwin":
+        return None
+    try:
+        want = _parse(ip)
+        out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=3,
+                             check=False).stdout
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+    name = None
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            name = line.split(":", 1)[0]
+            continue
+        parts = line.split()
+        if name and len(parts) >= 2 and parts[0] in ("inet", "inet6"):
+            addr = parts[1].split("%", 1)[0]
+            try:
+                if ipaddress.ip_address(addr) == want:
+                    return socket.if_nametoindex(name)
+            except (ValueError, OSError):
+                continue
+    return None
+
+
+def pin_socket(sock: socket.socket, ip: str | None) -> bool:
+    """Pin ``sock`` to the interface that owns ``ip`` (macOS). True if pinned. Never raises.
+
+    No-op for loopback, for an unknown address, and on systems without IP_BOUND_IF.
+    """
+    if not ip:
+        return False
+    try:
+        if _parse(ip).is_loopback:
+            return False
+    except ValueError:
+        return False
+    idx = iface_index_for_ip(ip)
+    if idx is None:
+        return False
+    try:
+        if sock.family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, _IPV6_BOUND_IF, idx)
+        else:
+            sock.setsockopt(socket.IPPROTO_IP, _IP_BOUND_IF, idx)
+        return True
+    except OSError:
+        return False

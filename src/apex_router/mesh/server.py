@@ -221,6 +221,9 @@ class _Server(ThreadingHTTPServer):
     def server_bind(self) -> None:
         # Skip HTTPServer.server_bind: it does a reverse-DNS getfqdn() on the bind address.
         import socketserver
+
+        from . import netif
+        netif.pin_socket(self.socket, str(self.server_address[0]))   # replies stay on the LAN
         socketserver.TCPServer.server_bind(self)
         host, port = self.server_address[:2]
         self.server_name, self.server_port = str(host), int(port)

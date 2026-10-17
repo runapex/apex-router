@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from . import protocol
+from . import netif, protocol
 from .protocol import (
     BEACON_INTERVAL_S,
     MAX_DATAGRAM,
@@ -164,6 +164,7 @@ class Beacon:
         try:
             _set_reuse(u)
             u.bind(bind_addr)
+            netif.pin_socket(u, self.iface_ip)       # stay on the LAN when a VPN routes its subnet
             u.setblocking(False)
             if self._family == socket.AF_INET:
                 try:
