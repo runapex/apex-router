@@ -219,3 +219,13 @@ apex-router mesh advise [--json]                             # pooled route_advi
 
 `mesh collect` reads peers from `peers.json` (written by `mesh up`), so a short-lived agent
 command needs no beacon of its own.
+
+## Known limits (v1)
+
+| Limit | Effect | Mitigation |
+|---|---|---|
+| Plain HTTP, signed but not encrypted | A host that sees LAN traffic can read served aggregates. | Serve aggregates only. Use `--share` to limit them. |
+| Pre-auth connection flood | A host that reconnects in a loop can fill the 32 slots for 5 s at a time. | Absolute 5 s header deadline; slots always recover. Use a trusted LAN. |
+| One beacon port per host | Two `mesh up` on one host need different UDP ports. | One node per machine; `mesh.lock` refuses a second `up`. |
+| Wire change in auth body (`to`) | Pre-release nodes without `to` get 401. | Upgrade all nodes together. |
+| Unix only (`fcntl`) | `mesh up` / `mesh status` do not run on Windows. | — |
