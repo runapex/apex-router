@@ -36,7 +36,7 @@ def _measure() -> Any:
 
 def _route_rates() -> Any:
     from .. import route_log
-    return route_log.read_rates()
+    return route_log.redact_models(route_log.read_rates())  # model names stay on this machine
 
 
 def _route_advice() -> Any:

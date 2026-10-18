@@ -36,8 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import stats
 from .route_conformance import default_conformance_path
 from .route_log import (ALL_TIER_RANK, CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, GPT_FAMILY,
-                        OTHER_TIER, default_labeled_path, default_log_path, is_cross_family,
-                        is_gpt_family, tier_family, tier_of)
+                        OTHER_TIER, default_labeled_path, default_log_path, format_models,
+                        is_cross_family, is_gpt_family, note_other_model, tier_family, tier_of)
 from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
 _JOIN_WINDOW_S = 300.0
@@ -711,6 +711,8 @@ def cell_rates(table) -> dict:
             sub["n"] += 1
             sub["escalated"] += 1 if escalated else 0
             sub["rate"] = sub["escalated"] / sub["n"]
+            if tier is None:
+                note_other_model(sub, row.get("model"))
             if (tier_family(tier) == GPT_FAMILY or row.get("tier_family") == GPT_FAMILY
                     or (tier is None and is_gpt_family(row.get("model")))):
                 continue
@@ -873,6 +875,8 @@ def main(argv=None) -> int:
             for tier in sorted(by_tier, key=lambda t: (tier_family(t) or "~", ALL_TIER_RANK.get(t, 99), t)):
                 b = by_tier[tier]
                 print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
+                if b.get("models"):
+                    print(f"    models: {format_models(b['models'])}")
         if st.get("cross_family"):
             print(f"\n  cross_family rows (Claude <-> GPT, excluded from every rate): {st['cross_family']}")
     except Exception:

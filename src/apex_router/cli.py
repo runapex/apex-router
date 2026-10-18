@@ -430,6 +430,8 @@ def main(argv=None) -> int:
                                                                 route_log.ALL_TIER_RANK.get(t, 99), t)):
                         b = by_tier[tier]
                         print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
+                        if b.get("models"):
+                            print(f"    models: {route_log.format_models(b['models'])}")
         except Exception:
             pass
         return 0

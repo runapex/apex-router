@@ -59,6 +59,10 @@ GPT_FAMILY = "gpt"
 TIER_FAMILY = {**{t: CLAUDE_FAMILY for t in TIER_RANK}, **{t: GPT_FAMILY for t in GPT_TIER_RANK}}
 ALL_TIER_RANK = {**TIER_RANK, **GPT_TIER_RANK}
 OTHER_TIER = "other"  # by_tier bucket for a model that maps to no known tier (kimi, local, auto)
+# by_tier["other"]["models"] counts the raw names behind `other` (local readout only; the mesh
+# dataset gets `redact_models`). Bounded: names are cut, and extra distinct names pool in "(more)".
+MODEL_NAME_MAX = 80
+MODEL_NAMES_MAX = 50
 _DESC_MAX = 200
 _OPTIONAL_STR_FIELDS = ("surface", "agent_id", "tool_use_id", "start_tier", "description",
                         "resolved_model", "parent_agent_id", "family")
@@ -226,6 +230,9 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
     sub["n"] += 1
     sub["escalated"] += 1 if escalated else 0
     sub["rate"] = sub["escalated"] / sub["n"]
+    if tier is None:
+        note_other_model(sub, (rec.get("effective_tier") or rec.get("requested_tier")) if labeled
+                         else (rec.get("start_tier") or rec.get("model")))
     if tier_family(tier) == GPT_FAMILY or (tier is None and is_gpt_family(
             rec.get("start_tier"), rec.get("model"), rec.get("effective_tier"),
             rec.get("requested_tier"))):
@@ -235,6 +242,43 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
     if bad_ts:
         cell["null_ts"] += 1
     cell["rate"] = cell["escalated"] / cell["n"]
+
+
+def note_other_model(sub: dict, name) -> None:
+    """Count the raw model name behind one `other` row in `sub["models"]`."""
+    key = name.strip()[:MODEL_NAME_MAX] if isinstance(name, str) and name.strip() else "(none)"
+    models = sub.setdefault("models", {})
+    if key not in models and len(models) >= MODEL_NAMES_MAX:
+        key = "(more)"
+    models[key] = models.get(key, 0) + 1
+
+
+def format_models(models, limit: int = 8) -> str:
+    """'kimi-k2.6 x2, auto x1' — the most frequent names first, for the local readouts."""
+    if not isinstance(models, dict) or not models:
+        return ""
+    top = sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
+    text = ", ".join(f"{k} x{v}" for k, v in top[:limit])
+    return text + (f", +{len(top) - limit} more" if len(top) > limit else "")
+
+
+def redact_models(rates):
+    """A copy of read_rates/cell_rates output with each `models` dict replaced by
+    `unmapped_ids` (the number of distinct names), for data that leaves this machine."""
+    if not isinstance(rates, dict):
+        return rates
+    out = {}
+    for tt, cell in rates.items():
+        if isinstance(cell, dict) and isinstance(cell.get("by_tier"), dict):
+            by_tier = {}
+            for t, sub in cell["by_tier"].items():
+                if isinstance(sub, dict) and "models" in sub:
+                    sub = {k: v for k, v in sub.items() if k != "models"}
+                    sub["unmapped_ids"] = len(cell["by_tier"][t]["models"] or {})
+                by_tier[t] = sub
+            cell = {**cell, "by_tier": by_tier}
+        out[tt] = cell
+    return out
 
 
 def _row_tier(rec: dict, *, labeled: bool = False) -> str | None:
