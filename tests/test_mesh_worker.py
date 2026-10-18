@@ -508,8 +508,12 @@ def test_settings_written_once_never_overwritten(env):
     deny = doc["permissions"]["deny"]
     for want in ("Bash(git push:*)", "Bash(gh:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(curl:*)",
                  "Bash(wget:*)", "Bash(security:*)", "Read(~/.ssh/**)", "Read(~/.kube/**)",
-                 "Read(~/.config/certbot/**)", "Read(~/.apex-router/mesh/**)"):
+                 "Read(~/.config/certbot/**)", "Read(~/.apex-router/mesh/**)",
+                 "Read(~/.apex-router/mesh-*/mesh.key)", "Edit(~/.apex-router/mesh-*/mesh.key)"):
         assert want in deny
+    # the job worktrees (<mesh home>-jobs, e.g. ~/.apex-router/mesh-jobs) stay readable
+    assert not any(r.startswith(("Read(~/.apex-router/mesh-*", "Edit(~/.apex-router/mesh-*"))
+                   and not r.endswith("/mesh.key)") for r in deny)
     assert oct(p.stat().st_mode & 0o777) == "0o600"
     p.write_text(json.dumps({"permissions": {"allow": ["Read"]}}))
     worker.ensure_settings(env["home"])

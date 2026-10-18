@@ -209,8 +209,8 @@ def _fake_modules(monkeypatch, record):
             return ("192.168.1.5", 50001)
 
     class Beacon:
-        def __init__(self, ident, table, card_fn, *, iface_ip, targets=None):
-            record["beacon_kw"] = {"iface_ip": iface_ip, "targets": targets}
+        def __init__(self, ident, table, card_fn, *, iface_ip, port, targets=None):
+            record["beacon_kw"] = {"iface_ip": iface_ip, "port": port, "targets": targets}
             record["card"] = card_fn()
 
         def start(self):
@@ -259,7 +259,9 @@ def test_up_writes_peers_and_pid_then_stops(home, monkeypatch, capsys):
     assert rc_box == [0]
     assert record["server_kw"] == {"host": "192.168.1.5", "port": 47778,
                                    "shared": frozenset({"pressure"})}
-    assert record["beacon_kw"] == {"iface_ip": "192.168.1.5", "targets": [("10.0.0.9", 47778)]}
+    assert record["beacon_kw"] == {"iface_ip": "192.168.1.5", "port": 47777,
+                                   "targets": [("10.0.0.9", 47778)]}
+    assert pid["beacon_port"] == 47777
     assert record["server_stopped"] and record["beacon_stopped"]
     assert not (home / "mesh.pid").exists()
     assert identity.export_secret(ident) not in (home / "peers.json").read_text()
@@ -281,9 +283,31 @@ def test_up_port_zero_uses_bound_port(home, monkeypatch):
 def test_up_rejects_bad_peer_and_share(home, monkeypatch, capsys):
     identity.init()
     _fake_modules(monkeypatch, {})
-    for argv in (["up", "--peer", "host:notaport"], ["up", "--share", "bogus"], ["up", "--port", "70000"]):
+    for argv in (["up", "--peer", "host:notaport"], ["up", "--share", "bogus"], ["up", "--port", "70000"],
+                 ["up", "--beacon-port", "0"], ["up", "--beacon-port", "70000"]):
         args = mesh_cli.build_parser().parse_args(argv)
         assert mesh_cli.run_up(args, threading.Event()) == 2
+
+
+def test_up_beacon_port_for_beacon_and_bare_peers(home, monkeypatch):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    args = mesh_cli.build_parser().parse_args(
+        ["up", "--beacon-port", "47787", "--peer", "10.0.0.9", "--peer", "10.0.0.8:47777"])
+    stop = threading.Event()
+    stop.set()                                   # one cycle, then stop
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == 0
+    assert record["beacon_kw"]["port"] == 47787
+    assert record["beacon_kw"]["targets"] == [("10.0.0.9", 47787), ("10.0.0.8", 47777)]
+
+
+def test_parse_peer_default_port():
+    assert mesh_cli._parse_peer("h") == ("h", 47777)
+    assert mesh_cli._parse_peer("h", 47787) == ("h", 47787)
+    assert mesh_cli._parse_peer("h:1", 47787) == ("h", 1)
+    assert mesh_cli._parse_peer("fe80::1", 47787) == ("fe80::1", 47787)
+    assert mesh_cli._parse_peer("[fe80::1]:9", 47787) == ("fe80::1", 9)
 
 
 def test_main_help_lists_mesh(capsys):

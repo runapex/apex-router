@@ -46,6 +46,33 @@ Verify pi sees the proxied models:
 pi --list-models | grep -E 'anthropic|moonshotai'
 ```
 
+## 2b. GPT on a ChatGPT subscription through the proxy (optional)
+
+Do this to measure GPT turns: proxy telemetry, mesh `pressure` and `errors15m`.
+pi sends `openai-codex` requests to `<baseUrl>/codex/responses` (default base:
+`https://chatgpt.com/backend-api`). The proxy forwards `upstream + path` unchanged.
+
+1. Start the proxy with the ChatGPT backend as its OpenAI upstream:
+   ```bash
+   APEX_OPENAI_UPSTREAM=https://chatgpt.com/backend-api apex-router serve
+   ```
+2. Add a `baseUrl` to the `openai-codex` provider in `~/.pi/agent/models.json`. Keep any `modelOverrides`:
+   ```json
+   "openai-codex": { "baseUrl": "http://127.0.0.1:8788" }
+   ```
+3. Set `"transport": "sse"` in `~/.pi/agent/settings.json`. The proxy does not relay WebSockets.
+4. Run one pi turn on a GPT model. Then make sure the proxy logged it:
+   ```bash
+   grep -c '"client": *"codex"' ~/.apex/telemetry.jsonl
+   ```
+
+CAUTION: This upstream applies to all OpenAI-wire traffic of this proxy. A Codex CLI on an
+API key (`api.openai.com`) cannot share it. Codex CLI on a ChatGPT login can: use a custom
+provider with `base_url = "http://127.0.0.1:8788/codex"` and `requires_openai_auth = true`.
+
+The ChatGPT login token goes through the proxy in the `Authorization` header. The proxy
+forwards it and does not log it. Bind the proxy to `127.0.0.1` only (the default).
+
 ## 3. Install the per-task router extension
 
 ```bash

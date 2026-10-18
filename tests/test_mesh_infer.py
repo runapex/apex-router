@@ -593,6 +593,7 @@ def test_e2e_two_nodes(tmp_path, monkeypatch, capsys):
 
     class _Beacon(real_beacon.Beacon):
         def __init__(self, ident, table, card_fn, **kw):
+            kw.pop("port", None)                     # up passes --beacon-port; one host needs two
             super().__init__(ident, table, card_fn, port=udp[ident.node_id], interval_s=0.1,
                              **kw)
 

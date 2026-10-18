@@ -20,6 +20,7 @@ Status: v1. Default OFF. Nothing listens and nothing is sent until `apex-router 
   No prompt text, no file contents, no paths, no session ids. Exception: model calls (opt-in,
   see "Model calls") carry the prompt and the answer.
 - All state lives under `~/.apex-router/mesh/` (override: `APEX_MESH_HOME`). Files are mode 0600.
+  Name the home of a second mesh `~/.apex-router/mesh-NAME`: the worker deny rules cover `mesh-*/mesh.key`.
 
 ## Modules (`src/apex_router/mesh/`)
 
@@ -320,7 +321,7 @@ running `mesh up` (same as `collect`). Exit 0 = ok, 1 = no node or the call fail
 |---|---|---|
 | Plain HTTP, signed but not encrypted | A host that sees LAN traffic can read served aggregates. | Serve aggregates only. Use `--share` to limit them. |
 | Pre-auth connection flood | A host that reconnects in a loop can fill the 32 slots for 5 s at a time. | Absolute 5 s header deadline; slots always recover. Use a trusted LAN. |
-| One beacon port per host | Two `mesh up` on one host need different UDP ports. | One node per machine; `mesh.lock` refuses a second `up`. |
+| One beacon port per mesh | Two `mesh up` on one host with the same UDP port share it (SO_REUSEPORT): a unicast announce reaches only one of them. | `mesh.lock` refuses a second `up` on the same home. A second mesh needs its own `APEX_MESH_HOME`, `--port` and `--beacon-port`. |
 | Wire change in auth body (`to`) | Pre-release nodes without `to` get 401. | Upgrade all nodes together. |
 | Unix only (`fcntl`) | `mesh up` / `mesh status` do not run on Windows. | — |
 | Model calls: prompts and answers cross the LAN in plain text, signed but not encrypted | A host that sees LAN traffic can read every prompt and answer. | Use model calls only on a trusted LAN. Do not send secrets in a prompt. |

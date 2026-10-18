@@ -7,6 +7,21 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `mesh up --beacon-port PORT` (default 47777). A host can now run a second mesh next to the
+  first one: give the second node its own home (`APEX_MESH_HOME=~/.apex-router/mesh-NAME`), its
+  own HTTP `--port` and its own beacon port. All nodes of one mesh must use the same beacon port.
+  A bare `--peer HOST` takes the `--beacon-port` value. `mesh.pid` records `beacon_port`.
+  Before, both meshes bound UDP 47777 (SO_REUSEPORT), and a unicast announce reached only one.
+- pi on a ChatGPT subscription through the measuring proxy (`docs/RUNBOOK-pi-integration.md`
+  §2b): `openai-codex` `baseUrl` override, `APEX_OPENAI_UPSTREAM=https://chatgpt.com/backend-api`
+  and `"transport": "sse"`. GPT turns then reach the proxy telemetry, so the mesh datasets
+  `pressure` and `errors15m` cover a GPT-only node.
+
+### Changed
+- Mesh worker settings deny agent reads and edits of `~/.apex-router/mesh-*/mesh.key` too, so a
+  worker agent cannot read the secret of a second mesh on the same host. Only the key file: the
+  job worktrees (`<mesh home>-jobs`) stay readable. Existing `worker-settings.json` files are
+  never overwritten: add the two rules by hand.
 - DeepSeek as an advisory offload backend (`docs/RUNBOOK-remote-ask.md`). `apex-router ask
   --backend deepseek|local` asks one question and books the call (tokens, cost, the Claude baseline
   tier) in the offload log; `apex-router offload-verdict <id> --used|--discarded` books whether the

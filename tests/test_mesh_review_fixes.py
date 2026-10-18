@@ -96,7 +96,7 @@ def _fake_modules(monkeypatch, record):
             return ("192.168.1.5", 50001)
 
     class Beacon:
-        def __init__(self, ident, table, card_fn, *, iface_ip, targets=None):
+        def __init__(self, ident, table, card_fn, *, iface_ip, port=MCAST_PORT, targets=None):
             record["targets"] = targets
 
         def start(self):
@@ -394,7 +394,7 @@ def test_e2e_two_nodes_peer_collect_pick(tmp_path, monkeypatch, capsys):
 
     class TestBeacon(beacon_mod.Beacon):      # one host: each node needs its own UDP port
         def __init__(self, *a, **kw):
-            kw.setdefault("port", ports[threading.current_thread().name])
+            kw["port"] = ports[threading.current_thread().name]   # up passes --beacon-port
             kw.setdefault("interval_s", 0.1)
             super().__init__(*a, **kw)
 

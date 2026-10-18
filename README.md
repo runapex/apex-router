@@ -781,6 +781,15 @@ other node (default 47777), not its HTTP port. Each HTTP request carries a signe
 that names the recipient node, so it cannot be replayed to another node. Use `--role R` and
 `mesh pick R` to send work to the least-loaded node with that role. `mesh leader` shows the elected leader.
 
+Second mesh on one host: one node can be in one mesh only, but a host can run two nodes.
+Give the second node its own home, HTTP port and beacon port. Every node of that mesh uses the same `--beacon-port`.
+```bash
+export APEX_MESH_HOME=~/.apex-router/mesh-home   # use it for every mesh command of this mesh
+apex-router mesh init --name node-2 --export
+apex-router mesh up --port 47779 --beacon-port 47787 --peer OTHER_HOST
+# other node:  apex-router mesh init --import apexmesh1:... && apex-router mesh up --beacon-port 47787 --peer THIS_HOST
+```
+
 Model calls (opt-in): `mesh up --serve-model qwen3:8b` lets mesh nodes run prompts on this node's local ollama.
 `apex-router mesh models` lists the served models; `apex-router mesh ask --model qwen3:8b "PROMPT"` runs one prompt on the least-loaded node.
 Prompts cross the LAN in plain text (signed, not encrypted): use model calls only on a trusted LAN.

@@ -241,6 +241,9 @@ def default_settings(h: Path | None = None) -> dict:
             "WebFetch", "WebSearch"]
     for d in secret_dirs:
         deny += [f"Read({d}/**)", f"Edit({d}/**)"]
+    # The key of another mesh on this host (APEX_MESH_HOME=~/.apex-router/mesh-NAME). Only the
+    # key file: a whole mesh-* deny would also cover the job worktrees (<mesh home>-jobs).
+    deny += ["Read(~/.apex-router/mesh-*/mesh.key)", "Edit(~/.apex-router/mesh-*/mesh.key)"]
     if not mesh_abs.endswith("/.apex-router/mesh"):
         deny += [f"Read(/{mesh_abs}/**)", f"Edit(/{mesh_abs}/**)"]
     return {"permissions": {

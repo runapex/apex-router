@@ -648,10 +648,10 @@ def _run_worker(argv: list[str]) -> int:
 
 # ---- up -------------------------------------------------------------------------------------
 
-def _parse_peer(spec: str) -> tuple[str, int] | None:
+def _parse_peer(spec: str, default_port: int = MCAST_PORT) -> tuple[str, int] | None:
     """``HOST``, ``HOST:PORT``, ``[V6]`` or ``[V6]:PORT`` -> (host, UDP beacon port), or None.
 
-    A bare IPv6 address (2+ colons, no brackets) takes the default port.
+    A spec without a port (and a bare IPv6 address: 2+ colons, no brackets) takes ``default_port``.
     """
     s = spec.strip()
     if s.startswith("["):
@@ -666,7 +666,7 @@ def _parse_peer(spec: str) -> tuple[str, int] | None:
     if not h:
         return None
     if p is None:
-        return h, MCAST_PORT
+        return h, default_port
     if not p.isdigit() or not 1 <= int(p) <= 65535:
         return None
     return h, int(p)
@@ -685,9 +685,14 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
     except ValueError as e:
         _err(str(e))
         return 2
+    beacon_port = getattr(args, "beacon_port", MCAST_PORT)
+    if isinstance(beacon_port, bool) or not isinstance(beacon_port, int) \
+            or not 1 <= beacon_port <= 65535:
+        _err(f"bad --beacon-port {beacon_port}: use 1..65535")
+        return 2
     targets = []
     for spec in args.peer or []:
-        got_t = _parse_peer(spec)
+        got_t = _parse_peer(spec, beacon_port)
         if got_t is None:
             _err(f"bad --peer {spec!r}: use HOST or HOST:PORT (UDP beacon port)")
             return 2
@@ -760,11 +765,12 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         server.start()
         state["port"] = int(server.address[1])
         table.update(card_fn())
-        beacon = beacon_mod.Beacon(ident, table, card_fn, iface_ip=host,
+        beacon = beacon_mod.Beacon(ident, table, card_fn, iface_ip=host, port=beacon_port,
                                    targets=targets or None)
         beacon.start()
         _write_json(pid_path, {"pid": own_pid, "host": host, "port": state["port"],
-                               "started_at": started, "shared": sorted(shared)})
+                               "beacon_port": beacon_port, "started_at": started,
+                               "shared": sorted(shared)})
         print(f"mesh up: {ident.name} {ident.node_id[:12]} on {host}:{state['port']} "
               f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s), "
               f"serving {len(models)} model(s))", flush=True)
@@ -835,9 +841,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=DEFAULT_HTTP_PORT)
     p.add_argument("--allow-public", action="store_true")
     p.add_argument("--role", action="append", default=[])
+    # A second mesh on one host (own APEX_MESH_HOME) needs its own beacon port: two sockets
+    # on one UDP port share it (SO_REUSEPORT) and a unicast announce reaches only one of them.
+    p.add_argument("--beacon-port", type=int, default=MCAST_PORT, metavar="PORT",
+                   help=f"UDP beacon port (multicast and unicast, default {MCAST_PORT}); "
+                        "all nodes of one mesh must use the same port")
     p.add_argument("--peer", action="append", default=[], metavar="HOST[:PORT]",
                    help="extra unicast beacon target; PORT = its UDP beacon port "
-                        f"(default {MCAST_PORT}), not the HTTP port")
+                        "(default: --beacon-port), not the HTTP port")
     p.add_argument("--share", action="append", default=[], metavar="NAME")
     p.add_argument("--serve-model", action="append", default=[], metavar="NAME",
                    help="serve this local ollama model to the mesh (POST /mesh/v1/infer); "
