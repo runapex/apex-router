@@ -76,6 +76,7 @@ P_DATA = "/mesh/v1/data"
 P_INFER = infer.INFER_PATH
 P_JOBS = jobs.JOBS_PATH
 P_RESULTS = jobs.RESULTS_PATH
+P_BUNDLE = jobs.BUNDLE_PATH
 
 
 class _HTTPError(Exception):
@@ -238,7 +239,7 @@ class _Handler(BaseHTTPRequestHandler):
                 raise _HTTPError(404, "not_found")
             self._send_signed("card", mesh.card())
             return
-        if path not in (P_PEERS, P_LEADER, P_DATA, P_JOBS, P_RESULTS):
+        if path not in (P_PEERS, P_LEADER, P_DATA, P_JOBS, P_RESULTS, P_BUNDLE):
             raise _HTTPError(404, "not_found")
         hdrs = self.headers.get_all(AUTH_HEADER) or []
         if len(hdrs) != 1 or not check_auth(hdrs[0], target, mesh.ident, mesh.guard):
@@ -251,6 +252,17 @@ class _Handler(BaseHTTPRequestHandler):
             if query:
                 raise _HTTPError(400, "bad_query")
             self._send_signed("leader", mesh.table.leader().to_dict())
+        elif path == P_BUNDLE:
+            one = _FOR_ID_RE.match(query) if isinstance(query, str) else None
+            if one is None:
+                raise _HTTPError(400, "bad_query")
+            if one.group(1) not in {p.node_id for p in mesh.table.alive()}:
+                raise _HTTPError(403, "unknown_node")
+            try:
+                body = jobs.bundle_for(one.group(1), one.group(2), mesh.ident, h=mesh.home)
+            except jobs.JobError as e:
+                raise _HTTPError(404 if str(e) == "no_job" else 409, str(e)) from e
+            self._send_signed("bundle", body)
         elif path in (P_JOBS, P_RESULTS):
             one = _FOR_ID_RE.match(query) if path == P_RESULTS and isinstance(query, str) else None
             node = one.group(1) if one else parse_for(query)

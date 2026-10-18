@@ -27,6 +27,9 @@ MAX_PEERS = 256                     # bound memory if a key holder floods fake n
 _STARTED_MIN, _STARTED_MAX = 0.0, 32503680000.0   # 1970 .. 3000
 
 _NODE_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+_COMMIT_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+_WORD_RE = re.compile(r"\A[a-z_]{1,16}\Z")
+CAPS_MAX = 8
 _ROLE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,31}\Z")
 MODEL_RE = re.compile(r"\A[A-Za-z0-9._:/-]{1,128}\Z")
 
@@ -48,12 +51,47 @@ class Peer:
     started_at: float
     last_seen: float
     models: tuple[str, ...] = ()          # served models (`mesh up --serve-model`); optional
+    build: dict | None = None             # {"commit", "update", "at"?, "caps"}; optional
 
     def to_dict(self) -> dict:
-        return {"node_id": self.node_id, "name": self.name, "host": self.host,
-                "port": self.port, "version": self.version, "roles": list(self.roles),
-                "load": self.load, "started_at": self.started_at, "last_seen": self.last_seen,
-                "models": list(self.models)}
+        d = {"node_id": self.node_id, "name": self.name, "host": self.host,
+             "port": self.port, "version": self.version, "roles": list(self.roles),
+             "load": self.load, "started_at": self.started_at, "last_seen": self.last_seen,
+             "models": list(self.models)}
+        if self.build is not None:
+            d["build"] = dict(self.build)
+        return d
+
+    def has_cap(self, cap: str) -> bool:
+        return cap in ((self.build or {}).get("caps") or ())
+
+
+def parse_build(v: Any) -> dict | None:
+    """The optional card ``build`` key, checked. A bad value is dropped (None), the card stays."""
+    if not isinstance(v, dict):
+        return None
+    out: dict = {}
+    c = v.get("commit")
+    if c is not None:
+        if not isinstance(c, str) or not _COMMIT_RE.match(c):
+            return None
+        out["commit"] = c
+    st = v.get("update")
+    if not isinstance(st, str) or not _WORD_RE.match(st):
+        return None
+    out["update"] = st
+    at = v.get("at")
+    if at is not None:
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) \
+                or not _STARTED_MIN <= at <= _STARTED_MAX:
+            return None
+        out["at"] = float(at)
+    caps = v.get("caps", [])
+    if not isinstance(caps, list) or len(caps) > CAPS_MAX \
+            or not all(isinstance(x, str) and _WORD_RE.match(x) for x in caps):
+        return None
+    out["caps"] = list(dict.fromkeys(caps))
+    return out
 
 
 def _is_int(v: Any) -> bool:
@@ -100,7 +138,8 @@ def parse_card(card: Any, *, now: float) -> Peer | None:
             return None
         return Peer(node_id=node_id, name=name, host=host, port=port, version=version,
                     roles=tuple(dict.fromkeys(roles)), load=load, started_at=float(started),
-                    last_seen=float(now), models=tuple(dict.fromkeys(models)))
+                    last_seen=float(now), models=tuple(dict.fromkeys(models)),
+                    build=parse_build(card.get("build")))
     except Exception:   # noqa: BLE001 -- contract: a bad card never raises
         return None
 

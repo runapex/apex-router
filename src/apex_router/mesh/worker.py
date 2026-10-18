@@ -212,6 +212,32 @@ def load_allowlist(h: Path | None = None) -> dict[str, str] | None:
     return out
 
 
+def auto_repos_enabled(h: Path | None = None) -> bool:
+    """worker.json ``"auto_repos"`` (default true): create a repo for a ``src: mesh`` job whose
+    repo name is not in ``repos``. Only ``false`` turns it off."""
+    doc = jobs.read_json(allowlist_path(h))
+    return not (isinstance(doc, dict) and doc.get("auto_repos") is False)
+
+
+def auto_repo(h: Path, sender: str, name: str) -> tuple[Path | None, str]:
+    """``<home>-repos/<sender node id>/<name>``: one empty git repo per sender and name.
+
+    Namespaced by sender, so one peer never writes into a repo that another peer's jobs use."""
+    if not _NODE_RE.match(sender or "") or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name or "") \
+            or name in (".", ".."):
+        return None, "repo_not_allowed"
+    p = Path(str(Path(h)) + "-repos") / sender / name
+    if not (p / ".git").exists():
+        try:
+            p.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            return None, "repo_bad_path"
+        r = _git(["init", "--quiet", str(p)], timeout=30)
+        if r is None or r.returncode != 0:
+            return None, "repo_not_git"
+    return p, ""
+
+
 def load_runner_config(h: Path | None = None, *, runner: str | None = None) -> dict:
     """worker.json ``runner``, ``codex_search``, ``codex_models`` -> {runner, codex_search,
     codex_models: {step: (model, effort)}}. ``runner`` (the --runner flag) wins over the file.
@@ -488,6 +514,11 @@ def _default_fetch(peer, ident, timeout):
     return sender.fetch_jobs(peer, ident, timeout)
 
 
+def _default_fetch_bundle(peer, ident, job_id):
+    from . import sender
+    return sender.fetch_bundle(peer, ident, job_id, FETCH_TIMEOUT_S)
+
+
 def _default_peers(ident, h: Path) -> list:
     """Alive peers (not self) from peers.json. [] on any error (no peer = no job)."""
     try:
@@ -524,6 +555,7 @@ class Worker:
                  claude_cmd: list[str] | None = None,
                  codex_cmd: list[str] | None = None, runner: str | None = None,
                  fetch: Callable | None = None, peers: Callable | None = None,
+                 fetch_bundle: Callable | None = None,
                  pressure: Callable[[], int] | None = None,
                  offload_log: Path | None = None, now: Callable[[], float] = time.time,
                  quiet: bool = False) -> None:
@@ -540,6 +572,8 @@ class Worker:
         self.codex_search: bool = cfg["codex_search"]
         self.codex_models: dict[str, tuple[str, str]] = cfg["codex_models"]
         self.fetch = fetch or _default_fetch
+        self.fetch_bundle = fetch_bundle or _default_fetch_bundle
+        self.auto_repos = auto_repos_enabled(self.h)
         self.peers = peers or (lambda: _default_peers(self.ident, self.h))
         self.pressure = pressure or _default_pressure
         self.offload_log = offload_log
@@ -632,6 +666,53 @@ class Worker:
             os.close(lock)
         return True
 
+    def _fetch_origin(self, job: dict, repo: Path) -> str:
+        r = _git(["-C", str(repo), "fetch", "--no-tags", "--quiet", "origin", "--", job["ref"]],
+                 timeout=FETCH_TIMEOUT_S)
+        if r is None or r.returncode != 0:
+            return ""
+        return self._fetch_head(repo)
+
+    @staticmethod
+    def _fetch_head(repo: Path) -> str:
+        r = _git(["-C", str(repo), "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"])
+        base = r.stdout.decode().strip() if r is not None and r.returncode == 0 else ""
+        return base if re.fullmatch(r"[0-9a-f]{40}", base) else ""
+
+    def _fetch_bundle(self, job: dict, repo: Path, peer) -> str:
+        """GET the sender's bundle, verify it, fetch its ref. The commit must match. "" on fail."""
+        jid = job["id"]
+        try:
+            res = self.fetch_bundle(peer, self.ident, jid)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "error": type(e).__name__}
+        if not isinstance(res, dict) or res.get("ok") is not True \
+                or not isinstance(res.get("data"), bytes) or res.get("ref") != job["ref"]:
+            err = res.get("error") if isinstance(res, dict) else "bad_response"
+            self.log("bundle_error", id=jid, error=str(err)[:200])
+            return ""
+        tmp = jobs.worker_dir(self.h) / f"{jid}.bundle"
+        try:
+            jobs.write_private(tmp, res["data"])
+            r = _git(["-C", str(repo), "bundle", "verify", "--quiet", str(tmp)], timeout=60)
+            if r is None or r.returncode != 0:
+                self.log("bundle_error", id=jid, error="verify")
+                return ""
+            r = _git(["-C", str(repo), "fetch", "--no-tags", "--quiet", str(tmp), "--",
+                      job["ref"]], timeout=FETCH_TIMEOUT_S)
+            if r is None or r.returncode != 0:
+                self.log("bundle_error", id=jid, error="fetch")
+                return ""
+            base = self._fetch_head(repo)
+            if base != res.get("commit"):
+                self.log("bundle_error", id=jid, error="commit_mismatch")
+                return ""
+            self.log("bundle", id=jid, bytes=len(res["data"]), commit=base[:12])
+            return base
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+
     def _check(self, envelope: str, peer) -> tuple[dict, Path, str, int] | None:
         peer_id = getattr(peer, "node_id", None)
         # 1. MAC, to, from = the alive peer that served it, not expired.
@@ -672,24 +753,21 @@ class Worker:
             return None
         if (jobs.results_dir(self.h) / f"{jid}.json").exists():
             return None     # answered before (e.g. rejected); never run it
-        # 3. Allowlist.
+        # 3. Allowlist (a `src: mesh` job may get an auto repo, namespaced by sender).
+        mesh_src = job.get("src") == jobs.SRC_MESH
         repo, why = resolve_repo(job["repo"], self.h)
+        if repo is None and mesh_src and why == "repo_not_allowed" and self.auto_repos:
+            repo, why = auto_repo(self.h, sender, job["repo"])
         if repo is None:
             self.reject(jid, sender, why)
             return None
-        # 4. Ref shape + fetch; pin the commit at once (FETCH_HEAD moves).
+        # 4. Ref shape + fetch (origin, or the sender's bundle); pin the commit at once.
         if not jobs.valid_ref(job["ref"]):
             self.reject(jid, sender, "bad_ref")
             return None
-        r = _git(["-C", str(repo), "fetch", "--no-tags", "--quiet", "origin", "--", job["ref"]],
-                 timeout=FETCH_TIMEOUT_S)
-        if r is None or r.returncode != 0:
-            self.reject(jid, sender, "fetch_failed")
-            return None
-        r = _git(["-C", str(repo), "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"])
-        base = r.stdout.decode().strip() if r is not None and r.returncode == 0 else ""
-        if not re.fullmatch(r"[0-9a-f]{40}", base):
-            self.reject(jid, sender, "fetch_failed")
+        base = self._fetch_bundle(job, repo, peer) if mesh_src else self._fetch_origin(job, repo)
+        if not base:
+            self.reject(jid, sender, "bundle_failed" if mesh_src else "fetch_failed")
             return None
         # 5. Sizes.
         if len(job["task"].encode("utf-8")) > jobs.MAX_TASK_BYTES:
@@ -1114,6 +1192,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--resume", action="store_true", help="take jobs again")
     g.add_argument("--status", action="store_true", help="print the worker state as JSON")
     g.add_argument("--once", action="store_true", help="poll one time, then exit")
+    ap.add_argument("--no-auto-restart", action="store_true",
+                    help="do not re-exec when a mesh self-update moves the apex-router checkout")
     g.add_argument("--recover", action="store_true",
                    help="after a worker crash: clear the stale running job (check that no "
                         "process of it runs first)")
@@ -1194,16 +1274,26 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
         raise KeyboardInterrupt
     with contextlib.suppress(ValueError):
         signal.signal(signal.SIGTERM, _term)
+    from . import selfupdate
+    code_repo = None if args.once or args.no_auto_restart else selfupdate.code_checkout()
+    start_commit = selfupdate.head(code_repo) if code_repo is not None else None
     try:
         while True:
             w.poll_once()
             if args.once:
                 return 0
+            if selfupdate.restart_needed(start_commit, code_repo) \
+                    and not running_path(h).exists():
+                w.log("restart", reason="update", commit=(selfupdate.head(code_repo) or "")[:12])
+                os.close(fd)
+                fd = -1
+                selfupdate.reexec()
             time.sleep(args.poll_s)
     except KeyboardInterrupt:
         return 0
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
 
 
 if __name__ == "__main__":

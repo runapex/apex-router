@@ -18,10 +18,14 @@ Layout under ``identity.mesh_home()``:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
 import secrets
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +35,9 @@ from .identity import Identity
 
 JOBS_PATH = "/mesh/v1/jobs"
 RESULTS_PATH = "/mesh/v1/results"
+BUNDLE_PATH = "/mesh/v1/bundle"
+SRC_MESH = "mesh"                           # job["src"]: the worker gets the repo from the sender
+MAX_BUNDLE_BYTES = 24 * 1024 * 1024         # one git bundle (raw); base64 + envelope stays < 34 MiB
 
 MAX_TASK_BYTES = 256 * 1024                 # room for a whole report or diff (mesh xval)
 MAX_CHECK_BYTES = 1024
@@ -74,6 +81,10 @@ def valid_id(s: Any) -> bool:
     return isinstance(s, str) and bool(_ID_RE.match(s))
 
 
+def valid_sha(ref: Any) -> bool:
+    return isinstance(ref, str) and bool(re.fullmatch(r"[0-9a-f]{40}", ref))
+
+
 def valid_ref(ref: Any) -> bool:
     """Branch/tag/sha. No leading '-' (git option), no '..', no '//' and no trailing '/' or '.lock'."""
     if not isinstance(ref, str) or not _REF_RE.match(ref):
@@ -102,12 +113,19 @@ def step_model(step: str) -> tuple[str, str]:
 
 def make_job(ident: Identity, *, to: str, repo: str, ref: str, task: str, check: str = "",
              max_effort: str = DEFAULT_CEILING, expires_s: int = DEFAULT_EXPIRES_S,
-             now: float | None = None) -> tuple[str, bytes]:
-    """Build and sign one job. Returns (id, envelope bytes). Raises JobError on a bad field."""
+             now: float | None = None, src: str | None = None) -> tuple[str, bytes]:
+    """Build and sign one job. Returns (id, envelope bytes). Raises JobError on a bad field.
+
+    ``src="mesh"``: the worker fetches the repo as a git bundle from this node (BUNDLE_PATH), not
+    from its own ``origin``. Only send it to a peer whose card has the ``bundle`` cap: an older
+    worker rejects the extra key (``bad_fields``).
+    """
     t = time.time() if now is None else float(now)
     body = {"id": new_id(), "from": ident.node_id, "to": to, "repo": repo, "ref": ref,
             "task": task, "check": check, "max_effort": max_effort,
             "created": t, "expires": t + int(expires_s)}
+    if src is not None:
+        body["src"] = src
     validate_job(body, now=t)
     if not 60 <= int(expires_s) <= MAX_EXPIRES_S:
         raise JobError("bad_expires")
@@ -120,8 +138,10 @@ def validate_job(body: Any, *, now: float | None = None) -> dict:
     if not isinstance(body, dict):
         raise JobError("bad_body")
     need = {"id", "from", "to", "repo", "ref", "task", "check", "max_effort", "created", "expires"}
-    if set(body) != need:
+    if set(body) - {"src"} != need:
         raise JobError("bad_fields")
+    if "src" in body and (body["src"] != SRC_MESH or valid_sha(body["ref"])):
+        raise JobError("bad_src")           # a bundle carries a branch or tag, not a bare commit
     if not valid_id(body["id"]):
         raise JobError("bad_id")
     for k in ("from", "to"):
@@ -274,6 +294,129 @@ def offered_jobs(for_node: str, ident: Identity, *, h: Path | None = None,
         picked.append(s)
         size += n
     return picked
+
+
+
+# -- repo bundles (job src "mesh") ---------------------------------------------------------------
+
+SHARE_FILE = "share_repos.json"     # sender side: {"repos": {name: abs path}}; opt-in per repo
+XVAL_REPO = "xval"                  # `mesh xval` scratch repo: built in, one empty commit
+
+
+def xval_repo_path(h: Path | None = None) -> Path:
+    return Path(str(home(h)) + "-xval")
+
+
+def ensure_xval_repo(h: Path | None = None) -> Path | None:
+    """Sender side: create the xval scratch repo (main, one empty commit) if missing."""
+    p = xval_repo_path(h)
+    if _git_out(p, "rev-parse", "--verify", "--quiet", "main^{commit}", timeout=30):
+        return p
+    try:
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        return None
+    ok = _git_out(p, "init", "--quiet") is not None \
+        and _git_out(p, "symbolic-ref", "HEAD", "refs/heads/main") is not None \
+        and _git_out(p, "-c", "user.name=apex-mesh", "-c", "user.email=mesh@localhost",
+                     "commit", "--quiet", "--allow-empty", "-m", "xval scratch") is not None
+    return p if ok else None
+
+
+def load_share(h: Path | None = None) -> dict[str, Path]:
+    """Sender side: repos this node may send as bundles: share_repos.json, plus the xval
+    scratch repo when it exists. Missing or bad file = only xval."""
+    out: dict[str, Path] = {}
+    if (xval_repo_path(h) / ".git").is_dir():
+        out[XVAL_REPO] = xval_repo_path(h)
+    doc = read_json(home(h) / SHARE_FILE)
+    repos = doc.get("repos") if isinstance(doc, dict) else None
+    if not isinstance(repos, dict):
+        return out
+    for k, v in repos.items():
+        if isinstance(k, str) and _REPO_RE.match(k) and isinstance(v, str) \
+                and Path(v).is_absolute() and Path(v).is_dir():
+            out[k] = Path(v)
+    return out
+
+
+def _git_out(repo: Path, *args: str, timeout: float = 120) -> bytes | None:
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        r = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
+                           env=env, capture_output=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+_BUNDLE_CACHE: dict[tuple[str, str], dict] = {}
+
+
+def bundle_for(for_node: str, jid: str, ident: Identity, *, h: Path | None = None,
+               now: float | None = None) -> dict:
+    """Sender side: the bundle body for one open ``src: mesh`` job offered to ``for_node``.
+
+    Returns ``{"id", "ref", "commit", "sha256", "size", "bundle_b64"}``. Raises JobError:
+    ``no_job`` (not ours, not open, not for that node, no src), ``repo_not_shared``,
+    ``bad_ref``, ``bundle_failed``, ``bundle_too_big``.
+    """
+    if not valid_id(jid) or not isinstance(for_node, str) or not _NODE_RE.match(for_node):
+        raise JobError("no_job")
+    if (inbox(h) / f"{jid}.json").exists():
+        raise JobError("no_job")                    # answered: the job is closed
+    try:
+        body = open_job((outbox(h) / f"{jid}.job").read_bytes(), ident, now=now)
+    except (OSError, JobError) as e:
+        raise JobError("no_job") from e
+    if body["to"] != for_node or body["id"] != jid or body.get("src") != SRC_MESH \
+            or body["from"] != ident.node_id:
+        raise JobError("no_job")
+    repo = load_share(h).get(body["repo"])
+    if repo is None:
+        raise JobError("repo_not_shared")
+    ref = body["ref"]
+    sha = _git_out(repo, "rev-parse", "--verify", "--quiet", "--end-of-options",
+                   f"{ref}^{{commit}}", timeout=30)
+    commit = sha.decode().strip() if sha else ""
+    if not valid_sha(commit):
+        raise JobError("bad_ref")
+    key = (jid, commit)
+    if key in _BUNDLE_CACHE:
+        return _BUNDLE_CACHE[key]
+    with tempfile.TemporaryDirectory(prefix="apex-mesh-bundle-") as td:
+        path = Path(td) / "repo.bundle"
+        if _git_out(repo, "bundle", "create", "--quiet", str(path), ref, timeout=300) is None \
+                or not path.is_file():
+            raise JobError("bundle_failed")
+        if path.stat().st_size > MAX_BUNDLE_BYTES:
+            raise JobError("bundle_too_big")
+        data = path.read_bytes()
+    out = {"id": jid, "ref": ref, "commit": commit, "sha256": hashlib.sha256(data).hexdigest(),
+           "size": len(data), "bundle_b64": base64.b64encode(data).decode("ascii")}
+    if len(_BUNDLE_CACHE) >= 4:
+        _BUNDLE_CACHE.pop(next(iter(_BUNDLE_CACHE)))
+    _BUNDLE_CACHE[key] = out
+    return out
+
+
+def decode_bundle(body: Any, jid: str) -> tuple[bytes, str, str]:
+    """Worker side: check a ``bundle`` body. Returns (bytes, ref, commit). Raises JobError."""
+    if not isinstance(body, dict) or body.get("id") != jid:
+        raise JobError("bad_bundle")
+    ref, commit, digest, b64 = (body.get(k) for k in ("ref", "commit", "sha256", "bundle_b64"))
+    if not valid_ref(ref) or not valid_sha(commit) or not isinstance(digest, str) \
+            or not isinstance(b64, str) or len(b64) > (MAX_BUNDLE_BYTES * 4) // 3 + 8:
+        raise JobError("bad_bundle")
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except ValueError as e:
+        raise JobError("bad_bundle") from e
+    if len(data) > MAX_BUNDLE_BYTES or hashlib.sha256(data).hexdigest() != digest:
+        raise JobError("bad_bundle")
+    return data, str(ref), str(commit)
 
 
 def results_for(for_node: str, *, h: Path | None = None, only: str | None = None) -> list[dict]:

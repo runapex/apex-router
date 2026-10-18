@@ -806,8 +806,19 @@ apex-router mesh worker ...            # on the worker node (second process next
 ```
 `mesh up` must run on both nodes. `--apply` runs `git am --abort` when the patch does not apply.
 
+The worker does not need a copy of the repo. On the sender, list the repos it may send in
+`~/.apex-router/mesh/share_repos.json` (`{"repos": {"NAME": "/abs/path"}}`). A job for a shared
+repo then carries the repo as a signed git bundle; the worker fetches it from the sender and
+creates a repo for it when the name is not in its allowlist (`"auto_repos": false` turns that off).
+
+Nodes keep apex-router current by themselves. When a peer runs a newer build, `mesh up` fetches
+its own `origin` and fast-forwards a clean `main`; `mesh up` and `mesh worker` then restart at
+idle. A dirty tree, another branch or diverged history is never changed. `mesh peers` shows each
+node's build and update status; `mesh update --check` reports without a change. Turn it off with
+`{"auto_update": false}` in `update.json` in the mesh home, or `APEX_MESH_NO_UPDATE=1`.
+
 Cross-validation on a worker node (`mesh xval`): one command submits the work to a reviewer node, waits and prints the verdict.
-The worker needs a scratch repo named `xval` in its allowlist (an empty git repo with an `origin`). On a codex node the reviewer is a different vendor than a Claude author.
+A worker with this version needs no setup for it: the sender sends its built-in `xval` scratch repo as a bundle. An older worker needs a scratch repo named `xval` in its allowlist (an empty git repo with an `origin`). On a codex node the reviewer is a different vendor than a Claude author.
 ```bash
 apex-router mesh xval --to NODE --file docs/research/report.md --question "Do the scores follow from the evidence?"
 apex-router mesh xval --to NODE --diff origin/main      # exit 0 AGREE, 1 PARTIAL/DISAGREE, 3 no verdict

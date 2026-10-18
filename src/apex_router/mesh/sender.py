@@ -35,6 +35,8 @@ MAX_RESPONSE_BYTES = 2 << 20          # 2 MiB: one full result (512 KiB patch ->
                                      # 64 KiB report, up to 6x JSON escaping) always fits
 # GET /jobs: up to jobs.JOBS_BUDGET raw envelope bytes, escaped once more in the response (<= 2x).
 MAX_JOBS_RESPONSE_BYTES = 8 << 20
+# GET /bundle: one base64 git bundle (jobs.MAX_BUNDLE_BYTES raw -> 4/3) plus the envelope.
+MAX_BUNDLE_RESPONSE_BYTES = 34 << 20
 TERMINAL = ("done", "failed", "rejected")
 STATES = ("offered", "running", "done", "failed", "rejected", "expired")
 
@@ -45,10 +47,10 @@ _RESPONSE_GUARD = protocol.ReplayGuard()
 
 def submit(ident: Identity, *, to: str, repo: str, ref: str, task: str, check: str = "",
            max_effort: str = jobs.DEFAULT_CEILING, expires_s: int = jobs.DEFAULT_EXPIRES_S,
-           h: Path | None = None, now: float | None = None) -> str:
+           h: Path | None = None, now: float | None = None, src: str | None = None) -> str:
     """Sign one job and write ``outbox/<id>.job`` (0600). Returns the id. Raises JobError."""
     jid, env = jobs.make_job(ident, to=to, repo=repo, ref=ref, task=task, check=check,
-                             max_effort=max_effort, expires_s=expires_s, now=now)
+                             max_effort=max_effort, expires_s=expires_s, now=now, src=src)
     if len(env) > jobs.MAX_JOB_ENVELOPE_BYTES:
         raise JobError("job_too_big")               # JSON escaping can grow a 256 KiB task past it
     jobs.write_private(jobs.outbox(h) / f"{jid}.job", env)
@@ -259,6 +261,28 @@ def fetch_results(peer: Peer, ident: Identity, timeout: float = 5.0, *,
     except Exception as e:  # noqa: BLE001 -- contract: never raises
         out["error"] = f"error: {type(e).__name__}"
         return out
+
+
+
+def fetch_bundle(peer: Peer, ident: Identity, job_id: str, timeout: float = 120.0, *,
+                 opener: Any = None) -> dict:
+    """Worker side: the repo bundle of job ``job_id`` from its sender ``peer``. Never raises.
+
+    Returns ``{"ok": True, "data": bytes, "ref", "commit"}`` or ``{"ok": False, "error"}``.
+    """
+    try:
+        if not jobs.valid_id(job_id):
+            return {"ok": False, "error": "bad job id"}
+        body, err = _get_signed(peer, ident, jobs.BUNDLE_PATH, ident.node_id, "bundle", timeout,
+                                opener, job_id, max_bytes=MAX_BUNDLE_RESPONSE_BYTES)
+        if err is not None:
+            return {"ok": False, "error": err}
+        data, ref, commit = jobs.decode_bundle(body, job_id)
+        return {"ok": True, "data": data, "ref": ref, "commit": commit}
+    except JobError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001 -- contract: never raises
+        return {"ok": False, "error": f"error: {type(e).__name__}"}
 
 
 # ---- result outputs and apply -----------------------------------------------------------------

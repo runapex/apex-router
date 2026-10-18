@@ -113,12 +113,15 @@ def _submodule(name: str):
 
 
 def _self_card(ident: Identity, host: str, port: int, roles: list[str], started_at: float,
-               load: int = 0, models: list[str] | None = None) -> dict:
+               load: int = 0, models: list[str] | None = None,
+               build: dict | None = None) -> dict:
     card = {"node_id": ident.node_id, "name": ident.name, "host": host, "port": port,
             "version": _version(), "roles": list(roles), "load": int(load),
             "started_at": started_at}
     if models:
         card["models"] = list(models)     # optional key: old nodes ignore it
+    if build:
+        card["build"] = dict(build)       # optional key: commit, update status, caps
     return card
 
 
@@ -189,8 +192,11 @@ def _pick(view: dict, role: str) -> dict | None:
 def _peer_line(r: dict) -> str:
     flags = ("*" if r.get("self") else " ")
     roles = ",".join(r.get("roles") or []) or "-"
+    b = r.get("build") if isinstance(r.get("build"), dict) else {}
+    build = f"  build={str(b.get('commit') or '?')[:7]}/{b.get('update', '?')}" if b else ""
     return (f"{flags} {r['node_id'][:12]}  {r['name'][:20]:<20}  {r['host']}:{r['port']:<5}  "
-            f"load={r['load']:<4} age={r.get('age_s', 0):.0f}s  roles={roles}  v{r['version']}")
+            f"load={r['load']:<4} age={r.get('age_s', 0):.0f}s  roles={roles}  v{r['version']}"
+            f"{build}")
 
 
 # ---- commands -------------------------------------------------------------------------------
@@ -510,6 +516,20 @@ def _peer_rows(ident: Identity, home: Path) -> list[dict]:
     return [r for r in doc["peers"] if isinstance(r, dict) and isinstance(r.get("node_id"), str)]
 
 
+def _job_src(args, to: str, rows: list[dict], home: Path, jobs) -> str | None:
+    """``"mesh"`` when the worker can take the repo as a bundle from this node, else None.
+
+    Needs: the repo name is shared here (share_repos.json, or the built-in xval scratch repo),
+    the ref is a branch or tag, the target card shows the ``bundle`` cap, and no --no-share."""
+    if getattr(args, "no_share", False) or jobs.valid_sha(args.ref):
+        return None
+    if args.repo not in jobs.load_share(home):
+        return None
+    row = next((r for r in rows if r.get("node_id") == to), None)
+    caps = ((row or {}).get("build") or {}).get("caps") if isinstance(row, dict) else None
+    return jobs.SRC_MESH if isinstance(caps, list) and "bundle" in caps else None
+
+
 def _cmd_submit(args) -> int:
     sender, jobs = _submodule("sender"), _submodule("jobs")
     task = sys.stdin.read() if args.task == "-" else args.task
@@ -518,10 +538,12 @@ def _cmd_submit(args) -> int:
         return 2
     ident, home = got
     try:
-        to = sender.resolve_to(args.to, _peer_rows(ident, home))
+        rows = _peer_rows(ident, home)
+        to = sender.resolve_to(args.to, rows)
         jid = sender.submit(ident, to=to, repo=args.repo, ref=args.ref, task=task or "",
                             check=args.check or "", max_effort=args.max_effort,
-                            expires_s=int(args.expires_min) * 60)
+                            expires_s=int(args.expires_min) * 60,
+                            src=_job_src(args, to, rows, home, jobs))
     except jobs.JobError as e:
         _err(f"submit: {e}")
         return 2
@@ -707,9 +729,13 @@ def _cmd_xval(args) -> int:
         return 2
     ident, home = got
     try:
-        to = sender.resolve_to(args.to, _peer_rows(ident, home))
+        rows = _peer_rows(ident, home)
+        to = sender.resolve_to(args.to, rows)
+        if args.repo == jobs.XVAL_REPO and not getattr(args, "no_share", False):
+            jobs.ensure_xval_repo(home)
         jid = sender.submit(ident, to=to, repo=args.repo, ref=args.ref, task=task,
-                            max_effort=args.max_effort, expires_s=int(args.expires_min) * 60)
+                            max_effort=args.max_effort, expires_s=int(args.expires_min) * 60,
+                            src=_job_src(args, to, rows, home, jobs))
     except jobs.JobError as e:
         _err(f"xval: submit: {e}")
         return 2
@@ -858,6 +884,9 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
     # While model calls run, the card load also counts them (server.infer_running).
     state: dict[str, Any] = {"port": args.port or DEFAULT_HTTP_PORT, "load": _local_load(),
                              "server": None}
+    # Self-update (selfupdate.py): only from `mesh up` with --auto-update (the CLI default).
+    updater = _submodule("selfupdate").AutoUpdater(home) \
+        if getattr(args, "auto_update", False) else None
 
     def card_fn() -> dict:
         load = state["load"]
@@ -865,7 +894,9 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         running = getattr(srv, "infer_running", 0) if srv is not None else 0
         if isinstance(running, int) and running > 0:
             load = min(LOAD_MAX, load + running)
-        return _self_card(ident, host, state["port"], args.role or [], started, load, models)
+        build = updater.card_build() if updater is not None else None
+        return _self_card(ident, host, state["port"], args.role or [], started, load, models,
+                          build)
 
     try:
         table = PeerTable(card_fn())
@@ -897,6 +928,7 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         _err(f"already running (lock {home / LOCK_FILE} is held)")
         return 1
     own_pid = os.getpid()
+    restart = False
     try:
         server.start()
         state["port"] = int(server.address[1])
@@ -921,6 +953,12 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             if stop.wait(interval_s):
                 break
             state["load"] = _local_load()
+            if updater is not None:
+                updater.tick(table.alive())
+                if updater.restart_needed():
+                    print("mesh up: apex-router updated; restarting", flush=True)
+                    restart = True
+                    break
     finally:
         if beacon is not None:
             try:
@@ -939,7 +977,10 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
                 pass
         os.close(lock_fd)                  # releases the flock
     print("mesh down", flush=True)
-    return 0
+    return RESTART if restart else 0
+
+
+RESTART = 75          # run_up result: an update landed; _cmd_up re-execs with the same argv
 
 
 def _cmd_up(args) -> int:
@@ -948,13 +989,32 @@ def _cmd_up(args) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         old[sig] = signal.signal(sig, lambda *_: stop.set())
     try:
-        return run_up(args, stop)
+        rc = run_up(args, stop)
     except Exception as e:  # noqa: BLE001 -- one line, no traceback
         _err(f"cannot start: {type(e).__name__}: {e}")
         return 1
     finally:
         for sig, h in old.items():
             signal.signal(sig, h)
+    if rc == RESTART:
+        _submodule("selfupdate").reexec()
+    return rc
+
+
+def _cmd_update(args) -> int:
+    """``mesh update``: run the self-update once (or only report with --check)."""
+    su = _submodule("selfupdate")
+    home = identity.mesh_home()
+    res = su.update(home, dry_run=args.check)
+    if args.json:
+        _dump(res)
+    else:
+        old, new = (res.get("old") or "?")[:12], (res.get("new") or "?")[:12]
+        extra = f" (upstream {str(res['upstream'])[:12]})" if res.get("upstream") else ""
+        print(f"mesh update: {res['status']}  {old} -> {new}{extra}")
+        if res["status"] == "updated":
+            print("mesh update: running `mesh up` and `mesh worker` restart themselves at idle")
+    return 0 if res["status"] in ("ok", "updated") else 1
 
 
 # ---- parser ---------------------------------------------------------------------------------
@@ -991,7 +1051,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "repeatable. Default: no model calls")
     p.add_argument("--infer-slots", type=int, default=1, metavar="N",
                    help="parallel model calls (1..4, default 1); more get 429 busy")
-    p.set_defaults(fn=_cmd_up)
+    p.add_argument("--no-auto-update", dest="auto_update", action="store_false",
+                   help="do not fast-forward this apex-router checkout from its own origin "
+                        "when a peer runs a newer build (also: update.json, "
+                        "APEX_MESH_NO_UPDATE=1)")
+    p.set_defaults(fn=_cmd_up, auto_update=True)
+
+    p = sub.add_parser("update", help="fast-forward this apex-router checkout from its own "
+                                      "origin now (clean main only); --check only reports")
+    p.add_argument("--check", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_update)
 
     for name, fn, hlp in (("peers", _cmd_peers, "list alive peers"),
                           ("leader", _cmd_leader, "show the leader"),
@@ -1040,6 +1110,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-effort", default="high", metavar="LEVEL",
                    help="ladder ceiling: high|xhigh|max|opus (default high)")
     p.add_argument("--expires-min", type=int, default=60, metavar="N", help="1..60 (default 60)")
+    p.add_argument("--no-share", action="store_true",
+                   help="the worker fetches REF from its own origin, even if REPO is in "
+                        "share_repos.json")
     p.add_argument("task", metavar="TASK", help='task text, or "-" to read stdin')
     p.set_defaults(fn=_cmd_submit)
 
@@ -1068,6 +1141,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--expires-min", type=int, default=60, metavar="N")
     p.add_argument("--timeout", type=float, default=3600.0, metavar="S", help="wait limit (default 3600)")
     p.add_argument("--out-dir", default=None, metavar="DIR", help="where ID.md goes (default .)")
+    p.add_argument("--no-share", action="store_true",
+                   help="do not send the scratch repo as a bundle (the worker needs its own)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_xval)
 

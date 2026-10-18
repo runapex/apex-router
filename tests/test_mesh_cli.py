@@ -406,3 +406,37 @@ def test_xval_usage_errors(home, monkeypatch, capsys, tmp_path):
     rc, _, err = _run(capsys, "xval", "--to", "node-b", "--file", str(big))
     assert rc == 2 and "limit" in err
     assert _run(capsys, "xval", "--to", "node-b", "--file", str(tmp_path / "missing.md"))[0] == 2
+
+
+def test_up_restarts_when_an_update_lands(home, monkeypatch):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    ticks = []
+
+    class FakeUpdater:
+        def __init__(self, h):
+            record["updater_home"] = h
+
+        def card_build(self):
+            return {"commit": "c" * 40, "update": "updated", "caps": ["bundle", "update"]}
+
+        def tick(self, peers):
+            ticks.append(len(list(peers)))
+
+        def restart_needed(self):
+            return len(ticks) >= 2
+
+    su = types.ModuleType("apex_router.mesh.selfupdate")
+    su.AutoUpdater = FakeUpdater
+    monkeypatch.setitem(sys.modules, su.__name__, su)
+    args = mesh_cli.build_parser().parse_args(["up"])
+    assert args.auto_update is True
+    assert mesh_cli.run_up(args, threading.Event(), interval_s=0.01) == mesh_cli.RESTART
+    assert record["card"]["build"]["commit"] == "c" * 40
+    assert record["server_stopped"] and record["beacon_stopped"]
+    assert not (home / "mesh.pid").exists()
+    off = mesh_cli.build_parser().parse_args(["up", "--no-auto-update"])
+    stop = threading.Event()
+    stop.set()
+    assert mesh_cli.run_up(off, stop, interval_s=0.01) == 0

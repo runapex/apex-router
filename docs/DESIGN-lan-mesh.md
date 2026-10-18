@@ -315,6 +315,58 @@ not try a second node when the first one fails. The socket is pinned to the LAN 
 running `mesh up` (same as `collect`). Exit 0 = ok, 1 = no node or the call failed, 2 = usage.
 `PROMPT` `-` reads stdin. Text mode prints the content on stdout and one status line on stderr.
 
+## Self-update (`selfupdate.py`)
+
+Rule: **a peer never sends code.** A card only carries the optional key
+`build: {"commit": <40 hex>, "update": <status>, "at"?: <ts>, "caps": ["bundle", "update"]}`.
+Old nodes ignore it; a bad `build` value is dropped, the card stays.
+
+1. `mesh up` (default `--auto-update`) runs `AutoUpdater.tick()` once per beacon cycle. A check
+   starts when a peer runs a commit this checkout does not have, or 6 h after the last check. At
+   most one check per 10 min. The check runs in a daemon thread.
+2. The check works on the checkout of the running code (`<repo>/src/apex_router`). Preflight:
+   branch `main`, no tracked changes, `origin` URL is an allowed upstream (default
+   `github.com/runapex/apex-router`; `update.json` `"upstreams"` overrides). Else the status is
+   `not_main`, `dirty` or `bad_origin`, and nothing changes.
+3. `git fetch origin main`. If HEAD is not an ancestor of the fetched commit: `diverged`, nothing
+   changes. Else `git merge --ff-only`.
+4. If `pyproject.toml` or `uv.lock` changed: the uv steps of `install.sh` (venv `uv pip install -e`,
+   `uv tool install --force` with the extras of the uv tool receipt). Then a smoke import in a new
+   interpreter. A failure resets the checkout to the old commit (and reinstalls it): `error`.
+5. `mesh up` and `mesh worker` record their start commit. At an idle point (the beacon loop; the
+   worker between polls, never while a job runs) a moved HEAD makes them re-exec with the same argv
+   (`sys.orig_argv`).
+
+Status: `<mesh home>/update-status.json`, the card, `mesh peers` (`build=<commit>/<status>`),
+`mesh update --check`. Opt out: `update.json` `{"auto_update": false}`, `APEX_MESH_NO_UPDATE=1`,
+`mesh up --no-auto-update`, `mesh worker --no-auto-restart`.
+
+Threat notes: a key holder can at most make a node fetch its own origin early. The code a node
+runs comes only from its own origin, so trust is the same as a manual `git pull`. CAUTION: a
+compromised upstream reaches every auto-update node without a person in the loop. Turn auto-update
+off on nodes where that risk is not acceptable.
+
+## Job repos over the mesh (`src: "mesh"`)
+
+The worker normally fetches the job ref from the `origin` of its allowlisted repo. A job with
+`"src": "mesh"` (inside the signed MAC) makes it fetch a git bundle from the sender instead:
+
+- Sender opt-in: `<mesh home>/share_repos.json` `{"repos": {name: abs path}}`. The `mesh xval`
+  scratch repo (`<mesh home>-xval`, one empty commit) is built in.
+- `mesh submit` and `mesh xval` set `src` only when the repo is shared, the ref is a branch or tag
+  (not a bare commit), and the target card has the `bundle` cap. An older worker rejects the extra
+  key (`bad_fields`), so it never gets one. `--no-share` keeps the origin fetch.
+- `GET /mesh/v1/bundle?for=<node>&id=<job>`: same auth and alive check as `/jobs`. Only an open
+  `src: mesh` job of this sender, offered to that node. Body (signed `bundle`):
+  `{id, ref, commit, sha256, size, bundle_b64}`. Raw cap 24 MiB; the client reads up to 34 MiB.
+  404 `no_job`; 409 `repo_not_shared`, `bad_ref`, `bundle_failed`, `bundle_too_big`.
+- Worker: checks sha256, `git bundle verify`, fetches the ref from the bundle file, and requires
+  `FETCH_HEAD` = the body commit. Any failure rejects the job as `bundle_failed`.
+- Auto repos: a `src: mesh` job whose repo name is not in `worker.json` gets
+  `<mesh home>-repos/<sender node id>/<name>` (`git init`). Namespacing by sender means one peer
+  never writes into a repo that another peer's jobs use. `worker.json` `"auto_repos": false` turns
+  this off. A missing `worker.json` still rejects every job.
+
 ## Known limits (v1)
 
 | Limit | Effect | Mitigation |

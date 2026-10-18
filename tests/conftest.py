@@ -220,6 +220,8 @@ def _apply_sandbox(home: Path) -> dict:
         "HOME": str(home), "USERPROFILE": str(home), "APEX_HOME": str(home / ".apex"),
         "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local" / "share"),
         "XDG_CACHE_HOME": str(home / ".cache"), "XDG_STATE_HOME": str(home / ".local" / "state"),
+        # Mesh self-update works on the checkout of the running code (this repo): never in tests.
+        "APEX_MESH_NO_UPDATE": "1",
     }
     prev = {k: os.environ.get(k) for k in (*new, *_PATH_OVERRIDES)}
     os.environ.update(new)

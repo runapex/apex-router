@@ -7,6 +7,19 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Mesh self-update. A node card shows its build commit. When a peer runs a commit this node does
+  not have (or every 6 h), `mesh up` fetches this node's own `origin` and fast-forwards a clean
+  `main` (official upstream only). A dirty tree, another branch, diverged history or another origin
+  is a status, never a change. Dependencies are reinstalled only when `pyproject.toml` or `uv.lock`
+  change; a failed reinstall or smoke import rolls back. `mesh up` and `mesh worker` re-exec at
+  idle. New `mesh update [--check]`; `mesh peers` shows `build=<commit>/<status>`. Opt out:
+  `update.json` `{"auto_update": false}`, `APEX_MESH_NO_UPDATE=1`, `--no-auto-update`. A peer never
+  sends code.
+- Mesh job repos as signed git bundles (job `"src": "mesh"`, `GET /mesh/v1/bundle`). The worker
+  no longer needs its own copy of the repo or of the xval scratch repo: it fetches the sender's
+  bundle (24 MiB cap, sha256 and commit checks) and creates a repo per sender when the name is not
+  allowlisted (`"auto_repos": false` turns it off). Sender opt-in per repo: `share_repos.json`.
+  `submit` and `xval` use it only for peers whose card has the `bundle` cap; `--no-share` opts out.
 - `apex-router ask --thinking on|off` (deepseek): force reasoning on or off. A reasoning model
   spends `max_tokens` on reasoning first; a long review prompt needs `--max-tokens 32000` or
   `--thinking off`. An answer cut off that way now fails as `truncated: max_tokens=N used up before
