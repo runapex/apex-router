@@ -559,7 +559,7 @@ def _cmd_result(args) -> int:
         else:
             peer_name = row.get("name")
             peer = parse_card(row, now=float(row["last_seen"]))
-            res = sender.fetch_results(peer, ident, timeout=RESULT_HTTP_TIMEOUT_S)
+            res = sender.fetch_results(peer, ident, timeout=RESULT_HTTP_TIMEOUT_S, job_id=jid)
             if not res["ok"]:
                 error = res.get("error", "fetch failed")
             else:

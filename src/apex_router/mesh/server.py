@@ -67,6 +67,7 @@ MAX_INFER_SLOTS = 4
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_.-]{1,64}\Z")
 _FOR_RE = re.compile(r"\Afor=([0-9a-f]{32})\Z")
+_FOR_ID_RE = re.compile(r"\Afor=([0-9a-f]{32})&id=([0-9a-f]{16})\Z")
 
 P_CARD = "/mesh/v1/card"
 P_PEERS = "/mesh/v1/peers"
@@ -251,15 +252,16 @@ class _Handler(BaseHTTPRequestHandler):
                 raise _HTTPError(400, "bad_query")
             self._send_signed("leader", mesh.table.leader().to_dict())
         elif path in (P_JOBS, P_RESULTS):
-            node = parse_for(query)
+            one = _FOR_ID_RE.match(query) if path == P_RESULTS and isinstance(query, str) else None
+            node = one.group(1) if one else parse_for(query)
             if node not in {p.node_id for p in mesh.table.alive()}:
                 raise _HTTPError(403, "unknown_node")
             if path == P_JOBS:
                 self._send_signed("jobs", {"jobs": jobs.offered_jobs(node, mesh.ident,
                                                                      h=mesh.home)})
             else:
-                self._send_signed("results", {"node_id": mesh.ident.node_id,
-                                              "results": jobs.results_for(node, h=mesh.home)})
+                got = jobs.results_for(node, h=mesh.home, only=one.group(2) if one else None)
+                self._send_signed("results", {"node_id": mesh.ident.node_id, "results": got})
         else:
             names = parse_names(query)
             data = datasets.read(names, mesh.shared)

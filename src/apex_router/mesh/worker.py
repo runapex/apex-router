@@ -97,7 +97,12 @@ def _append_line(path: Path, obj: dict, *, sync: bool = False) -> None:
     line = (json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, line)
+        view = memoryview(line)
+        while view:                            # os.write can be short: write the whole record
+            n = os.write(fd, view)
+            if n <= 0:
+                raise OSError("short write")
+            view = view[n:]
         if sync:
             os.fsync(fd)
     finally:
@@ -330,7 +335,8 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_path: Path,
-             stdin_path: Path | None = None) -> tuple[int | None, bool]:
+             stdin_path: Path | None = None,
+             on_start: Any = None) -> tuple[int | None, bool]:
     """Run ``argv`` (no shell) in its own process group. (returncode, timed_out).
 
     Output goes to files (no pipe dead-lock, no memory blow-up). On timeout, error or a normal
@@ -342,6 +348,12 @@ def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_
         with open(out_path, "wb") as out, open(err_path, "wb") as err:
             proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdin=stdin, stdout=out,
                                     stderr=err, start_new_session=True, close_fds=True)
+            if on_start is not None:
+                try:
+                    on_start(proc.pid)                 # record the group before we wait on it
+                except BaseException:
+                    _kill_group(proc)
+                    raise
             try:
                 rc = proc.wait(timeout=max(0.01, timeout))
             except subprocess.TimeoutExpired:
@@ -601,10 +613,23 @@ class Worker:
 
     # -- run --
 
+    def _record_pgid(self, pgid: int) -> None:
+        """Add a step's process group to running.json (a crash recovery kills it). Raises OSError."""
+        doc = jobs.read_json(running_path(self.h))
+        if not isinstance(doc, dict):
+            raise OSError("running.json missing")
+        groups = [g for g in doc.get("pgids", []) if isinstance(g, int)]
+        doc["pgids"] = [*groups, int(pgid)]
+        jobs.write_private(running_path(self.h), json.dumps(doc, sort_keys=True).encode("utf-8"))
+
     def _write_running(self, job: dict, step: str, effort: str, model: str, rows: list) -> None:
+        prev = jobs.read_json(running_path(self.h))
+        groups = [g for g in prev.get("pgids", []) if isinstance(g, int)] \
+            if isinstance(prev, dict) and prev.get("id") == job["id"] else []
         jobs.write_private(running_path(self.h), json.dumps(
             {"id": job["id"], "from": job["from"], "step": step, "effort": effort,
-             "model": model, "started": self.now()}, sort_keys=True).encode("utf-8"))
+             "model": model, "started": self.now(), "pgids": groups},
+            sort_keys=True).encode("utf-8"))
         self._result({"id": job["id"], "status": "running", "reason": f"step:{step}",
                       "steps": list(rows), "patch_b64": "", "report": ""}, job["from"])
 
@@ -708,7 +733,7 @@ class Worker:
                 "--output-format", "json"]
         left = deadline - self.now()
         try:
-            rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt,
+            rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt, on_start=self._record_pgid,
                                      out_path=jdir / f"{step}.out", err_path=jdir / f"{step}.err")
         except OSError:
             return done("claude_failed")
@@ -730,7 +755,7 @@ class Worker:
                 return done("wall_cap")
             tmo = min(self.check_timeout_s, left)
             try:
-                crc, ctimed = run_proc(["/bin/sh", "-c", job["check"]], cwd=wt, timeout=tmo,
+                crc, ctimed = run_proc(["/bin/sh", "-c", job["check"]], cwd=wt, timeout=tmo, on_start=self._record_pgid,
                                        out_path=jdir / f"{step}.check.out",
                                        err_path=jdir / f"{step}.check.err")
             except OSError:
@@ -783,6 +808,12 @@ class Worker:
         """A running.json left by a crash: the job id is in the ledger (never re-run); end it."""
         doc = jobs.read_json(running_path(self.h))
         if running_path(self.h).exists():
+            # A detached agent of the crashed worker can still run: kill its process groups first,
+            # so no second job runs beside it. A group that is gone is skipped.
+            for g in (doc.get("pgids", []) if isinstance(doc, dict) else []):
+                if isinstance(g, int) and not isinstance(g, bool) and g > 1 and g != os.getpgrp():
+                    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(g, signal.SIGKILL)
             jid = doc.get("id") if isinstance(doc, dict) else None
             sender = doc.get("from") if isinstance(doc, dict) else None
             cur = jobs.read_json(jobs.results_dir(self.h) / f"{jid}.json") if jid else None

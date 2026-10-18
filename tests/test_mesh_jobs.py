@@ -555,3 +555,28 @@ def test_cli_worker_passes_argv(monkeypatch, capsys):
     args = mesh_cli.build_parser().parse_args(["worker", "x", "--status"])
     assert args.rest == ["x", "--status"] and args.fn is mesh_cli._cmd_worker
     assert mesh_cli.main(["worker", "-h"]) == 7 and seen[-1] == ["-h"]
+
+
+# ---- xval round: results byte budget, id filter, oversized submit ------------------------------
+
+def test_xval_results_budget_stubs_overflow():
+    big = {"id": "a" * 16, "status": "done", "reason": "", "steps": [],
+           "patch_b64": "x" * 600_000, "report": ""}
+    out = jobs.budget([big, {**big, "id": "b" * 16}])
+    assert out[0]["patch_b64"] and out[1].get("truncated") is True and out[1]["patch_b64"] == ""
+    from apex_router.mesh import collect
+    assert len(json.dumps(out)) < collect.MAX_RESPONSE_BYTES
+
+
+def test_xval_results_for_only_one(tmp_path):
+    for i in ("1" * 16, "2" * 16):
+        jobs.write_result({"id": i, "status": "done", "reason": "", "steps": [],
+                           "patch_b64": "", "report": ""}, "s" * 32, h=tmp_path)
+    got = jobs.results_for("s" * 32, h=tmp_path, only="2" * 16)
+    assert [r["id"] for r in got] == ["2" * 16]
+
+
+def test_xval_submit_refuses_envelope_over_cap(me, home):
+    task = "\\" * (jobs.MAX_TASK_BYTES - 10)            # JSON doubles each backslash
+    with pytest.raises(jobs.JobError, match="job_too_big"):
+        sender.submit(me, to=W_ID, repo="apex-router", ref="main", task=task)

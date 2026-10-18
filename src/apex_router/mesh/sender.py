@@ -46,6 +46,8 @@ def submit(ident: Identity, *, to: str, repo: str, ref: str, task: str, check: s
     """Sign one job and write ``outbox/<id>.job`` (0600). Returns the id. Raises JobError."""
     jid, env = jobs.make_job(ident, to=to, repo=repo, ref=ref, task=task, check=check,
                              max_effort=max_effort, expires_s=expires_s, now=now)
+    if len(env) > jobs.MAX_JOB_ENVELOPE_BYTES:
+        raise JobError("job_too_big")               # JSON escaping can grow a 32 KiB task past it
     jobs.write_private(jobs.outbox(h) / f"{jid}.job", env)
     return jid
 
@@ -148,9 +150,11 @@ def _url(peer: Peer, path: str) -> str:
 
 
 def _get_signed(peer: Peer, ident: Identity, base: str, for_node: str, kind: str,
-                timeout: float, opener: Any) -> tuple[dict | None, str | None]:
-    """GET ``base?for=<for_node>`` from ``peer``. (envelope body, None) or (None, error)."""
+                timeout: float, opener: Any, job_id: str | None = None) -> tuple[dict | None, str | None]:
+    """GET ``base?for=<for_node>[&id=<job_id>]`` from ``peer``. (envelope body, None) or (None, error)."""
     path = f"{base}?for=" + urllib.parse.quote(for_node, safe="")
+    if job_id is not None:
+        path += "&id=" + urllib.parse.quote(job_id, safe="")
     req = urllib.request.Request(_url(peer, path), method="GET", headers={
         AUTH_HEADER: protocol.auth_header(ident, path, peer.node_id)})
     end = time.monotonic() + float(timeout)
@@ -211,7 +215,7 @@ def fetch_jobs(peer: Peer, ident: Identity, timeout: float = 5.0, *, opener: Any
 
 
 def fetch_results(peer: Peer, ident: Identity, timeout: float = 5.0, *,
-                  opener: Any = None) -> dict:
+                  opener: Any = None, job_id: str | None = None) -> dict:
     """Sender side: results ``peer`` holds for jobs this node sent. Never raises.
 
     Returns ``{"node_id", "name", "ok", "results": [<result body>, ...], "dropped": int,
@@ -221,8 +225,11 @@ def fetch_results(peer: Peer, ident: Identity, timeout: float = 5.0, *,
     out: dict = {"node_id": getattr(peer, "node_id", None), "name": getattr(peer, "name", None),
                  "ok": False, "results": [], "dropped": 0}
     try:
+        if job_id is not None and not jobs.valid_id(job_id):
+            out["error"] = "bad job id"
+            return out
         body, err = _get_signed(peer, ident, jobs.RESULTS_PATH, ident.node_id, "results",
-                                timeout, opener)
+                                timeout, opener, job_id)
         if err is not None:
             out["error"] = err
             return out

@@ -261,7 +261,7 @@ def offered_jobs(for_node: str, ident: Identity, *, h: Path | None = None,
     return [s for _, s in out[:MAX_OFFERED]]
 
 
-def results_for(for_node: str, *, h: Path | None = None) -> list[dict]:
+def results_for(for_node: str, *, h: Path | None = None, only: str | None = None) -> list[dict]:
     """Worker side: result bodies (incl. running) whose job came from ``for_node``.
 
     A result file carries a private "_from" key (sender node id); it is stripped from the output.
@@ -270,7 +270,8 @@ def results_for(for_node: str, *, h: Path | None = None) -> list[dict]:
     d = results_dir(h)
     if not d.is_dir():
         return []
-    for p in sorted(d.glob("*.json")):
+    files = [d / f"{only}.json"] if only is not None else sorted(d.glob("*.json"))
+    for p in files:
         doc = read_json(p)
         if not isinstance(doc, dict) or doc.get("_from") != for_node:
             continue
@@ -279,7 +280,36 @@ def results_for(for_node: str, *, h: Path | None = None) -> list[dict]:
             out.append(validate_result(body))
         except JobError:
             continue
-    return out[:64]
+    return budget(out)
+
+
+RESULTS_BUDGET = 900 * 1024        # under the client's 1 MiB response cap, with envelope room
+
+
+def budget(results: list[dict], limit: int = RESULTS_BUDGET) -> list[dict]:
+    """Fit results into one response: newest first by full size; the rest become stubs.
+
+    A stub keeps id, status, reason and steps and sets ``"truncated": true`` (patch and report
+    removed). The sender asks again with ``?for=..&id=<id>`` to get that one result in full.
+    """
+    def size(r: dict) -> int:
+        return len(json.dumps(r, separators=(",", ":")).encode("utf-8")) + 64
+
+    out: list[dict] = []
+    used = 0
+    for r in results[:64]:
+        full = size(r)
+        if used + full <= limit:
+            out.append(r)
+            used += full
+            continue
+        stub = {k: r[k] for k in ("id", "status", "reason", "steps") if k in r}
+        stub.update({"patch_b64": "", "report": "", "truncated": True})
+        if used + size(stub) > limit:
+            break
+        out.append(stub)
+        used += size(stub)
+    return out
 
 
 def write_result(body: dict, sender: str, *, h: Path | None = None) -> None:

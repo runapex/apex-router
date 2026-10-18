@@ -578,3 +578,48 @@ def test_cli_lock_one_worker(env):
         assert worker.main(["--once"], peers=list) == 1
     finally:
         os.close(fd)
+
+
+# ---- xval round: crash recovery kills a surviving agent group; full ledger write ---------------
+
+def test_xval_recover_kills_surviving_agent_group(env):
+    import signal as _sig
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                         start_new_session=True)
+    try:
+        jid = "ab" * 8
+        worker.running_path(env["home"]).parent.mkdir(parents=True, exist_ok=True)
+        worker.running_path(env["home"]).write_text(json.dumps(
+            {"id": jid, "from": "c" * 32, "step": "medium", "pgids": [p.pid]}))
+        w = _worker(env, [])
+        w.recover()
+        assert p.wait(timeout=5) == -_sig.SIGKILL
+        assert not worker.running_path(env["home"]).exists()
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+def test_xval_step_records_pgid_in_running(env):
+    seen = []
+    orig = worker.Worker._record_pgid
+
+    def spy(self, pgid):
+        orig(self, pgid)
+        seen.append(json.loads(worker.running_path(self.h).read_text())["pgids"])
+    worker.Worker._record_pgid = spy
+    try:
+        _jid, envb = _job(env, task="ALWAYS_DONE")
+        _worker(env, [envb]).poll_once()
+    finally:
+        worker.Worker._record_pgid = orig
+    assert seen and all(isinstance(g, int) for g in seen[-1])
+
+
+def test_xval_append_line_handles_short_write(env, monkeypatch):
+    real = os.write
+    monkeypatch.setattr(worker.os, "write", lambda fd, b: real(fd, bytes(b)[:3]))
+    worker.mark_seen("cd" * 8, env["home"])
+    monkeypatch.setattr(worker.os, "write", real)
+    got = worker.load_seen(env["home"])
+    assert got is not None and "cd" * 8 in got[0]
