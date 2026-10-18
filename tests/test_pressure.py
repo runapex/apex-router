@@ -464,3 +464,9 @@ def test_real_transport_fault_still_counts(tmp_path):
     assert r["overall"]["transport_errors"] == 10
     assert r["overall"]["retried"] == 10
     assert r["level"] == "AMBER"   # 10% transport → >= 3% amber, not > 10% red
+
+
+def test_upstream_rejected_rate_reported(tmp_path):
+    rows = _ok(90) + [_row(NOW - 30, cause=None, upstream_rejected=True) for _ in range(10)]
+    r = pressure.compute(_write(tmp_path / "t.jsonl", rows), now=NOW)
+    assert r["overall"]["upstream_rejected_rate"] == pytest.approx(0.1)

@@ -43,6 +43,17 @@ def test_pressure(env):
     assert str(env["tel"]) not in json.dumps(out)
 
 
+def test_pressure_carries_ttft_and_rejected_rate(env):
+    now = time.time()
+    rows = [_row(now - 60 + i * 0.01) for i in range(90)]
+    rows += [dict(_row(now - 30 + i * 0.01), upstream_rejected=True) for i in range(10)]
+    env["tel"].write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = _ok(["pressure"])["pressure"]
+    assert out["p50_ttft_ms"] == 500.0
+    assert out["causes"]["upstream_rejected"] == 10
+    assert out["causes"]["upstream_rejected_rate"] == 0.1
+
+
 def test_errors15m(env):
     now = time.time()
     rows = [_row(now - 30, "ReadError", True), _row(now - 20, "ReadError", True),

@@ -361,14 +361,17 @@ def _cmd_collect(args) -> int:
 
 
 def _cmd_advise(args) -> int:
-    got = _run_collect(["route_rates"], args.timeout)
+    got = _run_collect(["route_rates", "pressure"], args.timeout)
     if got is None:
         return 2
     res, have_view = got
     advice = res["pooled"]["route_advice_pooled"]
+    per_node = res["pooled"].get("per_node") or {}
+    pnodes = {n.get("node_id"): n for n in res["pooled"]["pressure"]["nodes"]}
     if args.json:
         _dump({"n_nodes": res["n_nodes"], "n_ok": res["n_ok"],
-               "route_rates": res["pooled"]["route_rates"], "route_advice_pooled": advice})
+               "route_rates": res["pooled"]["route_rates"], "route_advice_pooled": advice,
+               "per_node": per_node, "pressure_nodes": list(pnodes.values())})
         return 0 if res["n_ok"] else 1
     if not have_view:
         print("note: no fresh peers.json; local node only")
@@ -388,6 +391,17 @@ def _cmd_advise(args) -> int:
             if isinstance(b, dict):
                 print(f"    start {tier:<16} n={b.get('n', 0):<6} esc={b.get('escalated', 0):<6} "
                       f"rate={float(b.get('rate') or 0):.3f}")
+    if per_node:
+        print("per node (n, escalation rate)")
+    for nid in sorted(per_node, key=str):
+        for tt, c in sorted(per_node[nid]["route_rates"].items()):
+            print(f"  {str(nid)[:12]}  {tt:<24} n={c['n']:<6} rate={c['rate']:.3f}")
+    for nid, p in sorted(pnodes.items(), key=lambda kv: str(kv[0])):
+        if "n" not in p:
+            continue
+        ttft = f"{p['p50_ttft_ms']:.0f}" if "p50_ttft_ms" in p else "-"
+        rej = f"{p['upstream_rejected_rate']:.3f}" if "upstream_rejected_rate" in p else "-"
+        print(f"  {str(nid)[:12]}  pressure n={p['n']:<6} p50_ttft_ms={ttft} rejected_rate={rej}")
     return 0 if res["n_ok"] else 1
 
 

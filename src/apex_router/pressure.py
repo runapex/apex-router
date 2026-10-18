@@ -295,6 +295,7 @@ def _finish(b, th) -> dict:
         "retried": b["retried"],
         "local": b["local"],
         "upstream_rejected": b["upstream_rejected"],
+        "upstream_rejected_rate": round(b["upstream_rejected"] / n, 4) if n else 0.0,
         "p50_ttft_ms": round(statistics.median(b["_ttft"]), 1) if b["_ttft"] else None,
         "inflight_agents": len(b["_agents"]),
         "level": _level(b, th),

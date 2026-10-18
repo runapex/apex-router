@@ -185,6 +185,9 @@ def test_collect_and_advise_local_only(home, capsys, monkeypatch):
     assert rc == 0 and adv["route_advice_pooled"]["code"]["n"] == 40
     rc, out, _ = _run(capsys, "advise")
     assert rc == 0 and "code" in out and "local node only" in out
+    assert "per node" in out and "n=40" in out
+    rc, out, _ = _run(capsys, "advise", "--json")
+    assert json.loads(out)["per_node"]
 
 
 # ---- up (fake netif / beacon / server) -------------------------------------------------------

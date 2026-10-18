@@ -96,6 +96,29 @@ def test_pool_pressure_worst_level_and_per_node():
     assert collect.pool([])["pressure"] == {"level": "UNKNOWN", "nodes": []}
 
 
+def test_pool_pressure_new_fields_and_old_nodes():
+    new = {"level": "GREEN", "n": 96, "p50_ttft_ms": 800.0,
+           "causes": {"upstream_rejected": 5, "upstream_rejected_rate": 0.0521}}
+    old = {"level": "GREEN"}                       # older node: none of the new fields
+    p = collect.pool([_ok("1" * 32, {"pressure": new}), _ok("2" * 32, {"pressure": old})])["pressure"]
+    a, b = p["nodes"]
+    assert a["n"] == 96 and a["p50_ttft_ms"] == 800.0
+    assert a["upstream_rejected"] == 5 and a["upstream_rejected_rate"] == 0.0521
+    assert "n" not in b and "p50_ttft_ms" not in b and "upstream_rejected_rate" not in b
+    assert p["n"] == 96 and p["upstream_rejected"] == 5
+    assert p["upstream_rejected_rate"] == pytest.approx(5 / 96, abs=1e-4)
+
+
+def test_pool_per_node_route_split():
+    rs = [_ok("1" * 32, {"route_rates": {"debug": {"n": 96, "escalated": 24}}}),
+          _ok("2" * 32, {"route_rates": {"debug": {"n": 4, "escalated": 3}}}),
+          _ok("3" * 32, {})]
+    pn = collect.pool(rs)["per_node"]
+    assert pn["1" * 32]["route_rates"]["debug"] == {"n": 96, "escalated": 24, "rate": 0.25}
+    assert pn["2" * 32]["route_rates"]["debug"]["rate"] == 0.75
+    assert "3" * 32 not in pn
+
+
 def test_pool_errors_summed_measure_per_node():
     rs = [_ok("1" * 32, {"errors15m": {"n": 3, "by_cause": {"rate_limited": 2, "x": 1}},
                          "measure": {"limit_pct": 40}}),

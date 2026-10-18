@@ -278,6 +278,8 @@ def _pool_rates(results: list[dict]) -> dict:
 def _pool_pressure(results: list[dict]) -> dict:
     worst = "UNKNOWN"
     nodes = []
+    tot_n = tot_rej = 0
+    seen = False
     for r in results:
         if not isinstance(r, dict) or not r.get("ok"):
             continue
@@ -285,10 +287,51 @@ def _pool_pressure(results: list[dict]) -> dict:
         level = val.get("level") if isinstance(val, dict) else None
         if level not in LEVEL_RANK:
             level = "UNKNOWN"
-        nodes.append({"node_id": r.get("node_id"), "name": r.get("name"), "level": level})
+        node = {"node_id": r.get("node_id"), "name": r.get("name"), "level": level}
+        if isinstance(val, dict):          # older nodes lack these: leave the keys out
+            n = val.get("n")
+            causes = val.get("causes") if isinstance(val.get("causes"), dict) else {}
+            rej = causes.get("upstream_rejected")
+            ttft = val.get("p50_ttft_ms")
+            if _is_int(n) and n >= 0:
+                node["n"] = n
+            if isinstance(ttft, (int, float)) and not isinstance(ttft, bool):
+                node["p50_ttft_ms"] = ttft
+            if _is_int(rej) and rej >= 0 and "n" in node:
+                node["upstream_rejected"] = rej
+                node["upstream_rejected_rate"] = (
+                    round(rej / n, 4) if n else 0.0)
+                tot_n += n
+                tot_rej += rej
+                seen = True
+        nodes.append(node)
         if LEVEL_RANK[level] > LEVEL_RANK[worst]:
             worst = level
-    return {"level": worst, "nodes": nodes}
+    out = {"level": worst, "nodes": nodes}
+    if seen:
+        out.update(n=tot_n, upstream_rejected=tot_rej,
+                   upstream_rejected_rate=round(tot_rej / tot_n, 4) if tot_n else 0.0)
+    return out
+
+
+def _per_node_rates(results: list[dict]) -> dict:
+    """Per node id: the route_rates cells (n, escalated, rate). Only node ids; bad cells skipped."""
+    out: dict[str, dict] = {}
+    for r in results:
+        rates = _dataset(r, "route_rates")
+        if not isinstance(rates, dict):
+            continue
+        cells = {}
+        for tt, cell in rates.items():
+            if not isinstance(tt, str) or not isinstance(cell, dict):
+                continue
+            n, esc = cell.get("n"), cell.get("escalated")
+            if not _is_int(n) or not _is_int(esc) or n < 0 or not 0 <= esc <= n:
+                continue
+            cells[tt] = {"n": n, "escalated": esc, "rate": esc / n if n else 0.0}
+        if cells:
+            out[r.get("node_id")] = {"route_rates": cells}
+    return out
 
 
 def _pool_errors(results: list[dict]) -> dict:
@@ -332,4 +375,5 @@ def pool(results: list[dict]) -> dict:
         "pressure": _pool_pressure(results),
         "errors15m": _pool_errors(results),
         "measure": _per_node(results, "measure"),
+        "per_node": _per_node_rates(results),
     }
