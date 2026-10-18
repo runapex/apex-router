@@ -543,9 +543,14 @@ def test_recover_after_crash(env):
     jobs.write_private(worker.running_path(env["home"]), json.dumps(
         {"id": jid, "from": env["s"].node_id, "step": "medium"}).encode())
     w = _worker(env, [])
-    w.recover()
+    assert w.recover() is False                       # fail closed: stays busy
     r = _result(env, jid)
     assert r["status"] == "failed" and r["reason"] == "worker_crashed"
+    assert worker.running_path(env["home"]).exists()
+    jid2, envb = _job(env, task="ALWAYS_DONE")
+    _worker(env, [envb]).poll_once()
+    assert _result(env, jid2)["reason"] == "busy"     # no job runs beside a possible survivor
+    assert w.recover(confirmed=True) is True          # `mesh worker --recover`
     assert not worker.running_path(env["home"]).exists()
 
 
@@ -582,41 +587,53 @@ def test_cli_lock_one_worker(env):
 
 # ---- xval round: crash recovery kills a surviving agent group; full ledger write ---------------
 
-def test_xval_recover_kills_process_in_job_worktree_only(env, tmp_path):
-    import signal as _sig
+def test_xval_survivor_holds_agent_lock_until_it_exits(env, tmp_path):
+    """A step process (and its children) inherit the agent lock; a new job waits for them."""
+    lock = worker.try_agent_lock(env["home"])
+    assert lock is not None
+    out, err = tmp_path / "o", tmp_path / "e"
+    # A child that forks a grandchild in a new session and exits at once: the grandchild survives.
+    script = ("import os,time,subprocess,sys;"
+              "subprocess.Popen([sys.executable,'-c','import time; time.sleep(3)'],"
+              "start_new_session=True, close_fds=False)")
+    rc, _ = worker.run_proc([sys.executable, "-c", script], cwd=tmp_path, timeout=10,
+                            out_path=out, err_path=err, hold_fd=lock)
+    os.close(lock)                              # the worker "crashed" or finished
+    assert rc == 0
+    assert worker.try_agent_lock(env["home"]) is None          # the grandchild still holds it
+    deadline = time.time() + 10
+    fd = None
+    while fd is None and time.time() < deadline:
+        time.sleep(0.2)
+        fd = worker.try_agent_lock(env["home"])
+    assert fd is not None                                       # free once it exited
+    os.close(fd)
+
+
+def test_xval_recover_waits_while_lock_held(env):
     jid = "ab" * 8
-    jobdir = worker.jobs.worker_dir(env["home"]) / "jobs" / jid / "medium"
-    jobdir.mkdir(parents=True)
-    other = tmp_path / "elsewhere"
-    other.mkdir()
-    inside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=jobdir)
-    outside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=other)
+    worker.running_path(env["home"]).parent.mkdir(parents=True, exist_ok=True)
+    worker.running_path(env["home"]).write_text(json.dumps({"id": jid, "from": "c" * 32}))
+    held = worker.try_agent_lock(env["home"])
     try:
-        worker.running_path(env["home"]).write_text(json.dumps(
-            {"id": jid, "from": "c" * 32, "step": "medium"}))
-        _worker(env, []).recover()
-        assert inside.wait(timeout=5) == -_sig.SIGKILL
-        assert outside.poll() is None                       # an unrelated process is untouched
-        assert not worker.running_path(env["home"]).exists()
+        assert _worker(env, []).recover(confirmed=True) is False   # lock held: refused
+        assert worker.running_path(env["home"]).exists()
     finally:
-        for p in (inside, outside):
-            if p.poll() is None:
-                p.kill()
+        os.close(held)
+    assert _worker(env, []).recover() is False                   # default: fail closed
+    assert worker.running_path(env["home"]).exists()
+    assert _worker(env, []).recover(confirmed=True) is True       # operator confirmed
+    assert not worker.running_path(env["home"]).exists()
 
 
-def test_xval_kill_job_processes_matches_by_cwd_prefix(tmp_path):
-    root = tmp_path / "jobs" / ("cd" * 8)
-    root.mkdir(parents=True)
-    sig = []
-    orig = worker.os.kill
-    worker.os.kill = lambda pid, s: sig.append(pid)
+def test_xval_job_while_lock_held_is_busy(env):
+    held = worker.try_agent_lock(env["home"])
     try:
-        got = worker.kill_job_processes(root, cwds=lambda: {
-            11: str(root / "high"), 12: str(root), 13: str(tmp_path / "jobs" / ("cd" * 8 + "x")),
-            14: "/", os.getpid(): str(root)})
+        jid, envb = _job(env, task="ALWAYS_DONE")
+        _worker(env, [envb]).poll_once()
+        assert _result(env, jid)["reason"] == "busy"
     finally:
-        worker.os.kill = orig
-    assert sorted(got) == [11, 12] and sorted(sig) == [11, 12]
+        os.close(held)
 
 
 def test_xval_append_line_handles_short_write(env, monkeypatch):

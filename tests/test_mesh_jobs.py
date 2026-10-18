@@ -600,3 +600,10 @@ def test_xval_truncated_result_is_never_stored(home):
             "patch_b64": "", "report": "", "truncated": True}
     with pytest.raises(jobs.JobError, match="truncated"):
         sender.store_result(stub)
+
+
+def test_xval_cached_stub_is_ignored(home):
+    stub = {"id": "9" * 16, "status": "done", "reason": "", "steps": [],
+            "patch_b64": "", "report": "", "truncated": True}
+    jobs.write_private(jobs.inbox() / f"{'9' * 16}.json", json.dumps(stub).encode())
+    assert sender.stored_result("9" * 16) is None

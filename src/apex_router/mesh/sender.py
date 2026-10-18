@@ -109,6 +109,8 @@ def stored_result(jid: str, *, h: Path | None = None) -> dict | None:
         body = jobs.validate_result(doc)
     except JobError:
         return None
+    if body.get("truncated"):
+        return None                              # an old cached stub: fetch the full result again
     return body if body["id"] == jid else None
 
 

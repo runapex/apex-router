@@ -336,7 +336,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_path: Path,
              stdin_path: Path | None = None,
-             on_start: Any = None) -> tuple[int | None, bool]:
+             hold_fd: int | None = None) -> tuple[int | None, bool]:
     """Run ``argv`` (no shell) in its own process group. (returncode, timed_out).
 
     Output goes to files (no pipe dead-lock, no memory blow-up). On timeout, error or a normal
@@ -347,13 +347,8 @@ def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_
     try:
         with open(out_path, "wb") as out, open(err_path, "wb") as err:
             proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdin=stdin, stdout=out,
-                                    stderr=err, start_new_session=True, close_fds=True)
-            if on_start is not None:
-                try:
-                    on_start(proc.pid)                 # record the group before we wait on it
-                except BaseException:
-                    _kill_group(proc)
-                    raise
+                                    stderr=err, start_new_session=True, close_fds=True,
+                                    pass_fds=(hold_fd,) if hold_fd is not None else ())
             try:
                 rc = proc.wait(timeout=max(0.01, timeout))
             except subprocess.TimeoutExpired:
@@ -370,45 +365,23 @@ def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_
             stdin.close()
 
 
-def _cwds_of_user() -> dict[int, str]:
-    """pid -> cwd for this user's processes (``lsof``). Empty on any error."""
-    try:
-        r = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"],
-                           capture_output=True, text=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    out: dict[int, str] = {}
-    pid = None
-    for line in r.stdout.splitlines():
-        if line.startswith("p") and line[1:].isdigit():
-            pid = int(line[1:])
-        elif line.startswith("n") and pid is not None:
-            out[pid] = line[1:]
-    return out
+def agent_lock_path(h: Path | None = None) -> Path:
+    return jobs.worker_dir(h) / "agent.lock"
 
 
-def kill_job_processes(job_dir: Path, *, cwds: Any = None) -> list[int]:
-    """SIGKILL every process of this user whose cwd is inside ``job_dir`` (a crashed worker's
-    agent, its children, a running check). The cwd names the job, so no unrelated process (and no
-    reused pid) matches. Returns the pids it signalled. Never raises."""
-    root = os.path.realpath(str(job_dir))
-    killed = []
-    me = {os.getpid(), os.getppid()}
+def try_agent_lock(h: Path | None = None) -> int | None:
+    """Take the agent lock (flock, non-blocking). An fd, or None while any process of an earlier
+    job still holds it. Every step process inherits this fd (pass_fds), so the lock stays held
+    until the agent, its children and the check have all exited, also after a worker crash."""
+    p = agent_lock_path(h)
+    p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        table = (cwds or _cwds_of_user)()
-    except Exception:  # noqa: BLE001
-        return []
-    for pid, cwd in table.items():
-        try:
-            real = os.path.realpath(cwd)
-        except (OSError, ValueError):
-            continue
-        if pid in me or not (real == root or real.startswith(root + os.sep)):
-            continue
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pid, signal.SIGKILL)
-            killed.append(pid)
-    return killed
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
 
 
 # -- defaults for injected hooks --------------------------------------------------------------
@@ -548,10 +521,14 @@ class Worker:
             return False
         if job is None:
             return False
-        self.run_job(*job)
+        job, repo, base, lock = job
+        try:
+            self.run_job(job, repo, base, lock_fd=lock)
+        finally:
+            os.close(lock)
         return True
 
-    def _check(self, envelope: str, peer) -> tuple[dict, Path, str] | None:
+    def _check(self, envelope: str, peer) -> tuple[dict, Path, str, int] | None:
         peer_id = getattr(peer, "node_id", None)
         # 1. MAC, to, from = the alive peer that served it, not expired.
         try:
@@ -645,12 +622,18 @@ class Worker:
         if settings is None:
             self.reject(jid, sender, "bad_settings")
             return None
+        # The agent lock: free only when no process of an earlier job runs (see try_agent_lock).
+        lock = try_agent_lock(self.h)
+        if lock is None:
+            self.reject(jid, sender, "busy")
+            return None
         try:
             mark_seen(jid, self.h, now=self.now())
         except OSError:
+            os.close(lock)
             self.reject(jid, sender, "seen_write_failed")
             return None
-        return job, repo, base
+        return job, repo, base, lock
 
     # -- run --
 
@@ -680,8 +663,12 @@ class Worker:
         except Exception:  # noqa: BLE001, S110 -- fail open
             pass
 
-    def run_job(self, job: dict, repo: Path, base: str) -> dict:
-        """Run the ladder. Always writes a final result and removes running.json."""
+    def run_job(self, job: dict, repo: Path, base: str, *, lock_fd: int | None = None) -> dict:
+        """Run the ladder. Always writes a final result and removes running.json.
+
+        ``lock_fd`` (the agent lock) is passed to every step process, so it stays held while any
+        of them lives."""
+        self._lock_fd = lock_fd
         jid, sender = job["id"], job["from"]
         jdir = jobs_root(self.h) / jid
         rows: list[dict] = []
@@ -762,6 +749,7 @@ class Worker:
         left = deadline - self.now()
         try:
             rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt,
+                                     hold_fd=getattr(self, "_lock_fd", None),
                                      out_path=jdir / f"{step}.out", err_path=jdir / f"{step}.err")
         except OSError:
             return done("claude_failed")
@@ -784,6 +772,7 @@ class Worker:
             tmo = min(self.check_timeout_s, left)
             try:
                 crc, ctimed = run_proc(["/bin/sh", "-c", job["check"]], cwd=wt, timeout=tmo,
+                                      hold_fd=getattr(self, "_lock_fd", None),
                                        out_path=jdir / f"{step}.check.out",
                                        err_path=jdir / f"{step}.check.err")
             except OSError:
@@ -832,25 +821,38 @@ class Worker:
 
     # -- recovery and cleanup --
 
-    def recover(self) -> None:
-        """A running.json left by a crash: the job id is in the ledger (never re-run); end it."""
+    def recover(self, *, confirmed: bool = False) -> bool:
+        """End a job that a crashed worker left (running.json). True = the worker may take jobs.
+
+        A process of that job (the agent, a shell it started, the check) can still run, and the
+        worker cannot prove it is gone: node does not pass the agent lock to its children. So by
+        default this fails closed: it marks the job failed and KEEPS running.json, so every new
+        job is rejected as busy. ``mesh worker --recover`` (``confirmed``) clears it after you
+        made sure that no process of the job runs (the command prints the candidates).
+        """
+        if not running_path(self.h).exists():
+            return True
         doc = jobs.read_json(running_path(self.h))
-        if running_path(self.h).exists():
-            # A detached agent of the crashed worker can still run: kill its process groups first,
-            # so no second job runs beside it. A group that is gone is skipped.
-            jid = doc.get("id") if isinstance(doc, dict) else None
-            if jobs.valid_id(jid):
-                kill_job_processes(jobs.worker_dir(self.h) / "jobs" / jid)
-            sender = doc.get("from") if isinstance(doc, dict) else None
-            cur = jobs.read_json(jobs.results_dir(self.h) / f"{jid}.json") if jid else None
-            if jobs.valid_id(jid) and isinstance(sender, str) and _NODE_RE.match(sender) \
-                    and (not isinstance(cur, dict) or cur.get("status") == "running"):
-                with contextlib.suppress(Exception):
-                    self._result({"id": jid, "status": "failed", "reason": "worker_crashed",
-                                  "steps": [], "patch_b64": "", "report": ""}, sender)
-            self.log("recover", id=jid)
-            with contextlib.suppress(FileNotFoundError):
-                running_path(self.h).unlink()
+        jid = doc.get("id") if isinstance(doc, dict) else None
+        sender = doc.get("from") if isinstance(doc, dict) else None
+        cur = jobs.read_json(jobs.results_dir(self.h) / f"{jid}.json") if jobs.valid_id(jid) else None
+        if jobs.valid_id(jid) and isinstance(sender, str) and _NODE_RE.match(sender) \
+                and (not isinstance(cur, dict) or cur.get("status") == "running"):
+            with contextlib.suppress(Exception):
+                self._result({"id": jid, "status": "failed", "reason": "worker_crashed",
+                              "steps": [], "patch_b64": "", "report": ""}, sender)
+        if not confirmed:
+            self.log("needs_recover", id=jid)
+            return False
+        fd = try_agent_lock(self.h)
+        if fd is None:
+            self.log("recover_refused", id=jid, reason="agent_lock_held")
+            return False
+        os.close(fd)
+        self.log("recover", id=jid)
+        with contextlib.suppress(FileNotFoundError):
+            running_path(self.h).unlink()
+        return True
 
     def cleanup(self) -> None:
         """Delete worktrees and results older than 24 h (never the running job)."""
@@ -943,6 +945,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--resume", action="store_true", help="take jobs again")
     g.add_argument("--status", action="store_true", help="print the worker state as JSON")
     g.add_argument("--once", action="store_true", help="poll one time, then exit")
+    g.add_argument("--recover", action="store_true",
+                   help="after a worker crash: clear the stale running job (check that no "
+                        "process of it runs first)")
     return ap
 
 
@@ -984,7 +989,29 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
     if load_allowlist(h) is None:
         print(f"mesh worker: no {allowlist_path(h)}; every job is rejected", file=sys.stderr)
     w = Worker(ident, h, daily_cap=args.daily_cap, wall_s=args.wall_min * 60, **overrides)
-    w.recover()
+    if args.recover:
+        doc = jobs.read_json(running_path(h))
+        jid = doc.get("id") if isinstance(doc, dict) else None
+        if jobs.valid_id(jid):
+            jdir = jobs_root(h) / jid
+            print(f"mesh worker: stale job {jid}. Processes with a cwd in {jdir} (stop them first):")
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                r = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"],
+                                   capture_output=True, text=True, timeout=10, check=False)
+                pid = None
+                for line in r.stdout.splitlines():
+                    if line.startswith("p"):
+                        pid = line[1:]
+                    elif line.startswith("n") and line[1:].startswith(str(jdir)):
+                        print(f"  pid {pid}  {line[1:]}")
+        ok = w.recover(confirmed=True)
+        print("mesh worker: recovered" if ok else
+              "mesh worker: not recovered (a job process still holds the agent lock)")
+        return 0 if ok else 1
+    if not w.recover():
+        print("mesh worker: a crashed job is left (running.json); new jobs are rejected as busy. "
+              "Make sure no process of it runs, then run: apex-router mesh worker --recover",
+              file=sys.stderr)
 
     def _term(signum, frame):
         raise KeyboardInterrupt

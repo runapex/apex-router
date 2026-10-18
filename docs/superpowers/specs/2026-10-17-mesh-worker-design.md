@@ -152,3 +152,19 @@ apex-router mesh worker --pause | --resume | --status
 
 Encryption on the wire, per-node keys, more than one job at a time, bundle upload of unpushed code,
 a launchd agent for `mesh worker` (tmux first; a plist later after a week of use).
+
+## Implementation notes (2026-10-18)
+
+- **Crash recovery fails closed.** A worker crash can leave a process of the job running (the
+  agent, a shell it started, the check). Node does not pass an inherited fd to its children, so the
+  worker cannot prove that every such process is gone, and killing by pid or cwd risks unrelated
+  processes. So at start the worker marks the stale job `failed` (`worker_crashed`), KEEPS
+  `worker/running.json`, and rejects every new job as `busy`. Run `apex-router mesh worker --recover`
+  after you make sure no process of the job runs (the command lists processes whose cwd is in the
+  job folder). It also refuses while the agent lock (`worker/agent.lock`, inherited by the direct
+  step processes) is held.
+- **Results response.** `GET /mesh/v1/results?for=<sender>` fits a 900 KiB budget; results that do
+  not fit come back as stubs (`"truncated": true`, no patch/report). `?for=<sender>&id=<job id>`
+  returns that one result in full. `mesh result ID` always asks by id, and never caches a stub.
+  The sender response cap is 2 MiB.
+- **Tokens and cost** come from `claude --output-format json`; the prompt goes to `claude` on stdin.
