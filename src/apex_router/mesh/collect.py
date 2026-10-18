@@ -245,7 +245,18 @@ def _pool_rates(results: list[dict]) -> dict:
             null_ts = cell.get("null_ts", 0)
             if not _is_int(null_ts) or null_ts < 0:
                 null_ts = 0
-            acc = pooled.setdefault(tt, {"n": 0, "escalated": 0, "null_ts": 0})
+            acc = pooled.setdefault(tt, {"n": 0, "escalated": 0, "null_ts": 0, "by_tier": {}})
+            by_tier = cell.get("by_tier")  # absent on nodes that predate the split
+            if isinstance(by_tier, dict):
+                for tier, b in by_tier.items():
+                    if not isinstance(tier, str) or not isinstance(b, dict):
+                        continue
+                    bn, be = b.get("n"), b.get("escalated")
+                    if not _is_int(bn) or not _is_int(be) or bn < 0 or not 0 <= be <= bn:
+                        continue
+                    sub = acc["by_tier"].setdefault(tier, {"n": 0, "escalated": 0})
+                    sub["n"] += bn
+                    sub["escalated"] += be
             acc["n"] += n
             acc["escalated"] += esc
             acc["null_ts"] += null_ts
@@ -256,6 +267,10 @@ def _pool_rates(results: list[dict]) -> dict:
                 "rate": acc["escalated"] / acc["n"] if acc["n"] else 0.0}
         if acc["null_ts"]:
             cell["null_ts"] = acc["null_ts"]
+        if acc["by_tier"]:
+            cell["by_tier"] = {t: {"n": b["n"], "escalated": b["escalated"],
+                                   "rate": b["escalated"] / b["n"] if b["n"] else 0.0}
+                               for t, b in sorted(acc["by_tier"].items())}
         out[tt] = cell
     return out
 

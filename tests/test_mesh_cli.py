@@ -314,3 +314,21 @@ def test_main_help_lists_mesh(capsys):
     with pytest.raises(SystemExit):
         main_cli.main(["--help"])
     assert "mesh" in capsys.readouterr().out
+
+
+def test_advise_prints_start_tier_split(capsys, monkeypatch):
+    from apex_router.mesh import cli as mesh_cli
+    rates = {"code": {"n": 12, "escalated": 3, "rate": 0.25, "by_tier": {
+        "opus": {"n": 10, "escalated": 1, "rate": 0.1},
+        "sonnet": {"n": 2, "escalated": 2, "rate": 1.0}}},
+        "docs": {"n": 3, "escalated": 0, "rate": 0.0}}
+    res = {"n_nodes": 1, "n_ok": 1, "pooled": {"route_rates": rates, "route_advice_pooled": {
+        "code": {"verdict": "inconclusive", "n": 12, "rate": 0.25, "ci_low": 0.1, "ci_high": 0.5},
+        "docs": {"verdict": "inconclusive", "n": 3, "rate": 0.0, "ci_low": 0.0, "ci_high": 0.5}}}}
+    monkeypatch.setattr(mesh_cli, "_run_collect", lambda names, timeout: (res, True))
+    rc = mesh_cli._cmd_advise(type("A", (), {"json": False, "timeout": 1})())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "    start opus" in out and "n=10" in out
+    assert "    start sonnet" in out and "rate=1.000" in out
+    assert out.count("start ") == 2  # docs has no split -> no extra rows

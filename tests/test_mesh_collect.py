@@ -261,3 +261,19 @@ def test_fetch_against_real_mesh_server(monkeypatch):
     assert r["ok"] is True, r
     assert r["data"]["pressure"] == {"level": "GREEN"}
     assert r["data"]["worker"] == {"error": "not_shared"}
+
+
+def test_pool_sums_by_start_tier_and_keeps_old_nodes_working():
+    a = _ok("1" * 32, {"route_rates": {"code": {"n": 10, "escalated": 2, "rate": 0.2, "by_tier": {
+        "opus": {"n": 8, "escalated": 1, "rate": 0.125},
+        "sonnet": {"n": 2, "escalated": 1, "rate": 0.5}}}}})
+    b = _ok("2" * 32, {"route_rates": {"code": {"n": 6, "escalated": 3, "rate": 0.5, "by_tier": {
+        "opus": {"n": 4, "escalated": 0, "rate": 0.0},
+        "bad": {"n": 1, "escalated": 5}}}}})
+    old = _ok("3" * 32, {"route_rates": {"code": {"n": 4, "escalated": 0, "rate": 0.0}}})
+    cell = collect.pool([a, b, old])["route_rates"]["code"]
+    assert (cell["n"], cell["escalated"]) == (20, 5)  # pooled totals are unchanged
+    assert cell["by_tier"] == {"opus": {"n": 12, "escalated": 1, "rate": 1 / 12},
+                               "sonnet": {"n": 2, "escalated": 1, "rate": 0.5}}
+    # no node reports by_tier -> the field stays absent (old shape)
+    assert "by_tier" not in collect.pool([old])["route_rates"]["code"]

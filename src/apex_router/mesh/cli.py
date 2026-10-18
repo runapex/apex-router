@@ -375,12 +375,19 @@ def _cmd_advise(args) -> int:
     print(f"pooled over {res['n_ok']}/{res['n_nodes']} nodes")
     if not advice:
         print("no route data")
+    rates = res["pooled"].get("route_rates") or {}
     for tt, rec in sorted(advice.items()):
         if not isinstance(rec, dict):
             continue
         print(f"  {tt:<24} {rec.get('verdict')!s:<14} n={rec.get('n', 0):<6} "
               f"rate={float(rec.get('rate') or 0):.3f} "
               f"ci=[{float(rec.get('ci_low') or 0):.3f},{float(rec.get('ci_high') or 0):.3f}]")
+        # Per-start-tier split (informational; the verdict above stays pooled).
+        by_tier = (rates.get(tt) or {}).get("by_tier") if isinstance(rates.get(tt), dict) else None
+        for tier, b in sorted((by_tier or {}).items()):
+            if isinstance(b, dict):
+                print(f"    start {tier:<16} n={b.get('n', 0):<6} esc={b.get('escalated', 0):<6} "
+                      f"rate={float(b.get('rate') or 0):.3f}")
     return 0 if res["n_ok"] else 1
 
 
