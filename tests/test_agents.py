@@ -55,6 +55,9 @@ def test_claude_missing_home_is_empty(tmp_path):
 
 
 def test_decode_slug_resolves_on_disk(tmp_path, monkeypatch):
+    # tmp_path lives in the system temp dir, which can hold more entries than the listing cap;
+    # the cap is a safety bound for real ~/... paths, not what this test is about.
+    monkeypatch.setattr(agents, "SLUG_LIST_MAX", 1_000_000)
     real = tmp_path / "work" / "my-repo"
     real.mkdir(parents=True)
     (tmp_path / "work" / "my").mkdir()                         # shorter decoy prefix

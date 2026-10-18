@@ -33,8 +33,10 @@ Two layers:
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -207,6 +209,9 @@ _PATH_OVERRIDES = (
     "CLASSIFIER_PANEL", "APEX_MAIL_DIR", "APEX_ADAPTERS_DIR",
 )
 _SANDBOX = Path(tempfile.mkdtemp(prefix="apex-test-home-"))
+# One sandbox per process; remove it at exit, or every run leaves a dir in the system temp dir
+# (433 had piled up by 2026-10-17 and pushed it past agents.SLUG_LIST_MAX).
+atexit.register(shutil.rmtree, _SANDBOX, ignore_errors=True)
 
 
 def _apply_sandbox(home: Path) -> dict:
