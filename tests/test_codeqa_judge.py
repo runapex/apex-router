@@ -347,3 +347,24 @@ def test_http_post_strips_auth_on_cross_origin_redirect():
     assert "Authorization" not in cleaned
     assert "Ocp-Apim-Subscription-Key" not in cleaned
     assert cleaned.get("Content-Type") == "application/json"
+
+
+def _redirected_headers(src, dst):
+    import io
+    import urllib.request
+    from apex_router.codeqa import judge
+    req = urllib.request.Request(src, headers={"Authorization": "Bearer secret", "Ocp-Apim-Subscription-Key": "k",
+                                               "Accept": "application/json"})
+    new = judge._NoAuthRedirect().redirect_request(req, io.BytesIO(), 302, "Found", {}, dst)
+    return {k.lower(): v for k, v in new.headers.items()}
+
+
+def test_redirect_keeps_auth_only_on_the_same_origin():
+    # Same scheme, host and port: the credential may follow.
+    assert "authorization" in _redirected_headers("https://api.test/v1", "https://api.test/v2")
+    assert "authorization" in _redirected_headers("https://api.test/v1", "https://api.test:443/v2")
+    # Another host, another port, or a scheme change is another origin: no credential.
+    for dst in ("https://evil.test/v1", "https://api.test:8443/v1", "http://api.test/v1", "http://api.test:443/v1"):
+        h = _redirected_headers("https://api.test/v1", dst)
+        assert "authorization" not in h and "ocp-apim-subscription-key" not in h, dst
+        assert h.get("accept") == "application/json"
