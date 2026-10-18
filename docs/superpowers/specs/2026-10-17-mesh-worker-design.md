@@ -70,7 +70,9 @@ job's `max_effort`. Default `max_effort` = `high`.
 
 For each step:
 
-1. Make a fresh worktree from `origin/<ref>` under `worker/jobs/<id>/<step>` (detached HEAD).
+1. Make a fresh worktree from `origin/<ref>` under `<mesh home>-jobs/<id>/<step>` (detached HEAD).
+   The worktrees live OUTSIDE the mesh home: the agent settings deny the mesh home (it holds
+   `mesh.key`), and a worktree inside it was denied to the agent itself (every step BLOCKED).
 2. Run `claude -p --model <sonnet | opus> --effort <level>` (aliases, so the worker's own deployment resolves the model) in it, with the
    worker settings file (below), the task wrapped as data with a fixed preamble (do the task, commit
    to the worktree, end with DONE or BLOCKED and one reason), and the wall-clock cap (default 30 min
@@ -168,3 +170,11 @@ a launchd agent for `mesh worker` (tmux first; a plist later after a week of use
   returns that one result in full. `mesh result ID` always asks by id, and never caches a stub.
   The sender response cap is 2 MiB.
 - **Tokens and cost** come from `claude --output-format json`; the prompt goes to `claude` on stdin.
+- **Worktree location (fix 2026-10-18).** `<mesh home>-jobs/<id>/<step>`, a sibling of the mesh
+  home. Before, `worker/jobs/` sat inside the denied mesh home: the agent could run commands but not
+  read its own files, so each step ended BLOCKED and the ladder escalated to Opus for nothing.
+- **Ctrl-C / SIGTERM** ends the running job as `failed` (`interrupted`) with no further ladder step.
+  Killing only the `claude` process makes the step fail, and the ladder goes on; stop the worker
+  (or `--pause` and wait) instead.
+- **Watch a job:** the agent transcripts are in `~/.claude/projects/*mesh-worker-jobs-<id>-<step>/`
+  on the worker (never sent to the sender).

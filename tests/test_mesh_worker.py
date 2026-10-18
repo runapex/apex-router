@@ -643,3 +643,43 @@ def test_xval_append_line_handles_short_write(env, monkeypatch):
     monkeypatch.setattr(worker.os, "write", real)
     got = worker.load_seen(env["home"])
     assert got is not None and "cd" * 8 in got[0]
+
+
+# ---- worktrees live outside the denied mesh home ------------------------------------------------
+
+def test_jobs_root_is_outside_mesh_home(env):
+    root = worker.jobs_root(env["home"])
+    home = env["home"].resolve()
+    assert root.parent == home.parent and root.name == home.name + "-jobs"
+    assert not str(root).startswith(str(home) + os.sep)
+
+
+def test_agent_can_read_its_worktree_under_settings(env):
+    """No deny rule of the default settings covers a job worktree (seen live: every step BLOCKED)."""
+    import fnmatch
+    deny = worker.default_settings(env["home"])["permissions"]["deny"]
+    wt = str(worker.jobs_root(env["home"]) / ("ab" * 8) / "medium" / "metrics" / "x.json")
+    home_tilde = wt.replace(os.path.expanduser("~"), "~", 1)
+    for rule in deny:
+        if not rule.startswith(("Read(", "Edit(")):
+            continue
+        pat = rule[rule.index("(") + 1:-1].lstrip("/") if rule[5:6] == "/" else rule[rule.index("(") + 1:-1]
+        pat = pat.replace("/**", "/*")
+        for cand in (wt, home_tilde, "/" + wt.lstrip("/")):
+            assert not fnmatch.fnmatch(cand, pat), (rule, cand)
+
+
+def test_ctrl_c_ends_job_failed_interrupted_not_escalated(env, monkeypatch):
+    jid, envb = _job(env, task="never done", max_effort="opus")
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise KeyboardInterrupt
+    monkeypatch.setattr(worker, "run_proc", boom)
+    with pytest.raises(KeyboardInterrupt):
+        _worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and r["reason"] == "interrupted"
+    assert len(calls) == 1                                  # no next ladder step
+    assert not worker.running_path(env["home"]).exists()

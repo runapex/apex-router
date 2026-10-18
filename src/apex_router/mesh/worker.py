@@ -78,7 +78,13 @@ def log_path(h: Path | None = None) -> Path:
 
 
 def jobs_root(h: Path | None = None) -> Path:
-    return jobs.worker_dir(h) / "jobs"
+    """Job worktrees: a sibling of the mesh home (``<mesh home>-jobs``), NOT inside it.
+
+    The agent settings deny Read/Edit of the mesh home (it holds mesh.key). A worktree inside it
+    would be denied to the agent itself, so every step would fail and the ladder would escalate
+    for nothing (seen live, 2026-10-18)."""
+    home = jobs.home(h).resolve()
+    return home.with_name(home.name + "-jobs")
 
 
 def allowlist_path(h: Path | None = None) -> Path:
@@ -683,6 +689,11 @@ class Worker:
         except Exception as e:  # noqa: BLE001 -- fail closed: the job ends as failed
             self.log("job_error", id=jid, error=type(e).__name__)
             final.update(status="failed", reason="worker_error")
+        except BaseException:
+            # Ctrl-C / SIGTERM: run_proc already killed the step's process group. End the job as
+            # failed (no further ladder step), clear running.json in finally, then stop.
+            final.update(status="failed", reason="interrupted")
+            raise
         finally:
             final["steps"] = rows
             try:
