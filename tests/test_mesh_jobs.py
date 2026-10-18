@@ -580,3 +580,23 @@ def test_xval_submit_refuses_envelope_over_cap(me, home):
     task = "\\" * (jobs.MAX_TASK_BYTES - 10)            # JSON doubles each backslash
     with pytest.raises(jobs.JobError, match="job_too_big"):
         sender.submit(me, to=W_ID, repo="apex-router", ref="main", task=task)
+
+
+def test_xval_id_fetch_is_never_budgeted(tmp_path):
+    big = {"id": "e" * 16, "status": "done", "reason": "", "steps": [],
+           "patch_b64": "x" * 690_000, "report": "r" * 60_000}
+    jobs.write_result({**big, "id": "d" * 16}, "s" * 32, h=tmp_path)   # sorts first, fills budget
+    jobs.write_result(big, "s" * 32, h=tmp_path)
+    listed = {r["id"]: r for r in jobs.results_for("s" * 32, h=tmp_path)}
+    assert listed["e" * 16].get("truncated") is True
+    one = jobs.results_for("s" * 32, h=tmp_path, only="e" * 16)
+    assert one[0]["patch_b64"] and not one[0].get("truncated")
+    from apex_router.mesh import sender as _s
+    assert len(json.dumps(one).encode()) < _s.MAX_RESPONSE_BYTES
+
+
+def test_xval_truncated_result_is_never_stored(home):
+    stub = {"id": "f" * 16, "status": "done", "reason": "", "steps": [],
+            "patch_b64": "", "report": "", "truncated": True}
+    with pytest.raises(jobs.JobError, match="truncated"):
+        sender.store_result(stub)

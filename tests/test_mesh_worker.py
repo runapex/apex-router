@@ -582,38 +582,41 @@ def test_cli_lock_one_worker(env):
 
 # ---- xval round: crash recovery kills a surviving agent group; full ledger write ---------------
 
-def test_xval_recover_kills_surviving_agent_group(env):
+def test_xval_recover_kills_process_in_job_worktree_only(env, tmp_path):
     import signal as _sig
-    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                         start_new_session=True)
+    jid = "ab" * 8
+    jobdir = worker.jobs.worker_dir(env["home"]) / "jobs" / jid / "medium"
+    jobdir.mkdir(parents=True)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    inside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=jobdir)
+    outside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=other)
     try:
-        jid = "ab" * 8
-        worker.running_path(env["home"]).parent.mkdir(parents=True, exist_ok=True)
         worker.running_path(env["home"]).write_text(json.dumps(
-            {"id": jid, "from": "c" * 32, "step": "medium", "pgids": [p.pid]}))
-        w = _worker(env, [])
-        w.recover()
-        assert p.wait(timeout=5) == -_sig.SIGKILL
+            {"id": jid, "from": "c" * 32, "step": "medium"}))
+        _worker(env, []).recover()
+        assert inside.wait(timeout=5) == -_sig.SIGKILL
+        assert outside.poll() is None                       # an unrelated process is untouched
         assert not worker.running_path(env["home"]).exists()
     finally:
-        if p.poll() is None:
-            p.kill()
+        for p in (inside, outside):
+            if p.poll() is None:
+                p.kill()
 
 
-def test_xval_step_records_pgid_in_running(env):
-    seen = []
-    orig = worker.Worker._record_pgid
-
-    def spy(self, pgid):
-        orig(self, pgid)
-        seen.append(json.loads(worker.running_path(self.h).read_text())["pgids"])
-    worker.Worker._record_pgid = spy
+def test_xval_kill_job_processes_matches_by_cwd_prefix(tmp_path):
+    root = tmp_path / "jobs" / ("cd" * 8)
+    root.mkdir(parents=True)
+    sig = []
+    orig = worker.os.kill
+    worker.os.kill = lambda pid, s: sig.append(pid)
     try:
-        _jid, envb = _job(env, task="ALWAYS_DONE")
-        _worker(env, [envb]).poll_once()
+        got = worker.kill_job_processes(root, cwds=lambda: {
+            11: str(root / "high"), 12: str(root), 13: str(tmp_path / "jobs" / ("cd" * 8 + "x")),
+            14: "/", os.getpid(): str(root)})
     finally:
-        worker.Worker._record_pgid = orig
-    assert seen and all(isinstance(g, int) for g in seen[-1])
+        worker.os.kill = orig
+    assert sorted(got) == [11, 12] and sorted(sig) == [11, 12]
 
 
 def test_xval_append_line_handles_short_write(env, monkeypatch):

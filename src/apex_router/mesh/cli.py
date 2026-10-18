@@ -565,6 +565,9 @@ def _cmd_result(args) -> int:
             else:
                 error = None
                 mine = next((r for r in res["results"] if r["id"] == jid), None)
+                if mine is not None and mine.get("truncated"):
+                    error = "result truncated by the worker; try again"
+                    mine = None
                 if mine is not None:
                     body = mine
                     try:

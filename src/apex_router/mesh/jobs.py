@@ -280,7 +280,7 @@ def results_for(for_node: str, *, h: Path | None = None, only: str | None = None
             out.append(validate_result(body))
         except JobError:
             continue
-    return budget(out)
+    return out if only is not None else budget(out)     # one result: full (<= ~700 KiB + report)
 
 
 RESULTS_BUDGET = 900 * 1024        # under the client's 1 MiB response cap, with envelope room

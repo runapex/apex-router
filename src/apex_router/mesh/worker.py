@@ -370,6 +370,47 @@ def run_proc(argv: list[str], *, cwd: Path, timeout: float, out_path: Path, err_
             stdin.close()
 
 
+def _cwds_of_user() -> dict[int, str]:
+    """pid -> cwd for this user's processes (``lsof``). Empty on any error."""
+    try:
+        r = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"],
+                           capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    out: dict[int, str] = {}
+    pid = None
+    for line in r.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            out[pid] = line[1:]
+    return out
+
+
+def kill_job_processes(job_dir: Path, *, cwds: Any = None) -> list[int]:
+    """SIGKILL every process of this user whose cwd is inside ``job_dir`` (a crashed worker's
+    agent, its children, a running check). The cwd names the job, so no unrelated process (and no
+    reused pid) matches. Returns the pids it signalled. Never raises."""
+    root = os.path.realpath(str(job_dir))
+    killed = []
+    me = {os.getpid(), os.getppid()}
+    try:
+        table = (cwds or _cwds_of_user)()
+    except Exception:  # noqa: BLE001
+        return []
+    for pid, cwd in table.items():
+        try:
+            real = os.path.realpath(cwd)
+        except (OSError, ValueError):
+            continue
+        if pid in me or not (real == root or real.startswith(root + os.sep)):
+            continue
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+    return killed
+
+
 # -- defaults for injected hooks --------------------------------------------------------------
 
 def _default_fetch(peer, ident, timeout):
@@ -613,23 +654,10 @@ class Worker:
 
     # -- run --
 
-    def _record_pgid(self, pgid: int) -> None:
-        """Add a step's process group to running.json (a crash recovery kills it). Raises OSError."""
-        doc = jobs.read_json(running_path(self.h))
-        if not isinstance(doc, dict):
-            raise OSError("running.json missing")
-        groups = [g for g in doc.get("pgids", []) if isinstance(g, int)]
-        doc["pgids"] = [*groups, int(pgid)]
-        jobs.write_private(running_path(self.h), json.dumps(doc, sort_keys=True).encode("utf-8"))
-
     def _write_running(self, job: dict, step: str, effort: str, model: str, rows: list) -> None:
-        prev = jobs.read_json(running_path(self.h))
-        groups = [g for g in prev.get("pgids", []) if isinstance(g, int)] \
-            if isinstance(prev, dict) and prev.get("id") == job["id"] else []
         jobs.write_private(running_path(self.h), json.dumps(
             {"id": job["id"], "from": job["from"], "step": step, "effort": effort,
-             "model": model, "started": self.now(), "pgids": groups},
-            sort_keys=True).encode("utf-8"))
+             "model": model, "started": self.now()}, sort_keys=True).encode("utf-8"))
         self._result({"id": job["id"], "status": "running", "reason": f"step:{step}",
                       "steps": list(rows), "patch_b64": "", "report": ""}, job["from"])
 
@@ -733,7 +761,7 @@ class Worker:
                 "--output-format", "json"]
         left = deadline - self.now()
         try:
-            rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt, on_start=self._record_pgid,
+            rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt,
                                      out_path=jdir / f"{step}.out", err_path=jdir / f"{step}.err")
         except OSError:
             return done("claude_failed")
@@ -755,7 +783,7 @@ class Worker:
                 return done("wall_cap")
             tmo = min(self.check_timeout_s, left)
             try:
-                crc, ctimed = run_proc(["/bin/sh", "-c", job["check"]], cwd=wt, timeout=tmo, on_start=self._record_pgid,
+                crc, ctimed = run_proc(["/bin/sh", "-c", job["check"]], cwd=wt, timeout=tmo,
                                        out_path=jdir / f"{step}.check.out",
                                        err_path=jdir / f"{step}.check.err")
             except OSError:
@@ -810,11 +838,9 @@ class Worker:
         if running_path(self.h).exists():
             # A detached agent of the crashed worker can still run: kill its process groups first,
             # so no second job runs beside it. A group that is gone is skipped.
-            for g in (doc.get("pgids", []) if isinstance(doc, dict) else []):
-                if isinstance(g, int) and not isinstance(g, bool) and g > 1 and g != os.getpgrp():
-                    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                        os.killpg(g, signal.SIGKILL)
             jid = doc.get("id") if isinstance(doc, dict) else None
+            if jobs.valid_id(jid):
+                kill_job_processes(jobs.worker_dir(self.h) / "jobs" / jid)
             sender = doc.get("from") if isinstance(doc, dict) else None
             cur = jobs.read_json(jobs.results_dir(self.h) / f"{jid}.json") if jid else None
             if jobs.valid_id(jid) and isinstance(sender, str) and _NODE_RE.match(sender) \

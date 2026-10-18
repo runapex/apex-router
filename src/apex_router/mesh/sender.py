@@ -31,7 +31,8 @@ if TYPE_CHECKING:
     from .peers import Peer
 
 AUTH_HEADER = "X-Apex-Mesh"
-MAX_RESPONSE_BYTES = 1 << 20          # same 1 MiB cap as the v1 data plane
+MAX_RESPONSE_BYTES = 2 << 20          # 2 MiB: one full result (512 KiB patch -> ~700 KiB base64,
+                                     # 64 KiB report, up to 6x JSON escaping) always fits
 TERMINAL = ("done", "failed", "rejected")
 STATES = ("offered", "running", "done", "failed", "rejected", "expired")
 
@@ -113,6 +114,8 @@ def stored_result(jid: str, *, h: Path | None = None) -> dict | None:
 
 def store_result(body: dict, *, h: Path | None = None) -> None:
     jobs.validate_result(body)
+    if body.get("truncated"):
+        raise JobError("truncated")              # a stub has no patch/report: never cache it
     jobs.write_private(jobs.inbox(h) / f"{body['id']}.json",
                        json.dumps(body, sort_keys=True).encode("utf-8"))
 
