@@ -367,7 +367,8 @@ def _cmd_advise(args) -> int:
     res, have_view = got
     advice = res["pooled"]["route_advice_pooled"]
     per_node = res["pooled"].get("per_node") or {}
-    pnodes = {n.get("node_id"): n for n in res["pooled"]["pressure"]["nodes"]}
+    pnodes = {n.get("node_id"): n for n in (res["pooled"].get("pressure") or {}).get("nodes") or []
+              if isinstance(n, dict)}
     if args.json:
         _dump({"n_nodes": res["n_nodes"], "n_ok": res["n_ok"],
                "route_rates": res["pooled"]["route_rates"], "route_advice_pooled": advice,
