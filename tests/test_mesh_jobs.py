@@ -607,3 +607,9 @@ def test_xval_cached_stub_is_ignored(home):
             "patch_b64": "", "report": "", "truncated": True}
     jobs.write_private(jobs.inbox() / f"{'9' * 16}.json", json.dumps(stub).encode())
     assert sender.stored_result("9" * 16) is None
+
+
+def test_step_model_uses_aliases():
+    # Aliases let each worker's Claude Code pick its own deployment's model (a pinned ID fails on Foundry).
+    assert [jobs.step_model(s) for s in jobs.LADDER] == [
+        ("sonnet", "medium"), ("sonnet", "high"), ("sonnet", "xhigh"), ("sonnet", "max"), ("opus", "max")]

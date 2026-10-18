@@ -41,12 +41,14 @@ MAX_OFFERED = 8                             # jobs per GET /jobs response
 MAX_EXPIRES_S = 3600
 DEFAULT_EXPIRES_S = 3600
 
-# Effort ladder. "opus" = Opus 5.5 at max effort; every other step runs Sonnet 5.5.
+# Effort ladder. "opus" = Opus at max effort; every other step runs Sonnet.
+# Model aliases, not IDs: the worker's own Claude Code resolves them, so a Foundry or Bedrock
+# deployment with other model names still runs (a pinned ID fails there with claude_error).
 LADDER = ("medium", "high", "xhigh", "max", "opus")
 CEILINGS = ("high", "xhigh", "max", "opus")
 DEFAULT_CEILING = "high"
-SONNET = "claude-sonnet-5-5"
-OPUS = "claude-opus-5-5"
+SONNET = "sonnet"
+OPUS = "opus"
 
 STATUSES = ("running", "done", "failed", "rejected")
 

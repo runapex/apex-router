@@ -71,7 +71,7 @@ job's `max_effort`. Default `max_effort` = `high`.
 For each step:
 
 1. Make a fresh worktree from `origin/<ref>` under `worker/jobs/<id>/<step>` (detached HEAD).
-2. Run `claude -p --model <claude-sonnet-5-5 | claude-opus-5-5> --effort <level>` in it, with the
+2. Run `claude -p --model <sonnet | opus> --effort <level>` (aliases, so the worker's own deployment resolves the model) in it, with the
    worker settings file (below), the task wrapped as data with a fixed preamble (do the task, commit
    to the worktree, end with DONE or BLOCKED and one reason), and the wall-clock cap (default 30 min
    per job, all steps together).
