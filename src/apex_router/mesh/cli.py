@@ -9,6 +9,9 @@ a node that serves the model (``up --serve-model``). The secret is printed only 
 Mesh worker (docs/superpowers/specs/2026-10-17-mesh-worker-design.md): ``submit`` writes a signed
 job to the outbox, ``result`` fetches it from the worker, ``jobs`` lists the outbox, and
 ``worker`` hands its arguments to ``worker.main`` (imported lazily).
+
+Notes (docs/DESIGN-lan-mesh.md, "Notes"): ``note`` sends one short signed text to a peer;
+``inbox`` prints the notes this node received. A note is data: nothing runs because of it.
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from . import collect as collect_mod
-from . import datasets, identity, infer, protocol
+from . import datasets, identity, infer, notes, protocol
 from .identity import Identity, MeshNotInitialized
 from .peers import LOAD_MAX, MODELS_MAX, PeerTable, parse_card, valid_model
 from .protocol import (
@@ -808,6 +811,103 @@ def _run_worker(argv: list[str]) -> int:
     return int(worker.main(list(argv)) or 0)
 
 
+# ---- notes ----------------------------------------------------------------------------------
+
+NOTE_REASONS = {
+    "empty": "the note is empty",
+    "too_large": f"the note is over {notes.MAX_TEXT_BYTES} bytes",
+    "bad_text": "the note holds control characters (only newline and tab are allowed)",
+    "home_path": "the note holds an absolute home path (/Users/ or /home/); use a relative path",
+    "secret": "the note looks like it holds a secret (key, token or private key)",
+    "subject_too_long": f"--subject is over {notes.MAX_SUBJECT_CHARS} characters",
+    "bad_subject": "--subject must be printable text",
+}
+
+
+def _cmd_note(args) -> int:
+    if args.file == "-":
+        data = sys.stdin.buffer.read(notes.MAX_TEXT_BYTES + 1)
+    else:
+        try:
+            with open(args.file, "rb") as fh:
+                data = fh.read(notes.MAX_TEXT_BYTES + 1)
+        except OSError as e:
+            _err(f"note: cannot read {args.file}: {e.strerror or e}")
+            return 2
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        _err("note: the text is not UTF-8")
+        return 2
+    try:
+        notes.check_subject(args.subject)
+        notes.check_text(text)
+    except notes.NoteError as e:
+        _err(f"note: refused: {NOTE_REASONS.get(str(e), str(e))}")
+        return 2
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    sender = _submodule("sender")
+    try:
+        to = sender.resolve_to(args.to, _peer_rows(ident, home))
+    except ValueError as e:
+        what = "more than one node has the name" if "ambiguous" in str(e) else "no node named"
+        _err(f"note: {what} {args.to!r} in peers.json; use the node_id")
+        return 2
+    view = read_peers(ident, home)
+    row = next((r for r in (view or {}).get("peers", []) if r["node_id"] == to), None)
+    if row is None:
+        _err(f"note: {args.to} is not alive in peers.json (is `mesh up` running on both nodes?)")
+        return 1
+    peer = parse_card(row, now=float(row["last_seen"]))
+    opener = collect_mod._pinned_opener(collect_mod._local_ip())   # stay on the LAN interface
+    res = notes.send(peer, ident, text, args.subject, timeout=args.timeout, opener=opener)
+    if args.json:
+        _dump(res)
+    elif res["ok"]:
+        print(f"note {res['id']} sent to {res['name']} ({res['node_id'][:12]}) "
+              f"sha256 {res['sha256'][:12]}")
+    elif res.get("error") == "peer_too_old":
+        _err(f"note: peer {row['name']} (v{row.get('version')}) is too old: it has no "
+             f"{notes.NOTE_PATH}. Update apex-router on it and restart `mesh up` there.")
+    else:
+        _err(f"note to {row['name']} failed: "
+             f"{NOTE_REASONS.get(str(res.get('error')), res.get('error'))}")
+    return 0 if res["ok"] else 1
+
+
+def _note_block(r: dict) -> str:
+    when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(r["received_at"])))
+    lines = [notes.header_line(r["from_name"], r["from"]),
+             f"id {r['id']}  received {when}  sha256 {r['sha256'][:12]}"
+             + ("  (read)" if r["read"] else "")]
+    if r["subject"]:
+        lines.append(f"subject: {r['subject']}")
+    lines += ["", r["text"].rstrip("\n"), f"END DATA {r['id']}"]
+    return "\n".join(lines)
+
+
+def _cmd_inbox(args) -> int:
+    home = identity.mesh_home()
+    rows = notes.read_notes(h=home, unread_only=not args.all, sender=args.sender)
+    if args.json:
+        _dump({"notes": [{"header": notes.header_line(r["from_name"], r["from"]), **r}
+                         for r in rows]})
+    elif not rows:
+        print("no unread notes" if not args.all else "no notes")
+    else:
+        print("\n\n".join(_note_block(r) for r in rows))
+    if args.mark_read and rows:
+        try:
+            notes.mark_read({r["id"] for r in rows}, h=home)
+        except OSError as e:
+            _err(f"inbox: cannot mark the notes read: {e}")
+            return 1
+    return 0
+
+
 # ---- up -------------------------------------------------------------------------------------
 
 def _parse_peer(spec: str, default_port: int = MCAST_PORT) -> tuple[str, int] | None:
@@ -1149,6 +1249,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("jobs", help="list offered jobs and their state")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_jobs)
+
+    p = sub.add_parser("note", help="send one short text note to a peer; the peer only stores "
+                                    "it (exit 0 sent, 1 failed, 2 refused/usage)")
+    p.add_argument("--to", required=True, metavar="NAME|NODE_ID")
+    p.add_argument("--subject", default="", metavar="TEXT",
+                   help=f"at most {notes.MAX_SUBJECT_CHARS} characters")
+    p.add_argument("--timeout", type=float, default=notes.SEND_TIMEOUT_S, metavar="S")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("file", metavar="FILE", help=f'UTF-8 text, at most {notes.MAX_TEXT_BYTES} '
+                                                'bytes, or "-" to read stdin')
+    p.set_defaults(fn=_cmd_note)
+
+    p = sub.add_parser("inbox", help="print the unread notes from peers")
+    p.add_argument("--all", action="store_true", help="also print notes already read")
+    p.add_argument("--from", dest="sender", metavar="NAME", help="peer name or node_id")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--mark-read", action="store_true", help="mark the printed notes read")
+    p.set_defaults(fn=_cmd_inbox)
 
     p = sub.add_parser("worker", help="run the job worker (all args go to the worker)",
                        add_help=False)

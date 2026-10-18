@@ -15,6 +15,8 @@ Routes (GET only, exact paths):
   ``for`` must be an alive node of the table (else 403 ``unknown_node``).
 - ``POST /mesh/v1/infer`` (only with ``models``, i.e. ``mesh up --serve-model``; else 404) ->
   signed envelope kind ``infer``. See "Model calls" in the design doc and ``infer.py``.
+- ``POST /mesh/v1/note`` -> stores one note in ``inbox.jsonl`` (nothing runs), signed envelope
+  kind ``note_ack``. See "Notes" in the design doc and ``notes.py``.
 - Anything else -> 404. Other methods (and POST to other paths) -> 501.
 
 ``/peers``, ``/leader``, ``/data``, ``/jobs`` and ``/results`` need header ``X-Apex-Mesh`` = signed envelope kind ``auth``
@@ -23,7 +25,8 @@ kind, path, recipient and replay. Any
 failure gives a plain 401 ``{"error": "unauthorized"}`` with no reason (no oracle).
 
 The socket faces the LAN, so: one bind address (never the wildcard), a request body is read only
-for an authenticated POST /infer (auth header first, then Content-Length <= 256 KiB, then the body
+for an authenticated POST /infer or /note (auth header first, then Content-Length <= 256 KiB for
+/infer or 32 KiB for /note, then the body
 under its own 10 s deadline), a 5 s socket timeout, an absolute 5 s deadline for the request line
 and headers, a cap on parallel connections, no request log, no traceback.
 """
@@ -43,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs
 
-from . import datasets, infer, jobs, protocol
+from . import datasets, infer, jobs, notes, protocol
 from .peers import MODELS_MAX, valid_model
 from .protocol import (  # noqa: F401 -- re-export
     DEFAULT_HTTP_PORT,
@@ -77,6 +80,7 @@ P_INFER = infer.INFER_PATH
 P_JOBS = jobs.JOBS_PATH
 P_RESULTS = jobs.RESULTS_PATH
 P_BUNDLE = jobs.BUNDLE_PATH
+P_NOTE = notes.NOTE_PATH
 
 
 class _HTTPError(Exception):
@@ -288,6 +292,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         try:
             target = self.path
+            if isinstance(target, str) and target.startswith(P_NOTE):
+                if target != P_NOTE:
+                    raise _HTTPError(404, "not_found")
+                self._note()
+                return
             if not isinstance(target, str) or not target.startswith(P_INFER):
                 raise _HTTPError(501, "not_implemented")    # unchanged v1 behavior
             if target != P_INFER or not self.server.mesh.models:
@@ -301,7 +310,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._try_error(500, "internal")
 
     # -- POST /mesh/v1/infer -----------------------------------------------------------------
-    def _content_length(self) -> int:
+    def _content_length(self, cap: int = infer.MAX_REQUEST_BYTES) -> int:
         if self.headers.get_all("Transfer-Encoding"):
             raise _HTTPError(411, "length_required")    # chunked bodies are not accepted
         vals = self.headers.get_all("Content-Length") or []
@@ -313,7 +322,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not v.isascii() or not v.isdigit() or len(v) > 12:
             raise _HTTPError(400, "bad_length")
         n = int(v)
-        if n > infer.MAX_REQUEST_BYTES:
+        if n > cap:
             raise _HTTPError(413, "too_large")
         return n
 
@@ -338,22 +347,44 @@ class _Handler(BaseHTTPRequestHandler):
             timer.cancel()
         return b"".join(chunks)
 
-    def _infer(self) -> None:
+    def _signed_body(self, path: str, cap: int) -> tuple[dict, bytes]:
+        """Steps 1-4 of an authenticated POST. Return (auth envelope, body). Raises _HTTPError."""
         mesh = self.server.mesh
         # 1. Auth header BEFORE any body byte is read (MAC, skew, kind, path, to, body_sha256).
         hdrs = self.headers.get_all(AUTH_HEADER) or []
-        env = _verify_auth(hdrs[0], P_INFER, mesh.ident, with_body=True) \
+        env = _verify_auth(hdrs[0], path, mesh.ident, with_body=True) \
             if len(hdrs) == 1 else None
         if env is None:
             raise _HTTPError(401, "unauthorized")
         # 2. Length rules, 3. body under its own deadline.
-        n = self._content_length()
+        n = self._content_length(cap)
         raw = self._read_body(n)
         # 4. Body hash, then replay. A wrong body does not burn the nonce of the real request.
         if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), env["body"]["body_sha256"]):
             raise _HTTPError(401, "unauthorized")
         if mesh.guard.seen(env["nonce"], float(env["ts"])):
             raise _HTTPError(401, "unauthorized")
+        return env, raw
+
+    # -- POST /mesh/v1/note ------------------------------------------------------------------
+    def _note(self) -> None:
+        """Store one note. Nothing runs because of a note: no job, no command, no model call."""
+        mesh = self.server.mesh
+        env, raw = self._signed_body(P_NOTE, notes.MAX_REQUEST_BYTES)
+        try:
+            note = notes.parse_request(raw)
+        except notes.NoteError as e:
+            raise _HTTPError(413 if str(e) == "too_large" else 400, str(e)) from None
+        sender = next((p for p in mesh.table.alive() if p.node_id == note["from"]), None)
+        if sender is None:
+            raise _HTTPError(403, "unknown_node")
+        row = notes.store(note, note_id=env["nonce"], from_name=sender.name, h=mesh.home)
+        self._send_signed("note_ack", {"node_id": mesh.ident.node_id, "id": row["id"],
+                                       "sha256": row["sha256"]})
+
+    def _infer(self) -> None:
+        mesh = self.server.mesh
+        _env, raw = self._signed_body(P_INFER, infer.MAX_REQUEST_BYTES)
         # 5. Request shape, served set, slot.
         try:
             req = infer.parse_request(raw)
