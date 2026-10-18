@@ -31,6 +31,8 @@ import json
 import os
 import urllib.request
 
+from apex_router import safe_http
+
 from apex_router.proxy_engine.pipeline.resolver import StubResolver
 
 DRIVER_MODEL = os.environ.get("APEX_DRIVER_MODEL", "claude-opus-4-1")
@@ -177,7 +179,7 @@ def build_state_driver(
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=600) as resp:
+            with safe_http.urlopen(req, timeout=600) as resp:  # no credential on a cross-origin redirect
                 return json.loads(resp.read().decode("utf-8"))
 
     tally = {"in": 0, "out": 0}

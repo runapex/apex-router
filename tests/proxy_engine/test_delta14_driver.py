@@ -77,8 +77,9 @@ def test_driver_plugs_into_run_gate(monkeypatch):
 # --- test seams -----------------------------------------------------------------------------------
 
 def urllib_seam():
-    import urllib.request
-    return urllib.request
+    # The driver sends its credentialed request through safe_http (no auth on cross-origin redirects).
+    from apex_router import safe_http
+    return safe_http
 
 
 def _tool():

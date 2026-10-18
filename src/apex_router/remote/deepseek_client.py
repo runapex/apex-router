@@ -22,12 +22,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .. import model_registry as mr
+from .. import safe_http
 
 BACKEND = "deepseek"
 
 _BUILTIN_DENY = [
-    (re.compile(r"sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|"
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|"
                 r"(?i:password|passwd|secret|token|api[_-]?key)[\"']?\s*[:=]\s*[\"']?\S{6,}"), "secret"),
+    # Common token formats: AWS key id, GitHub, Slack, bearer header, JWT.
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36,}|\bgithub_pat_[A-Za-z0-9_]{22,}|"
+                r"\bxox[abposr]-[A-Za-z0-9-]{10,}|(?i:bearer)\s+[A-Za-z0-9._~+/-]{20,}|"
+                r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{8,}"), "secret"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "e-mail address"),
 ]
 
@@ -165,7 +170,7 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
     req = urllib.request.Request(cfg.get("base_url", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
                                  data=body, headers={"Authorization": f"Bearer {key}",
                                                      "Content-Type": "application/json"})
-    send = transport or (lambda r, timeout: urllib.request.urlopen(r, timeout=timeout))
+    send = transport or safe_http.urlopen  # no credential on a cross-origin redirect
     t0 = time.monotonic()
     try:
         with send(req, timeout_s) as resp:

@@ -21,6 +21,8 @@ import json
 import os
 import urllib.request
 
+from apex_router import safe_http
+
 from apex_router.proxy_engine.pipeline.resolver import StubResolver
 
 # The production model — the gate must probe the model the real agent uses (tier must match). Override
@@ -82,7 +84,7 @@ def build_driver(
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=600) as resp:
+            with safe_http.urlopen(req, timeout=600) as resp:  # no credential on a cross-origin redirect
                 return json.loads(resp.read().decode("utf-8"))
 
     def ask_model(prompt: str, tools: list, *, resolver: StubResolver | None = None) -> dict:

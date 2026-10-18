@@ -128,37 +128,11 @@ class JudgeConfigError(ValueError):
 # --- shared HTTP-judge helpers (used by judge + freshness so they can't diverge) ----------
 _HTTP_MAX_BYTES = 4 * 1024 * 1024   # bound the response read so a hostile endpoint can't OOM
 
-_SENSITIVE_HEADERS = ("authorization", "ocp-apim-subscription-key")
-
-
-def _strip_auth_headers(headers) -> dict:
-    """Drop credential headers (used when a redirect crosses to another origin). Accepts any
-    mapping (a Request's headers are a MutableMapping)."""
-    return {k: v for k, v in dict(headers).items() if str(k).lower() not in _SENSITIVE_HEADERS}
-
-
-def _origin(url: str) -> tuple:
-    """(scheme, host, port) with the default port filled in: the browser notion of an origin."""
-    import urllib.parse
-    u = urllib.parse.urlsplit(url)
-    scheme = u.scheme.lower()
-    try:
-        port = u.port
-    except ValueError:
-        port = None
-    return scheme, (u.hostname or "").lower(), port or {"https": 443, "http": 80}.get(scheme)
-
-
-class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
-    """A redirect handler that strips Authorization / APIM-key headers before following a
-    redirect to a DIFFERENT origin (scheme, host or port), so a hostile/misconfigured endpoint
-    returning `302 Location: https://attacker/...` can't harvest the credential (Codex #1), and
-    an https -> http downgrade on the same host can't send it in plain text."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None and _origin(req.full_url) != _origin(newurl):
-            new.headers = _strip_auth_headers(new.headers)
-        return new
+# Shared with every credentialed client (safe_http); the old names stay for callers and tests.
+from ..safe_http import NoAuthRedirect as _NoAuthRedirect  # noqa: E402
+from ..safe_http import SENSITIVE_HEADERS as _SENSITIVE_HEADERS  # noqa: E402,F401
+from ..safe_http import origin as _origin  # noqa: E402,F401
+from ..safe_http import strip_auth_headers as _strip_auth_headers  # noqa: E402,F401
 
 
 def _extract_text(payload) -> str:
