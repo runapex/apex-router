@@ -9,7 +9,7 @@ Scan date: 2026-10-17. Commit scanned: `ce08fb94d641fa9461ab34852f1f0eb28ba42ce8
 | Lockfiles | `uv.lock` (1 file) |
 | Packages queried | 52 (PyPI) |
 | OSV hits | 22 OSV ids = 11 distinct advisories (each GHSA also has a PYSEC id) |
-| Affected | 4 (pypdf, optional `[books]` extra) |
+| Affected | 4 (pypdf, optional `[books]` extra); fixed in `64e3034` (pypdf>=6.19.0), re-scan has no pypdf hits |
 | Not affected | 7 (4 pypdf, 3 urllib3) |
 
 No `package-lock.json` or `yarn.lock` file exists. `integrations/pi/package.json` has no dependencies.
@@ -23,6 +23,7 @@ Create it with `uv lock` if it is missing.
 |---|---|
 | `security/osv_scan.py` | Scanner. Python standard library only. |
 | `security/osv/2026-10-17-osv.json` | Raw OSV batch response, package list and advisory details. |
+| `security/osv/2026-10-17-osv-after-pypdf.json` | Re-scan after the pypdf fix: urllib3 hits only. |
 | `security/vex/apex-router.openvex.json` | OpenVEX v0.2.0 triage, one statement per advisory. |
 
 ## How the scan was run
@@ -50,7 +51,7 @@ If the scan has zero hits, keep `statements` as an empty list and record the dat
 
 | Advisory | Package | Status | Reason |
 |---|---|---|---|
-| GHSA-5jq2-8x83-x246, GHSA-fp3h-c4fm-7vvf, GHSA-g9cg-prrw-2r8q, GHSA-jw7q-gvrg-4vj3 | pypdf 6.16.2 | affected | `scripts/booksearch.py:197,205` parses PDFs with `PdfReader` and `extract_text`. DoS only. Fix: pypdf 6.19.0 or later. |
+| GHSA-5jq2-8x83-x246, GHSA-fp3h-c4fm-7vvf, GHSA-g9cg-prrw-2r8q, GHSA-jw7q-gvrg-4vj3 | pypdf 6.16.2 | affected | `scripts/booksearch.py:197,205` parses PDFs with `PdfReader` and `extract_text`. DoS only. Fixed in `64e3034`: floor pypdf>=6.19.0. |
 | GHSA-qv6h-rv94-w285, GHSA-w23x-9jrw-r45c, GHSA-php9-fj8v-98fj, GHSA-v247-6f48-mgcj | pypdf 6.16.2 | not_affected | Page labels, form flatten and embedded files are never used. |
 | GHSA-vxq7-64xx-v4gw, GHSA-gh4c-6fx4-qh6g | urllib3 2.7.0 | not_affected | Only reached through tiktoken download from a fixed host. |
 | GHSA-8988-9cw3-xx77 | urllib3 2.7.0 | not_affected | The repo uses no HTTPS proxy TLS configuration. |

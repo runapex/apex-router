@@ -4,7 +4,7 @@
   "author": "apex-router security maintainer",
   "role": "Project maintainer",
   "timestamp": "2026-10-18T04:18:29Z",
-  "version": 1,
+  "version": 2,
   "tooling": "security/osv_scan.py (OSV querybatch) plus manual code review",
   "statements": [
     {
@@ -20,17 +20,16 @@
       "timestamp": "2026-10-18T04:18:29Z",
       "products": [
         {
-          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "@id": "pkg:github/runapex/apex-router@64e30349844498a718f8c1bb26393feca0152929",
           "subcomponents": [
             {
-              "@id": "pkg:pypi/pypdf@6.16.2"
+              "@id": "pkg:pypi/pypdf@6.21.1"
             }
           ]
         }
       ],
-      "status": "affected",
-      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
-      "status_notes": "Reachable. booksearch parses PDFs with PdfReader, which reads indirect objects. A crafted PDF can cause long runtimes (DoS only). Only PDFs the user chooses to index are parsed. Fixed in pypdf 6.18.0. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+      "status": "fixed",
+      "status_notes": "Fixed in commit 64e3034: pyproject.toml raises the [books] floor to pypdf>=6.19.0; the lock resolves 6.21.1. Re-scan security/osv/2026-10-17-osv-after-pypdf.json has no pypdf hits. Before the fix: Reachable. booksearch parses PDFs with PdfReader, which reads indirect objects. A crafted PDF can cause long runtimes (DoS only). Only PDFs the user chooses to index are parsed. Fixed in pypdf 6.18.0. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
     },
     {
       "vulnerability": {
@@ -45,17 +44,16 @@
       "timestamp": "2026-10-18T04:18:29Z",
       "products": [
         {
-          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "@id": "pkg:github/runapex/apex-router@64e30349844498a718f8c1bb26393feca0152929",
           "subcomponents": [
             {
-              "@id": "pkg:pypi/pypdf@6.16.2"
+              "@id": "pkg:pypi/pypdf@6.21.1"
             }
           ]
         }
       ],
-      "status": "affected",
-      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
-      "status_notes": "Reachable. page.extract_text() parses font /ToUnicode streams. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+      "status": "fixed",
+      "status_notes": "Fixed in commit 64e3034: pyproject.toml raises the [books] floor to pypdf>=6.19.0; the lock resolves 6.21.1. Re-scan security/osv/2026-10-17-osv-after-pypdf.json has no pypdf hits. Before the fix: Reachable. page.extract_text() parses font /ToUnicode streams. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
     },
     {
       "vulnerability": {
@@ -70,17 +68,16 @@
       "timestamp": "2026-10-18T04:18:29Z",
       "products": [
         {
-          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "@id": "pkg:github/runapex/apex-router@64e30349844498a718f8c1bb26393feca0152929",
           "subcomponents": [
             {
-              "@id": "pkg:pypi/pypdf@6.16.2"
+              "@id": "pkg:pypi/pypdf@6.21.1"
             }
           ]
         }
       ],
-      "status": "affected",
-      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
-      "status_notes": "Reachable. page.extract_text() parses font /Widths. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+      "status": "fixed",
+      "status_notes": "Fixed in commit 64e3034: pyproject.toml raises the [books] floor to pypdf>=6.19.0; the lock resolves 6.21.1. Re-scan security/osv/2026-10-17-osv-after-pypdf.json has no pypdf hits. Before the fix: Reachable. page.extract_text() parses font /Widths. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
     },
     {
       "vulnerability": {
@@ -95,17 +92,16 @@
       "timestamp": "2026-10-18T04:18:29Z",
       "products": [
         {
-          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "@id": "pkg:github/runapex/apex-router@64e30349844498a718f8c1bb26393feca0152929",
           "subcomponents": [
             {
-              "@id": "pkg:pypi/pypdf@6.16.2"
+              "@id": "pkg:pypi/pypdf@6.21.1"
             }
           ]
         }
       ],
-      "status": "affected",
-      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
-      "status_notes": "Reachable. PdfReader and extract_text decode FlateDecode streams. A crafted PDF can cause long runtimes (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+      "status": "fixed",
+      "status_notes": "Fixed in commit 64e3034: pyproject.toml raises the [books] floor to pypdf>=6.19.0; the lock resolves 6.21.1. Re-scan security/osv/2026-10-17-osv-after-pypdf.json has no pypdf hits. Before the fix: Reachable. PdfReader and extract_text decode FlateDecode streams. A crafted PDF can cause long runtimes (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
     },
     {
       "vulnerability": {
