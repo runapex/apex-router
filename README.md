@@ -906,6 +906,8 @@ plaintext `http://`.
 
 **No telemetry egress.** All measurement is local JSONL; there is no uploader or phone-home.
 
+**Security research.** Findings, hardening controls with their tests, disclosure and planned work: [docs/SECURITY-RESEARCH.md](docs/SECURITY-RESEARCH.md).
+
 ---
 
 ## License

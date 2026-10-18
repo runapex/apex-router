@@ -1,0 +1,286 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/runapex/apex-router/security/vex/apex-router.openvex.json#2026-10-17",
+  "author": "apex-router security maintainer",
+  "role": "Project maintainer",
+  "timestamp": "2026-10-18T04:18:29Z",
+  "version": 1,
+  "tooling": "security/osv_scan.py (OSV querybatch) plus manual code review",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-5jq2-8x83-x246",
+        "name": "GHSA-5jq2-8x83-x246",
+        "description": "pypdf: Possible long runtimes/large memory usage when parsing indirect objects",
+        "aliases": [
+          "CVE-2026-102994",
+          "PYSEC-2026-4153"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "affected",
+      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
+      "status_notes": "Reachable. booksearch parses PDFs with PdfReader, which reads indirect objects. A crafted PDF can cause long runtimes (DoS only). Only PDFs the user chooses to index are parsed. Fixed in pypdf 6.18.0. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-fp3h-c4fm-7vvf",
+        "name": "GHSA-fp3h-c4fm-7vvf",
+        "description": "pypdf: Possible large memory usage for large /ToUnicode streams (Follow-up 2)",
+        "aliases": [
+          "CVE-2026-102995",
+          "PYSEC-2026-4154"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "affected",
+      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
+      "status_notes": "Reachable. page.extract_text() parses font /ToUnicode streams. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-g9cg-prrw-2r8q",
+        "name": "GHSA-g9cg-prrw-2r8q",
+        "description": "pypdf: Possible large memory usage when parsing font data",
+        "aliases": [
+          "CVE-2026-102996",
+          "PYSEC-2026-4155"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "affected",
+      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
+      "status_notes": "Reachable. page.extract_text() parses font /Widths. A crafted PDF can cause large memory use (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-jw7q-gvrg-4vj3",
+        "name": "GHSA-jw7q-gvrg-4vj3",
+        "description": "pypdf: Possible long runtimes for partially malformed FlateDecode streams (Follow-up)",
+        "aliases": [
+          "CVE-2026-102997",
+          "PYSEC-2026-4156"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "affected",
+      "action_statement": "Upgrade pypdf to 6.19.0 or later (uv lock --upgrade-package pypdf). Not applied by this scan.",
+      "status_notes": "Reachable. PdfReader and extract_text decode FlateDecode streams. A crafted PDF can cause long runtimes (DoS only). Fixed in pypdf 6.18.1. Evidence: scripts/booksearch.py:193,197,205 (only pypdf use in the repo: PdfReader(...) then page.extract_text()); pyproject.toml:42 (optional [books] extra)"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-qv6h-rv94-w285",
+        "name": "GHSA-qv6h-rv94-w285",
+        "description": "pypdf: Possible large memory usage when retrieving Roman page labels",
+        "aliases": [
+          "CVE-2026-102993",
+          "PYSEC-2026-4158"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is the page-label API (Roman numeral labels). apex-router never reads page labels. Evidence: scripts/booksearch.py:193-206 calls only PdfReader and page.extract_text(); git grep finds no pypdf use anywhere else in the repo"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-w23x-9jrw-r45c",
+        "name": "GHSA-w23x-9jrw-r45c",
+        "description": "pypdf: Possible large memory usage when retrieving alphabetical page labels",
+        "aliases": [
+          "CVE-2026-103000",
+          "PYSEC-2026-4160"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is the page-label API (alphabetical labels). apex-router never reads page labels. Evidence: scripts/booksearch.py:193-206 calls only PdfReader and page.extract_text(); git grep finds no pypdf use anywhere else in the repo"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-php9-fj8v-98fj",
+        "name": "GHSA-php9-fj8v-98fj",
+        "description": "pypdf: Possible long runtimes when generating appearance streams",
+        "aliases": [
+          "CVE-2026-102998",
+          "PYSEC-2026-4157"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is appearance-stream generation when updating form fields with flatten. apex-router only reads text and never writes or updates PDFs. Evidence: scripts/booksearch.py:193-206 calls only PdfReader and page.extract_text(); git grep finds no pypdf use anywhere else in the repo"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-v247-6f48-mgcj",
+        "name": "GHSA-v247-6f48-mgcj",
+        "description": "pypdf: Possible long runtimes with large amount of embedded files",
+        "aliases": [
+          "CVE-2026-102999",
+          "PYSEC-2026-4159"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/pypdf@6.16.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The vulnerable code is the dictionary-style embedded-files API. apex-router never accesses embedded files. Evidence: scripts/booksearch.py:193-206 calls only PdfReader and page.extract_text(); git grep finds no pypdf use anywhere else in the repo"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-vxq7-64xx-v4gw",
+        "name": "GHSA-vxq7-64xx-v4gw",
+        "description": "urllib3: HTTPResponse.stream()/read_chunked() buffers an unbounded chunk-size line into memory",
+        "aliases": [
+          "CVE-2026-97689",
+          "PYSEC-2026-4177"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/urllib3@2.7.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "Reachable only through tiktoken downloading its BPE file with requests.get from one fixed URL chosen by tiktoken. An attacker would need to control that TLS-protected host. The path is optional and offline-tuner only; apex-router does not use urllib3 directly. Evidence: src/apex_router/proxy_engine/tuner/tokens.py:57-59 (tiktoken.get_encoding); pyproject.toml:38 (optional [tuner] extra); uv.lock: urllib3 is reached only through requests, which only tiktoken pulls in; tiktoken/load.py:15-17 calls requests.get() on a fixed URL"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-gh4c-6fx4-qh6g",
+        "name": "GHSA-gh4c-6fx4-qh6g",
+        "description": "urllib3: Chunked Deflate streaming can enter an infinite loop",
+        "aliases": [
+          "CVE-2026-97688",
+          "PYSEC-2026-4176"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/urllib3@2.7.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "Same path as GHSA-vxq7-64xx-v4gw. A malicious server must send a crafted chunked deflate response. The only server contacted is the fixed tiktoken download host. Evidence: src/apex_router/proxy_engine/tuner/tokens.py:57-59 (tiktoken.get_encoding); pyproject.toml:38 (optional [tuner] extra); uv.lock: urllib3 is reached only through requests, which only tiktoken pulls in; tiktoken/load.py:15-17 calls requests.get() on a fixed URL"
+    },
+    {
+      "vulnerability": {
+        "@id": "https://osv.dev/vulnerability/GHSA-8988-9cw3-xx77",
+        "name": "GHSA-8988-9cw3-xx77",
+        "description": "urllib3: HTTPS proxy TLS configuration may be ignored or overridden",
+        "aliases": [
+          "CVE-2026-97687",
+          "PYSEC-2026-4175"
+        ]
+      },
+      "timestamp": "2026-10-18T04:18:29Z",
+      "products": [
+        {
+          "@id": "pkg:github/runapex/apex-router@ce08fb94d641fa9461ab34852f1f0eb28ba42ce8",
+          "subcomponents": [
+            {
+              "@id": "pkg:pypi/urllib3@2.7.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Needs an HTTPS proxy with a custom proxy TLS configuration. The repo sets no proxy and passes no proxy_ssl_context. git grep finds no HTTPS_PROXY use in src, scripts or tests. Evidence: pyproject.toml:38; tiktoken/load.py:15-17 (plain requests.get); git grep HTTPS_PROXY|proxy_ssl_context returns no match in the repo"
+    }
+  ]
+}
