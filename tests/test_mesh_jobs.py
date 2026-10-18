@@ -576,10 +576,33 @@ def test_xval_results_for_only_one(tmp_path):
     assert [r["id"] for r in got] == ["2" * 16]
 
 
-def test_xval_submit_refuses_envelope_over_cap(me, home):
-    task = "\\" * (jobs.MAX_TASK_BYTES - 10)            # JSON doubles each backslash
+def test_xval_submit_refuses_envelope_over_cap(me, home, monkeypatch):
+    monkeypatch.setattr(jobs, "MAX_JOB_ENVELOPE_BYTES", 64 * 1024)   # keep the guard reachable
+    task = "\\" * (40 * 1024)                            # JSON doubles each backslash
     with pytest.raises(jobs.JobError, match="job_too_big"):
         sender.submit(me, to=W_ID, repo="apex-router", ref="main", task=task)
+
+
+def test_worst_case_escaped_max_task_fits_envelope(me, home):
+    task = "\x01" * jobs.MAX_TASK_BYTES                    # \u0001: 6x, the worst JSON escaping
+    jid = sender.submit(me, to=W_ID, repo="apex-router", ref="main", task=task)
+    raw = (jobs.outbox() / f"{jid}.job").read_bytes()
+    assert jobs.MAX_TASK_BYTES * 6 < len(raw) <= jobs.MAX_JOB_ENVELOPE_BYTES
+    assert jobs.open_job(raw, me)["task"] == task
+
+
+def test_offered_jobs_byte_budget_keeps_at_least_one(me, home, monkeypatch):
+    for i in range(3):
+        sender.submit(me, to=W_ID, repo="apex-router", ref="main", task=f"t{i} " + "x" * 200_000,
+                      now=1_000_000.0 + i)
+    now = 1_000_010.0
+    assert len(jobs.offered_jobs(W_ID, me, now=now)) == 3
+    one = len(jobs.offered_jobs(W_ID, me, now=now)[0].encode("utf-8"))
+    monkeypatch.setattr(jobs, "JOBS_BUDGET", 2 * one)
+    got = jobs.offered_jobs(W_ID, me, now=now)
+    assert len(got) == 2 and '"t0 ' in got[0]                 # oldest first, budget stops the third
+    monkeypatch.setattr(jobs, "JOBS_BUDGET", 10)
+    assert len(jobs.offered_jobs(W_ID, me, now=now)) == 1    # one job is always offered
 
 
 def test_xval_id_fetch_is_never_budgeted(tmp_path):

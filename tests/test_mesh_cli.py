@@ -335,3 +335,74 @@ def test_advise_prints_start_tier_split(capsys, monkeypatch):
     assert "    start opus" in out and "n=10" in out
     assert "    start sonnet" in out and "rate=1.000" in out
     assert out.count("start ") == 2  # docs has no split -> no extra rows
+
+
+# ---- xval -----------------------------------------------------------------------------------
+
+def test_xval_verdict_last_line_wins():
+    assert mesh_cli.xval_verdict("x\nVERDICT: AGREE\nmore\n**VERDICT: DISAGREE**\nDONE") == "DISAGREE"
+    assert mesh_cli.xval_verdict("VERDICT: PARTIAL\nDONE") == "PARTIAL"
+    assert mesh_cli.xval_verdict("no verdict here\nDONE") is None
+    assert mesh_cli.xval_verdict("I verdict: agree") is None
+
+
+def test_build_xval_task_fences_artifacts():
+    t = mesh_cli.build_xval_task("Is the score right?", [("a.md", "alpha\n"), ("git diff HEAD", "+x")])
+    assert t.startswith(mesh_cli.XVAL_BRIEF) and "QUESTION: Is the score right?" in t
+    assert "===== BEGIN ARTIFACT: a.md =====\nalpha\n===== END ARTIFACT: a.md =====" in t
+    assert "BEGIN ARTIFACT: git diff HEAD" in t and "VERDICT: AGREE" in t
+    assert "QUESTION: Is this work correct" in mesh_cli.build_xval_task("", [("s", "x")])
+
+
+def _xval_env(monkeypatch, home, verdict_report, state="done"):
+    identity.init(name="me")
+    from apex_router.mesh import sender
+    seen: dict = {}
+    monkeypatch.setattr(sender, "resolve_to", lambda spec, rows: "b" * 32)
+
+    def fake_submit(ident, **kw):
+        seen.update(kw)
+        return "c" * 16
+    monkeypatch.setattr(sender, "submit", fake_submit)
+
+    def fake_result(args):
+        seen["result_args"] = args
+        print(json.dumps({"id": args.id, "state": state, "files": {"report": "r.md"},
+                          "result": {"status": state, "report": verdict_report}}))
+        return 0
+    monkeypatch.setattr(mesh_cli, "_cmd_result", fake_result)
+    return seen
+
+
+def test_xval_submits_file_and_maps_verdict_to_exit(home, monkeypatch, capsys, tmp_path):
+    f = tmp_path / "report.md"
+    f.write_text("the claim: 2 + 2 = 5\n")
+    seen = _xval_env(monkeypatch, home, "finding 1\nVERDICT: DISAGREE\nDONE")
+    rc, out, _ = _run(capsys, "xval", "--to", "node-b", "--file", str(f), "--question", "Is 2+2=5?",
+                      "--out-dir", str(tmp_path / "o"))
+    assert rc == 1 and "verdict DISAGREE" in out and "finding 1" in out
+    assert seen["repo"] == "xval" and seen["ref"] == "main" and seen["max_effort"] == "high"
+    assert "QUESTION: Is 2+2=5?" in seen["task"] and "2 + 2 = 5" in seen["task"]
+    assert seen["result_args"].wait is True and seen["result_args"].out_dir == str(tmp_path / "o")
+
+
+@pytest.mark.parametrize("report,state,rc", [("VERDICT: AGREE\nDONE", "done", 0),
+                                             ("VERDICT: PARTIAL\nDONE", "done", 1),
+                                             ("no verdict\nDONE", "done", 3),
+                                             ("VERDICT: AGREE\nDONE", "failed", 3)])
+def test_xval_exit_codes(home, monkeypatch, capsys, tmp_path, report, state, rc):
+    f = tmp_path / "w.md"
+    f.write_text("work")
+    _xval_env(monkeypatch, home, report, state)
+    assert _run(capsys, "xval", "--to", "node-b", "--file", str(f), "--json")[0] == rc
+
+
+def test_xval_usage_errors(home, monkeypatch, capsys, tmp_path):
+    identity.init(name="me")
+    assert _run(capsys, "xval", "--to", "node-b")[0] == 2                      # nothing to review
+    big = tmp_path / "big.md"
+    from apex_router.mesh import jobs
+    big.write_text("x" * (jobs.MAX_TASK_BYTES + 1))
+    rc, _, err = _run(capsys, "xval", "--to", "node-b", "--file", str(big))
+    assert rc == 2 and "limit" in err
+    assert _run(capsys, "xval", "--to", "node-b", "--file", str(tmp_path / "missing.md"))[0] == 2

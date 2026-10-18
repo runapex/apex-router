@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 AUTH_HEADER = "X-Apex-Mesh"
 MAX_RESPONSE_BYTES = 2 << 20          # 2 MiB: one full result (512 KiB patch -> ~700 KiB base64,
                                      # 64 KiB report, up to 6x JSON escaping) always fits
+# GET /jobs: up to jobs.JOBS_BUDGET raw envelope bytes, escaped once more in the response (<= 2x).
+MAX_JOBS_RESPONSE_BYTES = 8 << 20
 TERMINAL = ("done", "failed", "rejected")
 STATES = ("offered", "running", "done", "failed", "rejected", "expired")
 
@@ -48,7 +50,7 @@ def submit(ident: Identity, *, to: str, repo: str, ref: str, task: str, check: s
     jid, env = jobs.make_job(ident, to=to, repo=repo, ref=ref, task=task, check=check,
                              max_effort=max_effort, expires_s=expires_s, now=now)
     if len(env) > jobs.MAX_JOB_ENVELOPE_BYTES:
-        raise JobError("job_too_big")               # JSON escaping can grow a 32 KiB task past it
+        raise JobError("job_too_big")               # JSON escaping can grow a 256 KiB task past it
     jobs.write_private(jobs.outbox(h) / f"{jid}.job", env)
     return jid
 
@@ -155,7 +157,8 @@ def _url(peer: Peer, path: str) -> str:
 
 
 def _get_signed(peer: Peer, ident: Identity, base: str, for_node: str, kind: str,
-                timeout: float, opener: Any, job_id: str | None = None) -> tuple[dict | None, str | None]:
+                timeout: float, opener: Any, job_id: str | None = None,
+                max_bytes: int = MAX_RESPONSE_BYTES) -> tuple[dict | None, str | None]:
     """GET ``base?for=<for_node>[&id=<job_id>]`` from ``peer``. (envelope body, None) or (None, error)."""
     path = f"{base}?for=" + urllib.parse.quote(for_node, safe="")
     if job_id is not None:
@@ -167,10 +170,10 @@ def _get_signed(peer: Peer, ident: Identity, base: str, for_node: str, kind: str
         with (opener or collect._pinned_opener(collect._local_ip())).open(
                 req, timeout=timeout) as resp:
             chunks, size = [], 0
-            while size <= MAX_RESPONSE_BYTES:
+            while size <= max_bytes:
                 if time.monotonic() > end:
                     return None, "timeout"
-                chunk = resp.read(min(65536, MAX_RESPONSE_BYTES + 1 - size))
+                chunk = resp.read(min(65536, max_bytes + 1 - size))
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -184,7 +187,7 @@ def _get_signed(peer: Peer, ident: Identity, base: str, for_node: str, kind: str
             return None, "timeout"
         return None, f"unreachable: {type(reason).__name__}"
     try:
-        env = protocol.decode(raw, ident, _RESPONSE_GUARD, max_bytes=MAX_RESPONSE_BYTES)
+        env = protocol.decode(raw, ident, _RESPONSE_GUARD, max_bytes=max_bytes)
     except protocol.ProtocolError as e:
         return None, f"bad response: {e}"
     if env["kind"] != kind:
@@ -202,7 +205,7 @@ def fetch_jobs(peer: Peer, ident: Identity, timeout: float = 5.0, *, opener: Any
                  "ok": False, "jobs": []}
     try:
         body, err = _get_signed(peer, ident, jobs.JOBS_PATH, ident.node_id, "jobs", timeout,
-                                opener)
+                                opener, max_bytes=MAX_JOBS_RESPONSE_BYTES)
         if err is not None:
             out["error"] = err
             return out

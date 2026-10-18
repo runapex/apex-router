@@ -7,6 +7,17 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router mesh xval --to NODE (--diff REF | --file PATH ... | --stdin) [--question TEXT]`:
+  independent cross-validation on a mesh worker node. It wraps the work in a fixed adversarial
+  reviewer brief, submits one job to the node's scratch repo (`--repo xval` by default, in the
+  worker allowlist), waits, prints the report and ends with the verdict. Exit 0 AGREE, 1 PARTIAL or
+  DISAGREE, 3 no verdict or the job did not finish, 2 usage. On a codex node this is a
+  different-vendor (GPT) reviewer for Claude work.
+- Mesh jobs: the task limit is 256 KiB (was 32 KiB) and one signed job up to 2 MiB (was 64 KiB),
+  so a whole report or diff fits one job. A GET /jobs response offers at most 3 MiB of job
+  envelopes (always at least one job); the worker reads that response up to 8 MiB. CAUTION: a
+  worker with older code rejects the whole jobs response when one envelope is over 64 KiB. Update
+  the worker before you send a large job.
 - Mesh worker: on a codex node with `codex_search: true`, preamble rule 3 allows the built-in
   web search tool ("Do not use the network, except the built-in web search tool"). Before, the
   fixed rule "Do not use the network." won over the task, so research jobs ran with no search.

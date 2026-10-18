@@ -41,7 +41,7 @@ The sender signs one envelope of kind `job` with the mesh key (`protocol.encode`
 ```
 {"id": "<16 hex>", "from": "<sender node_id>", "to": "<worker node_id>",
  "repo": "<name from the worker allowlist>", "ref": "<branch or 40-hex sha>",
- "task": "<text, max 32 KiB>", "check": "<shell command or empty, max 1 KiB>",
+ "task": "<text, max 256 KiB>", "check": "<shell command or empty, max 1 KiB>",
  "max_effort": "high" | "xhigh" | "max" | "opus", "created": <unix>, "expires": <unix, created + 3600 max>}
 ```
 
@@ -58,7 +58,7 @@ The sender signs one envelope of kind `job` with the mesh key (`protocol.encode`
 2. `id` not in the seen-ledger.
 3. `repo` is in `~/.apex-router/mesh/worker.json` (`{"repos": {"apex-router": "/path"}}`). No other path.
 4. `ref` matches `[A-Za-z0-9._/-]{1,200}` or a 40-hex sha; `git fetch origin <ref>` succeeds.
-5. Sizes: task ≤ 32 KiB, check ≤ 1 KiB.
+5. Sizes: task ≤ 256 KiB, check ≤ 1 KiB, signed job ≤ 2 MiB. One GET /jobs response offers ≤ 3 MiB of jobs (at least one).
 6. Caps: no job running now; jobs today < daily cap (default 20); `apex-router pressure --check` is not RED.
 7. Not paused (`mesh worker --pause` writes `worker/paused`; `--resume` removes it).
 

@@ -805,6 +805,13 @@ apex-router mesh result ID --apply     # git am --3way ID.patch; refuses a dirty
 apex-router mesh worker ...            # on the worker node (second process next to `mesh up`)
 ```
 `mesh up` must run on both nodes. `--apply` runs `git am --abort` when the patch does not apply.
+
+Cross-validation on a worker node (`mesh xval`): one command submits the work to a reviewer node, waits and prints the verdict.
+The worker needs a scratch repo named `xval` in its allowlist (an empty git repo with an `origin`). On a codex node the reviewer is a different vendor than a Claude author.
+```bash
+apex-router mesh xval --to NODE --file docs/research/report.md --question "Do the scores follow from the evidence?"
+apex-router mesh xval --to NODE --diff origin/main      # exit 0 AGREE, 1 PARTIAL/DISAGREE, 3 no verdict
+```
 Task text and patches cross the LAN in plain text: do not send secrets in a task.
 
 A GPT-only worker runs the jobs with Codex CLI (`codex exec`, `workspace-write` sandbox). Set the

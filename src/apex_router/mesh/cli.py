@@ -13,11 +13,15 @@ job to the outbox, ``result`` fetches it from the worker, ``jobs`` lists the out
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import importlib
+import io
 import json
 import os
+import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -608,7 +612,8 @@ def _cmd_result(args) -> int:
     files: dict = {}
     if body is not None and body.get("status") in sender.TERMINAL:
         try:
-            ppath, mpath = sender.write_outputs(job, body, Path.cwd(), peer_name)
+            ppath, mpath = sender.write_outputs(job, body, Path(getattr(args, "out_dir", None)
+                                                                or Path.cwd()), peer_name)
         except (OSError, jobs.JobError) as e:
             _result_out(job, body, jid, state, files, f"cannot write outputs: {e}", args.json)
             return 1
@@ -629,6 +634,115 @@ def _cmd_result(args) -> int:
         return rc
     _result_out(job, body, jid, state, files, error, args.json)
     return 0 if state == "done" else 1
+
+
+# ---- xval (independent cross-validation on a worker node) ----------------------------------
+
+XVAL_VERDICTS = ("AGREE", "PARTIAL", "DISAGREE")
+_XVAL_RE = re.compile(r"^\W*VERDICT:\s*(AGREE|PARTIAL|DISAGREE)\b", re.M)
+XVAL_BRIEF = """You are an independent cross-validator. Another model wrote the work below.
+Your job is to find what is wrong with it, not to praise it.
+Rules:
+1. Check every claim, number, file name and conclusion that the question names. Check the rest when time allows.
+2. Give each finding: the location, the problem, the evidence, and a label: MEASURED (you checked it), PLAUSIBLE, or ASSUMED.
+3. Use the web search tool to check public facts when it is available. Do not trust a claim because the work states it.
+4. Do not edit or commit files. Your report is the result.
+5. End with two lines: "VERDICT: AGREE", "VERDICT: PARTIAL" or "VERDICT: DISAGREE", then DONE.
+   AGREE = no finding changes the conclusion. PARTIAL = some findings change parts. DISAGREE = the conclusion does not hold.
+"""
+
+
+def xval_verdict(report: str) -> str | None:
+    """The last ``VERDICT: X`` line of a cross-validation report, or None."""
+    found = _XVAL_RE.findall(report or "")
+    return found[-1] if found else None
+
+
+def build_xval_task(question: str, parts: list[tuple[str, str]]) -> str:
+    """The xval brief + the question + each artifact as (label, text) between fences."""
+    out = [XVAL_BRIEF, f"QUESTION: {question.strip() or 'Is this work correct and are its conclusions supported?'}\n"]
+    for label, text in parts:
+        out.append(f"===== BEGIN ARTIFACT: {label} =====\n{text.rstrip()}\n===== END ARTIFACT: {label} =====\n")
+    return "\n".join(out)
+
+
+def _xval_parts(args) -> tuple[list[tuple[str, str]] | None, str | None]:
+    parts: list[tuple[str, str]] = []
+    if args.diff:
+        r = subprocess.run(["git", "diff", args.diff], capture_output=True, timeout=60)
+        if r.returncode != 0:
+            return None, f"git diff {args.diff} failed: {r.stderr.decode(errors='replace').strip()}"
+        if not r.stdout.strip():
+            return None, f"git diff {args.diff} is empty"
+        parts.append((f"git diff {args.diff}", r.stdout.decode("utf-8", errors="replace")))
+    for f in args.file or []:
+        try:
+            parts.append((f, Path(f).read_text(encoding="utf-8", errors="replace")))
+        except OSError as e:
+            return None, f"cannot read {f}: {e}"
+    if args.stdin:
+        parts.append(("stdin", sys.stdin.read()))
+    if not parts:
+        return None, "nothing to review: give --diff REF, --file PATH or --stdin"
+    return parts, None
+
+
+def _cmd_xval(args) -> int:
+    """Submit one cross-validation job to a worker node, wait, print the report and verdict.
+
+    Exit 0 AGREE, 1 PARTIAL or DISAGREE, 3 no verdict or the job did not finish, 2 usage."""
+    sender, jobs = _submodule("sender"), _submodule("jobs")
+    parts, err = _xval_parts(args)
+    if parts is None:
+        _err(f"xval: {err}")
+        return 2
+    task = build_xval_task(args.question or "", parts)
+    n = len(task.encode("utf-8"))
+    if n > jobs.MAX_TASK_BYTES:
+        _err(f"xval: the review is {n} bytes; the limit is {jobs.MAX_TASK_BYTES}. "
+             "Review the work in parts (one --file each).")
+        return 2
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    try:
+        to = sender.resolve_to(args.to, _peer_rows(ident, home))
+        jid = sender.submit(ident, to=to, repo=args.repo, ref=args.ref, task=task,
+                            max_effort=args.max_effort, expires_s=int(args.expires_min) * 60)
+    except jobs.JobError as e:
+        _err(f"xval: submit: {e}")
+        return 2
+    except OSError as e:
+        _err(f"xval: cannot write the outbox: {e}")
+        return 1
+    print(f"xval: job {jid} to {args.to} ({n} bytes); waiting", file=sys.stderr, flush=True)
+    out_dir = Path(args.out_dir) if args.out_dir else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rargs = argparse.Namespace(id=jid, wait=True, timeout=args.timeout, apply=False, json=True,
+                               out_dir=str(out_dir))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _cmd_result(rargs)
+    try:
+        doc = json.loads(buf.getvalue())
+    except ValueError:
+        _err(f"xval: job {jid}: no result")
+        return 3
+    res = doc.get("result") or {}
+    report = res.get("report") or ""
+    verdict = xval_verdict(report) if doc.get("state") == "done" else None
+    if args.json:
+        _dump({"id": jid, "state": doc.get("state"), "verdict": verdict,
+               "report_file": (doc.get("files") or {}).get("report"), "report": report,
+               "error": doc.get("error")})
+    else:
+        print(report.rstrip())
+        print(f"\nxval: job {jid} state {doc.get('state')} verdict {verdict or 'none'}"
+              + (f" ({doc.get('error')})" if doc.get("error") else ""))
+    if verdict == "AGREE":
+        return 0
+    return 1 if verdict in XVAL_VERDICTS else 3
 
 
 def _cmd_jobs(args) -> int:
@@ -938,6 +1052,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true", help="git am --3way the patch in this repo")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_result)
+
+    p = sub.add_parser("xval", help="independent cross-validation on a worker node: submit, wait, "
+                                    "print the verdict (exit 0 AGREE, 1 PARTIAL/DISAGREE, 3 none)")
+    p.add_argument("--to", required=True, metavar="NAME|NODE_ID")
+    p.add_argument("--diff", metavar="REF", help="review `git diff REF` of the current repo")
+    p.add_argument("--file", action="append", default=[], metavar="PATH", help="repeatable")
+    p.add_argument("--stdin", action="store_true", help="review text from stdin")
+    p.add_argument("--question", default="", metavar="TEXT", help="what the reviewer must check")
+    p.add_argument("--repo", default="xval", metavar="NAME",
+                   help="scratch repo in the worker allowlist (default xval)")
+    p.add_argument("--ref", default="main", metavar="REF")
+    p.add_argument("--max-effort", default="high", metavar="LEVEL",
+                   help="ladder ceiling: high|xhigh|max|opus (default high)")
+    p.add_argument("--expires-min", type=int, default=60, metavar="N")
+    p.add_argument("--timeout", type=float, default=3600.0, metavar="S", help="wait limit (default 3600)")
+    p.add_argument("--out-dir", default=None, metavar="DIR", help="where ID.md goes (default .)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_xval)
 
     p = sub.add_parser("jobs", help="list offered jobs and their state")
     p.add_argument("--json", action="store_true")

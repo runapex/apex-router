@@ -32,12 +32,16 @@ from .identity import Identity
 JOBS_PATH = "/mesh/v1/jobs"
 RESULTS_PATH = "/mesh/v1/results"
 
-MAX_TASK_BYTES = 32 * 1024
+MAX_TASK_BYTES = 256 * 1024                 # room for a whole report or diff (mesh xval)
 MAX_CHECK_BYTES = 1024
 MAX_PATCH_BYTES = 512 * 1024
 MAX_REPORT_BYTES = 64 * 1024
-MAX_JOB_ENVELOPE_BYTES = 64 * 1024          # one signed job (task <= 32 KiB, JSON-escaped)
+MAX_JOB_ENVELOPE_BYTES = 2 * 1024 * 1024    # one signed job: 256 KiB task, up to 6x JSON escaping
 MAX_OFFERED = 8                             # jobs per GET /jobs response
+# Raw envelope bytes per GET /jobs response. The response escapes each envelope string again
+# (at most 2x), so 3 MiB stays under the client's MAX_JOBS_RESPONSE_BYTES (sender.py, 8 MiB).
+# One job is always offered, even when it alone is larger.
+JOBS_BUDGET = 3 * 1024 * 1024
 MAX_EXPIRES_S = 3600
 DEFAULT_EXPIRES_S = 3600
 
@@ -240,7 +244,8 @@ def offered_jobs(for_node: str, ident: Identity, *, h: Path | None = None,
                  now: float | None = None) -> list[str]:
     """Sender side: signed job envelopes (str) for ``for_node``, not expired, no result yet.
 
-    At most MAX_OFFERED, oldest first. A job with a result in inbox/ is no longer offered.
+    At most MAX_OFFERED and JOBS_BUDGET bytes (at least one job), oldest first. A job with a
+    result in inbox/ is no longer offered.
     """
     t = time.time() if now is None else float(now)
     out: list[tuple[float, str]] = []
@@ -260,7 +265,15 @@ def offered_jobs(for_node: str, ident: Identity, *, h: Path | None = None,
             continue
         out.append((body["created"], raw.decode("utf-8")))
     out.sort()
-    return [s for _, s in out[:MAX_OFFERED]]
+    picked: list[str] = []
+    size = 0
+    for _, s in out[:MAX_OFFERED]:
+        n = len(s.encode("utf-8"))
+        if picked and size + n > JOBS_BUDGET:
+            break
+        picked.append(s)
+        size += n
+    return picked
 
 
 def results_for(for_node: str, *, h: Path | None = None, only: str | None = None) -> list[dict]:
