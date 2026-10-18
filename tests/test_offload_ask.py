@@ -258,3 +258,46 @@ def test_incomplete_spend_wording_names_the_bound_directions():
          "unknown_cost": 1, "duplicates": 0}
     text = rep.format_dollars({"deepseek": s})
     assert "spent is a lower bound" in text and "after_remote is an upper bound" in text
+
+
+def _fake_transport(message, finish, usage, seen=None):
+    import io
+
+    def send(req, timeout):
+        if seen is not None:
+            seen.append(json.loads(req.data))
+        raw = json.dumps({"choices": [{"message": message, "finish_reason": finish}], "usage": usage}).encode()
+
+        class R(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+        return R(raw)
+    return send
+
+
+def test_reasoning_budget_exhausted_is_reported_as_truncated_with_usage(tmp_path):
+    """finish_reason length + empty content + reasoning_content: say so, and book the tokens."""
+    usage = {"prompt_tokens": 5979, "completion_tokens": 12000, "prompt_cache_hit_tokens": 0,
+             "prompt_cache_miss_tokens": 5979}
+    tr = _fake_transport({"role": "assistant", "content": "", "reasoning_content": "thinking..."}, "length", usage)
+
+    def chat(prompt, **kw):
+        return ds.chat(prompt, key="k", transport=tr, **kw)
+
+    log = tmp_path / "off.jsonl"
+    code, answer, _ = ask.run_ask("q", backend="deepseek", max_tokens=12000, log_path=log, chat_fn=chat)
+    assert (code, answer) == (3, None)
+    [row] = _rows(log)
+    assert row["ok"] is False and row["error"].startswith("truncated:") and "--max-tokens" in row["error"]
+    assert row["prompt_tokens"] == 5979 and row["completion_tokens"] == 12000 and row["cost_usd"] > 0
+
+
+def test_thinking_off_is_sent_and_default_omits_it():
+    seen = []
+    ok = _fake_transport({"role": "assistant", "content": "VERDICT: ok"}, "stop", {"completion_tokens": 3}, seen)
+    ds.chat("q", key="k", transport=ok)
+    ds.chat("q", key="k", transport=ok, thinking=False)
+    assert "thinking" not in seen[0] and seen[1]["thinking"] == {"type": "disabled"}

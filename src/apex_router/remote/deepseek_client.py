@@ -49,10 +49,12 @@ class RemoteUnavailable(Exception):
     """No answer (no key, HTTP error, no credit, timeout, empty answer). `cost_usd` is what the
     failed call still billed (an empty or malformed answer that reported usage), else 0."""
 
-    def __init__(self, reason: str, *, cost_usd: float = 0.0, cost_known: bool = True):
+    def __init__(self, reason: str, *, cost_usd: float = 0.0, cost_known: bool = True,
+                 usage: dict | None = None):
         super().__init__(reason)
         self.reason = reason
         self.cost_usd = cost_usd
+        self.usage = usage or {}  # token counts the failed call still billed
         # False when the request may have been processed and billed but no usage came back
         # (timeout or connection drop after send): the spend is unknown, not zero.
         self.cost_known = cost_known
@@ -156,7 +158,7 @@ def api_key(registry: dict | None = None, *, env=None, runner=None) -> str:
 
 def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, temperature: float = 0.3,
          registry: dict | None = None, transport=None, key: str | None = None,
-         now: datetime | None = None, timeout_s: float = 300) -> RemoteResult:
+         now: datetime | None = None, timeout_s: float = 300, thinking: bool | None = None) -> RemoteResult:
     """One user-turn chat call. Refuses (before sending) text that fails `check_text`."""
     cfg = _cfg(registry)
     model = model or cfg.get("default_model", "deepseek-v4-pro")
@@ -165,8 +167,11 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
     key = key or api_key(registry)
     now = now or datetime.now(timezone.utc)
     peak = is_peak(now, registry=registry)
-    body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
-                       "max_tokens": max_tokens, "temperature": temperature, "stream": False}).encode()
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": max_tokens, "temperature": temperature, "stream": False}
+    if thinking is not None:  # reasoning models spend max_tokens on thinking first; False turns it off
+        payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(cfg.get("base_url", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
                                  data=body, headers={"Authorization": f"Bearer {key}",
                                                      "Content-Type": "application/json"})
@@ -187,8 +192,13 @@ def chat(prompt: str, *, model: str | None = None, max_tokens: int = 4096, tempe
         choice = data["choices"][0]
         answer = (choice["message"].get("content") or "").strip()
     except (KeyError, IndexError, TypeError, AttributeError):
-        raise RemoteUnavailable("malformed response", cost_usd=cost) from None
+        raise RemoteUnavailable("malformed response", cost_usd=cost, usage=usage) from None
     if not answer:
-        raise RemoteUnavailable("empty answer", cost_usd=cost)
+        if choice.get("finish_reason") == "length":
+            # Reasoning models think first: the whole max_tokens budget went to reasoning_content.
+            raise RemoteUnavailable(f"truncated: max_tokens={max_tokens} used up before any answer "
+                                    "(finish_reason length); raise --max-tokens or use --thinking off",
+                                    cost_usd=cost, usage=usage)
+        raise RemoteUnavailable("empty answer", cost_usd=cost, usage=usage)
     return RemoteResult(answer=answer, model=model, finish_reason=choice.get("finish_reason"),
                         usage=usage, peak=peak, cost_usd=cost, latency_ms=ms, raw=data)

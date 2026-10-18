@@ -76,7 +76,7 @@ def _tokens(usage: dict) -> tuple[int, int, int]:
 
 def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", baseline: str = "sonnet",
             model: str | None = None, max_tokens: int = 4096, log_path: Path | None = None,
-            registry: dict | None = None, chat_fn=None) -> tuple[int, str | None, str]:
+            registry: dict | None = None, chat_fn=None, thinking: bool | None = None) -> tuple[int, str | None, str]:
     """Ask once and book the call. Returns (exit code, answer or None, call id)."""
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r} (choose from {', '.join(BACKENDS)})")
@@ -97,7 +97,8 @@ def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", b
     t0 = time.monotonic()
     code, answer = 3, None
     try:
-        r = chat_fn(question, model=model, max_tokens=max_tokens, registry=registry)
+        kw = {} if thinking is None else {"thinking": thinking}
+        r = chat_fn(question, model=model, max_tokens=max_tokens, registry=registry, **kw)
         p, c, k = _tokens(r.usage or {})
         rec.model, rec.ok = r.model, True
         rec.prompt_tokens, rec.completion_tokens, rec.cached_tokens = p, c, k
@@ -109,6 +110,7 @@ def run_ask(question: str, *, backend: str, lane: str = "ask", role: str = "", b
         code = 4
     except ds.RemoteUnavailable as e:
         extra.update(error=e.reason, cost_usd=round(e.cost_usd, 8), cost_known=e.cost_known)
+        rec.prompt_tokens, rec.completion_tokens, rec.cached_tokens = _tokens(getattr(e, "usage", None) or {})
     except Exception as e:  # noqa: BLE001 — any other failure: no answer, and the spend is unknown
         extra.update(error=type(e).__name__, cost_known=False)
     finally:
@@ -170,6 +172,7 @@ def main_ask(argv: list[str]) -> int:
     ap.add_argument("--baseline", default="sonnet", help="Claude tier the answer replaces (for $ accounting)")
     ap.add_argument("--model")
     ap.add_argument("--max-tokens", type=int, default=4096)
+    ap.add_argument("--thinking", choices=("on", "off"), help="deepseek: force reasoning on/off (default: model default)")
     ap.add_argument("--context", action="append", default=[], metavar="FILE")
     ap.add_argument("--log", type=Path)
     a = ap.parse_args(argv)
@@ -194,6 +197,7 @@ def main_ask(argv: list[str]) -> int:
     try:
         code, answer, cid = run_ask(q, backend=a.backend, lane=a.lane, role=a.role, baseline=a.baseline,
                                     model=a.model, max_tokens=a.max_tokens, log_path=a.log,
+                                    thinking=None if a.thinking is None else a.thinking == "on",
                                     registry=registry, chat_fn=_backend_chat(a.backend))
     except ValueError as e:
         print(f"apex-router ask: {e}", file=sys.stderr)

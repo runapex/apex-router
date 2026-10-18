@@ -7,6 +7,10 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router ask --thinking on|off` (deepseek): force reasoning on or off. A reasoning model
+  spends `max_tokens` on reasoning first; a long review prompt needs `--max-tokens 32000` or
+  `--thinking off`. An answer cut off that way now fails as `truncated: max_tokens=N used up before
+  any answer` (was `empty answer`), and the failed call books its billed token counts (were 0).
 - `apex-router mesh xval --to NODE (--diff REF | --file PATH ... | --stdin) [--question TEXT]`:
   independent cross-validation on a mesh worker node. It wraps the work in a fixed adversarial
   reviewer brief, submits one job to the node's scratch repo (`--repo xval` by default, in the
