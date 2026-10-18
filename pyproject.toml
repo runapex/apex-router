@@ -39,7 +39,7 @@ tuner = ["scipy>=1.13", "tiktoken>=0.7"]
 # booksearch (scripts/booksearch.py): local semantic index over a folder of PDF books.
 # Reuses the stdlib embed client (nomic-embed via ollama) + the local Ornith tier; the only
 # third-party need is a PDF text extractor. Install with `pip install apex-router[books]`.
-books = ["pypdf>=5"]
+books = ["pypdf>=6.19.0"]
 # Dev/test.
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "hypothesis>=6"]
 
