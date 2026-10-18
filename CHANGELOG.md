@@ -26,6 +26,12 @@ next tag will carry.
   `POST /mesh/v1/infer` (signed auth with `body_sha256`, 256 KiB body cap, `--infer-slots` 1..4,
   429 when full, 502 on upstream error). `mesh models` lists served models; `mesh ask --model M
   PROMPT` runs one prompt on the least-loaded node. Prompts cross the LAN signed, not encrypted.
+- LAN mesh worker, sender side (opt-in): `GET /mesh/v1/jobs?for=NODE` and `GET /mesh/v1/results?for=NODE`
+  (signed auth, query exactly `for=<32 hex>`, `for` must be an alive node, else 400/403).
+  `mesh submit` signs a job into `outbox/<id>.job`; `mesh result ID [--wait] [--apply]` fetches
+  and verifies the result, writes `<id>.patch` and `<id>.md`, and with `--apply` runs
+  `git am --3way` (refuses a dirty tree, `git am --abort` on failure); `mesh jobs` lists job states;
+  `mesh worker` starts the worker. Spec: `docs/superpowers/specs/2026-10-17-mesh-worker-design.md`.
 - ASD-STE100 Simplified Technical English is the default format for agent text (`docs/STE.md`).
   One rules file (`src/apex_router/data/ste_rules.json`) feeds pi (`integrations/pi/apex-ste.ts`
   appends the rules to the system prompt; `APEX_STE=0` turns it off), sub-agent briefs, Claude Code

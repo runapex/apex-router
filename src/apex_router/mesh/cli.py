@@ -5,6 +5,10 @@ each beacon cycle; ``peers``, ``leader``, ``pick``, ``models``, ``ask``, ``colle
 read that file and drop entries older than PEER_TTL_S. ``ask`` sends one prompt to the ollama of
 a node that serves the model (``up --serve-model``). The secret is printed only by
 ``init --export``.
+
+Mesh worker (docs/superpowers/specs/2026-10-17-mesh-worker-design.md): ``submit`` writes a signed
+job to the outbox, ``result`` fetches it from the worker, ``jobs`` lists the outbox, and
+``worker`` hands its arguments to ``worker.main`` (imported lazily).
 """
 from __future__ import annotations
 
@@ -465,6 +469,180 @@ def _cmd_ask(args) -> int:
     return 0 if res["ok"] else 1
 
 
+# ---- mesh worker: sender side ---------------------------------------------------------------
+
+RESULT_POLL_S = 5.0                 # `mesh result --wait` poll interval
+RESULT_HTTP_TIMEOUT_S = 10.0        # one GET /results
+
+
+def _peer_rows(ident: Identity, home: Path) -> list[dict]:
+    """All rows of peers.json (stale ones too) when the file belongs to this node and mesh."""
+    doc = _read_json(home / PEERS_FILE)
+    if not isinstance(doc, dict) or doc.get("mesh_id") != ident.mesh_id \
+            or doc.get("self") != ident.node_id or not isinstance(doc.get("peers"), list):
+        return []
+    return [r for r in doc["peers"] if isinstance(r, dict) and isinstance(r.get("node_id"), str)]
+
+
+def _cmd_submit(args) -> int:
+    sender, jobs = _submodule("sender"), _submodule("jobs")
+    task = sys.stdin.read() if args.task == "-" else args.task
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    try:
+        to = sender.resolve_to(args.to, _peer_rows(ident, home))
+        jid = sender.submit(ident, to=to, repo=args.repo, ref=args.ref, task=task or "",
+                            check=args.check or "", max_effort=args.max_effort,
+                            expires_s=int(args.expires_min) * 60)
+    except jobs.JobError as e:
+        _err(f"submit: {e}")
+        return 2
+    except OSError as e:
+        _err(f"submit: cannot write the outbox: {e}")
+        return 1
+    print(jid)
+    return 0
+
+
+def _result_out(job: dict | None, body: dict | None, jid: str, state: str,
+                files: dict, error: str | None, as_json: bool) -> None:
+    if as_json:
+        doc: dict = {"id": jid, "state": state, "files": files}
+        if body is not None:
+            doc["result"] = {k: v for k, v in body.items() if k != "patch_b64"}
+        if job is not None:
+            doc["to"] = job["to"]
+        if error:
+            doc["error"] = error
+        _dump(doc)
+        return
+    print(f"{jid}  {state}" + (f"  {body.get('reason')}" if body and body.get("reason") else ""))
+    if body and body.get("status") == "running":
+        run = [s for s in body.get("steps") or [] if isinstance(s, dict)]
+        if run:
+            print(f"  step {run[-1].get('effort')}")
+    for k in ("patch", "report"):
+        if files.get(k):
+            print(f"  {k:<6} {files[k]}")
+    if error:
+        _err(f"result {jid}: {error}")
+
+
+def _cmd_result(args) -> int:
+    sender, jobs = _submodule("sender"), _submodule("jobs")
+    jid = args.id
+    if not jobs.valid_id(jid):
+        _err(f"result: bad id {jid!r} (16 hex)")
+        return 2
+    if args.timeout is not None and args.timeout < 0:
+        _err("result: --timeout must be >= 0")
+        return 2
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    job = sender.read_job(jid, ident)
+    if job is None:
+        _err(f"result: no job {jid} in the outbox")
+        return 2
+    body = sender.stored_result(jid)
+    error = None
+    end = time.monotonic() + (args.timeout if args.timeout is not None else 1800.0)
+    peer_name = None
+    while body is None or body.get("status") not in sender.TERMINAL:
+        view = read_peers(ident, home)
+        row = next((r for r in (view or {}).get("peers", []) if r["node_id"] == job["to"]), None)
+        if row is None:
+            error = "worker not alive in peers.json"
+        else:
+            peer_name = row.get("name")
+            peer = parse_card(row, now=float(row["last_seen"]))
+            res = sender.fetch_results(peer, ident, timeout=RESULT_HTTP_TIMEOUT_S)
+            if not res["ok"]:
+                error = res.get("error", "fetch failed")
+            else:
+                error = None
+                mine = next((r for r in res["results"] if r["id"] == jid), None)
+                if mine is not None:
+                    body = mine
+                    try:
+                        sender.store_result(body)
+                    except (OSError, jobs.JobError) as e:
+                        error = f"cannot store the result: {e}"
+        if body is not None and body.get("status") in sender.TERMINAL:
+            break
+        if not args.wait or time.monotonic() + RESULT_POLL_S > end:
+            break
+        time.sleep(RESULT_POLL_S)
+    if peer_name is None:
+        peer_name = next((r.get("name") for r in _peer_rows(ident, home)
+                          if r["node_id"] == job["to"]), None)
+    state = sender.job_state(job, body)
+    files: dict = {}
+    if body is not None and body.get("status") in sender.TERMINAL:
+        try:
+            ppath, mpath = sender.write_outputs(job, body, Path.cwd(), peer_name)
+        except (OSError, jobs.JobError) as e:
+            _result_out(job, body, jid, state, files, f"cannot write outputs: {e}", args.json)
+            return 1
+        files = {"patch": str(ppath) if ppath else None, "report": str(mpath)}
+    if args.apply:
+        if state != "done":
+            _result_out(job, body, jid, state, files, error or f"not applied: state {state}",
+                        args.json)
+            return 1
+        if not files.get("patch"):
+            _result_out(job, body, jid, state, files, "not applied: empty patch", args.json)
+            return 1
+        rc, msg = sender.apply_patch(Path(files["patch"]), Path.cwd())
+        files["applied"] = rc == 0
+        _result_out(job, body, jid, state, files, None if rc == 0 else msg, args.json)
+        if rc == 0 and not args.json:
+            print(f"  {msg}")
+        return rc
+    _result_out(job, body, jid, state, files, error, args.json)
+    return 0 if state == "done" else 1
+
+
+def _cmd_jobs(args) -> int:
+    sender = _submodule("sender")
+    got = _load_ident()
+    if got is None:
+        return 2
+    ident, home = got
+    names = {r["node_id"]: r.get("name") for r in _peer_rows(ident, home)}
+    rows = sender.list_jobs(ident)
+    for r in rows:
+        r["to_name"] = names.get(r["to"]) or r["to"][:12]
+    if args.json:
+        _dump({"jobs": rows})
+        return 0
+    if not rows:
+        print("no jobs in the outbox")
+    for r in rows:
+        print(f"{r['id']}  {str(r['to_name'])[:20]:<20}  {r['repo'][:24]:<24}  "
+              f"{r['ref'][:32]:<32}  {r['state']}")
+    return 0
+
+
+def _cmd_worker(args) -> int:
+    return _run_worker(list(args.rest or []))
+
+
+def _run_worker(argv: list[str]) -> int:
+    """Lazy import of ``worker`` (built separately); exit 2 when it is not installed."""
+    try:
+        worker = _submodule("worker")
+    except ModuleNotFoundError as e:
+        if e.name not in (f"{__package__}.worker", __package__):
+            raise
+        print("mesh worker: not installed", file=sys.stderr)
+        return 2
+    return int(worker.main(list(argv)) or 0)
+
+
 # ---- up -------------------------------------------------------------------------------------
 
 def _parse_peer(spec: str) -> tuple[str, int] | None:
@@ -702,10 +880,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.add_argument("--timeout", type=float, default=3.0)
     p.set_defaults(fn=_cmd_advise)
+
+    # mesh worker (sender side + worker launcher)
+    p = sub.add_parser("submit", help="offer an agent job to a worker node; prints the job id")
+    p.add_argument("--to", required=True, metavar="NAME|NODE_ID")
+    p.add_argument("--repo", required=True, metavar="NAME")
+    p.add_argument("--ref", required=True, metavar="REF")
+    p.add_argument("--check", default="", metavar="CMD")
+    p.add_argument("--max-effort", default="high", metavar="LEVEL",
+                   help="ladder ceiling: high|xhigh|max|opus (default high)")
+    p.add_argument("--expires-min", type=int, default=60, metavar="N", help="1..60 (default 60)")
+    p.add_argument("task", metavar="TASK", help='task text, or "-" to read stdin')
+    p.set_defaults(fn=_cmd_submit)
+
+    p = sub.add_parser("result", help="fetch a job result; writes ID.patch and ID.md here "
+                                      "(exit 0 done, 1 not done, 2 usage/refused)")
+    p.add_argument("id", metavar="ID")
+    p.add_argument("--wait", action="store_true", help=f"poll every {RESULT_POLL_S:g} s")
+    p.add_argument("--timeout", type=float, default=None, metavar="S",
+                   help="--wait limit in seconds (default 1800)")
+    p.add_argument("--apply", action="store_true", help="git am --3way the patch in this repo")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_result)
+
+    p = sub.add_parser("jobs", help="list offered jobs and their state")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_jobs)
+
+    p = sub.add_parser("worker", help="run the job worker (all args go to the worker)",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=_cmd_worker)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["worker"]:
+        # argparse REMAINDER drops a first token that starts with "-" (e.g. `worker --pause`).
+        # So hand every argument after "worker" to worker.main unchanged.
+        return _run_worker(argv[1:])
     args = build_parser().parse_args(argv)
     return int(args.fn(args) or 0)
 

@@ -785,6 +785,20 @@ Model calls (opt-in): `mesh up --serve-model qwen3:8b` lets mesh nodes run promp
 `apex-router mesh models` lists the served models; `apex-router mesh ask --model qwen3:8b "PROMPT"` runs one prompt on the least-loaded node.
 Prompts cross the LAN in plain text (signed, not encrypted): use model calls only on a trusted LAN.
 
+Mesh worker (opt-in): one node offers an agent job, another node runs it and sends back a patch.
+The HTTP server stays GET-only. Each node serves only its own outbox (`GET /mesh/v1/jobs?for=NODE`)
+and its own results (`GET /mesh/v1/results?for=NODE`). Both need the signed auth header.
+```bash
+apex-router mesh submit --to machine-b --repo apex-router --ref main --check "make test" "TASK"   # prints ID
+apex-router mesh jobs                  # id, worker, repo, ref, state
+apex-router mesh result ID --wait      # writes ID.patch and ID.md in the current dir
+apex-router mesh result ID --apply     # git am --3way ID.patch; refuses a dirty tree
+apex-router mesh worker ...            # on the worker node (second process next to `mesh up`)
+```
+`mesh up` must run on both nodes. `--apply` runs `git am --abort` when the patch does not apply.
+Task text and patches cross the LAN in plain text: do not send secrets in a task.
+Design: [docs/superpowers/specs/2026-10-17-mesh-worker-design.md](docs/superpowers/specs/2026-10-17-mesh-worker-design.md).
+
 ### Served datasets (allowlist)
 
 Each dataset is an aggregate (numbers and enums only). No prompt text, no file paths, no session ids.

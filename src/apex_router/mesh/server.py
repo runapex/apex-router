@@ -7,11 +7,17 @@ Routes (GET only, exact paths):
 - ``/mesh/v1/leader`` -> signed envelope kind ``leader``, body = the leader Peer dict.
 - ``/mesh/v1/data?names=a,b`` -> signed envelope kind ``data``,
   body = ``{"node_id": ..., "data": {name: value}}``. Not-shared names give ``not_shared``.
+- ``/mesh/v1/jobs?for=<node_id>`` -> signed envelope kind ``jobs``, body ``{"jobs": [...]}``: the
+  job envelopes this node offers to ``for`` (``jobs.offered_jobs``). Mesh worker spec.
+- ``/mesh/v1/results?for=<node_id>`` -> signed envelope kind ``results``,
+  body ``{"node_id": <this node>, "results": [...]}``: results of jobs sent by ``for``
+  (``jobs.results_for``). For both: query exactly ``for=<32 hex>`` (else 400 ``bad_query``) and
+  ``for`` must be an alive node of the table (else 403 ``unknown_node``).
 - ``POST /mesh/v1/infer`` (only with ``models``, i.e. ``mesh up --serve-model``; else 404) ->
   signed envelope kind ``infer``. See "Model calls" in the design doc and ``infer.py``.
 - Anything else -> 404. Other methods (and POST to other paths) -> 501.
 
-``/peers``, ``/leader`` and ``/data`` need header ``X-Apex-Mesh`` = signed envelope kind ``auth``
+``/peers``, ``/leader``, ``/data``, ``/jobs`` and ``/results`` need header ``X-Apex-Mesh`` = signed envelope kind ``auth``
 with body ``{"path": "<path?query>", "to": "<server node_id>"}``. The server checks MAC, skew,
 kind, path, recipient and replay. Any
 failure gives a plain 401 ``{"error": "unauthorized"}`` with no reason (no oracle).
@@ -33,10 +39,11 @@ import threading
 import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs
 
-from . import datasets, infer, protocol
+from . import datasets, infer, jobs, protocol
 from .peers import MODELS_MAX, valid_model
 from .protocol import (  # noqa: F401 -- re-export
     DEFAULT_HTTP_PORT,
@@ -59,12 +66,15 @@ BODY_DEADLINE_S = 10.0           # absolute, for the POST body read
 MAX_INFER_SLOTS = 4
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_.-]{1,64}\Z")
+_FOR_RE = re.compile(r"\Afor=([0-9a-f]{32})\Z")
 
 P_CARD = "/mesh/v1/card"
 P_PEERS = "/mesh/v1/peers"
 P_LEADER = "/mesh/v1/leader"
 P_DATA = "/mesh/v1/data"
 P_INFER = infer.INFER_PATH
+P_JOBS = jobs.JOBS_PATH
+P_RESULTS = jobs.RESULTS_PATH
 
 
 class _HTTPError(Exception):
@@ -146,6 +156,14 @@ def parse_names(query: str) -> list[str]:
     return names
 
 
+def parse_for(query: str) -> str:
+    """Parse a query of exactly ``for=<32 hex>``. Raises _HTTPError(400)."""
+    m = _FOR_RE.match(query) if isinstance(query, str) else None
+    if m is None:
+        raise _HTTPError(400, "bad_query")
+    return m.group(1)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server: _Server                      # type: ignore[assignment]
     timeout = REQUEST_TIMEOUT_S
@@ -219,7 +237,7 @@ class _Handler(BaseHTTPRequestHandler):
                 raise _HTTPError(404, "not_found")
             self._send_signed("card", mesh.card())
             return
-        if path not in (P_PEERS, P_LEADER, P_DATA):
+        if path not in (P_PEERS, P_LEADER, P_DATA, P_JOBS, P_RESULTS):
             raise _HTTPError(404, "not_found")
         hdrs = self.headers.get_all(AUTH_HEADER) or []
         if len(hdrs) != 1 or not check_auth(hdrs[0], target, mesh.ident, mesh.guard):
@@ -232,6 +250,16 @@ class _Handler(BaseHTTPRequestHandler):
             if query:
                 raise _HTTPError(400, "bad_query")
             self._send_signed("leader", mesh.table.leader().to_dict())
+        elif path in (P_JOBS, P_RESULTS):
+            node = parse_for(query)
+            if node not in {p.node_id for p in mesh.table.alive()}:
+                raise _HTTPError(403, "unknown_node")
+            if path == P_JOBS:
+                self._send_signed("jobs", {"jobs": jobs.offered_jobs(node, mesh.ident,
+                                                                     h=mesh.home)})
+            else:
+                self._send_signed("results", {"node_id": mesh.ident.node_id,
+                                              "results": jobs.results_for(node, h=mesh.home)})
         else:
             names = parse_names(query)
             data = datasets.read(names, mesh.shared)
@@ -408,12 +436,15 @@ class MeshServer:
     ``models`` = model names served on POST /mesh/v1/infer (empty = route off, 404).
     ``infer_slots`` = parallel upstream calls (1..4); a full set gives 429 at once.
     ``ollama`` = upstream base URL (default: $APEX_MESH_OLLAMA or http://127.0.0.1:11434).
+    ``home`` = mesh home for the job outbox and worker results (default: ``identity.mesh_home()``
+    at request time).
     """
 
     def __init__(self, ident: Identity, table: PeerTable, card_fn: Callable[[], dict], *,
                  host: str, port: int = DEFAULT_HTTP_PORT,
                  shared: frozenset = frozenset(), models: tuple | list | frozenset = (),
-                 infer_slots: int = 1, ollama: str | None = None) -> None:
+                 infer_slots: int = 1, ollama: str | None = None,
+                 home: Path | None = None) -> None:
         try:
             addr = ipaddress.ip_address(host)
         except (TypeError, ValueError):
@@ -428,6 +459,7 @@ class MeshServer:
         self.host = str(addr)
         self.port = port
         self.shared = frozenset(n for n in shared if n in datasets.ALLOWLIST)
+        self.home = Path(home) if home is not None else None
         self.guard = protocol.ReplayGuard()
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         models = tuple(dict.fromkeys(models or ()))
