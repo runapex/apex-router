@@ -1373,7 +1373,8 @@
       "retried": 0,
       "transport_errors": 1,
       "transport_rate": 0.0455,
-      "upstream_rejected": 0
+      "upstream_rejected": 0,
+      "upstream_rejected_rate": 0.0
     },
     "families": {
       "fable": "GREEN",
@@ -1384,6 +1385,7 @@
     "level": "AMBER",
     "min_sample": 10,
     "n": 22,
+    "p50_ttft_ms": 1500.0,
     "recommendation": "shed mechanical and exploration subagents one tier down (opus\u2192sonnet, sonnet\u2192haiku); cap parallel heavy agents at 2",
     "retry_after_recent": false,
     "retry_after_s": null,
