@@ -7,6 +7,10 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Mesh worker: on a codex node with `codex_search: true`, preamble rule 3 allows the built-in
+  web search tool ("Do not use the network, except the built-in web search tool"). Before, the
+  fixed rule "Do not use the network." won over the task, so research jobs ran with no search.
+  Every other node keeps the old rule. The task text cannot change it.
 - `mesh up --beacon-port PORT` (default 47777). A host can now run a second mesh next to the
   first one: give the second node its own home (`APEX_MESH_HOME=~/.apex-router/mesh-NAME`), its
   own HTTP `--port` and its own beacon port. All nodes of one mesh must use the same beacon port.

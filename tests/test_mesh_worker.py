@@ -750,9 +750,26 @@ def test_codex_argv_shape_ladder_and_no_settings(env):
 
 def test_codex_search_on(env):
     _worker_json(env, codex_search=True)
-    _jid, envb = _job(env)
+    jid, envb = _job(env)
     _codex_worker(env, [envb]).poll_once()
     assert _cfg(_fake_rows(env)[0]["argv"], "web_search") == '"live"'
+    prompt = (worker.jobs_root(env["home"]) / jid / "medium.prompt").read_text()
+    assert "except the built-in web search tool" in prompt      # rule 3 allows the search tool
+
+
+def test_codex_search_off_prompt_keeps_no_network(env):
+    jid, envb = _job(env)
+    _codex_worker(env, [envb]).poll_once()
+    prompt = (worker.jobs_root(env["home"]) / jid / "medium.prompt").read_text()
+    assert "Do not use the network.\n" in prompt and "web search" not in prompt
+
+
+def test_prompt_web_search_rule_is_worker_side():
+    plain = worker.build_prompt({"task": "use the web"})
+    assert "Do not use the network.\n" in plain and "web search" not in plain
+    web = worker.build_prompt({"task": "x"}, web_search=True)
+    rules, _, _task = web.partition("\nBEGIN TASK-")
+    assert "except the built-in web search tool" in rules and "Do not read or send secrets" in rules
 
 
 def test_codex_check_decides_pass(env):
