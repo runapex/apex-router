@@ -6,10 +6,10 @@ apex-router is a public, MIT-licensed Claude Code plugin. The security maintaine
 
 ## Summary
 
-- 9 public coding-agent data-destruction incidents are mapped to the pre-call check that would have caught each. An adversarial re-score cut the path-check count from 7 to about 4.
+- 9 public coding-agent data-destruction incidents are mapped to candidate checks. An adversarial re-score found about 4 path checks, 3 credential or scope cases and 2 cases that no pre-call check catches. No check was run against the incidents.
 - Claude Code's OTel `tool_decision` event does not say which permission source matched. One automatic accept cannot be tied to one rule.
 - Published auto-mode miss rates are 17% (vendor, n = 52) and 81% (independent stress test, n = 253). The two studies measure different things.
-- The repo ships tested controls: a signed mesh, an outbound-text preflight, same-origin redirect credentials, injection markers, a hygiene test and a secrets canary. Three research tracks are planned. They have no results yet.
+- The repo ships tested controls: a signed mesh, an outbound-text preflight, same-origin redirect credentials, injection markers, a hygiene test and a secrets canary. Dependency triage with OSV and OpenVEX (track T2) started on 2026-10-17. Two research tracks (T1, T3) are planned. They have no results yet.
 
 ## Findings
 
@@ -17,7 +17,7 @@ apex-router is a public, MIT-licensed Claude Code plugin. The security maintaine
 
 Source: [Adversa, AI coding agent incidents](https://adversa.ai/blog/ai-coding-agent-incidents/), read 2026-10-12 (R:43-45, R:279-298) and re-read 2026-10-17.
 
-| # | Agent, date | Guardrails | Check that would have caught it | Re-score class (R:448-451) |
+| # | Agent, date | Guardrails | Candidate check (retrospective judgment) | Re-score class (R:448-451) |
 |---|---|---|---|---|
 | 1 | Cursor YOLO, 2025-06 | off | delete target resolves outside the working tree | path |
 | 2 | Replit, 2025-07-18 | freeze instruction ignored | destructive DB operation while a freeze flag is set | credential/scope |
@@ -90,7 +90,7 @@ An earlier scan found 3 classifier denials in 5,040 tool calls. All 3 were false
 
 ## Planned research
 
-**PLANNED. No results exist for these tracks.**
+**T1 and T3 are PLANNED; no results exist for them. T2 started on 2026-10-17: see [security/README.md](../security/README.md) (11 advisories triaged, 4 fixed in `64e3034`).**
 
 | Track | Goal | Measure |
 |---|---|---|
