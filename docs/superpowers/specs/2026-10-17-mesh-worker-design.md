@@ -15,7 +15,7 @@ patch and a report back. Nothing is pushed.
 |---|---|
 | Job kind | Full agent task: edit and bash in a fresh worktree of an allowlisted repo |
 | Escalation | Automatic on a failed check, capped by the sender (`--max-effort`) |
-| Runner | Claude Code headless (`claude -p`) through the local apex-router proxy |
+| Runner | Claude Code headless (`claude -p`) through the local apex-router proxy. A GPT-only node uses `codex exec` instead (see "Codex runner"). The worker node chooses the runner, not the job. |
 | Code and result | Repo from the worker's allowlist, ref fetched from its `origin`; result = `git format-patch` + report |
 | Transport | Pull model: the mesh HTTP server stays GET-only |
 
@@ -120,7 +120,7 @@ apex-router mesh submit --to NAME|NODE_ID --repo NAME --ref REF [--check CMD]
                         [--max-effort high|xhigh|max|opus] [--expires-min N] "TASK"   # prints the job id
 apex-router mesh result ID [--wait] [--timeout S] [--apply] [--json]
 apex-router mesh jobs [--json]                       # sender: offered jobs and their state
-apex-router mesh worker [--daily-cap N] [--wall-min N] [--poll-s N]   # foreground
+apex-router mesh worker [--daily-cap N] [--wall-min N] [--poll-s N] [--runner claude|codex]  # foreground
 apex-router mesh worker --pause | --resume | --status
 ```
 
@@ -178,3 +178,62 @@ a launchd agent for `mesh worker` (tmux first; a plist later after a week of use
   (or `--pause` and wait) instead.
 - **Watch a job:** the agent transcripts are in `~/.claude/projects/*mesh-worker-jobs-<id>-<step>/`
   on the worker (never sent to the sender).
+
+## Codex runner (2026-10-17)
+
+A GPT-only node runs the same jobs with Codex CLI (`codex exec`). The job envelope does not change.
+The worker node chooses the runner. A codex node never runs Claude.
+
+Config in `worker.json` (read once when the worker starts):
+
+| Key | Values | Default |
+|---|---|---|
+| `runner` | `"claude"` or `"codex"` | `"claude"` |
+| `codex_search` | `true` or `false` | `false` |
+| `codex_models` | `{step: [model, effort]}`, effort `minimal`, `low`, `medium`, `high` or `xhigh` | table below |
+
+`mesh worker --runner claude|codex` overrides `runner`. A bad value stops the worker (exit 2).
+`mesh worker --status` shows `runner` (and the codex values on a codex node).
+
+Default ladder for codex:
+
+| Step | Model | `model_reasoning_effort` |
+|---|---|---|
+| `medium` | `gpt-5.6-terra` | `medium` |
+| `high` | `gpt-5.6-terra` | `high` |
+| `xhigh` | `gpt-5.6-sol` | `high` |
+| `max` | `gpt-5.6-sol` | `xhigh` |
+| `opus` | `gpt-5.6-sol` | `xhigh` |
+
+Each step runs, with the prompt on stdin:
+
+```
+codex exec -m MODEL -c model_reasoning_effort="EFFORT" -c web_search="disabled|live"
+  -c sandbox_workspace_write.network_access=false -s workspace-write -C <worktree>
+  --add-dir <repo>/.git/worktrees/<name> --add-dir <repo>/.git/objects
+  --ephemeral --ignore-rules --json -o <job dir>/<step>.last -
+```
+
+- `web_search="live"` only when `codex_search` is true. Codex defaults to `"cached"`, so the
+  worker sets `"disabled"` explicitly.
+- A git worktree keeps its index and HEAD in `<repo>/.git/worktrees/<name>` and its objects in
+  `<repo>/.git/objects`. The sandbox blocks writes there, so `git commit` fails. The two
+  `--add-dir` values make only these dirs writable. The rest of `.git` stays read-only.
+- `--ignore-rules`: user execpolicy rules cannot approve a command outside the sandbox.
+- The worker never uses `--dangerously-bypass-approvals-and-sandbox` or `--approve-for-me`.
+- No `worker-settings.json`: that file is for Claude only. A bad settings file does not reject
+  codex jobs.
+- Report: the `-o` file (if empty, the last `agent_message` event), capped like the Claude report.
+- Pass rules are the same as Claude: no check means the report must end with DONE; with a check,
+  the check must pass. The agent fails when the exit code is not 0 or the last turn event is not
+  `turn.completed`.
+- Tokens: the sum of `turn.completed` `usage` (`input_tokens`, `output_tokens`,
+  `cached_input_tokens`). `cost_usd` is null (subscription).
+- Reason codes: `agent_error` and `agent_failed` for codex. Claude keeps `claude_error` and
+  `claude_failed`.
+- `worker/steps.jsonl`, `running.json`, the `start` log row and the OffloadRecord record `runner`.
+
+WARNING: the `workspace-write` sandbox blocks network and writes outside the worktree. It does not
+block reads. A codex agent can read `~/.ssh` or `mesh.key` and commit a copy into the patch. This
+is the same trust boundary as the Claude runner (its Bash rule is best-effort). A Codex permission
+profile with `"deny"` entries blocks these reads; it is not used yet.

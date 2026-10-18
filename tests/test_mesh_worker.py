@@ -687,3 +687,219 @@ def test_ctrl_c_ends_job_failed_interrupted_not_escalated(env, monkeypatch):
     assert r["status"] == "failed" and r["reason"] == "interrupted"
     assert len(calls) == 1                                  # no next ladder step
     assert not worker.running_path(env["home"]).exists()
+
+
+# ---- codex runner (worker.json "runner": "codex" or --runner codex) ------------------------------
+
+FAKE_CODEX = Path(__file__).parent / "fixtures" / "fake_codex.py"
+
+
+def _codex_worker(env, envs, **kw):
+    kw.setdefault("runner", "codex")
+    return _worker(env, envs, codex_cmd=[sys.executable, str(FAKE_CODEX)], **kw)
+
+
+def _worker_json(env, **kw):
+    doc = {"repos": {"demo": str(env["repo"])}, **kw}
+    (env["home"] / "worker.json").write_text(json.dumps(doc))
+
+
+def _cfg(argv, key):
+    """Value of the ``-c key=value`` option in a codex argv."""
+    vals = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"]
+    return next(v.split("=", 1)[1] for v in vals if v.startswith(key + "="))
+
+
+def test_codex_argv_shape_ladder_and_no_settings(env):
+    jid, envb = _job(env, task="DONE_AT=high", max_effort="max")
+    assert _codex_worker(env, [envb]).poll_once() == 1
+    r = _result(env, jid)
+    assert r["status"] == "done" and r["reason"] == "pass:high"
+    assert [(s["model"], s["effort"]) for s in r["steps"]] == [
+        ("gpt-5.6-terra", "medium"), ("gpt-5.6-terra", "high")]
+    assert [s["cost_usd"] for s in r["steps"]] == [None, None]
+    assert r["report"].endswith("DONE")
+    rows = _fake_rows(env)
+    a = rows[0]["argv"]
+    assert a[0] == "exec" and a[-1] == "-"                     # prompt on stdin
+    assert a[a.index("-m") + 1] == "gpt-5.6-terra"
+    assert _cfg(a, "model_reasoning_effort") == '"medium"'
+    assert _cfg(a, "web_search") == '"disabled"'
+    assert _cfg(a, "sandbox_workspace_write.network_access") == "false"
+    assert a[a.index("-s") + 1] == "workspace-write"
+    assert a[a.index("-C") + 1] == rows[0]["cwd"]
+    assert {"--ephemeral", "--json", "--ignore-rules"} <= set(a)
+    assert a[a.index("-o") + 1] == str(worker.jobs_root(env["home"]) / jid / "medium.last")
+    for bad in ("--dangerously-bypass-approvals-and-sandbox", "--approve-for-me", "--search",
+                "--skip-git-repo-check", "danger-full-access"):
+        assert bad not in a
+    # only the worktree's own git dir and the object store are added as writable
+    adds = [a[i + 1] for i, x in enumerate(a) if x == "--add-dir"]
+    common = Path(_git("rev-parse", "--path-format=absolute", "--git-common-dir",
+                       cwd=env["repo"]))
+    assert len(adds) == 2 and adds[1] == str(common / "objects")
+    assert Path(adds[0]).parent == common / "worktrees"
+    assert not worker.settings_path(env["home"]).exists()      # claude-only file never written
+    assert rows[0]["running"]["runner"] == "codex"
+    steps = [json.loads(x) for x in worker.steps_path(env["home"]).read_text().splitlines()]
+    assert [s["runner"] for s in steps] == ["codex", "codex"]
+    assert (steps[0]["tokens_in"], steps[0]["tokens_out"], steps[0]["cached"]) == (100, 7, 40)
+    patch = base64.b64decode(r["patch_b64"])
+    assert b"fake-high.txt" in patch and b"fake-medium.txt" not in patch
+
+
+def test_codex_search_on(env):
+    _worker_json(env, codex_search=True)
+    _jid, envb = _job(env)
+    _codex_worker(env, [envb]).poll_once()
+    assert _cfg(_fake_rows(env)[0]["argv"], "web_search") == '"live"'
+
+
+def test_codex_check_decides_pass(env):
+    jid, envb = _job(env, task="never done", check="test -f fake-xhigh.txt", max_effort="max")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "done" and r["reason"] == "pass:xhigh"
+    assert [s["pass"] for s in r["steps"]] == [False, False, True]
+    assert [s["reason"] for s in r["steps"]] == ["check_failed", "check_failed", ""]
+    assert (r["steps"][2]["model"], r["steps"][2]["effort"]) == ("gpt-5.6-sol", "high")
+
+
+def test_codex_check_fails_to_ceiling(env):
+    jid, envb = _job(env, task="ALWAYS_DONE", check="false", max_effort="opus")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and r["reason"] == "ceiling"
+    assert [(s["model"], s["effort"]) for s in r["steps"]][-2:] == [
+        ("gpt-5.6-sol", "xhigh"), ("gpt-5.6-sol", "xhigh")]
+
+
+def test_codex_not_done_fails_step(env):
+    jid, envb = _job(env, task="never done")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and [s["reason"] for s in r["steps"]] == ["not_done"] * 2
+
+
+def test_codex_nonzero_exit_is_agent_error(env):
+    jid, envb = _job(env, task="AGENT_ERROR ALWAYS_DONE")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and r["steps"][0]["reason"] == "agent_error"
+    jid2, envb2 = _job(env, task="AGENT_ERROR ALWAYS_DONE", check="true")
+    _codex_worker(env, [envb2]).poll_once()
+    assert _result(env, jid2)["steps"][0]["reason"] == "agent_error"
+
+
+def test_codex_missing_binary_is_agent_failed(env):
+    jid, envb = _job(env)
+    w = _worker(env, [envb], runner="codex", codex_cmd=[str(env["tmp"] / "no-such-codex")])
+    w.poll_once()
+    assert _result(env, jid)["steps"][0]["reason"] == "agent_failed"
+
+
+def test_codex_report_from_event_without_last_file(env):
+    jid, envb = _job(env, task="NO_LAST_FILE ALWAYS_DONE")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "done" and r["report"].endswith("DONE")
+
+
+def test_codex_report_cap_keeps_tail(env):
+    jid, envb = _job(env, task="BIGREPORT ALWAYS_DONE")
+    _codex_worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "done" and r["report"].endswith("DONE")
+    assert len(r["report"].encode()) <= jobs.MAX_REPORT_BYTES
+
+
+def test_codex_models_override(env):
+    _worker_json(env, runner="codex", codex_models={"medium": ["gpt-5.6-luna", "low"]})
+    _jid, envb = _job(env, task="never done")
+    w = _worker(env, [envb], codex_cmd=[sys.executable, str(FAKE_CODEX)])   # runner from file
+    assert w.runner == "codex"
+    w.poll_once()
+    a0, a1 = (row["argv"] for row in _fake_rows(env))
+    assert a0[a0.index("-m") + 1] == "gpt-5.6-luna"
+    assert _cfg(a0, "model_reasoning_effort") == '"low"'
+    assert a1[a1.index("-m") + 1] == "gpt-5.6-terra"            # other steps keep the default
+
+
+def test_codex_ignores_bad_claude_settings(env):
+    worker.settings_path(env["home"]).write_text("not json")
+    jid, envb = _job(env)
+    _codex_worker(env, [envb]).poll_once()
+    assert _result(env, jid)["status"] == "done"
+
+
+@pytest.mark.parametrize("over", [
+    {"runner": "gpt"}, {"codex_search": "yes"}, {"codex_models": []},
+    {"codex_models": {"medium": ["gpt-5.6-luna", "max"]}},
+    {"codex_models": {"ultra": ["gpt-5.6-luna", "low"]}},
+    {"codex_models": {"medium": ["-c", "low"]}},
+    {"codex_models": {"medium": ["gpt-5.6-luna"]}}])
+def test_bad_runner_config_fails_closed(env, over, capsys):
+    _worker_json(env, **over)
+    with pytest.raises(ValueError):
+        _worker(env, [])
+    assert worker.main(["--once"], peers=list) == 2
+    capsys.readouterr()
+    assert worker.main(["--status"]) == 0
+    st = json.loads(capsys.readouterr().out)
+    assert st["runner"] is None and st["runner_error"].startswith("bad_")
+
+
+def test_runner_defaults_to_claude(env):
+    assert worker.load_runner_config(env["home"])["runner"] == "claude"
+    (env["home"] / "worker.json").write_text("[1, 2]")          # malformed: defaults
+    assert worker.load_runner_config(env["home"])["runner"] == "claude"
+    _jid, envb = _job(env)
+    _worker_json(env)
+    _worker(env, [envb]).poll_once()
+    assert _fake_rows(env)[0]["argv"][0] == "-p"
+    steps = [json.loads(x) for x in worker.steps_path(env["home"]).read_text().splitlines()]
+    assert steps[0]["runner"] == "claude" and steps[0]["cost_usd"] == 0.01
+
+
+def test_cli_runner_flag_overrides_worker_json(env, capsys):
+    kw = {"claude_cmd": [sys.executable, str(FAKE)], "codex_cmd": [sys.executable, str(FAKE_CODEX)],
+          "peers": lambda: [env["peer"]], "pressure": lambda: 0, "quiet": True,
+          "offload_log": env["tmp"] / "off.jsonl"}
+    jid, envb = _job(env)
+    rc = worker.main(["--once", "--runner", "codex"],
+                     fetch=lambda p, i, t: {"ok": True, "jobs": [envb.decode()]}, **kw)
+    assert rc == 0 and _result(env, jid)["status"] == "done"
+    assert _fake_rows(env)[-1]["argv"][0] == "exec"
+    _worker_json(env, runner="codex")
+    jid2, envb2 = _job(env)
+    rc = worker.main(["--once", "--runner", "claude"],
+                     fetch=lambda p, i, t: {"ok": True, "jobs": [envb2.decode()]}, **kw)
+    assert rc == 0 and _result(env, jid2)["status"] == "done"
+    assert _fake_rows(env)[-1]["argv"][0] == "-p"
+    capsys.readouterr()
+    assert worker.main(["--status"]) == 0
+    st = json.loads(capsys.readouterr().out)
+    assert st["runner"] == "codex" and st["codex_search"] is False
+    assert st["codex_models"]["max"] == ["gpt-5.6-sol", "xhigh"]
+    assert worker.main(["--status", "--runner", "claude"]) == 0
+    st = json.loads(capsys.readouterr().out)
+    assert st["runner"] == "claude" and "codex_models" not in st
+    assert worker.main(["--runner", "gpt"]) == 2
+
+
+def test_parse_codex_output():
+    ev = [{"type": "thread.started"}, {"type": "turn.started"},
+          {"type": "item.completed", "item": {"type": "reasoning", "text": "hmm"}},
+          {"type": "item.completed", "item": {"type": "agent_message", "text": "a\nDONE"}},
+          {"type": "turn.completed",
+           "usage": {"input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 3}}]
+    text = "torn line {\n" + "\n".join(json.dumps(e) for e in ev) + "\n[1]\n"
+    p = worker.parse_codex_output(text, "")
+    assert p == {"report": "a\nDONE", "is_error": False, "cost_usd": None, "tokens_in": 10,
+                 "tokens_out": 3, "cached": 4}
+    assert worker.parse_codex_output(text, "from file\nDONE")["report"] == "from file\nDONE"
+    failed = text + json.dumps({"type": "turn.failed", "error": {"message": "x"}}) + "\n"
+    assert worker.parse_codex_output(failed, "")["is_error"] is True
+    p = worker.parse_codex_output('{"type": "turn.completed"}\n', "")
+    assert p["is_error"] is False and p["tokens_in"] is None and p["report"] == ""
+    assert worker.parse_codex_output("", "")["is_error"] is True

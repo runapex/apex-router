@@ -806,6 +806,14 @@ apex-router mesh worker ...            # on the worker node (second process next
 ```
 `mesh up` must run on both nodes. `--apply` runs `git am --abort` when the patch does not apply.
 Task text and patches cross the LAN in plain text: do not send secrets in a task.
+
+A GPT-only worker runs the jobs with Codex CLI (`codex exec`, `workspace-write` sandbox). Set the
+runner in `~/.apex-router/mesh/worker.json`, or use `mesh worker --runner codex`:
+```json
+{"repos": {"apex-router": "/path/to/apex-router"}, "runner": "codex", "codex_search": false}
+```
+The ladder then uses `gpt-5.6-terra` and `gpt-5.6-sol`. `codex_models` overrides a step, for
+example `{"medium": ["gpt-5.6-luna", "low"]}`. `cost_usd` is null (subscription).
 Design: [docs/superpowers/specs/2026-10-17-mesh-worker-design.md](docs/superpowers/specs/2026-10-17-mesh-worker-design.md).
 
 ### Served datasets (allowlist)

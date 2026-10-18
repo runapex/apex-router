@@ -3,7 +3,8 @@
 
 ``apex-router mesh worker`` polls the alive peers (``GET /mesh/v1/jobs`` through
 ``sender.fetch_jobs``), checks each offered job (7 checks, spec order, all fail closed) and runs at
-most one job at a time: an effort ladder of ``claude -p`` runs, each in a fresh detached worktree of
+most one job at a time: an effort ladder of ``claude -p`` runs (or ``codex exec`` runs on a node
+with ``"runner": "codex"`` in worker.json), each in a fresh detached worktree of
 an allowlisted repo. The result (status, steps, ``git format-patch``, report) goes to
 ``worker/results/<id>.json``; the mesh server serves it to the sender. Nothing is pushed.
 
@@ -53,6 +54,19 @@ _NODE_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _DONE_RE = re.compile(r"\A[\s*_`#>-]*DONE\b")
 # git without hooks: a prior job could have planted one in the shared .git/hooks.
 _GIT = ("git", "-c", "core.hooksPath=/dev/null")
+
+# Runners. The worker node chooses one (worker.json "runner" or --runner); a job cannot.
+RUNNERS = ("claude", "codex")
+CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+# Ladder step -> (codex model, model_reasoning_effort). worker.json "codex_models" overrides.
+DEFAULT_CODEX_MODELS: dict[str, tuple[str, str]] = {
+    "medium": ("gpt-5.6-terra", "medium"),
+    "high": ("gpt-5.6-terra", "high"),
+    "xhigh": ("gpt-5.6-sol", "high"),
+    "max": ("gpt-5.6-sol", "xhigh"),
+    "opus": ("gpt-5.6-sol", "xhigh"),
+}
+_MODEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}\Z")
 
 
 # -- paths ------------------------------------------------------------------------------------
@@ -198,6 +212,33 @@ def load_allowlist(h: Path | None = None) -> dict[str, str] | None:
     return out
 
 
+def load_runner_config(h: Path | None = None, *, runner: str | None = None) -> dict:
+    """worker.json ``runner``, ``codex_search``, ``codex_models`` -> {runner, codex_search,
+    codex_models: {step: (model, effort)}}. ``runner`` (the --runner flag) wins over the file.
+
+    A missing or malformed worker.json gives the defaults (the allowlist check rejects every job
+    then). A bad value raises ValueError (fail closed: the worker does not start)."""
+    doc = jobs.read_json(allowlist_path(h))
+    doc = doc if isinstance(doc, dict) else {}
+    r = runner if runner is not None else doc.get("runner", "claude")
+    if r not in RUNNERS:
+        raise ValueError("bad_runner")
+    search = doc.get("codex_search", False)
+    if not isinstance(search, bool):
+        raise ValueError("bad_codex_search")  # noqa: TRY004 -- one error type for config
+    models = dict(DEFAULT_CODEX_MODELS)
+    over = doc.get("codex_models", {})
+    if not isinstance(over, dict):
+        raise ValueError("bad_codex_models")  # noqa: TRY004
+    for step, v in over.items():
+        if step not in jobs.LADDER or not isinstance(v, (list, tuple)) or len(v) != 2 \
+                or not isinstance(v[0], str) or not _MODEL_RE.match(v[0]) \
+                or v[1] not in CODEX_EFFORTS:
+            raise ValueError("bad_codex_models")
+        models[step] = (v[0], v[1])
+    return {"runner": r, "codex_search": search, "codex_models": models}
+
+
 def _git(args: list[str], *, cwd: str | Path | None = None,
          timeout: float = GIT_TIMEOUT_S) -> subprocess.CompletedProcess | None:
     env = dict(os.environ)
@@ -324,6 +365,48 @@ def parse_claude_output(text: str) -> dict:
     return out
 
 
+def parse_codex_output(jsonl: str, last_message: str) -> dict:
+    """``codex exec --json`` events + the ``-o`` file -> the same dict as parse_claude_output.
+
+    is_error is False only when the last turn event is ``turn.completed``. Tokens are summed over
+    ``turn.completed`` usage (input_tokens, output_tokens, cached_input_tokens); None if no usage.
+    The report is the ``-o`` file; if it is empty, the text of the last ``agent_message`` item.
+    cost_usd is None (subscription). Unknown or torn lines are skipped."""
+    out = {"report": last_message, "is_error": True, "cost_usd": None, "tokens_in": None,
+           "tokens_out": None, "cached": None}
+    sums: dict[str, int | None] = {"tokens_in": None, "tokens_out": None, "cached": None}
+    keys = {"tokens_in": "input_tokens", "tokens_out": "output_tokens",
+            "cached": "cached_input_tokens"}
+    last_text = ""
+    for line in jsonl.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        kind = ev.get("type")
+        if kind == "turn.completed":
+            out["is_error"] = False
+            u = ev.get("usage")
+            if isinstance(u, dict):
+                for k, src in keys.items():
+                    v = u.get(src)
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        sums[k] = (sums[k] or 0) + v
+        elif kind == "turn.failed":
+            out["is_error"] = True
+        elif kind == "item.completed":
+            item = ev.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message" \
+                    and isinstance(item.get("text"), str):
+                last_text = item["text"]
+    out.update(sums)
+    if not last_message.strip():
+        out["report"] = last_text
+    return out
+
+
 # -- process runner ---------------------------------------------------------------------------
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -434,6 +517,7 @@ class Worker:
     def __init__(self, ident, h: Path, *, daily_cap: int = DEFAULT_DAILY_CAP,
                  wall_s: float = DEFAULT_WALL_MIN * 60, check_timeout_s: float = CHECK_TIMEOUT_S,
                  claude_cmd: list[str] | None = None,
+                 codex_cmd: list[str] | None = None, runner: str | None = None,
                  fetch: Callable | None = None, peers: Callable | None = None,
                  pressure: Callable[[], int] | None = None,
                  offload_log: Path | None = None, now: Callable[[], float] = time.time,
@@ -444,6 +528,12 @@ class Worker:
         self.wall_s = float(wall_s)
         self.check_timeout_s = float(check_timeout_s)
         self.claude_cmd = list(claude_cmd or ["claude"])
+        self.codex_cmd = list(codex_cmd or ["codex"])
+        # Read once at start (raises ValueError on a bad value). Restart the worker to change it.
+        cfg = load_runner_config(self.h, runner=runner)
+        self.runner: str = cfg["runner"]
+        self.codex_search: bool = cfg["codex_search"]
+        self.codex_models: dict[str, tuple[str, str]] = cfg["codex_models"]
         self.fetch = fetch or _default_fetch
         self.peers = peers or (lambda: _default_peers(self.ident, self.h))
         self.pressure = pressure or _default_pressure
@@ -626,9 +716,9 @@ class Worker:
         if paused_path(self.h).exists():
             self.reject(jid, sender, "paused")
             return None
-        # Pre-run: settings usable, then mark seen BEFORE the run (a crash never runs it twice).
-        settings = ensure_settings(self.h)
-        if settings is None:
+        # Pre-run: settings usable (claude only), then mark seen BEFORE the run (a crash never
+        # runs it twice).
+        if self.runner == "claude" and ensure_settings(self.h) is None:
             self.reject(jid, sender, "bad_settings")
             return None
         # The agent lock: free only when no process of an earlier job runs (see try_agent_lock).
@@ -649,13 +739,15 @@ class Worker:
     def _write_running(self, job: dict, step: str, effort: str, model: str, rows: list) -> None:
         jobs.write_private(running_path(self.h), json.dumps(
             {"id": job["id"], "from": job["from"], "step": step, "effort": effort,
-             "model": model, "started": self.now()}, sort_keys=True).encode("utf-8"))
+             "model": model, "runner": self.runner, "started": self.now()},
+            sort_keys=True).encode("utf-8"))
         self._result({"id": job["id"], "status": "running", "reason": f"step:{step}",
                       "steps": list(rows), "patch_b64": "", "report": ""}, job["from"])
 
     def _log_step(self, job: dict, row: dict, extra: dict, escalated: bool) -> None:
         with contextlib.suppress(Exception):
-            _append_line(steps_path(self.h), {"ts": self.now(), "id": job["id"], **row, **extra})
+            _append_line(steps_path(self.h), {"ts": self.now(), "id": job["id"],
+                                              "runner": self.runner, **row, **extra})
         try:
             from ..ornith.offload_telemetry import OffloadRecord, write_offload
             rec = OffloadRecord(
@@ -664,7 +756,7 @@ class Worker:
                 cached_tokens=extra.get("cached"), latency_ms=int(row["s"] * 1000),
                 escalated=escalated, gated=bool(job["check"]),
                 _extra={"job": job["id"], "step": row["step"], "effort": row["effort"],
-                        "cost_usd": row["cost_usd"]})
+                        "cost_usd": row["cost_usd"], "runner": self.runner})
             if self.offload_log is not None:
                 write_offload(self.offload_log, rec)
             else:
@@ -683,7 +775,8 @@ class Worker:
         rows: list[dict] = []
         final = {"id": jid, "status": "failed", "reason": "worker_error", "steps": rows,
                  "patch_b64": "", "report": ""}
-        self.log("start", id=jid, repo=job["repo"], ref=job["ref"], ceiling=job["max_effort"])
+        self.log("start", id=jid, repo=job["repo"], ref=job["ref"], ceiling=job["max_effort"],
+                 runner=self.runner)
         try:
             jdir.mkdir(mode=0o700, parents=True, exist_ok=True)
             jobs.write_private(jdir / "job.json", json.dumps(
@@ -720,7 +813,7 @@ class Worker:
             if left <= 0:
                 out["reason"] = "wall_cap"
                 break
-            model, effort = jobs.step_model(step)
+            model, effort = self.step_model(step)
             self._write_running(job, step, effort, model, rows)
             row, extra, step_out = self._step(job, repo, base, jdir, step, model, effort, deadline)
             last = i == len(steps) - 1 or step_out.get("stop")
@@ -733,6 +826,38 @@ class Worker:
                 out["reason"] = step_out["stop"]
                 break
         return out
+
+    def step_model(self, step: str) -> tuple[str, str]:
+        """(model, effort) of one ladder step for this worker's runner."""
+        if self.runner == "codex":
+            if step not in jobs.LADDER:
+                raise jobs.JobError("bad_step")
+            return self.codex_models[step]
+        return jobs.step_model(step)
+
+    def _codex_argv(self, wt: Path, jdir: Path, step: str, model: str,
+                    effort: str) -> list[str] | None:
+        """``codex exec`` argv, or None when the git dirs of the worktree are unknown.
+
+        The sandbox is workspace-write (writes only in the worktree, no network). A git worktree
+        keeps its index and HEAD in ``<repo>/.git/worktrees/<name>`` and its objects in
+        ``<repo>/.git/objects``, both outside the worktree: ``--add-dir`` makes only these two
+        writable, so ``git commit`` works (the rest of ``.git`` stays read-only)."""
+        r = _git(["-C", str(wt), "rev-parse", "--path-format=absolute", "--git-dir",
+                  "--git-common-dir"], timeout=60)
+        if r is None or r.returncode != 0:
+            return None
+        dirs = r.stdout.decode("utf-8", errors="replace").splitlines()
+        if len(dirs) != 2 or not all(d and Path(d).is_absolute() for d in dirs):
+            return None
+        gitdir, objects = dirs[0], str(Path(dirs[1]) / "objects")
+        search = "live" if self.codex_search else "disabled"
+        return [*self.codex_cmd, "exec", "-m", model,
+                "-c", f'model_reasoning_effort="{effort}"', "-c", f'web_search="{search}"',
+                "-c", "sandbox_workspace_write.network_access=false",
+                "-s", "workspace-write", "-C", str(wt), "--add-dir", gitdir,
+                "--add-dir", objects, "--ephemeral", "--ignore-rules", "--json",
+                "-o", str(jdir / f"{step}.last"), "-"]
 
     def _step(self, job, repo, base, jdir, step, model, effort, deadline):
         t0 = time.monotonic()
@@ -756,18 +881,31 @@ class Worker:
             return done("worktree_failed")
         prompt = jdir / f"{step}.prompt"
         jobs.write_private(prompt, build_prompt(job).encode("utf-8"))
-        settings = settings_path(self.h)
-        argv = [*self.claude_cmd, "-p", "--model", model, "--effort", effort,
-                "--settings", str(settings), "--permission-mode", "dontAsk",
-                "--output-format", "json"]
+        codex = self.runner == "codex"
+        why = "agent" if codex else "claude"      # reason codes: agent_* (codex), claude_*
+        if codex:
+            argv = self._codex_argv(wt, jdir, step, model, effort)
+            if argv is None:
+                out["stop"] = "worktree_failed"
+                return done("worktree_failed")
+        else:
+            settings = settings_path(self.h)
+            argv = [*self.claude_cmd, "-p", "--model", model, "--effort", effort,
+                    "--settings", str(settings), "--permission-mode", "dontAsk",
+                    "--output-format", "json"]
         left = deadline - self.now()
         try:
             rc, timed_out = run_proc(argv, cwd=wt, timeout=left, stdin_path=prompt,
                                      hold_fd=getattr(self, "_lock_fd", None),
                                      out_path=jdir / f"{step}.out", err_path=jdir / f"{step}.err")
         except OSError:
-            return done("claude_failed")
-        parsed = parse_claude_output(_read_cap(jdir / f"{step}.out", 4 * jobs.MAX_REPORT_BYTES))
+            return done(f"{why}_failed")
+        raw = _read_cap(jdir / f"{step}.out", 4 * jobs.MAX_REPORT_BYTES)
+        if codex:
+            parsed = parse_codex_output(raw, _read_cap(jdir / f"{step}.last",
+                                                       4 * jobs.MAX_REPORT_BYTES))
+        else:
+            parsed = parse_claude_output(raw)
         out["report"] = _cap_tail(parsed["report"], jobs.MAX_REPORT_BYTES)
         row["cost_usd"] = parsed["cost_usd"]
         extra.update(tokens_in=parsed["tokens_in"], tokens_out=parsed["tokens_out"],
@@ -797,13 +935,13 @@ class Worker:
                 if tmo < self.check_timeout_s:
                     out["stop"] = "wall_cap"
             elif not agent_ok:
-                row["reason"] = "claude_error"
+                row["reason"] = f"{why}_error"
             elif crc != 0:
                 row["reason"] = "check_failed"
         else:
             passed = agent_ok and report_done(out["report"])
             if not passed:
-                row["reason"] = "claude_error" if not agent_ok else "not_done"
+                row["reason"] = f"{why}_error" if not agent_ok else "not_done"
         out.update(self._patch(wt, base, jdir, step))
         if passed and out.get("patch_error"):
             passed = False
@@ -913,11 +1051,20 @@ class Worker:
     # -- status --
 
     def status(self) -> dict:
-        return status(self.h, daily_cap=self.daily_cap, now=self.now())
+        return status(self.h, daily_cap=self.daily_cap, now=self.now(), runner=self.runner)
 
 
-def status(h: Path, *, daily_cap: int = DEFAULT_DAILY_CAP, now: float | None = None) -> dict:
+def status(h: Path, *, daily_cap: int = DEFAULT_DAILY_CAP, now: float | None = None,
+           runner: str | None = None) -> dict:
     t = time.time() if now is None else float(now)
+    try:
+        cfg = load_runner_config(h, runner=runner)
+        run_info: dict = {"runner": cfg["runner"]}
+        if cfg["runner"] == "codex":
+            run_info["codex_search"] = cfg["codex_search"]
+            run_info["codex_models"] = {k: list(v) for k, v in cfg["codex_models"].items()}
+    except ValueError as e:
+        run_info = {"runner": None, "runner_error": str(e)}
     seen = load_seen(h)
     today = None if seen is None else sum(1 for s in seen[1] if s >= _local_midnight(t))
     allow = load_allowlist(h)
@@ -931,7 +1078,7 @@ def status(h: Path, *, daily_cap: int = DEFAULT_DAILY_CAP, now: float | None = N
     return {"paused": paused_path(h).exists(), "running": jobs.read_json(running_path(h)),
             "jobs_today": today, "daily_cap": daily_cap,
             "repos": sorted(allow) if allow is not None else None,
-            "settings": settings_path(h).exists(), "results": counts}
+            "settings": settings_path(h).exists(), "results": counts, **run_info}
 
 
 # -- CLI --------------------------------------------------------------------------------------
@@ -954,6 +1101,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--daily-cap", type=int, default=DEFAULT_DAILY_CAP)
     ap.add_argument("--wall-min", type=float, default=DEFAULT_WALL_MIN)
     ap.add_argument("--poll-s", type=float, default=DEFAULT_POLL_S)
+    ap.add_argument("--runner", choices=RUNNERS, default=None,
+                    help="agent CLI for the jobs (default: worker.json \"runner\", else claude)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--pause", action="store_true", help="stop taking new jobs")
     g.add_argument("--resume", action="store_true", help="take jobs again")
@@ -985,9 +1134,16 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
         print("mesh worker: resumed")
         return 0
     if args.status:
-        print(json.dumps(status(h, daily_cap=args.daily_cap), indent=2, sort_keys=True,
-                         default=str))
+        print(json.dumps(status(h, daily_cap=args.daily_cap, runner=args.runner), indent=2,
+                         sort_keys=True, default=str))
         return 0
+    try:
+        cfg = load_runner_config(h, runner=args.runner)
+    except ValueError as e:
+        print(f"mesh worker: {allowlist_path(h)}: {e} (runner must be one of {', '.join(RUNNERS)}; "
+              f"codex_search true|false; codex_models {{step: [model, effort]}}, effort one of "
+              f"{', '.join(CODEX_EFFORTS)})", file=sys.stderr)
+        return 2
     try:
         ident = identity.load(h)
     except identity.MeshNotInitialized as e:
@@ -997,11 +1153,12 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
     if fd is None:
         print("mesh worker: another worker runs on this mesh home", file=sys.stderr)
         return 1
-    if ensure_settings(h) is None:
+    if cfg["runner"] == "claude" and ensure_settings(h) is None:
         print(f"mesh worker: {settings_path(h)} is not a valid settings file; jobs are rejected",
               file=sys.stderr)
     if load_allowlist(h) is None:
         print(f"mesh worker: no {allowlist_path(h)}; every job is rejected", file=sys.stderr)
+    overrides.setdefault("runner", cfg["runner"])
     w = Worker(ident, h, daily_cap=args.daily_cap, wall_s=args.wall_min * 60, **overrides)
     if args.recover:
         doc = jobs.read_json(running_path(h))

@@ -16,6 +16,13 @@ next tag will carry.
   §2b): `openai-codex` `baseUrl` override, `APEX_OPENAI_UPSTREAM=https://chatgpt.com/backend-api`
   and `"transport": "sse"`. GPT turns then reach the proxy telemetry, so the mesh datasets
   `pressure` and `errors15m` cover a GPT-only node.
+- Mesh worker Codex runner. A GPT-only node runs mesh jobs with `codex exec`. Set
+  `"runner": "codex"` in `worker.json`, or use `mesh worker --runner codex`. The worker node
+  chooses the runner; the job envelope does not change. The ladder maps to `gpt-5.6-terra` and
+  `gpt-5.6-sol` (`codex_models` overrides a step). Codex runs in the `workspace-write` sandbox,
+  with web search off unless `"codex_search": true`. Pass rules are the same as Claude. Failure
+  reasons are `agent_error` and `agent_failed`. `cost_usd` is null. `steps.jsonl` and
+  `mesh worker --status` show `runner`.
 
 ### Changed
 - Mesh worker settings deny agent reads and edits of `~/.apex-router/mesh-*/mesh.key` too, so a
