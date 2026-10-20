@@ -138,6 +138,9 @@ def _extract_line(line, tasks, by_call) -> None:
         cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
         tasks.append(cur)
     elif role == "assistant" and cur is not None and isinstance(c, list):
+        mdl = m.get("model")
+        if isinstance(mdl, str) and mdl.strip() and not mdl.startswith("<"):
+            cur["model"] = mdl.strip()[:80]       # model id only; the last one of the task wins
         for b in c:
             if not isinstance(b, dict):
                 continue
@@ -557,10 +560,24 @@ def _write(p: Path, rows: list) -> None:
 
 def _row(t) -> dict:
     """What is stored: ids, counts, votes — no text."""
-    return {"id": t["id"], "source": t["source"], "session": t["session"], "index": t["index"],
-            "ts": t.get("ts"), "n_calls": len(t["calls"]),
-            "n_errors": sum(1 for c in t["calls"] if c[2]), "has_next": t.get("next") is not None,
-            "votes": votes(t)}
+    r = {"id": t["id"], "source": t["source"], "session": t["session"], "index": t["index"],
+         "ts": t.get("ts"), "n_calls": len(t["calls"]),
+         "n_errors": sum(1 for c in t["calls"] if c[2]), "has_next": t.get("next") is not None,
+         "votes": votes(t)}
+    r.update(_model_fields(t.get("model")))
+    return r
+
+
+def _model_fields(model) -> dict:
+    """``{"model", "tier"}`` for a model id; a key is left out when unknown (old rows have none)."""
+    if not isinstance(model, str) or not model:
+        return {}
+    from .route_log import tier_of
+    out = {"model": model}
+    tier = tier_of(model)
+    if tier:
+        out["tier"] = tier
+    return out
 
 
 def gold_latest(gold_rows: list | None = None) -> dict:
@@ -702,7 +719,8 @@ def relabel(rows=None, write: bool = True) -> dict:
             lab, p = gold[r["id"]], 1.0
         labels.append({"id": r["id"], "source": r["source"], "session": r["session"],
                        "label": lab if p >= EMIT_MIN or src == "gold" else "unknown",
-                       "p": round(p, 3), "from": src, "voters": sorted(_all_votes(r))})
+                       "p": round(p, 3), "from": src, "voters": sorted(_all_votes(r)),
+                       **_model_fields(r.get("model"))})
     if write:
         _write(h / "labels.jsonl", labels)
     return {"tasks": len(rows), "labels": labels, "acc": acc, "gold": gold}
