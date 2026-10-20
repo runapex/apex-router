@@ -190,8 +190,9 @@ class TestFamilyField(unittest.TestCase):
     def test_pi_extension_passes_family(self):
         ts = (ROOT / "integrations" / "pi" / "apex-route.ts").read_text()
         self.assertIn('args.push("--family", family)', ts)
-        self.assertEqual(ts.count("contextSize, family, keys)") + ts.count("contextSize,\n\t\t\t\tcue.family, keys)")
-                         + ts.count("contextSize, cue.family, keys)"), 3)
+        # every outcome writer passes the family (C1 added a trailing `cause` argument)
+        self.assertEqual(ts.count("contextSize, family, keys, cause)") + ts.count("contextSize,\n\t\t\t\tcue.family, keys, cause)")
+                         + ts.count("contextSize, cue.family, keys, cause)"), 3)
 
 
 class TestRouteJoin(unittest.TestCase):
