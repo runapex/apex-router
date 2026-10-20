@@ -1,0 +1,9 @@
+{"phase": "research", "agent": "RA", "job": "20261020201741-215f", "model": "it-entra-claude-opus-5-5", "turns": 16, "tool_calls": 16, "cost_usd": 2.574118, "wall_s": 189.8, "state": "done"}
+{"phase": "research", "agent": "RB", "job": "20261020201741-lhw2", "model": "it-entra-gpt-6.1-sol", "turns": 12, "tool_calls": 18, "cost_usd": 1.271131, "wall_s": 331.4, "state": "done"}
+{"phase": "research", "agent": "RC", "job": "20261020201741-km0q", "model": "it-entra-claude-sonnet-5-5", "turns": 21, "tool_calls": 24, "cost_usd": 0.878232, "wall_s": 222.0, "state": "done"}
+{"phase": "vote1", "agent": "VA", "job": "20261020202400-22hk", "model": "it-entra-claude-opus-5-5", "turns": 4, "tool_calls": 3, "cost_usd": 0.817616, "wall_s": 35.5, "state": "done"}
+{"phase": "vote1", "agent": "VB", "job": "20261020202400-5zz1", "model": "it-entra-gpt-6.1-sol", "turns": 3, "tool_calls": 5, "cost_usd": 0.102069, "wall_s": 46.0, "state": "done"}
+{"phase": "vote1", "agent": "VC", "job": "20261020202400-5w4i", "model": "it-entra-claude-sonnet-5-5", "turns": 5, "tool_calls": 6, "cost_usd": 0.20077, "wall_s": 40.5, "state": "done"}
+{"phase": "vote2", "agent": "VA", "job": "20261020202520-9n0e", "model": "it-entra-claude-opus-5-5", "turns": 4, "tool_calls": 3, "cost_usd": 0.248234, "wall_s": 19.1, "state": "done"}
+{"phase": "vote2", "agent": "VB", "job": "20261020202520-ym2q", "model": "it-entra-gpt-6.1-sol", "turns": 5, "tool_calls": 4, "cost_usd": 0.111197, "wall_s": 43.6, "state": "done"}
+{"phase": "vote2", "agent": "VC", "job": "20261020202520-f3iq", "model": "it-entra-claude-sonnet-5-5", "turns": 4, "tool_calls": 4, "cost_usd": 0.060889, "wall_s": 19.3, "state": "done"}
