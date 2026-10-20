@@ -63,9 +63,24 @@ export function stepRow(e: Pick<TurnStepInput, 'model' | 'effort' | 'agentId'>, 
   }
 }
 
-export const measureRow = (m: Measure, ts: number): Row => ({
+/** FNV-1a 32-bit (the same hash as inject.ts; kept local so observe.ts does not import a module that imports it). */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5
+  for (const b of new TextEncoder().encode(s)) {
+    h ^= b
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h
+}
+
+/**
+ * A measure row. `sid` (an 8-hex FNV-1a of the session id, not the id) lets the collector keep two
+ * concurrent sessions apart when it pairs a context alert with what followed; absent before the id is known.
+ */
+export const measureRow = (m: Measure, ts: number, sessionId = ''): Row => ({
   ev: 'measure',
   ts,
+  ...(sessionId === '' ? {} : { sid: fnv1a(sessionId).toString(16).padStart(8, '0') }),
   ctx_pct: m.ctxPercent,
   limit_kind: m.limitKind,
   limit_pct: m.limitPercent,
@@ -294,7 +309,7 @@ export async function start(host: Host, e: SessionStartInput, rt: Runtime): Prom
 export function measure(rt: Runtime, e: SessionMeasureInput, now: number): void {
   try {
     const m = measureOf(e)
-    record(rt, measureRow(m, now))
+    record(rt, measureRow(m, now, rt.sessionId))
     if (m.costUsd !== null) {
       if (rt.lastCostUsd !== null) rt.minute.spend += Math.max(0, m.costUsd - rt.lastCostUsd)
       rt.lastCostUsd = m.costUsd

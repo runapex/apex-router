@@ -629,6 +629,14 @@ def run_daily() -> int:
     except Exception as e:  # noqa: BLE001
         esc += f"  (unavailable: {type(e).__name__})\n"
 
+    # Agent-run + band-alert collection (routing and UX data, no text). Fail-open.
+    try:
+        from . import agent_runs
+        agent_runs.collect_runs()
+        agent_runs.collect_alerts()
+    except Exception:  # noqa: BLE001
+        pass
+
     # Nightly adaptivity pass (route-advise verdicts, handoff threshold, memory index,
     # judge probe) — fail-open like everything else here; its failure degrades its own
     # digest section, never the daily run.

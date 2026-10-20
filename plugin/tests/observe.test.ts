@@ -25,6 +25,9 @@ describe('observe: pure rows', () => {
     expect(measureRow({ ctxPercent: 61, limitKind: 'five_hour', limitPercent: 62, resetsAt: null, costUsd: 4.12 }, 7)).toEqual({
       ev: 'measure', ts: 7, ctx_pct: 61, limit_kind: 'five_hour', limit_pct: 62, resets_at: null, cost_usd: 4.12,
     })
+    const withSid = measureRow({ ctxPercent: 61, limitKind: null, limitPercent: null, resetsAt: null, costUsd: null }, 7, 'sess-0001')
+    expect(withSid.sid).toMatch(/^[0-9a-f]{8}$/)
+    expect(JSON.stringify(withSid)).not.toContain('sess-0001')
   })
 
   test('backend commands and signal patterns are classified; anything else is ignored', () => {

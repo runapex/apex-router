@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { CellView, Dispatch } from '../types/index.d.ts'
 import { cellKey, cellViews } from '../hooks/evidence.ts'
 import { HANDOFF_TEMPLATE } from '../hooks/handoff.ts'
+import { cols } from '../hooks/band.tsx'
 import { ledgerRows, NO_LABEL, paneSections, wrapRow, type PaneInput } from '../hooks/pane.tsx'
 import { EMPTY_BACKEND, EMPTY_INJECT, EMPTY_PROFILE_STORE, EMPTY_SIGNALS, profileView } from '../hooks/state.ts'
 import { command, PANE, SESSION, spawnInput } from './fixtures/inputs.ts'
@@ -22,6 +23,18 @@ const d = (over: Partial<Dispatch>): Dispatch => ({
 })
 
 describe('pane: sections', () => {
+  test('wrapRow counts terminal columns: a wide-character row fits 72 columns', () => {
+    const rows = wrapRow(`  ${'調べる'.repeat(30)} · explore`)
+    for (const r of rows) expect(cols(r)).toBeLessThanOrEqual(72)
+    expect(rows.join('').replace(/ /g, '')).toBe(`${'調べる'.repeat(30)}·explore`)
+  })
+
+  test('RED below 80% quota: the quota figure is in the band or named in Now', () => {
+    const m = { ctxPercent: 40, limitKind: 'five_hour', limitPercent: 3, resetsAt: null, costUsd: 1 }
+    const s = paneSections(empty({ m, s: { ...EMPTY_SIGNALS, level: 'RED' } }))
+    expect(sec(s, 'now').join(' ')).toContain('5h 3%')
+  })
+
   test('pressure row explains a level that is still settling', () => {
     const rows = (over: object) => paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'AMBER', ...over } })).find(x => x.id === 'now')!.rows
     expect(rows({ observed: 'GREEN', exitIn: 2 }).slice(0, 2).join(' ').replace(/ +/g, ' ')).toBe('pressure AMBER; last check GREEN; returns to GREEN after 2 more calm checks')

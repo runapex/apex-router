@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 import { atom, read } from 'claude-code'
 
 import type { BackendView, CellView, Dispatch, InjectView, Measure, ProfileView, SignalsView, Tier } from '../types/index.d.ts'
-import { alertsOf, bandParts, differsOf, meter, usd } from './band.tsx'
+import { alertsOf, bandParts, cols, differsOf, meter, usd } from './band.tsx'
 import { kTok } from './evidence.ts'
 import { HANDOFF_TEMPLATE } from './handoff.ts'
 import type { Host } from './host.ts'
@@ -96,7 +96,7 @@ function signalRows(s: SignalsView, b: BackendView, m: Measure | null, budgetUsd
   if (m != null) {
     if (m.limitPercent !== null) rows.push(`${m.limitKind === 'five_hour' ? '5-hour' : m.limitKind === 'seven_day' ? '7-day' : (m.limitKind ?? '')} limit ${Math.round(m.limitPercent)}% used${m.resetsAt === null ? '' : ` · resets ${m.resetsAt.slice(11, 16)} UTC`}`)
     if (m.ctxPercent !== null) rows.push(`context ${Math.round(m.ctxPercent)}% full`)
-    if (m.costUsd !== null) rows.push(budgetUsd > 0 ? `spent ${usd(m.costUsd)} of $${budgetUsd} budget` : `spent ${usd(m.costUsd)} (no budget set)`)
+    if (m.costUsd !== null) rows.push(budgetUsd > 0 ? `spent ${usd(m.costUsd)} of ${usd(budgetUsd).replace(/\.00$/, '')} budget` : `spent ${usd(m.costUsd)} (no budget set)`)
   }
   if (s.budgetBurn !== null) rows.push(`spend pace ${fixed(s.budgetBurn)}× your daily budget pace${s.minutesToExhaust === null ? '' : ` · empty in about ${Math.round(s.minutesToExhaust)} min at this rate`}`)
   const times = (x: number | null): string => (x === null ? 'unknown' : `${x.toFixed(1)}×`)
@@ -180,29 +180,27 @@ function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] 
 /** Pane body width (the docked pane): every row fits it. */
 export const PANE_WIDTH = 72
 
-/** Wrap a row at a word to PANE_WIDTH; continuation rows keep the indent plus two spaces. Nothing is cut. */
+/** Wrap a row at a word to PANE_WIDTH terminal columns (wide characters count 2); continuation rows keep the indent plus two spaces. Nothing is cut. */
 export function wrapRow(row: string, width = PANE_WIDTH): string[] {
-  if (row.length <= width) return [row]
+  if (cols(row) <= width) return [row]
   const lead = /^ */.exec(row)![0].slice(0, Math.max(0, width - 2))
   const continuation = `${lead}  `.slice(0, Math.max(0, width - 2))
   const out: string[] = []
   let line = lead
   for (const word of row.trim().split(' ')) {
-    if (line.trim() !== '' && line.length + 1 + word.length > width) {
+    if (line.trim() !== '' && cols(line) + 1 + cols(word) > width) {
       out.push(line)
       line = continuation
     }
-    let w = word
     if (line.trim() !== '') line += ' '
-    while (line.length + w.length > width) {
-      let room = width - line.length
-      // Keep a surrogate pair on one row when the width boundary falls inside it.
-      if (room > 0 && /[\uD800-\uDBFF]/.test(w[room - 1]!) && /[\uDC00-\uDFFF]/.test(w[room]!)) room--
-      out.push(line + w.slice(0, room))
-      w = w.slice(room)
-      line = continuation
+    // Split by code point (a surrogate pair is one code point), so a word longer than a row breaks cleanly.
+    for (const ch of word) {
+      if (cols(line) + cols(ch) > width && line.trim() !== '') {
+        out.push(line)
+        line = continuation
+      }
+      line += ch
     }
-    line += w
   }
   out.push(line)
   return out

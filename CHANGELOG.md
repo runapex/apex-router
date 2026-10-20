@@ -17,6 +17,22 @@ next tag will carry.
   (`scripts/ux_score.py`, new) 62.9 → 98.9. See `docs/research/ux-rsi/RESULTS.md`.
 
 ### Added
+- `apex-router agent-runs collect|report`: routing and band-alert data from this machine, with no
+  prompt or answer text. One row per finished sub-agent job (role, model, thinking, state, turns,
+  tool calls, tokens, cost, wall time, judge verdict) in `~/.apex-router/labels/agent_runs.jsonl`.
+  One row per band context alert, with an "acted" proxy (context < 50 % within 30 min), in
+  `band_alerts.jsonl`. It runs in the daily unit. The datapce measure rows now carry `sid` (a hash of
+  the session id) so that concurrent sessions stay apart.
+- `scripts/ux_score.py` v2: 12 edge cases and 400 seeded fuzz cases check the judges' defect types.
+  The checks are a cut action, width, contradicting advice, a hidden figure, a missing status action,
+  exponent notation and others. A failed critical check caps the score at 60. v2 caps every commit that
+  the judges marked NO-GO. See `docs/research/ux-rsi/SCORER-v2.md`.
+
+### Fixed
+- datapce pane rows wrap at 72 terminal columns (wide characters count 2), not at 72 UTF-16 units.
+- datapce band at RED below 80 % quota: the quota figure is in the band or named in the pane Now section.
+- datapce money never prints exponent notation (tiny budgets show `$0`, sums cap at `$999T+`).
+
 - Mesh self-update. A node card shows its build commit. When a peer runs a commit this node does
   not have (or every 6 h), `mesh up` fetches this node's own `origin` and fast-forwards a clean
   `main` (official upstream only). A dirty tree, another branch, diverged history or another origin

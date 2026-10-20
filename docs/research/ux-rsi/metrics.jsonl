@@ -22,3 +22,15 @@
 {"phase":"fix","round":"3c","agent":"main","model":"it-entra-claude-opus-5-5","commit":"ec781c4"}
 {"phase":"judge","round":"3c","agent":"J3","model":"it-entra-gpt-6-astra (xval)","turns":1,"time_s":74,"verdict":"GO","must_fix":0,"note":"186,624 targeted cases within 74 cols, actions intact"}
 {"phase":"stop","round":3,"reason":"3/3 judges GO; composite gain < 1.0 for 3 rounds (98.9 plateau)","final_commit":"ec781c4","composite":98.9,"baseline":62.9}
+{"phase": "scorer-v2-review", "round": 1, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 0, "turns_source": "pi usage", "wall_s": 900.7, "state": "timed_out(idle)", "verdict": null}
+{"phase": "scorer-v2-review", "round": 2, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 9, "turns_source": "codex calls", "wall_s": 445.8, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 3, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 9, "turns_source": "codex calls", "wall_s": 440.7, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 4, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 5, "turns_source": "codex calls", "wall_s": 128.7, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 5, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 6, "turns_source": "codex calls", "wall_s": 89.0, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 6, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 7, "turns_source": "codex calls", "wall_s": 72.2, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 7, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 14, "turns_source": "codex calls", "wall_s": 162.9, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 8, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 6, "turns_source": "codex calls", "wall_s": 91.8, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 9, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 9, "turns_source": "codex calls", "wall_s": 472.1, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 10, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 9, "turns_source": "codex calls", "wall_s": 437.2, "state": "done", "verdict": "NO-GO"}
+{"phase": "scorer-v2-review", "round": 11, "agent": "xval", "model": "it-entra-gpt-6-astra", "turns": 7, "turns_source": "codex calls", "wall_s": 378.8, "state": "done", "verdict": "GO"}
+{"phase": "stop", "round": "scorer-v2", "reason": "xval GO after 11 reviews; findings: 4 scorer must-fix, 3 collector must-fix, 7 matcher bypasses, 3 plugin money/width defects", "composite": 99.6, "inv_cases": 412}

@@ -34,7 +34,8 @@ export function meter(percent: number, width = 8): string {
   return '▇'.repeat(full) + '░'.repeat(width - full)
 }
 
-export const usd = (x: number): string => `$${x.toFixed(2)}`
+/** Exact money, two decimals. From $1e15 up (toFixed would print an exponent from 1e21) it is the short form. */
+export const usd = (x: number): string => (x < 1e15 ? `$${x.toFixed(2)}` : usdShort(x))
 
 /** A limit kind the host did not document is shown as plain ASCII, at most 12 characters (it is untrusted text). */
 const limitName = (m: Measure): string => {
@@ -86,9 +87,12 @@ export type Alert = { kind: 'limit' | 'budget' | 'context'; cause: string; actio
 
 /** Short money for the band: $9.10 below $1,000; then $12.3k, $1.2M (the pane keeps exact figures). */
 export const usdShort = (x: number): string =>
-  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : x < 999_950_000 ? `$${+(x / 1e6).toFixed(1)}M` : x < 999_950_000_000 ? `$${+(x / 1e9).toFixed(1)}B` : `$${Math.round(x / 1e12)}T`
+  x < 1000 ? `$${x.toFixed(2)}` : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : x < 999_950_000 ? `$${+(x / 1e6).toFixed(1)}M` : x < 999_950_000_000 ? `$${+(x / 1e9).toFixed(1)}B` : x < 999.5e12 ? `$${Math.round(x / 1e12)}T` : '$999T+'
 
-const budgetCell = (cost: number, budget: number): string => `${usdShort(cost)}/${budget < 1000 ? `$${budget}` : usdShort(budget)}`
+/** Budget below $1,000: whole dollars stay whole (`$10`), else two decimals (`$12.50`); never exponent notation. */
+const budgetShort = (b: number): string => (b < 1000 ? `$${Number.isInteger(b) ? b : +b.toFixed(2)}` : usdShort(b))
+
+const budgetCell = (cost: number, budget: number): string => `${usdShort(cost)}/${budgetShort(budget)}`
 
 /** Every condition that needs the user now, most urgent first. Calm states give an empty list. */
 export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
@@ -139,7 +143,7 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const m = i.m
   // Optional figures carry a drop rank (lower drops first); 99 drops only in the final width guard.
   const figs: { text: string; drop: number }[] = []
-  if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 3 : 99 })
+  if (m !== null && m.limitPercent !== null && !(first?.kind === 'limit' && first.cause.includes(' limit '))) figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 3 : 99 })
   if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 4 })
   if (m !== null && m.costUsd !== null && first?.kind !== 'budget') figs.push({ text: i.budgetUsd > 0 ? budgetCell(m.costUsd, i.budgetUsd) : usdShort(m.costUsd), drop: 99 })
   if (i.ds.length > 0) {

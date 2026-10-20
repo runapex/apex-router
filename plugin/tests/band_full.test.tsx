@@ -88,11 +88,25 @@ describe('band line', () => {
     expect(cols(wide)).toBeLessThanOrEqual(74)
     expect(wide.startsWith('apex RED · limit limit 95% · pause new subagents')).toBe(true)
     expect(cols('界a')).toBe(3)
-    expect(bandLine({ m: { ...m, costUsd: 1e15 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e15 })).toBe('apex pressure GREEN · $1000T/$1000T, empty ≈18 min · pause new subagents')
+    expect(bandLine({ m: { ...m, costUsd: 1e15 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e15 })).toBe('apex pressure GREEN · $999T+/$999T+, empty ≈18 min · pause new subagents')
     // a cause too long even in short money is cut, the action stays whole
     const odd = bandLine({ m: { ...m, costUsd: 9e20 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 1e12 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 9e20 })
     expect(odd.length).toBeLessThanOrEqual(74)
     expect(odd.endsWith(' · pause new subagents')).toBe(true)
+  })
+
+  test('a tiny or fractional budget never prints exponent notation', () => {
+    const m = { ctxPercent: 40, limitKind: 'five_hour', limitPercent: 10, resetsAt: null, costUsd: 4.12 }
+    const tiny = bandLine({ m, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e-7 })
+    expect(tiny).not.toMatch(/e-?\d/)
+    expect(tiny).toContain('$4.12/$0')
+    expect(bandLine({ m: { ...m, costUsd: 1 }, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 12.5 })).toContain('$1.00/$12.5')
+    // above $999T the figure stops growing: no exponent, ever
+    for (const x of [1e15, 1e21, 1e33, Number.MAX_VALUE]) {
+      const l = bandLine({ m: { ...m, costUsd: x }, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: x })
+      expect(l).not.toMatch(/e[+-]?\d/)
+      expect(statusText('GREEN', x)).not.toMatch(/e[+-]?\d/)
+    }
   })
 
   test('status text and token formatting', () => {
