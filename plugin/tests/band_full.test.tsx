@@ -25,18 +25,18 @@ describe('band line', () => {
       b: { ...EMPTY_BACKEND, present: true, conformance: 0.86, lanes: { codegen: { n: 4, ok: 3, escalated: 1 } } },
       budgetUsd: 10,
     })
-    expect(line).toBe('apex AMBER · context 61% · $4.12/$10 · 2 of 7 subagents differ from advice')
+    expect(line).toBe('apex AMBER · 5h 62% · context 61% · $4.12/$10 · 2 of 7 differ from advice')
   })
 
   test('the user must act: cause and action right after the level; the band fits 74 columns', () => {
     const m = (ctx: number, lim: number, cost: number) => ({ ctxPercent: ctx, limitKind: 'five_hour', limitPercent: lim, resetsAt: null, costUsd: cost })
     const ctx = bandLine({ m: m(88, 40, 6.4), s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 })
-    expect(ctx).toBe('apex GREEN · context 88% full: run /compact · 5h 40% · $6.40')
+    expect(ctx).toBe('apex GREEN · context 88% full · run /compact · 5h 40% · $6.40')
     const burn = bandLine({ m: m(45, 50, 9.1), s: { ...EMPTY_SIGNALS, level: 'AMBER', minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 10 })
-    expect(burn).toBe('apex AMBER · $9.10/$10, empty in 18 min: slow down · 5h 50% · context 45%')
+    expect(burn).toBe('apex AMBER · $9.10/$10 · empty in about 18 min · pause new subagents')
     expect(burn.length).toBeLessThanOrEqual(74)
     const red = bandLine({ m: m(61, 95, 4.12), s: { ...EMPTY_SIGNALS, level: 'RED' }, ds: [dispatch(null, 'claude-opus-5-5'), dispatch(null, 'claude-opus-5-5'), dispatch(null, 'claude-opus-5-5')], b: EMPTY_BACKEND, budgetUsd: 0 })
-    expect(red).toBe('apex RED · 5h limit 95%: pause new subagents · context 61% · $4.12')
+    expect(red).toBe('apex RED · 5h limit 95% · pause new subagents · context 61% · $4.12')
     // calm: no action words
     expect(bandLine({ m: m(30, 40, 1), s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 10 })).toBe('apex GREEN · 5h 40% · context 30% · $1.00/$10')
   })
@@ -48,8 +48,8 @@ describe('band line', () => {
   test('status text and token formatting', () => {
     expect(statusText('AMBER', 4.12)).toBe('apex AMBER · $4.12')
     expect(statusText('GREEN', null)).toBe('apex GREEN')
-    expect(statusText('RED', 4.12, { kind: 'limit', cause: '5h limit 95%', action: 'pause new subagents' })).toBe('apex RED · 5h limit 95%: pause new subagents · $4.12')
-    expect(statusText('AMBER', 9.1, { kind: 'budget', cause: '$9.10/$10', action: 'slow down' })).toBe('apex AMBER · $9.10/$10: slow down')
+    expect(statusText('RED', 4.12, { kind: 'limit', cause: '5h limit 95%', action: 'pause new subagents' })).toBe('apex RED · 5h limit 95% · pause new subagents · $4.12')
+    expect(statusText('AMBER', 9.1, { kind: 'budget', cause: '$9.10/$10', action: 'pause new subagents' })).toBe('apex AMBER · $9.10/$10 · pause new subagents')
     expect(fmtTok(43_860_328)).toBe('43.9M')
     expect(fmtTok(1000)).toBe('1k')
     expect(handoffDue(10, null)).toBe(false)
@@ -69,7 +69,7 @@ describe('band, status, handoff: hooks', () => {
     await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: '2026-10-03T20:00:00Z' }] })
     await world.clock.advance(120_000)
     const ui = await $.ui.mount({ plugin: 'datapce', surface: 'terminal', ...BAND })
-    expect((await ui.find({ key: 'datapce-band-line' }))?.text).toBe('apex RED · 5h limit 95%: pause new subagents · context 61% · $4.12')
+    expect((await ui.find({ key: 'datapce-band-line' }))?.text).toBe('apex RED · 5h limit 95% · pause new subagents · context 61% · $4.12')
     await ui.unmount()
   })
 
@@ -96,7 +96,7 @@ describe('band, status, handoff: hooks', () => {
     await $.session.start({ ...SESSION, surface: 'vscode' })
     await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: '2026-10-03T20:00:00Z' }] })
     await world.clock.advance(120_000)
-    expect(world.statuses.at(-1)).toBe('apex RED · 5h limit 95%: pause new subagents · $4.12')
+    expect(world.statuses.at(-1)).toBe('apex RED · 5h limit 95% · pause new subagents · $4.12')
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {

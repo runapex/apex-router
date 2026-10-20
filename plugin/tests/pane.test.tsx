@@ -23,10 +23,10 @@ const d = (over: Partial<Dispatch>): Dispatch => ({
 
 describe('pane: sections', () => {
   test('pressure row explains a level that is still settling', () => {
-    const rows = (over: object) => paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'AMBER', ...over } })).find(x => x.id === 'signals')!.rows[0]!
-    expect(rows({ observed: 'GREEN', exitIn: 2 })).toBe('pressure AMBER (now GREEN; drops after 2 more calm checks)')
-    expect(rows({ observed: 'AMBER', exitIn: null })).not.toMatch(/now GREEN|drops/)
-    expect(rows({ observed: 'RED', exitIn: null })).not.toMatch(/drops/)
+    const rows = (over: object) => paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'AMBER', ...over } })).find(x => x.id === 'now')!.rows
+    expect(rows({ observed: 'GREEN', exitIn: 2 }).slice(0, 2).join(' ').replace(/ +/g, ' ')).toBe('pressure AMBER; last check GREEN; returns to GREEN after 2 more calm checks')
+    expect(rows({ observed: 'AMBER', exitIn: null }).join()).not.toMatch(/last check|returns/)
+    expect(rows({ observed: 'RED', exitIn: null }).join()).not.toMatch(/returns/)
   })
 
   test('empty: honest placeholders; no Lanes without a backend; never an anomaly or enforce section', () => {
@@ -46,11 +46,11 @@ describe('pane: sections', () => {
       ],
     }))
     expect(sec(s, 'dispatches')).toEqual([
-      '1 of 2 finished ok · 0 of 1 ran the advised tier',
+      '1 of 2 finished ok · 1 of 2 differ from advice (1 had advice)',
       'Review diff · review',
-      '  sonnet→sonnet · failed in 41s · 12k tokens',
+      '  asked sonnet, ran sonnet · failed in 41s · 12k tokens',
       'Find X · explore',
-      '  main model→opus · ok in 41s · 12k tokens',
+      '  asked session model, ran opus · ok in 41s · 12k tokens',
       '  advice: sonnet (opus→sonnet: 35/35 ok; GREEN now)',
     ])
   })
@@ -84,7 +84,7 @@ describe('pane: sections', () => {
 
   test('a workflow dispatch is labelled, not blank', () => {
     const rows = sec(paneSections(empty({ ds: [d({ description: '', requested: 'unknown', taskType: 'other', subagentType: 'workflow' })] })), 'dispatches')
-    expect(rows.slice(1, 3)).toEqual(['workflow · other', '  unknown→opus · ok in 41s · 12k tokens'])
+    expect(rows.slice(1, 3)).toEqual(['workflow · other', '  asked unknown, ran opus · ok in 41s · 12k tokens'])
   })
 
   test('the ledger never states a label count that would suffice', () => {
@@ -101,7 +101,7 @@ describe('pane: sections', () => {
   test('Now: same cause and action as the band; limits row carries the measure and the budget', () => {
     const m = { ctxPercent: 61, limitKind: 'five_hour', limitPercent: 95, resetsAt: '2026-10-03T20:00:00Z', costUsd: 4.12 }
     const s = paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'RED', observed: 'RED' }, m, budgetUsd: 10 }))
-    expect(sec(s, 'now')[0]).toBe('RED · 5h limit 95%: pause new subagents')
+    expect(sec(s, 'now')[0]).toBe('RED · 5h limit 95% · pause new subagents')
     expect(sec(s, 'signals')).toContain('5-hour limit 95% used · resets 20:00 UTC')
     expect(sec(s, 'signals')).toContain('spent $4.12 of $10 budget')
     expect(sec(s, 'signals')).toContain('failure rate vs target: last 5 min unknown, last hour unknown')
@@ -118,7 +118,7 @@ describe('pane: sections', () => {
     const m = { ctxPercent: 61, limitKind: 'five_hour', limitPercent: 62, resetsAt: null, costUsd: 4.12 }
     const ds = Array.from({ length: 7 }, (_, k) => d({ advised: k < 2 ? 'haiku' : null }))
     const s = paneSections(empty({ ds, m, budgetUsd: 10, s: { ...EMPTY_SIGNALS, level: 'AMBER' }, b: { ...EMPTY_BACKEND, present: true, conformance: 0.86 } }))
-    expect(sec(s, 'now').slice(0, 2)).toEqual(['AMBER · no action needed · 2 of 7 subagents differ from advice', 'not in the band (no room): 5h 62% · model match 86%'])
+    expect(sec(s, 'now').slice(0, 2)).toEqual(['AMBER · no action needed · 2 of 7 subagents differ from advice', 'not in the band (no room): ran tier asked 86%'])
   })
 
   test('lanes appear with a backend', () => {
@@ -153,7 +153,7 @@ describe('pane: hooks', () => {
       const ui = await $.ui.mount({ plugin: 'datapce', surface, ...PANE })
       expect(await ui.find({ type: 'Text', text: 'Subagents' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'Find pressure gate state file · explore' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /main model→opus · running/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /asked session model, ran opus · running/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /no quality label yet/ })).toBeDefined()
       await ui.unmount()
     }

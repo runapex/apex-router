@@ -57,7 +57,8 @@ const plainBasis = (basis: string): string => basis.replace(/\bn (\d+)\b/g, (_, 
 /** "Now": one summary row per condition, the same words as the band. */
 function nowRows(i: PaneInput): string[] {
   const alerts = alertsOf({ m: i.m ?? null, s: i.s, budgetUsd: i.budgetUsd ?? 0 })
-  const rows = alerts.map(a => `${i.s.level} · ${a.cause}: ${a.action}`)
+  const rows = alerts.map(a => `${i.s.level} · ${a.cause} · ${a.action}`)
+  if (i.s.exitIn !== null && i.s.observed !== i.s.level) rows.push(`pressure ${i.s.level}; last check ${i.s.observed}; returns to ${i.s.observed} after ${plural(i.s.exitIn, 'more calm check')}`)
   if (rows.length === 0) {
     const differs = differsOf(i.ds)
     rows.push(`${i.s.level} · no action needed${differs > 0 ? ` · ${differs} of ${plural(i.ds.length, 'subagent')} differ from advice` : ''}`)
@@ -75,14 +76,15 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
   const done = ds.filter(d => d.outcome !== 'running')
   const running = ds.length - done.length
   const tally = `${done.filter(d => d.outcome === 'ok').length} of ${done.length} finished ok${running > 0 ? `, ${running} running` : ''}`
-  const rows = [advised.length > 0 ? `${tally} · ${agree} of ${advised.length} ran the advised tier` : `${tally} · no advice given yet`]
+  const differ = advised.length - agree
+  const rows = [advised.length > 0 ? `${tally} · ${differ} of ${ds.length} differ from advice (${advised.length} had advice)` : `${tally} · no model advice recorded`]
   for (const d of [...ds].reverse().slice(0, DISPATCH_ROWS)) {
     const ran = tierOf(d.resolved) ?? d.resolved ?? 'unknown'
-    const asked = d.requested === 'inherit' ? 'main model' : d.requested
+    const asked = d.requested === 'inherit' ? 'session model' : d.requested
     const tok = d.tokens === null ? '' : ` · ${kTok(d.tokens)} tokens`
     rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType}`)
-    rows.push(`  ${asked}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}`)
-    if (d.advised !== null && d.advised !== tierOf(d.resolved)) rows.push(`  advice: ${d.advised} (${plainBasis(d.basis)})`)
+    rows.push(`  asked ${asked}, ran ${ran} · ${d.outcome}${secs(d.durationMs)}${tok}`)
+    if (d.advised !== null) rows.push(d.advised === tierOf(d.resolved) ? `  advice: ${d.advised} (matched)` : `  advice: ${d.advised} (${plainBasis(d.basis)})`)
   }
   return rows
 }
@@ -90,22 +92,21 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
 const BREAKER: Record<string, string> = { open: 'paused after failures', 'half-open': 'trying again', closed: 'ok' }
 
 function signalRows(s: SignalsView, b: BackendView, m: Measure | null, budgetUsd: number): string[] {
-  const settling = s.exitIn !== null && s.observed !== s.level ? ` (now ${s.observed}; drops after ${plural(s.exitIn, 'more calm check')})` : ''
-  const rows = [`pressure ${s.level}${settling}`]
+  const rows = [`pressure ${s.level}`]
   if (m != null) {
     if (m.limitPercent !== null) rows.push(`${m.limitKind === 'five_hour' ? '5-hour' : m.limitKind === 'seven_day' ? '7-day' : (m.limitKind ?? '')} limit ${Math.round(m.limitPercent)}% used${m.resetsAt === null ? '' : ` · resets ${m.resetsAt.slice(11, 16)} UTC`}`)
     if (m.ctxPercent !== null) rows.push(`context ${Math.round(m.ctxPercent)}% full`)
     if (m.costUsd !== null) rows.push(budgetUsd > 0 ? `spent ${usd(m.costUsd)} of $${budgetUsd} budget` : `spent ${usd(m.costUsd)} (no budget set)`)
   }
-  if (s.budgetBurn !== null) rows.push(`spend pace ${fixed(s.budgetBurn)}× a day-long budget · empty in ${s.minutesToExhaust === null ? 'unknown' : `${Math.round(s.minutesToExhaust)} min`}`)
+  if (s.budgetBurn !== null) rows.push(`spend pace ${fixed(s.budgetBurn)}× your daily budget pace${s.minutesToExhaust === null ? '' : ` · empty in about ${Math.round(s.minutesToExhaust)} min at this rate`}`)
   const times = (x: number | null): string => (x === null ? 'unknown' : `${x.toFixed(1)}×`)
   rows.push(`failure rate vs target: last 5 min ${times(s.burnShort)}, last hour ${times(s.burnLong)}`)
   const families = Object.entries(b.families)
   if (families.length > 0) rows.push(`model families: ${families.map(([f, l]) => `${f} ${l}`).join(', ')}`)
   for (const [l, st] of Object.entries(s.breakers)) rows.push(`lane ${l}: ${BREAKER[st] ?? st}`)
-  rows.push(`suggested: at most ${+s.admissionRate.toFixed(1)} new large subagents a minute`)
-  if (s.fanoutRisk !== null) rows.push(`chance one parallel subagent runs slow: ${(100 * s.fanoutRisk).toFixed(0)}%`)
-  if (b.conformance !== null) rows.push(`model match: ${Math.round(100 * b.conformance)}% ran the tier they asked for`)
+  if (s.level !== 'RED') rows.push(`suggested: at most ${+s.admissionRate.toFixed(1)} new large subagents a minute`)
+  if (s.fanoutRisk !== null) rows.push(`chance at least one parallel subagent is slow: ${(100 * s.fanoutRisk).toFixed(0)}%`)
+  if (b.conformance !== null) rows.push(`ran the tier asked for ${Math.round(100 * b.conformance)}%`)
   return rows
 }
 
@@ -154,9 +155,10 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
     })
 }
 
-function evidenceRows(cs: readonly CellView[]): string[] {
+function evidenceRows(cs: readonly CellView[], ds: readonly Dispatch[]): string[] {
   const rows = ledgerRows(cs)
-  return [...(rows.length > 0 ? rows : ['no track record yet']), NO_LABEL]
+  const finished = ds.some(d => d.outcome !== 'running')
+  return [...(rows.length > 0 ? rows : [finished ? 'no track record yet (updates after the session ledger saves)' : 'no track record yet']), NO_LABEL]
 }
 
 function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] {
@@ -165,7 +167,7 @@ function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] 
       .sort((x, y) => y[1] - x[1])
       .slice(0, 5)
       .map(([k, n]) => `${k} ${n}`)
-      .join(', ') || 'none yet'
+      .join(', ') || 'unknown'
   return [
     `task mix: ${top(p.taskMix)}`,
     `skills: ${top(p.skills)}`,
@@ -206,7 +208,7 @@ function paneSectionsRaw(i: PaneInput): Section[] {
     { id: 'dispatches', title: 'Subagents', rows: dispatchRows(i.ds) },
   ]
   if (i.b.present) out.push({ id: 'lanes', title: 'Local models (24 h)', rows: laneRows(i.b) })
-  out.push({ id: 'evidence', title: 'Track record', rows: evidenceRows(i.cells) })
+  out.push({ id: 'evidence', title: 'Track record', rows: evidenceRows(i.cells, i.ds) })
   out.push({ id: 'profile', title: 'Session', rows: profileRows(i.profile, i.b, i.inject) })
   return out
 }

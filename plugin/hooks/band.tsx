@@ -80,8 +80,8 @@ export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
     const mins = i.s.minutesToExhaust
     const soon = mins !== null && mins <= BUDGET_MINUTES
     if (soon || m.costUsd >= BUDGET_SHARE * i.budgetUsd) {
-      const when = mins !== null ? `, empty in ${Math.round(mins)} min` : ''
-      out.push({ kind: 'budget', cause: `${budgetCell(m.costUsd, i.budgetUsd)}${when}`, action: 'slow down' })
+      const when = mins !== null ? ` · empty in about ${Math.round(mins)} min` : ''
+      out.push({ kind: 'budget', cause: `${budgetCell(m.costUsd, i.budgetUsd)}${when}`, action: 'pause new subagents' })
     }
   }
   if (m !== null && m.ctxPercent !== null && m.ctxPercent >= CONTEXT_FULL) {
@@ -97,9 +97,9 @@ export const differsOf = (ds: readonly Dispatch[]): number => ds.filter(d => d.a
 export const BAND_WIDTH = 74
 
 /**
- * §6 (advise-only): `apex LEVEL[ · cause: action] · figures`. The action shows only when the user
+ * §6 (advise-only): `apex LEVEL[ · cause · action] · figures`. The action shows only when the user
  * must act, right after the level, so a narrow terminal cuts figures, never the action. When the line
- * is long, figures go in a fixed order: the model match rate, the limit below 80%, the subagent count.
+ * is long, figures go in a fixed order: the tier-asked rate, the advice count, the limit below 80%.
  */
 export const bandLine = (i: BandInput): string => bandParts(i).line
 
@@ -108,22 +108,22 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const alerts = alertsOf(i)
   const first = alerts[0]
   const head = [`apex ${i.s.level}`]
-  if (first !== undefined) head.push(`${first.cause}: ${first.action}`)
+  if (first !== undefined) head.push(`${first.cause} · ${first.action}`)
   const m = i.m
   // Optional figures carry a drop rank (lower drops first); 99 never drops.
   const figs: { text: string; drop: number }[] = []
-  if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 2 : 99 })
-  if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 99 })
+  if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 3 : 99 })
+  if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 4 })
   if (m !== null && m.costUsd !== null && first?.kind !== 'budget') figs.push({ text: i.budgetUsd > 0 ? budgetCell(m.costUsd, i.budgetUsd) : usd(m.costUsd), drop: 99 })
   if (i.ds.length > 0) {
     const differs = differsOf(i.ds)
     const n = `${i.ds.length} subagent${i.ds.length === 1 ? '' : 's'}`
-    figs.push({ text: differs > 0 ? `${differs} of ${n} differ from advice` : n, drop: 3 })
+    figs.push({ text: differs > 0 ? `${differs} of ${i.ds.length} differ from advice` : n, drop: 2 })
   }
-  if (i.b.conformance !== null) figs.push({ text: `model match ${Math.round(100 * i.b.conformance)}%`, drop: 1 })
+  if (i.b.conformance !== null) figs.push({ text: `ran tier asked ${Math.round(100 * i.b.conformance)}%`, drop: 1 })
   const line = (fs: typeof figs): string => [...head, ...fs.map(f => f.text)].join(' · ')
   let kept = figs
-  for (const rank of [1, 2, 3]) {
+  for (const rank of [1, 2, 3, 4]) {
     if (line(kept).length <= BAND_WIDTH) break
     kept = kept.filter(f => f.drop !== rank)
   }
@@ -132,7 +132,7 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
 
 /** The status entry (no band on this surface): the level, the action when one is due, the cost. */
 export const statusText = (level: Level, costUsd: number | null, alert?: Alert): string =>
-  `apex ${level}${alert === undefined ? '' : ` · ${alert.cause}: ${alert.action}`}${costUsd === null || alert?.kind === 'budget' ? '' : ` · ${usd(costUsd)}`}`
+  `apex ${level}${alert === undefined ? '' : ` · ${alert.cause} · ${alert.action}`}${costUsd === null || alert?.kind === 'budget' ? '' : ` · ${usd(costUsd)}`}`
 
 /** The last signals each runtime published (the status entry reads the budget forecast from them). */
 const lastSignals = new WeakMap<Runtime, SignalsView>()
