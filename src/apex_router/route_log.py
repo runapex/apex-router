@@ -145,6 +145,15 @@ def is_cross_family(a, b) -> bool:
     return fa is not None and fb is not None and fa != fb
 
 
+def cause_of(rec: dict) -> str | None:
+    """Read an explicit cause, or infer infrastructure failure from a legacy note."""
+    cause = rec.get("cause")
+    if isinstance(cause, str) and cause in ("infra", "capability"):
+        return cause
+    note = rec.get("note")
+    return "infra" if isinstance(note, str) and "provider error" in note.lower() else None
+
+
 def read_rates(*, log_path=None, labeled_path=None) -> dict:
     """Aggregate the log into per-task-type escalation rates — the Phase-1 payoff.
 
@@ -202,7 +211,7 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
             return
         if rec.get("requested_tier") not in CHEAP_START_TIERS:
             return
-        if rec.get("label_status") == "unlabeled":
+        if rec.get("label_status") == "unlabeled" and cause_of(rec) != "infra":
             return
     elif rec.get("label_pending") is True:
         return  # escalation not yet inferred — counting it would fake an "ok" label
@@ -227,6 +236,10 @@ def _accumulate(rates: dict, line: str, *, labeled: bool = False) -> None:
         bad_ts = True
     cell = rates.setdefault(tt, {"n": 0, "escalated": 0, "rate": 0.0, "null_ts": 0, "by_tier": {}})
     sub = cell["by_tier"].setdefault(tier or OTHER_TIER, {"n": 0, "escalated": 0, "rate": 0.0})
+    if cause_of(rec) == "infra":
+        cell["infra"] = cell.get("infra", 0) + 1
+        sub["infra"] = sub.get("infra", 0) + 1
+        return
     sub["n"] += 1
     sub["escalated"] += 1 if escalated else 0
     sub["rate"] = sub["escalated"] / sub["n"]
@@ -297,7 +310,7 @@ def _row_tier(rec: dict, *, labeled: bool = False) -> str | None:
 def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
                 context_size=None, session_id=None, label_pending=False, surface=None,
                 agent_id=None, tool_use_id=None, start_tier=None, description=None,
-                resolved_model=None, parent_agent_id=None, family=None) -> bool:
+                resolved_model=None, parent_agent_id=None, family=None, cause=None) -> bool:
     """Append one outcome record to the log. Returns True on success, False on ANY
     failure (never raises). `outcome` is "ok" (cheap succeeded) or "escalated"
     (re-dispatched heavy); any other value is rejected and nothing is written.
@@ -320,6 +333,8 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
             return False
         allowed = DISPATCH_OUTCOMES if label_pending else _VALID_OUTCOMES
         if not isinstance(outcome, str) or outcome not in allowed:
+            return False
+        if cause is not None and (not isinstance(cause, str) or cause not in ("infra", "capability")):
             return False
         escalated = (outcome == "escalated") if not label_pending else False
         if context_size is not None:
@@ -344,6 +359,8 @@ def log_outcome(task_type, model, outcome, *, log_path=None, ts=None, note="",
             "escalated": escalated,
             "note": note,
         }
+        if cause is not None:
+            record["cause"] = cause
         if context_size is not None:
             record["context_size"] = context_size
         if session_id is not None:
@@ -509,7 +526,13 @@ def hook_main(raw: str, *, log_path=None) -> bool:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via the hook subprocess test
-    if "--hook" in sys.argv[1:]:
+    if "--record" in sys.argv[1:]:
+        try:
+            payload = json.loads(sys.argv[sys.argv.index("--record") + 1])
+            log_outcome(**payload)
+        except Exception:
+            pass
+    elif "--hook" in sys.argv[1:]:
         try:
             import signal
             signal.alarm(3)  # hard ceiling: a hook must never hang a session

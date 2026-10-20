@@ -31,6 +31,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import pressure
+from .route_log import cause_of
 
 WINDOW_S = 24 * 3600
 TAIL_BYTES = 4 * 1024 * 1024        # per small log: far more than a day of rows
@@ -104,10 +105,12 @@ def classification(since: float, home: Path) -> dict:
     rows = [r for r in _recent(home / "route_log.jsonl", since)
             if r.get("label_pending") is not True and isinstance(r.get("task_type"), str)
             and isinstance(_bool(r.get("escalated")), bool)]
+    infra = sum(cause_of(r) == "infra" for r in rows)
+    rows = [r for r in rows if cause_of(r) != "infra"]
     by = Counter(r["task_type"] for r in rows)
     esc = [r for r in rows if _bool(r.get("escalated"))]
     why = Counter(str(r.get("note") or "?").split(": ", 1)[-1] for r in esc)
-    return {"n": len(rows), "types": dict(by.most_common()), "escalated": len(esc),
+    return {"n": len(rows), "infra": infra, "types": dict(by.most_common()), "escalated": len(esc),
             "escalated_by_type": dict(Counter(r["task_type"] for r in esc).most_common()),
             "escalation_causes": dict(why.most_common())}
 

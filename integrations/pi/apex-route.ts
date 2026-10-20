@@ -202,7 +202,14 @@ function logOutcome(
 		args.push("--context-size", String(Math.floor(contextSize)));
 	}
 	try {
-		execFile(APEX_BIN, args, { timeout: 10_000 }, () => {});
+		// Use the installed CLI's Python environment without changing its argument contract.
+		const shebang = readFileSync(APEX_BIN, "utf8").split("\n", 1)[0];
+		const python = shebang.startsWith("#!/") ? shebang.slice(2).trim() : "python3";
+		const row = { task_type: taskType, model: startTier, outcome, note,
+			session_id: sessionId, context_size: contextSize, family,
+			cause: note.includes("provider error") ? "infra" : undefined };
+		execFile(python, ["-m", "apex_router.route_log", "--record", JSON.stringify(row)],
+			{ timeout: 10_000 }, () => {});
 	} catch {
 		// spawning must never break the turn
 	}

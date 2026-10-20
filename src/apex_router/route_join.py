@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import stats
 from .route_conformance import default_conformance_path
 from .route_log import (ALL_TIER_RANK, CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, GPT_FAMILY,
-                        OTHER_TIER, default_labeled_path, default_log_path, format_models,
+                        OTHER_TIER, cause_of, default_labeled_path, default_log_path, format_models,
                         is_cross_family, is_gpt_family, note_other_model, tier_family, tier_of)
 from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
@@ -195,6 +195,9 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
         "resolved_model": conf_row.get("resolved_model"),
         "matched": conf_row.get("matched"),
     }
+    cause = cause_of(route_row)
+    if cause is not None:
+        out["cause"] = cause
     # The outcome's tier is the model that RAN (route_log `model`): on a subscription overlay a
     # pi `sonnet` cue runs gpt-5.6-terra, so the row is gpt-terra's, with `family` as the label.
     tier = tier_of(route_row.get("start_tier")) or tier_of(route_row.get("model"))
@@ -497,6 +500,9 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
             "error_count": t["error_count"] if t else 0,
             "escalated_by": None,
         }
+        cause = cause_of(r)
+        if cause is not None:
+            row["cause"] = cause
         cs = r.get("context_size")
         if cs is not None:
             row["context_size"] = cs
@@ -696,7 +702,7 @@ def cell_rates(table) -> dict:
             escalated = row.get("escalated")
             if not isinstance(tt, str) or not isinstance(escalated, bool):
                 continue
-            if row.get("label_status") == UNLABELED:
+            if row.get("label_status") == UNLABELED and cause_of(row) != "infra":
                 continue
             if row.get("cross_family") is True:
                 continue
@@ -708,6 +714,10 @@ def cell_rates(table) -> dict:
             if not (isinstance(tier, str) and tier in ALL_TIER_RANK):
                 tier = tier_of(row.get("model"))
             sub = cell["by_tier"].setdefault(tier or OTHER_TIER, {"n": 0, "escalated": 0, "rate": 0.0})
+            if cause_of(row) == "infra":
+                cell["infra"] = cell.get("infra", 0) + 1
+                sub["infra"] = sub.get("infra", 0) + 1
+                continue
             sub["n"] += 1
             sub["escalated"] += 1 if escalated else 0
             sub["rate"] = sub["escalated"] / sub["n"]
@@ -865,16 +875,16 @@ def main(argv=None) -> int:
             return 0
 
         rates = cell_rates(table)
-        print(f"\n{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7} {'95% CI':>15} {'with_ctx':>9}")
+        print(f"\n{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7} {'95% CI':>15} {'with_ctx':>9} {'infra':>7}")
         for tt in sorted(rates):
             r = rates[tt]
             lo, hi = r["ci"]
             print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f} "
-                  f"[{lo:>6.2f},{hi:>6.2f}] {r['with_context']:>9}")
+                  f"[{lo:>6.2f},{hi:>6.2f}] {r['with_context']:>9} {r.get('infra', 0):>7}")
             by_tier = r.get("by_tier") or {}
             for tier in sorted(by_tier, key=lambda t: (tier_family(t) or "~", ALL_TIER_RANK.get(t, 99), t)):
                 b = by_tier[tier]
-                print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
+                print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}  infra={b.get('infra', 0)}")
                 if b.get("models"):
                     print(f"    models: {format_models(b['models'])}")
         if st.get("cross_family"):

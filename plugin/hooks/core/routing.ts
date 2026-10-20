@@ -13,7 +13,8 @@ export const P0_CAP = 0.98
 
 export const cellNew = (): Cell => ({ n: 0, pass: 0, state: 'COLD', winN: 0, winPass: 0, below: 0, above: 0, cusum: 0, p0: null })
 
-export function cellObserve(cell: Cell, passed: boolean, minN = MIN_N, target = TARGET, window = WINDOW): Cell {
+export function cellObserve(cell: Cell, passed: boolean | null, minN = MIN_N, target = TARGET, window = WINDOW): Cell {
+  if (passed === null) return { ...cell }
   const x = passed ? 1 : 0
   const c: Cell = { ...cell, n: cell.n + 1, pass: cell.pass + x, winN: cell.winN + 1, winPass: cell.winPass + x }
   let alarm = false

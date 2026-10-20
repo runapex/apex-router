@@ -153,6 +153,7 @@ export function finishRow(row: Row, e: Pick<TurnCompleteInput, 'reason' | 'isAbo
   const f = finishOf(e)
   const out: Row = { ...row, outcome: f.outcome, end_reason: e.reason }
   if (f.errorKind !== null) out.error_kind = f.errorKind
+  if (f.errorKind === 'unavailable') out.cause = 'infra'
   return out
 }
 
@@ -169,7 +170,7 @@ export function beforeSpawn(rt: Runtime, e: AgentSpawnInput, now: number): Decis
   return decideSpawn(e, { level: rt.level.level, cells: rt.cells, stats: rt.stats, admitted })
 }
 
-async function label(host: Host, rt: Runtime, key: string, passed: boolean): Promise<void> {
+async function label(host: Host, rt: Runtime, key: string, passed: boolean | null): Promise<void> {
   // Advise-only (P1): the cell is a ledger (n, ok%); a promotion or demotion announces nothing.
   recordOutcome(rt.cells, key, passed)
   rt.cellsDirty = true
@@ -360,8 +361,9 @@ export async function onComplete(host: Host, rt: Runtime, e: TurnCompleteInput, 
       pushStat(rt.stats, cell, 'tokens', tokens)
       pushStat(rt.stats, cell, 'duration_ms', e.durationMs)
       pushStat(rt.stats, cell, 'unavailable', f.errorKind === 'unavailable' ? 1 : 0)
+      pushStat(rt.stats, cell, 'unavailable_excluded', f.errorKind === 'unavailable' ? 1 : 0)
       rt.statsDirty = true
-      await label(host, rt, cell, f.outcome === 'ok')
+      await label(host, rt, cell, f.errorKind === 'unavailable' ? null : f.outcome === 'ok')
     }
     record(rt, completeRow(e.agentId, f.outcome === 'ok', e.durationMs, tokens, now))
     await publishDispatches(host, rt, now)

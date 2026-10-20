@@ -133,9 +133,9 @@ describe('router: hooks', () => {
     await $.agent.spawn(spawnInput({ model: 'opus' }))
     await $.turn.complete(complete({ reason: 'error', usage: undefined, durationMs: 900 }))
     await world.clock.advance(5000)
-    expect(routeRows(world)).toEqual([expect.objectContaining({ outcome: 'error', error_kind: 'unavailable', end_reason: 'error', model: 'opus' })])
+    expect(routeRows(world)).toEqual([expect.objectContaining({ outcome: 'error', error_kind: 'unavailable', cause: 'infra', end_reason: 'error', model: 'opus' })])
     const key = cellKey('explore', 'GREEN', 'opus')
-    expect((world.store.get('datapce.cells') as Record<string, Cell>)[key]).toMatchObject({ n: 1, pass: 0 })
+    expect((world.store.get('datapce.cells') as Record<string, Cell>)[key]).toMatchObject({ n: 0, pass: 0, state: 'COLD' })
     const stats = world.store.get('datapce.stats') as Record<string, Record<string, { n: number; mean: number }>>
     expect(stats[key]?.unavailable).toMatchObject({ n: 1, mean: 1 })
     expect(stats[key]?.tokens).toBeUndefined()
