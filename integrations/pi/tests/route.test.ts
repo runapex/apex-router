@@ -23,7 +23,7 @@ test('route writers record infra and session, agent, and tool identities', async
   t.after(() => { child.execFile = originalExec; syncBuiltinESMExports(); });
   const read = fs.readFileSync;
   t.mock.method(fs, 'readFileSync', (path: any, ...args: any[]) => {
-    if (String(path).endsWith('/apex-router')) return '#!/fake/python\n';
+    if (String(path).endsWith('/apex-router')) throw new Error('must not read executable');
     if (String(path).endsWith('models.json') || String(path).endsWith('pi-routes.json')) throw new Error('no registry');
     return (read as any)(path, ...args);
   });
@@ -47,7 +47,11 @@ test('route writers record infra and session, agent, and tool identities', async
   await handlers.input({ text: '>>sonnet debug this' }, ctx);
   await handlers.turn_end({ message: { stopReason: 'error' }, agent_id: 'b', tool_use_id: 'u' }, ctx);
   await new Promise(resolve => setImmediate(resolve));
-  const rows = calls.filter(c => c[1]?.includes('apex_router.route_log')).map(c => JSON.parse(c[1].at(-1)));
+  const logs = calls.filter(c => c[1]?.[0] === 'route-log');
+  assert.ok(logs.every(c => String(c[0]).endsWith('/apex-router')));
+  const rows = logs.map(c => Object.fromEntries(
+    Array.from({ length: (c[1].length - 1) / 2 }, (_, i) =>
+      [c[1][1 + i * 2].slice(2).replaceAll('-', '_'), c[1][2 + i * 2]])));
   assert.equal(rows.length, 2, JSON.stringify(calls.map(c => c.slice(0, 2))));
   assert.deepEqual(rows.map(r => [r.session_id, r.agent_id, r.tool_use_id, r.cause]),
     [['real-session', 'a', 't', 'infra'], ['real-session', 'b', 'u', 'infra']]);

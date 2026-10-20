@@ -36,6 +36,22 @@ def test_cause_validation_and_explicit_capability(tmp_path):
     assert json.loads(p.read_text())['cause'] == 'capability'
 
 
+@pytest.mark.parametrize('cause', ['infra', 'capability', None])
+def test_route_log_cli_cause(tmp_path, monkeypatch, cause):
+    from apex_router import cli
+
+    p = tmp_path / 'route_log.jsonl'
+    monkeypatch.setenv('APEX_ROUTER_LOG', str(p))
+    args = ['route-log', '--task-type', 'debug', '--start-tier', 'sonnet',
+            '--outcome', 'escalated']
+    if cause:
+        args += ['--cause', cause]
+    assert cli.main(args) == 0
+    row = json.loads(p.read_text())
+    assert row.get('cause') == cause
+    assert ('cause' in row) == (cause is not None)
+
+
 def test_all_infra_and_gpt_counts(tmp_path):
     p = tmp_path / 'route_log.jsonl'
     for model in ('sonnet', 'gpt-5.6-terra'):

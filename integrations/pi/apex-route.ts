@@ -208,20 +208,16 @@ function logOutcome(
 		"route-log", "--task-type", taskType, "--start-tier", startTier,
 		"--outcome", outcome, "--note", note,
 	];
+	if (note.includes("provider error")) args.push("--cause", "infra");
+	if (keys?.agent_id) args.push("--agent-id", keys.agent_id);
+	if (keys?.tool_use_id) args.push("--tool-use-id", keys.tool_use_id);
 	if (family) args.push("--family", family);
 	if (sessionId) args.push("--session-id", sessionId);
 	if (typeof contextSize === "number" && Number.isFinite(contextSize) && contextSize >= 0) {
 		args.push("--context-size", String(Math.floor(contextSize)));
 	}
 	try {
-		// Use the installed CLI's Python environment without changing its argument contract.
-		const shebang = readFileSync(APEX_BIN, "utf8").split("\n", 1)[0];
-		const python = shebang.startsWith("#!/") ? shebang.slice(2).trim() : "python3";
-		const row = { task_type: taskType, model: startTier, outcome, note,
-			session_id: sessionId, context_size: contextSize, family, ...keys,
-			cause: note.includes("provider error") ? "infra" : undefined };
-		execFile(python, ["-m", "apex_router.route_log", "--record", JSON.stringify(row)],
-			{ timeout: 10_000 }, () => {});
+		execFile(APEX_BIN, args, { timeout: 10_000 }, () => {});
 	} catch {
 		// spawning must never break the turn
 	}
