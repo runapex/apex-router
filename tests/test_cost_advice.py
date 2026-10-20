@@ -60,3 +60,18 @@ def test_module_entry_point(tmp_path):
     r = subprocess.run([sys.executable, "-m", "apex_router.cost_advice", "--agent", "w", "--model", "m", "--thinking", "t", "--json"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0 and json.loads(r.stdout)["advice"] is False
+
+
+def test_collector_rows_drop_soft_capped_jobs(tmp_path):
+    """xval repro: the collector must keep `capped`, so capped completions never form a cell."""
+    from apex_router import agent_runs as ar
+    rows = []
+    for i in range(8):
+        d = tmp_path / f"j{i}"
+        d.mkdir()
+        (d / "meta.json").write_text(json.dumps({
+            "id": f"j{i}", "agent": "worker", "kind": "pi", "state": "done", "capped": True, "soft_cap_at": 5,
+            "usage": {"cost": 0.9, "turns": 3}, "argv": ["pi", "--model", "opus", "--thinking", "high"]}))
+        rows.append(ar.run_row(d, []))
+    assert all(r["capped"] is True for r in rows)
+    assert ca.advice("worker", "opus", "high", rows=rows)["advice"] is False

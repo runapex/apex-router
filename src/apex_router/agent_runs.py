@@ -128,6 +128,8 @@ def run_row(job_dir: Path, xruns: list[dict]) -> dict | None:
         "provider": _argv_opt(argv, "--provider"),
         "thinking": _argv_opt(argv, "--thinking"),
         "state": meta.get("state"),
+        # soft cost cap (A1): the job reached 85 % of max_cost and was asked to report; state stays "done"
+        "capped": bool(meta.get("capped")) or meta.get("soft_cap_at") is not None,
         "exit_code": meta.get("exit_code"),
         "turns": turns if turns else usage.get("turns"),
         "turns_source": "pi turn_end" if turns else "pi usage",
@@ -279,10 +281,11 @@ def report(since_days: float | None = None) -> dict:
     cells: dict[tuple, dict] = {}
     for r in runs:
         k = (r.get("role") or "?", r.get("model") or "?")
-        c = cells.setdefault(k, {"n": 0, "done": 0, "capped": 0, "turns": [], "cost": [], "wall": [], "verdicts": {}})
+        c = cells.setdefault(k, {"n": 0, "done": 0, "capped": 0, "soft_capped": 0, "turns": [], "cost": [], "wall": [], "verdicts": {}})
         c["n"] += 1
         c["done"] += r.get("state") == "done"
         c["capped"] += r.get("state") == "killed(cost)"
+        c["soft_capped"] += r.get("state") == "done" and r.get("capped") is True
         for f, src in (("turns", "turns"), ("cost", "cost_usd"), ("wall", "wall_s")):
             if isinstance(r.get(src), (int, float)):
                 c[f].append(r[src])
@@ -294,7 +297,7 @@ def report(since_days: float | None = None) -> dict:
         return None if not xs else xs[len(xs) // 2] if len(xs) % 2 else (xs[len(xs) // 2 - 1] + xs[len(xs) // 2]) / 2
 
     table = [{"role": k[0], "model": k[1], "n": c["n"], "done_rate": round(c["done"] / c["n"], 3),
-              "cost_capped": c["capped"], "turns_med": med(c["turns"]), "cost_med": med(c["cost"]),
+              "cost_capped": c["capped"], "soft_capped": c["soft_capped"], "turns_med": med(c["turns"]), "cost_med": med(c["cost"]),
               "cost_sum": round(sum(c["cost"]), 2), "wall_med": med(c["wall"]), "verdicts": c["verdicts"]}
              for k, c in sorted(cells.items())]
     acted = [a for a in alerts if a.get("acted") is not None]
