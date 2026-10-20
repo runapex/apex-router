@@ -73,7 +73,7 @@ export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
   const out: Alert[] = []
   const m = i.m
   if (i.s.level === 'RED') {
-    const cause = m !== null && m.limitPercent !== null ? `${limitName(m)} limit ${Math.round(m.limitPercent)}%` : 'pressure RED'
+    const cause = m !== null && m.limitPercent !== null && m.limitPercent >= 80 ? `${limitName(m)} limit ${Math.round(m.limitPercent)}%` : 'pressure RED'
     out.push({ kind: 'limit', cause, action: 'pause new subagents' })
   }
   if (m !== null && m.costUsd !== null && i.budgetUsd > 0) {
@@ -107,10 +107,10 @@ export const bandLine = (i: BandInput): string => bandParts(i).line
 export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const alerts = alertsOf(i)
   const first = alerts[0]
-  const head = [`apex ${i.s.level}`]
+  const head = [`apex ${first !== undefined && i.s.level === 'GREEN' ? 'pressure ' : ''}${i.s.level}`]
   if (first !== undefined) head.push(`${first.cause} · ${first.action}`)
   const m = i.m
-  // Optional figures carry a drop rank (lower drops first); 99 never drops.
+  // Optional figures carry a drop rank (lower drops first); 99 drops only in the final width guard.
   const figs: { text: string; drop: number }[] = []
   if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 3 : 99 })
   if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 4 })
@@ -127,12 +127,13 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
     if (line(kept).length <= BAND_WIDTH) break
     kept = kept.filter(f => f.drop !== rank)
   }
+  while (line(kept).length > BAND_WIDTH && kept.length > 0) kept = kept.slice(0, -1)
   return { line: line(kept), dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
 }
 
 /** The status entry (no band on this surface): the level, the action when one is due, the cost. */
 export const statusText = (level: Level, costUsd: number | null, alert?: Alert): string =>
-  `apex ${level}${alert === undefined ? '' : ` · ${alert.cause} · ${alert.action}`}${costUsd === null || alert?.kind === 'budget' ? '' : ` · ${usd(costUsd)}`}`
+  `apex ${alert !== undefined && level === 'GREEN' ? 'pressure ' : ''}${level}${alert === undefined ? '' : ` · ${alert.cause} · ${alert.action}`}${costUsd === null || alert?.kind === 'budget' ? '' : ` · ${usd(costUsd)}`}`
 
 /** The last signals each runtime published (the status entry reads the budget forecast from them). */
 const lastSignals = new WeakMap<Runtime, SignalsView>()

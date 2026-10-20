@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { Dispatch } from '../types/index.d.ts'
-import { bandLine, statusText } from '../hooks/band.tsx'
+import { alertsOf, bandLine, bandParts, statusText } from '../hooks/band.tsx'
 import { fmtTok, handoffDue, HANDOFF_TEMPLATE } from '../hooks/handoff.ts'
 import { EMPTY_BACKEND, EMPTY_SIGNALS } from '../hooks/state.ts'
 import { BAND, MEASURE, SESSION, spawnInput, stepInput } from './fixtures/inputs.ts'
@@ -31,7 +31,7 @@ describe('band line', () => {
   test('the user must act: cause and action right after the level; the band fits 74 columns', () => {
     const m = (ctx: number, lim: number, cost: number) => ({ ctxPercent: ctx, limitKind: 'five_hour', limitPercent: lim, resetsAt: null, costUsd: cost })
     const ctx = bandLine({ m: m(88, 40, 6.4), s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 })
-    expect(ctx).toBe('apex GREEN · context 88% full · run /compact · 5h 40% · $6.40')
+    expect(ctx).toBe('apex pressure GREEN · context 88% full · run /compact · 5h 40% · $6.40')
     const burn = bandLine({ m: m(45, 50, 9.1), s: { ...EMPTY_SIGNALS, level: 'AMBER', minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 10 })
     expect(burn).toBe('apex AMBER · $9.10/$10, empty ≈18 min · pause new subagents · context 45%')
     expect(burn.length).toBeLessThanOrEqual(74)
@@ -39,6 +39,33 @@ describe('band line', () => {
     expect(red).toBe('apex RED · 5h limit 95% · pause new subagents · context 61% · $4.12')
     // calm: no action words
     expect(bandLine({ m: m(30, 40, 1), s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 10 })).toBe('apex GREEN · 5h 40% · context 30% · $1.00/$10')
+  })
+
+  test('M2: RED names a quota cause only at 80% or more', () => {
+    for (const limitPercent of [null, 0, 40, 79.9, 80, 95]) {
+      const alerts = alertsOf({ m: { ctxPercent: 20, limitKind: 'five_hour', limitPercent, resetsAt: null, costUsd: 1 }, s: { ...EMPTY_SIGNALS, level: 'RED' }, budgetUsd: 0 })
+      expect(alerts[0]?.cause).toBe(limitPercent !== null && limitPercent >= 80 ? `5h limit ${Math.round(limitPercent)}%` : 'pressure RED')
+      expect(alerts[0]?.action).toBe('pause new subagents')
+    }
+  })
+
+  test('M6: GREEN alerts say pressure GREEN, not all-clear', () => {
+    for (const [ctxPercent, costUsd, budgetUsd] of [[88, 1, 0], [20, 9.1, 10]]) {
+      const line = bandLine({ m: { ctxPercent, costUsd, limitKind: null, limitPercent: null, resetsAt: null }, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd })
+      expect(line.startsWith('apex pressure GREEN · ')).toBe(true)
+      expect(line).toContain(ctxPercent === 88 ? 'run /compact' : 'pause new subagents')
+    }
+  })
+
+  test('M3: final width guard drops rank-99 figures and the pane names them', () => {
+    const input = { m: { ctxPercent: 88, limitKind: 'five_hour', limitPercent: 95, resetsAt: null, costUsd: 123456.78 }, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 }
+    const parts = bandParts(input)
+    expect(parts.line).toBe('apex pressure GREEN · context 88% full · run /compact · 5h 95%')
+    expect(parts.line.length).toBeLessThanOrEqual(74)
+    expect(parts.dropped).toEqual(['$123456.78'])
+    const huge = bandParts({ ...input, m: { ...input.m, limitKind: 'quota'.repeat(20) } })
+    expect(huge.line).toBe('apex pressure GREEN · context 88% full · run /compact')
+    expect(huge.dropped.length).toBe(2)
   })
 
   test('no backend: no local, no conf', () => {
@@ -97,6 +124,15 @@ describe('band, status, handoff: hooks', () => {
     await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: '2026-10-03T20:00:00Z' }] })
     await world.clock.advance(120_000)
     expect(world.statuses.at(-1)).toBe('apex RED · 5h limit 95% · pause new subagents · $4.12')
+  })
+
+  test('M8: no-band status carries the first GREEN alert cause and action', { options: { budgetUsd: 10 } }, async ($, on) => {
+    const world = worldOf(on)
+    await $.session.start({ ...SESSION, surface: 'mobile' })
+    await $.session.measure({ ...MEASURE, context: { ...MEASURE.context, percent: 88 }, cost: { usd: 9.1 } } as never)
+    expect(world.statuses.at(-1)).toBe('apex pressure GREEN · $9.10/$10 · pause new subagents')
+    await $.session.measure({ ...MEASURE, context: { ...MEASURE.context, percent: 88 } })
+    expect(world.statuses.at(-1)).toBe('apex pressure GREEN · context 88% full · run /compact · $4.12')
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {

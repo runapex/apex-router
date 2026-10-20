@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { CellView, Dispatch } from '../types/index.d.ts'
 import { cellKey, cellViews } from '../hooks/evidence.ts'
 import { HANDOFF_TEMPLATE } from '../hooks/handoff.ts'
-import { ledgerRows, NO_LABEL, paneSections, type PaneInput } from '../hooks/pane.tsx'
+import { ledgerRows, NO_LABEL, paneSections, wrapRow, type PaneInput } from '../hooks/pane.tsx'
 import { EMPTY_BACKEND, EMPTY_INJECT, EMPTY_PROFILE_STORE, EMPTY_SIGNALS, profileView } from '../hooks/state.ts'
 import { command, PANE, SESSION, spawnInput } from './fixtures/inputs.ts'
 import { worldOf } from './fixtures/world.ts'
@@ -51,8 +51,21 @@ describe('pane: sections', () => {
       '  asked sonnet, ran sonnet · failed in 41s · 12k tokens',
       'Find X · explore',
       '  asked session model, ran opus · ok in 41s · 12k tokens',
-      '  advice: sonnet (opus→sonnet: 35/35 ok; GREEN now)',
+      '  advice: sonnet (opus→sonnet: 35/35 ok; GREEN now) (all pressure',
+      '    levels)',
     ])
+  })
+
+  test('M5: conformance names the backend scope within 72 columns', () => {
+    const rows = sec(paneSections(empty({ b: { ...EMPTY_BACKEND, conformance: 0.86 } })), 'signals')
+    expect(rows).toContain('ran the tier asked for: 86% (backend log, all sessions)')
+    expect(rows.every(r => r.length <= 72)).toBe(true)
+  })
+
+  test('M7: advice run counts name all pressure levels; Track record names the cell list', () => {
+    const sections = paneSections(empty({ ds: [d({ advised: 'sonnet', basis: 'explore·sonnet ok 92% n 25' })], cells: [view({})] }))
+    expect(sec(sections, 'dispatches')).toContain('  advice: sonnet (explore·sonnet ok 92% 25 runs) (all pressure levels)')
+    expect(sec(sections, 'evidence')).toContain('scope: cell list, all pressure levels')
   })
 
   test('ledger: runs, ok% with error kinds, avg tokens per task type × tier, levels pooled, avg time shown', () => {
@@ -98,6 +111,16 @@ describe('pane: sections', () => {
     expect(rows).toContain('suggested: at most 10 new large subagents a minute')
   })
 
+  test('M1: any pause alert hides standing admission advice; compact alone keeps it', () => {
+    for (const level of ['GREEN', 'AMBER', 'RED'] as const) {
+      const sections = paneSections(empty({ s: { ...EMPTY_SIGNALS, level }, m: { ctxPercent: 20, limitKind: 'five_hour', limitPercent: 40, resetsAt: null, costUsd: 9.1 }, budgetUsd: 10 }))
+      expect(sec(sections, 'now').join(' ')).toContain('pause new subagents')
+      expect(sec(sections, 'signals').join(' ')).not.toContain('suggested:')
+    }
+    const sections = paneSections(empty({ m: { ctxPercent: 88, limitKind: null, limitPercent: null, resetsAt: null, costUsd: null } }))
+    expect(sec(sections, 'signals')).toContain('suggested: at most 10 new large subagents a minute')
+  })
+
   test('Now: same cause and action as the band; limits row carries the measure and the budget', () => {
     const m = { ctxPercent: 61, limitKind: 'five_hour', limitPercent: 95, resetsAt: '2026-10-03T20:00:00Z', costUsd: 4.12 }
     const s = paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'RED', observed: 'RED' }, m, budgetUsd: 10 }))
@@ -112,6 +135,30 @@ describe('pane: sections', () => {
     const rows = sec(paneSections(empty({ ds: [d({ description: long })] })), 'dispatches')
     expect(rows.every(r => r.length <= 72)).toBe(true)
     expect(rows.slice(1, 3)).toEqual([`${'a'.repeat(30)} ${'b'.repeat(30)}`, `  ${'c'.repeat(30)} · explore`])
+  })
+
+  test('M4: hard-split long words without lost text or rows over width', () => {
+    for (const prefix of ['', '  ', 'start ']) {
+      const row = `${prefix}${'x'.repeat(200)} end`
+      const rows = wrapRow(row)
+      expect(rows.every(r => r.length <= 72)).toBe(true)
+      expect(rows.join('').replace(/ /g, '')).toBe(row.replace(/ /g, ''))
+    }
+    const indented = wrapRow(`${' '.repeat(69)}😀😀`)
+    expect(indented.every(r => r.length <= 72)).toBe(true)
+    expect(indented.join('').replace(/ /g, '')).toBe('😀😀')
+    const unicode = `${'a'.repeat(71)}😀tail`
+    const unicodeRows = wrapRow(unicode)
+    expect(unicodeRows.every(r => r.length <= 72)).toBe(true)
+    expect(unicodeRows.join('').replace(/ /g, '')).toBe(unicode)
+    expect(unicodeRows.every(r => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(r))).toBe(true)
+    const sections = paneSections(empty({ ds: [d({ description: 'x'.repeat(120) })] }))
+    expect(sections.flatMap(s => s.rows).every(r => r.length <= 72)).toBe(true)
+  })
+
+  test('M3: Now names a rank-99 figure dropped by the final width guard', () => {
+    const sections = paneSections(empty({ m: { ctxPercent: 88, limitKind: 'five_hour', limitPercent: 95, resetsAt: null, costUsd: 123456.78 } }))
+    expect(sec(sections, 'now')).toContain('not in the band (no room): $123456.78')
   })
 
   test('Now names the figures the band dropped for room', () => {

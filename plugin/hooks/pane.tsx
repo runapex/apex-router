@@ -84,7 +84,7 @@ function dispatchRows(ds: readonly Dispatch[]): string[] {
     const tok = d.tokens === null ? '' : ` · ${kTok(d.tokens)} tokens`
     rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType}`)
     rows.push(`  asked ${asked}, ran ${ran} · ${d.outcome}${secs(d.durationMs)}${tok}`)
-    if (d.advised !== null) rows.push(d.advised === tierOf(d.resolved) ? `  advice: ${d.advised} (matched)` : `  advice: ${d.advised} (${plainBasis(d.basis)})`)
+    if (d.advised !== null) rows.push(d.advised === tierOf(d.resolved) ? `  advice: ${d.advised} (matched)` : `  advice: ${d.advised} (${plainBasis(d.basis)}) (all pressure levels)`)
   }
   return rows
 }
@@ -104,9 +104,9 @@ function signalRows(s: SignalsView, b: BackendView, m: Measure | null, budgetUsd
   const families = Object.entries(b.families)
   if (families.length > 0) rows.push(`model families: ${families.map(([f, l]) => `${f} ${l}`).join(', ')}`)
   for (const [l, st] of Object.entries(s.breakers)) rows.push(`lane ${l}: ${BREAKER[st] ?? st}`)
-  if (s.level !== 'RED') rows.push(`suggested: at most ${+s.admissionRate.toFixed(1)} new large subagents a minute`)
+  if (!alertsOf({ m, s, budgetUsd }).some(a => a.action === 'pause new subagents')) rows.push(`suggested: at most ${+s.admissionRate.toFixed(1)} new large subagents a minute`)
   if (s.fanoutRisk !== null) rows.push(`chance at least one parallel subagent is slow: ${(100 * s.fanoutRisk).toFixed(0)}%`)
-  if (b.conformance !== null) rows.push(`ran the tier asked for ${Math.round(100 * b.conformance)}%`)
+  if (b.conformance !== null) rows.push(`ran the tier asked for: ${Math.round(100 * b.conformance)}% (backend log, all sessions)`)
   return rows
 }
 
@@ -158,7 +158,7 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
 function evidenceRows(cs: readonly CellView[], ds: readonly Dispatch[]): string[] {
   const rows = ledgerRows(cs)
   const finished = ds.some(d => d.outcome !== 'running')
-  return [...(rows.length > 0 ? rows : [finished ? 'no track record yet (updates after the session ledger saves)' : 'no track record yet']), NO_LABEL]
+  return [...(rows.length > 0 ? rows : [finished ? 'no track record yet (updates after the session ledger saves)' : 'no track record yet']), ...(rows.length > 0 ? ['scope: cell list, all pressure levels'] : []), NO_LABEL]
 }
 
 function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] {
@@ -183,15 +183,26 @@ export const PANE_WIDTH = 72
 /** Wrap a row at a word to PANE_WIDTH; continuation rows keep the indent plus two spaces. Nothing is cut. */
 export function wrapRow(row: string, width = PANE_WIDTH): string[] {
   if (row.length <= width) return [row]
-  const lead = /^ */.exec(row)![0]
+  const lead = /^ */.exec(row)![0].slice(0, Math.max(0, width - 2))
+  const continuation = `${lead}  `.slice(0, Math.max(0, width - 2))
   const out: string[] = []
   let line = lead
-  for (const w of row.trim().split(' ')) {
-    const next = line.trim() === '' ? `${line}${w}` : `${line} ${w}`
-    if (next.length > width && line.trim() !== '') {
+  for (const word of row.trim().split(' ')) {
+    if (line.trim() !== '' && line.length + 1 + word.length > width) {
       out.push(line)
-      line = `${lead}  ${w}`
-    } else line = next
+      line = continuation
+    }
+    let w = word
+    if (line.trim() !== '') line += ' '
+    while (line.length + w.length > width) {
+      let room = width - line.length
+      // Keep a surrogate pair on one row when the width boundary falls inside it.
+      if (room > 0 && /[\uD800-\uDBFF]/.test(w[room - 1]!) && /[\uDC00-\uDFFF]/.test(w[room]!)) room--
+      out.push(line + w.slice(0, room))
+      w = w.slice(room)
+      line = continuation
+    }
+    line += w
   }
   out.push(line)
   return out
