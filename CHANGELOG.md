@@ -6,6 +6,16 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+### Changed
+- datapce band and `/apex` pane are now plain words. The band reads `apex LEVEL · figures`. When
+  you must act, the cause and the action come right after the level: `5h limit 95% · pause new
+  subagents`, `context 88% full · run /compact`, `$9.10/$10, empty ≈18 min · pause new subagents`.
+  The band fits 74 terminal columns, and it never cuts the action. A GREEN level with an action reads `pressure GREEN`.
+  The glyphs `● ▲ ↑ ✓ μ`, `routes`, `conf` and `tok(all)` are gone. The pane sections are Now · Limits and
+  budget · Subagents · Local models (24 h) · Track record · Session. Now names any figure that the band
+  dropped for room. Rows fit 72 columns. Still advise-only. Readability score
+  (`scripts/ux_score.py`, new) 62.9 → 98.9. See `docs/research/ux-rsi/RESULTS.md`.
+
 ### Added
 - Mesh self-update. A node card shows its build commit. When a peer runs a commit this node does
   not have (or every 6 h), `mesh up` fetches this node's own `origin` and fast-forwards a clean

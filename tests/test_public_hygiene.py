@@ -39,6 +39,8 @@ HOME_ALLOWLIST = {
     "tests/proxy_engine/test_m5bS_delta2_bytestrata.py": {37},
     "tests/proxy_engine/test_m5bS_delta9_frontier.py": {108},
     "docs/superpowers/specs/2026-08-21-project-memory-compaction-design.md": {11},
+    # synthetic inputs that prove `mesh note` refuses a home path (not real user paths)
+    "tests/test_mesh_notes.py": {207, 208, 231, 242, 369},
 }
 
 

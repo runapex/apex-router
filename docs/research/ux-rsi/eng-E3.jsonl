@@ -1,0 +1,6 @@
+{"iter":0,"turn":4,"composite":62.9,"jargon_hits":114,"action_acc":0.5,"band_fit":0.667,"pane_trunc":"26/85","test_fails":0,"change":"Baseline; no edits."}
+{"iter": 1, "turn": 9, "composite": 78.2, "jargon_hits": 92, "action_acc": 1.0, "band_fit": 1.0, "pane_trunc": "26/85", "test_fails": 1, "change": "Plain band labels and cause-first advice; fixed old band expectations."}
+{"iter": 2, "turn": 17, "composite": 91.8, "jargon_hits": 16, "action_acc": 1.0, "band_fit": 1.0, "pane_trunc": "0/170", "test_fails": 0, "change": "Plain pane sections and split fact rows; shared Now advice; live measured inputs."}
+{"iter": 3, "turn": 23, "composite": 97.8, "jargon_hits": 0, "action_acc": 1.0, "band_fit": 1.0, "pane_trunc": "0/170", "test_fails": 1, "change": "Wrap pane rows without deleting facts; name inherited model and failure rate correctly."}
+{"iter": 4, "turn": 27, "composite": 97.8, "jargon_hits": 0, "action_acc": 1.0, "band_fit": 1.0, "pane_trunc": "0/170", "test_fails": 0, "change": "Keep run and its slash command together when pane rows wrap."}
+{"iter": 5, "turn": 31, "composite": 97.8, "jargon_hits": 0, "action_acc": 1.0, "band_fit": 1.0, "pane_trunc": "0/170", "test_fails": 0, "change": "Unknown actual tiers no longer count as advice mismatches; stop band truncation to retain simultaneous advice."}

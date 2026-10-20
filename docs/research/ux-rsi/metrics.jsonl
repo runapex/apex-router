@@ -1,0 +1,24 @@
+{"phase":"baseline","agent":"main","composite":62.9,"jargon_hits":114,"action_acc":0.5,"band_fit":0.667,"pane_trunc":"26/85"}
+{"phase":"research","round":1,"agent":"R1","model":"it-entra-claude-opus-5-5","turns":47,"cost_usd":6.2346,"time_s":241,"state":"killed(cost) after report"}
+{"phase":"research","round":1,"agent":"R2","model":"it-entra-claude-sonnet-5-5","turns":6,"cost_usd":0.1507,"time_s":356,"state":"done"}
+{"phase":"research","round":1,"agent":"R3","model":"it-entra-gpt-6.1-sol","turns":28,"cost_usd":2.3023,"time_s":405,"state":"done"}
+{"phase":"engineer","round":1,"agent":"E1","model":"it-entra-claude-opus-5-5","turns":47,"iterations":7,"cost_usd":10.1951,"time_s":531,"composite":97.8,"tests":"252/0","state":"killed(cost) after commit b05b6bd","judge_rank":1}
+{"phase":"engineer","round":1,"agent":"E2","model":"it-entra-claude-sonnet-5-5","turns":26,"iterations":5,"cost_usd":1.1083,"time_s":260,"composite":98.9,"tests":"247/0","state":"done 7ec116c","judge_rank":3}
+{"phase":"engineer","round":1,"agent":"E3","model":"it-entra-gpt-6.1-sol","turns":39,"iterations":6,"cost_usd":3.2779,"time_s":688,"composite":97.8,"tests":"250/0","state":"done f7558ae","judge_rank":2}
+{"phase":"judge","round":1,"agent":"J1","model":"it-entra-claude-opus-5-5","turns":3,"cost_usd":0.7684,"time_s":53,"vote":"E1","verdict":"GO-WITH-CHANGES","scores":{"E3":22,"E1":32,"E2":28}}
+{"phase":"judge","round":1,"agent":"J2","model":"it-entra-claude-sonnet-5-5","turns":2,"cost_usd":0.1283,"time_s":31,"vote":"E1","verdict":"GO-WITH-CHANGES","scores":{"E3":23,"E1":34,"E2":32}}
+{"phase":"judge","round":1,"agent":"J3","model":"it-entra-gpt-6-astra (xval)","turns":1,"cost_usd":null,"time_s":208,"vote":"E1","verdict":"GO-WITH-CHANGES","scores":{"E3":30,"E1":31,"E2":26}}
+{"phase":"engineer","round":2,"agent":"E1b","model":"it-entra-claude-sonnet-5-5","turns":17,"cost_usd":0.8128,"time_s":505,"composite":97.8,"tests":"252/0","state":"done 5856164"}
+{"phase":"engineer","round":2,"agent":"main","model":"it-entra-claude-opus-5-5","turns":4,"cost_usd":null,"composite":98.9,"tests":"252/0","state":"15ffeb9 budget band keeps context"}
+{"phase":"judge","round":2,"agent":"J1","model":"it-entra-claude-opus-5-5","turns":5,"cost_usd":0.6183,"time_s":46,"verdict":"NO-GO","must_fix":5,"scores":[7,6,5,9]}
+{"phase":"judge","round":2,"agent":"J2","model":"it-entra-claude-sonnet-5-5","turns":2,"cost_usd":0.0909,"time_s":24,"verdict":"GO","must_fix":0,"scores":[8,8,7,9]}
+{"phase":"judge","round":2,"agent":"J3","model":"it-entra-gpt-6-astra (xval)","turns":10,"cost_usd":null,"time_s":165,"verdict":"NO-GO","must_fix":5,"scores":[8,7,6,9]}
+{"phase":"engineer","round":3,"agent":"E1c","model":"it-entra-gpt-6.1-sol","turns":35,"cost_usd":2.5829,"time_s":614,"composite":98.9,"tests":"261/0","state":"done 1ca2ab1"}
+{"phase":"judge","round":3,"agent":"J1","model":"it-entra-claude-opus-5-5","turns":8,"cost_usd":0.9164,"time_s":66,"verdict":"GO","must_fix":0,"scores":[7,8,8,8]}
+{"phase":"judge","round":3,"agent":"J2","model":"it-entra-claude-sonnet-5-5","turns":2,"cost_usd":0.0810,"time_s":19,"verdict":"GO","must_fix":0,"scores":[8,8,8,9],"note":"did not read code; M4/M8 unchecked"}
+{"phase":"judge","round":3,"agent":"J3","model":"it-entra-gpt-6-astra (xval)","turns":1,"cost_usd":null,"time_s":106,"verdict":"NO-GO","must_fix":1,"scores":[9,10,9,9],"finding":"alert alone can exceed 74 cols"}
+{"phase":"fix","round":"3a","agent":"main","model":"it-entra-claude-opus-5-5","commit":"fcb7273","xval":"NO-GO (action cut)","xval_time_s":60}
+{"phase":"fix","round":"3b","agent":"main","model":"it-entra-claude-opus-5-5","commit":"1a56fb1","xval":"NO-GO (UTF-16 vs columns; 1e15 label)","xval_time_s":103}
+{"phase":"fix","round":"3c","agent":"main","model":"it-entra-claude-opus-5-5","commit":"ec781c4"}
+{"phase":"judge","round":"3c","agent":"J3","model":"it-entra-gpt-6-astra (xval)","turns":1,"time_s":74,"verdict":"GO","must_fix":0,"note":"186,624 targeted cases within 74 cols, actions intact"}
+{"phase":"stop","round":3,"reason":"3/3 judges GO; composite gain < 1.0 for 3 rounds (98.9 plateau)","final_commit":"ec781c4","composite":98.9,"baseline":62.9}

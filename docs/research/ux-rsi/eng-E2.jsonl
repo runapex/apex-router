@@ -1,0 +1,5 @@
+{"iter":0,"turn":6,"composite":62.9,"jargon_hits":114,"action_acc":0.5,"band_fit":0.667,"pane_trunc":"26/85","test_fails":0,"change":"baseline"}
+{"iter":1,"turn":18,"composite":91.8,"jargon_hits":16,"action_acc":1.0,"band_fit":1.0,"pane_trunc":"0/143","test_fails":25,"change":"band: level+cause+action first, unit words, ' · ' separator; pane: Now/Limits/Subagents/Local models/Track record/Session, plain words, rows <=72 cols (old tests not yet updated)"}
+{"iter":2,"turn":19,"composite":97.8,"jargon_hits":0,"action_acc":1.0,"band_fit":1.0,"pane_trunc":"0/143","test_fails":25,"change":"pane: show 'inherit' as 'default model' (plain words)"}
+{"iter":3,"turn":20,"composite":98.9,"jargon_hits":0,"action_acc":1.0,"band_fit":1.0,"pane_trunc":"0/143","test_fails":25,"change":"band: drop order meter, match, 5h (<80%), plain subagent count; 'N of M differ from advice'; fits 74 cols"}
+{"iter":4,"turn":26,"composite":98.9,"jargon_hits":0,"action_acc":1.0,"band_fit":1.0,"pane_trunc":"0/143","test_fails":0,"change":"update old tests to the new text only; unknown shows 'unknown'; no scorer change (gain 0.0, stop)"}
