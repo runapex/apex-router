@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { Dispatch } from '../types/index.d.ts'
-import { alertsOf, bandLine, bandParts, statusText } from '../hooks/band.tsx'
+import { alertsOf, bandLine, bandParts, cols, statusText } from '../hooks/band.tsx'
 import { fmtTok, handoffDue, HANDOFF_TEMPLATE } from '../hooks/handoff.ts'
 import { EMPTY_BACKEND, EMPTY_SIGNALS } from '../hooks/state.ts'
 import { BAND, MEASURE, SESSION, spawnInput, stepInput } from './fixtures/inputs.ts'
@@ -60,12 +60,13 @@ describe('band line', () => {
   test('M3: final width guard drops rank-99 figures and the pane names them', () => {
     const input = { m: { ctxPercent: 88, limitKind: 'five_hour', limitPercent: 95, resetsAt: null, costUsd: 123456.78 }, s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 }
     const parts = bandParts(input)
-    expect(parts.line).toBe('apex pressure GREEN · context 88% full · run /compact · 5h 95%')
+    expect(parts.line).toBe('apex pressure GREEN · context 88% full · run /compact · 5h 95% · $123.5k')
     expect(parts.line.length).toBeLessThanOrEqual(74)
-    expect(parts.dropped).toEqual(['$123456.78'])
-    const huge = bandParts({ ...input, m: { ...input.m, limitKind: 'quota'.repeat(20) } })
-    expect(huge.line).toBe('apex pressure GREEN · context 88% full · run /compact')
-    expect(huge.dropped.length).toBe(2)
+    expect(parts.dropped).toEqual([])
+    const huge = bandParts({ ...input, m: { ...input.m, limitKind: 'quota'.repeat(20) }, ds: Array(12).fill(dispatch('haiku', 'claude-opus-5-5')) })
+    expect(cols(huge.line)).toBeLessThanOrEqual(74)
+    expect(huge.line.startsWith('apex pressure GREEN · context 88% full · run /compact')).toBe(true)
+    expect(huge.dropped.length).toBeGreaterThan(0)
   })
 
   test('no backend: no local, no conf', () => {
@@ -82,6 +83,12 @@ describe('band line', () => {
       expect(l.length).toBeLessThanOrEqual(74)
       expect(l.endsWith(' · pause new subagents')).toBe(true)
     }
+    // an unknown limit kind is untrusted: plain ASCII, short; the line fits in terminal columns
+    const wide = bandLine({ m: { ...m, limitKind: '界'.repeat(40), limitPercent: 95 }, s: { ...EMPTY_SIGNALS, level: 'RED' }, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 })
+    expect(cols(wide)).toBeLessThanOrEqual(74)
+    expect(wide.startsWith('apex RED · limit limit 95% · pause new subagents')).toBe(true)
+    expect(cols('界a')).toBe(3)
+    expect(bandLine({ m: { ...m, costUsd: 1e15 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e15 })).toBe('apex pressure GREEN · $1000T/$1000T, empty ≈18 min · pause new subagents')
     // a cause too long even in short money is cut, the action stays whole
     const odd = bandLine({ m: { ...m, costUsd: 9e20 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 1e12 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 9e20 })
     expect(odd.length).toBeLessThanOrEqual(74)

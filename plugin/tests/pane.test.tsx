@@ -157,8 +157,8 @@ describe('pane: sections', () => {
   })
 
   test('M3: Now names a rank-99 figure dropped by the final width guard', () => {
-    const sections = paneSections(empty({ m: { ctxPercent: 88, limitKind: 'five_hour', limitPercent: 95, resetsAt: null, costUsd: 123456.78 } }))
-    expect(sec(sections, 'now')).toContain('not in the band (no room): $123456.78')
+    const sections = paneSections(empty({ m: { ctxPercent: 88, limitKind: 'weekly_opus_x', limitPercent: 95, resetsAt: null, costUsd: 123_456_789_012 } }))
+    expect(sec(sections, 'now')).toContain('not in the band (no room): $123.5B')
   })
 
   test('Now names the figures the band dropped for room', () => {

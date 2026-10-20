@@ -36,7 +36,25 @@ export function meter(percent: number, width = 8): string {
 
 export const usd = (x: number): string => `$${x.toFixed(2)}`
 
-const limitName = (m: Measure): string => LIMIT_LABEL[m.limitKind ?? ''] ?? m.limitKind ?? 'limit'
+/** A limit kind the host did not document is shown as plain ASCII, at most 12 characters (it is untrusted text). */
+const limitName = (m: Measure): string => {
+  const known = LIMIT_LABEL[m.limitKind ?? '']
+  if (known !== undefined) return known
+  const plain = (m.limitKind ?? '').replace(/[^A-Za-z0-9_ -]/g, '').slice(0, 12).trim()
+  return plain === '' ? 'limit' : plain
+}
+
+/** Terminal columns: East Asian wide and fullwidth code points take 2. */
+export function cols(s: string): number {
+  let n = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 0
+    n += (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd)
+      ? 2 : 1
+  }
+  return n
+}
 
 const limitCell = (m: Measure): string | null => (m.limitPercent === null ? null : `${limitName(m)} ${Math.round(m.limitPercent)}%`)
 
@@ -68,7 +86,7 @@ export type Alert = { kind: 'limit' | 'budget' | 'context'; cause: string; actio
 
 /** Short money for the band: $9.10 below $1,000; then $12.3k, $1.2M (the pane keeps exact figures). */
 export const usdShort = (x: number): string =>
-  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : x < 999_950_000 ? `$${+(x / 1e6).toFixed(1)}M` : x < 1e15 ? `$${+(x / 1e9).toFixed(1)}B` : '$>1e15'
+  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : x < 999_950_000 ? `$${+(x / 1e6).toFixed(1)}M` : x < 999_950_000_000 ? `$${+(x / 1e9).toFixed(1)}B` : `$${Math.round(x / 1e12)}T`
 
 const budgetCell = (cost: number, budget: number): string => `${usdShort(cost)}/${budget < 1000 ? `$${budget}` : usdShort(budget)}`
 
@@ -115,15 +133,15 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const head = [level]
   if (first !== undefined) {
     // Odd inputs can make the cause too long. Cut the cause, never the level or the action.
-    const room = BAND_WIDTH - level.length - first.action.length - 6
-    head.push(`${first.cause.length <= room ? first.cause : `${first.cause.slice(0, Math.max(1, room - 1))}…`} · ${first.action}`)
+    const room = BAND_WIDTH - cols(level) - cols(first.action) - 6
+    head.push(`${cols(first.cause) <= room ? first.cause : `${first.cause.slice(0, Math.max(1, room - 1))}…`} · ${first.action}`)
   }
   const m = i.m
   // Optional figures carry a drop rank (lower drops first); 99 drops only in the final width guard.
   const figs: { text: string; drop: number }[] = []
   if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 3 : 99 })
   if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 4 })
-  if (m !== null && m.costUsd !== null && first?.kind !== 'budget') figs.push({ text: i.budgetUsd > 0 ? budgetCell(m.costUsd, i.budgetUsd) : usd(m.costUsd), drop: 99 })
+  if (m !== null && m.costUsd !== null && first?.kind !== 'budget') figs.push({ text: i.budgetUsd > 0 ? budgetCell(m.costUsd, i.budgetUsd) : usdShort(m.costUsd), drop: 99 })
   if (i.ds.length > 0) {
     const differs = differsOf(i.ds)
     const n = `${i.ds.length} subagent${i.ds.length === 1 ? '' : 's'}`
@@ -133,10 +151,10 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const line = (fs: typeof figs): string => [...head, ...fs.map(f => f.text)].join(' · ')
   let kept = figs
   for (const rank of [1, 2, 3, 4]) {
-    if (line(kept).length <= BAND_WIDTH) break
+    if (cols(line(kept)) <= BAND_WIDTH) break
     kept = kept.filter(f => f.drop !== rank)
   }
-  while (line(kept).length > BAND_WIDTH && kept.length > 0) kept = kept.slice(0, -1)
+  while (cols(line(kept)) > BAND_WIDTH && kept.length > 0) kept = kept.slice(0, -1)
   return { line: line(kept), dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
 }
 
