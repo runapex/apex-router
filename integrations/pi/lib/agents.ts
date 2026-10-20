@@ -10,6 +10,11 @@
  * finishes and notifies the job. A manager adopts a job (under a lock) only when the owner's process is gone.
  *
  * Every job ends in one state: done | failed | killed | timed_out(idle) | timed_out(wall) | killed(cost).
+ *
+ * Cost cap (A1): at SOFT_CAP (85 %) of max_cost the manager writes <dir>/steer.json once and records soft_cap_at.
+ * The child's apex-agents extension (APEX_AGENT_JOB_DIR) reads it, steers the model to write the final report now
+ * and blocks new tool calls. The hard stop "killed(cost)" fires only above max_cost x SALVAGE (1.10). A job that
+ * ends cleanly after the soft cap is "done" with `capped: true` (no new state: every FINAL consumer stays correct).
  * Cancel follows the P0 result: snapshot descendant pids, SIGTERM them, wait, SIGKILL their process groups
  * (pi's bash tool runs commands in their own group, and SIGKILL alone leaves them as orphans).
  */
@@ -80,7 +85,48 @@ export type Meta = {
 	/** `ps -o lstart=` of the child at spawn. A pid with another start time is a reused pid: not our job. */
 	pid_start?: string;
 	notified?: boolean;
+	/** Time the soft-cap message was written to steer.json (85 % of max_cost). */
+	soft_cap_at?: number;
+	/** Cost when the soft cap fired. */
+	soft_cap_cost?: number;
+	/** true on a "done" job that ended after the soft-cap message (the final report is a salvage report). */
+	capped?: boolean;
 };
+
+/** Fraction of max_cost that sends the "write the final report now" message. */
+export const SOFT_CAP = 0.85;
+/** Salvage budget: hard stop only above max_cost x SALVAGE. */
+export const SALVAGE = 1.1;
+export const STEER_FILE = "steer.json";
+export const SOFT_CAP_MESSAGE =
+	"COST LIMIT: you used 85 % of your cost budget. Stop the work now. Do not call tools. "
+	+ "Write your final report now as your last message: what is done, what is not done, what stays open.";
+
+/** Cost decision for one tick. "soft": send the soft-cap message (once). "hard": stop the job. */
+export function costAction(cost: number, maxCost: number | undefined, softSent: boolean): "none" | "soft" | "hard" {
+	if (maxCost === undefined || !Number.isFinite(maxCost)) return "none";
+	if (cost > maxCost * SALVAGE) return "hard";
+	if (!softSent && cost >= maxCost * SOFT_CAP) return "soft";
+	return "none";
+}
+
+/** Child-side gate for one tool call. After the soft cap: block the call; steer the model once. */
+export function softCapGate(dir: string | undefined, steered: boolean): { block: false } | { block: true; reason: string; steer: boolean } {
+	const s = readSteer(dir);
+	if (!s) return { block: false };
+	return { block: true, reason: s.message, steer: !steered };
+}
+
+/** The soft-cap steer of a job dir, or null. Used by the child's extension (pure: tests call it). */
+export function readSteer(dir: string | undefined): { kind: string; message: string; at: number } | null {
+	if (!dir) return null;
+	try {
+		const s = JSON.parse(readFileSync(join(dir, STEER_FILE), "utf8"));
+		return typeof s?.message === "string" ? s : null;
+	} catch {
+		return null;
+	}
+}
 
 export type Options = {
 	root?: string;
@@ -121,12 +167,15 @@ export function readPressure(path = join(homedir(), ".apex-router", "pressure.js
  *  inherited env: a plain child (no maxDepth) gets max = its depth, so it cannot spawn; a child with
  *  maxDepth N may nest N - 1 more levels. Hard ceiling MAX_TREE_DEPTH, and bad inputs mean "leaf". */
 export const MAX_TREE_DEPTH = 3;
-export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number): NodeJS.ProcessEnv {
+export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number, jobDir?: string): NodeJS.ProcessEnv {
 	const parent = Number(env.APEX_AGENT_DEPTH ?? "0");
 	const depth = Math.min((Number.isInteger(parent) && parent >= 0 ? parent : MAX_TREE_DEPTH) + 1, MAX_TREE_DEPTH + 1);
 	const extra = maxDepth !== undefined && Number.isInteger(maxDepth) && maxDepth > 1 ? maxDepth - 1 : 0;
 	const max = Math.min(depth + extra, MAX_TREE_DEPTH);
-	return { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_MAX_DEPTH: String(max), APEX_AGENT_JOB: jobId };
+	const out: NodeJS.ProcessEnv = { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_MAX_DEPTH: String(max), APEX_AGENT_JOB: jobId };
+	if (jobDir) out.APEX_AGENT_JOB_DIR = jobDir;
+	else delete out.APEX_AGENT_JOB_DIR; // never inherit the parent's job dir (it would read the parent's steer)
+	return out;
 }
 
 export function defaultArgv(spec: Spec, meta: Meta, dir: string): string[] {
@@ -388,7 +437,7 @@ export class JobManager {
 		try {
 			const child = spawn(cmd!, args, {
 				cwd: m.cwd, detached: true, stdio: ["ignore", out, err],
-				env: childEnv(process.env, m.id, m.max_depth),
+				env: childEnv(process.env, m.id, m.max_depth, dir),
 			});
 			pid = child.pid;
 			child.on("error", e => {
@@ -482,12 +531,24 @@ export class JobManager {
 				this.finish(m);
 				continue;
 			}
-			if (m.max_cost !== undefined && m.usage.cost > m.max_cost) void this.cancel(m.id, "killed(cost)");
+			const act = costAction(m.usage.cost, m.max_cost, m.soft_cap_at !== undefined);
+			if (act === "hard") void this.cancel(m.id, "killed(cost)");
+			else if (act === "soft") this.softCap(m);
 			else if (now - (m.started ?? now) > m.timeout_s * 1000) void this.cancel(m.id, "timed_out(wall)");
 			else if (now - (m.last_event ?? now) > m.idle_s * 1000) void this.cancel(m.id, "timed_out(idle)");
 		}
 		this.pump();
 		this.notifyPending();
+	}
+
+	/** Write the soft-cap message for the child once, and record soft_cap_at. No text goes into meta.json. */
+	private softCap(m: Meta) {
+		const now = this.o.now();
+		const p = join(this.dir(m.id), STEER_FILE);
+		const tmp = `${p}.${this.self}.tmp`;
+		writeFileSync(tmp, JSON.stringify({ kind: "soft_cap", message: SOFT_CAP_MESSAGE, at: now }));
+		renameSync(tmp, p);
+		this.write({ ...m, soft_cap_at: now, soft_cap_cost: m.usage.cost });
 	}
 
 	/** Decide the final state of a job whose process is gone, write result.md, notify. */
@@ -496,6 +557,10 @@ export class JobManager {
 		if (!FINAL.has(m.state)) {
 			const clean = m.kind === "pi" ? !m.model_error && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
 			m.state = clean ? "done" : "failed";
+			if (clean && m.soft_cap_at !== undefined) {
+				m.capped = true;
+				m.reason = "capped: final report after the cost soft cap";
+			}
 			if (!clean) {
 				if (m.model_error && RATE_LIMIT.test(m.model_error))
 					m.reason = `rate limited (429) after ${m.retries ?? 0} pi retries. Resume later: ${m.resume ?? "agent_spawn again"}`;
@@ -698,5 +763,43 @@ export class JobManager {
 	/** @deprecated alias of adopt() */
 	reattach(): Meta[] {
 		return this.adopt();
+	}
+}
+
+/** A2 advice only (same rule as src/apex_router/cost_advice.py): done-cost p75/p90 for ONE (agent, model, thinking)
+ *  cell, n >= COST_ADVICE_MIN_N, no pooled threshold. Never changes max_cost. */
+export const COST_ADVICE_MIN_N = 8;
+export const AGENT_RUNS = join(homedir(), ".apex-router", "labels", "agent_runs.jsonl");
+export function costAdvice(rows: unknown[], agent: string, model: string | undefined, thinking: string | undefined): { n: number; p75?: number; p90?: number } {
+	const xs = rows
+		.filter((r: any) => r && r.state === "done" && r.capped !== true && r.agent === agent && r.model === (model ?? null) && r.thinking === (thinking ?? null))
+		.map((r: any) => r.cost_usd)
+		.filter((c: unknown): c is number => typeof c === "number" && c > 0)
+		.sort((a, b) => a - b);
+	if (xs.length < COST_ADVICE_MIN_N) return { n: xs.length };
+	const pct = (q: number) => {
+		const k = (xs.length - 1) * q;
+		const lo = Math.floor(k);
+		const hi = Math.min(lo + 1, xs.length - 1);
+		return Math.round((xs[lo]! + (xs[hi]! - xs[lo]!) * (k - lo)) * 1e4) / 1e4;
+	};
+	return { n: xs.length, p75: pct(0.75), p90: pct(0.9) };
+}
+/** The advice line when max_cost is below the cell p75, else "". Any read error gives "". */
+export function costAdviceLine(maxCost: number | undefined, agent: string, model: string | undefined, thinking: string | undefined, path = AGENT_RUNS): string {
+	if (maxCost === undefined) return "";
+	try {
+		const rows = readFileSync(path, "utf8").split("\n").flatMap(l => {
+			try {
+				return l.trim() ? [JSON.parse(l)] : [];
+			} catch {
+				return [];
+			}
+		});
+		const a = costAdvice(rows, agent, model, thinking);
+		if (a.p75 === undefined || maxCost >= a.p75) return "";
+		return `cost advice (no change made): max_cost $${maxCost.toFixed(2)} is below the done-cost p75 $${a.p75.toFixed(2)} (p90 $${a.p90!.toFixed(2)}, n=${a.n}) of ${agent}/${model}/${thinking}.`;
+	} catch {
+		return "";
 	}
 }

@@ -155,3 +155,17 @@ def test_run_daily_survives_a_collector_crash(monkeypatch, tmp_path):
     monkeypatch.setattr(nightly, "run", lambda *a, **k: "\n## nightly\n")
     assert watch.run_daily() == 0
     assert (tmp_path / ".apex-router" / "offload_daily.md").exists()
+
+
+def test_soft_capped_done_job_keeps_its_flag(ar, tmp_path):
+    d = _job(tmp_path, "j1")
+    meta = json.loads((d / "meta.json").read_text())
+    meta.update({"capped": True, "soft_cap_at": 1_050_000})
+    (d / "meta.json").write_text(json.dumps(meta))
+    _job(tmp_path, "j2")
+    ar.collect_runs()
+    rows = {json.loads(l)["id"]: json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()}
+    assert rows["j1"]["capped"] is True and rows["j1"]["state"] == "done"
+    assert rows["j2"]["capped"] is False
+    (cell,) = ar.report()["by_role_model"]
+    assert cell["soft_capped"] == 1 and cell["cost_capped"] == 0
