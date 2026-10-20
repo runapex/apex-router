@@ -36,14 +36,15 @@ export function meter(percent: number, width = 8): string {
 
 export const usd = (x: number): string => `$${x.toFixed(2)}`
 
-const limitCell = (m: Measure): string | null =>
-  m.limitPercent === null ? null : `${LIMIT_LABEL[m.limitKind ?? ''] ?? m.limitKind}:${Math.round(m.limitPercent)}%`
+const limitName = (m: Measure): string => LIMIT_LABEL[m.limitKind ?? ''] ?? m.limitKind ?? 'limit'
+
+const limitCell = (m: Measure): string | null => (m.limitPercent === null ? null : `${limitName(m)} ${Math.round(m.limitPercent)}%`)
 
 export function measureCells(m: Measure): string[] {
   const out: string[] = []
   const lim = limitCell(m)
   if (lim !== null) out.push(lim)
-  if (m.ctxPercent !== null) out.push(`ctx ${meter(m.ctxPercent)} ${Math.round(m.ctxPercent)}%`)
+  if (m.ctxPercent !== null) out.push(`context ${Math.round(m.ctxPercent)}%`)
   if (m.costUsd !== null) out.push(usd(m.costUsd))
   return out
 }
@@ -56,33 +57,90 @@ export type BandInput = {
   budgetUsd: number
 }
 
-/** §6 (advise-only, pivot P1/P6): apex ●LEVEL 5h:62%  ctx ▇▇▇▇▇░░░ 61%  $4.12/10  routes 7 (local 4 ✓3 ↑1) ▲2  conf 86% */
-export function bandLine(i: BandInput): string {
-  const lim = i.m === null ? null : limitCell(i.m)
-  const out = [`apex ●${i.s.level}${lim === null ? '' : ` ${lim}`}`]
-  if (i.m !== null && i.m.ctxPercent !== null) out.push(`ctx ${meter(i.m.ctxPercent)} ${Math.round(i.m.ctxPercent)}%`)
-  if (i.m !== null && i.m.costUsd !== null) out.push(i.budgetUsd > 0 ? `${usd(i.m.costUsd)}/${i.budgetUsd}` : usd(i.m.costUsd))
-  if (i.ds.length > 0 || i.b.lanes !== null) {
-    let local = ''
-    if (i.b.lanes !== null) {
-      let n = 0
-      let ok = 0
-      let esc = 0
-      for (const lane of Object.values(i.b.lanes)) {
-        n += lane.n
-        ok += lane.ok
-        esc += lane.escalated
-      }
-      local = ` (local ${n} ✓${ok} ↑${esc})`
-    }
-    const differs = i.ds.filter(d => d.advised !== null && d.advised !== tierOf(d.resolved)).length
-    out.push(`routes ${i.ds.length}${local}${differs > 0 ? ` ▲${differs}` : ''}`)
+/** Context at or above this share: the user must act (compact). */
+export const CONTEXT_FULL = 80
+/** Budget alert: spend at or above this share of the budget, or empty within BUDGET_MINUTES. */
+const BUDGET_SHARE = 0.9
+const BUDGET_MINUTES = 60
+
+/** A condition the user must act on: what is wrong and what to do. The user decides; nothing changes the model. */
+export type Alert = { kind: 'limit' | 'budget' | 'context'; cause: string; action: string }
+
+const budgetCell = (cost: number, budget: number): string => `${usd(cost)}/$${budget}`
+
+/** Every condition that needs the user now, most urgent first. Calm states give an empty list. */
+export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
+  const out: Alert[] = []
+  const m = i.m
+  if (i.s.level === 'RED') {
+    const cause = m !== null && m.limitPercent !== null ? `${limitName(m)} limit ${Math.round(m.limitPercent)}%` : 'pressure RED'
+    out.push({ kind: 'limit', cause, action: 'pause new subagents' })
   }
-  if (i.b.conformance !== null) out.push(`conf ${Math.round(100 * i.b.conformance)}%`)
-  return out.join('  ')
+  if (m !== null && m.costUsd !== null && i.budgetUsd > 0) {
+    const mins = i.s.minutesToExhaust
+    const soon = mins !== null && mins <= BUDGET_MINUTES
+    if (soon || m.costUsd >= BUDGET_SHARE * i.budgetUsd) {
+      const when = mins !== null ? `, empty in ${Math.round(mins)} min` : ''
+      out.push({ kind: 'budget', cause: `${budgetCell(m.costUsd, i.budgetUsd)}${when}`, action: 'slow down' })
+    }
+  }
+  if (m !== null && m.ctxPercent !== null && m.ctxPercent >= CONTEXT_FULL) {
+    out.push({ kind: 'context', cause: `context ${Math.round(m.ctxPercent)}% full`, action: 'run /compact' })
+  }
+  return out
 }
 
-export const statusText = (level: Level, costUsd: number | null): string => `apex ●${level}${costUsd === null ? '' : ` ${usd(costUsd)}`}`
+/** Subagents whose model tier differs from the advice. */
+export const differsOf = (ds: readonly Dispatch[]): number => ds.filter(d => d.advised !== null && d.advised !== tierOf(d.resolved)).length
+
+/** Band target width: 80 columns less the Hide button. */
+export const BAND_WIDTH = 74
+
+/**
+ * §6 (advise-only): `apex LEVEL[ · cause: action] · figures`. The action shows only when the user
+ * must act, right after the level, so a narrow terminal cuts figures, never the action. When the line
+ * is long, figures go in a fixed order: the model match rate, the limit below 80%, the subagent count.
+ */
+export const bandLine = (i: BandInput): string => bandParts(i).line
+
+/** The band line and the figures it dropped to fit (the pane shows those). */
+export function bandParts(i: BandInput): { line: string; dropped: string[] } {
+  const alerts = alertsOf(i)
+  const first = alerts[0]
+  const head = [`apex ${i.s.level}`]
+  if (first !== undefined) head.push(`${first.cause}: ${first.action}`)
+  const m = i.m
+  // Optional figures carry a drop rank (lower drops first); 99 never drops.
+  const figs: { text: string; drop: number }[] = []
+  if (m !== null && m.limitPercent !== null && first?.kind !== 'limit') figs.push({ text: limitCell(m)!, drop: m.limitPercent < 80 ? 2 : 99 })
+  if (m !== null && m.ctxPercent !== null && first?.kind !== 'context') figs.push({ text: `context ${Math.round(m.ctxPercent)}%`, drop: 99 })
+  if (m !== null && m.costUsd !== null && first?.kind !== 'budget') figs.push({ text: i.budgetUsd > 0 ? budgetCell(m.costUsd, i.budgetUsd) : usd(m.costUsd), drop: 99 })
+  if (i.ds.length > 0) {
+    const differs = differsOf(i.ds)
+    const n = `${i.ds.length} subagent${i.ds.length === 1 ? '' : 's'}`
+    figs.push({ text: differs > 0 ? `${differs} of ${n} differ from advice` : n, drop: 3 })
+  }
+  if (i.b.conformance !== null) figs.push({ text: `model match ${Math.round(100 * i.b.conformance)}%`, drop: 1 })
+  const line = (fs: typeof figs): string => [...head, ...fs.map(f => f.text)].join(' · ')
+  let kept = figs
+  for (const rank of [1, 2, 3]) {
+    if (line(kept).length <= BAND_WIDTH) break
+    kept = kept.filter(f => f.drop !== rank)
+  }
+  return { line: line(kept), dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
+}
+
+/** The status entry (no band on this surface): the level, the action when one is due, the cost. */
+export const statusText = (level: Level, costUsd: number | null, alert?: Alert): string =>
+  `apex ${level}${alert === undefined ? '' : ` · ${alert.cause}: ${alert.action}`}${costUsd === null || alert?.kind === 'budget' ? '' : ` · ${usd(costUsd)}`}`
+
+/** The last signals each runtime published (the status entry reads the budget forecast from them). */
+const lastSignals = new WeakMap<Runtime, SignalsView>()
+
+const statusOf = (rt: Runtime, m: Measure | null): string => {
+  const s = { ...(lastSignals.get(rt) ?? EMPTY_SIGNALS), level: rt.level.level }
+  return statusText(rt.level.level, m?.costUsd ?? null, alertsOf({ m, s, budgetUsd: rt.options.budgetUsd })[0])
+}
 
 /** Surfaces that raise AbovePrompt: only there can the band draw. */
 const BAND_SURFACES = new Set(['terminal', 'desktop'])
@@ -96,9 +154,10 @@ const bandShows = (rt: Runtime, hidden: boolean): boolean =>
  * the band shows, the entry is cleared (one set earlier, e.g. by an older version, would linger).
  * `claude -p` (surface null) gets none.
  */
-export async function refreshStatus(host: Host, rt: Runtime, m: Measure | null): Promise<void> {
+export async function refreshStatus(host: Host, rt: Runtime, m: Measure | null, s?: SignalsView): Promise<void> {
+  if (s !== undefined) lastSignals.set(rt, s)
   if (rt.surface === null) return
-  host.status(bandShows(rt, await host.bandHidden()) ? undefined : statusText(rt.level.level, m?.costUsd ?? null))
+  host.status(bandShows(rt, await host.bandHidden()) ? undefined : statusOf(rt, m))
 }
 
 export function install(on: On, rt: Runtime): void {
@@ -121,7 +180,7 @@ export function install(on: On, rt: Runtime): void {
           onPress={async () => {
             await update($, bandHidden, () => true)
             // The figures move to the status entry now, not at the next measure or tick.
-            $.ui.status(statusText(rt.level.level, (await read($, measure))?.costUsd ?? null))
+            $.ui.status(statusOf(rt, await read($, measure)))
           }}
         />
       </Box>

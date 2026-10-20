@@ -184,11 +184,11 @@ describe('live: hooks', () => {
     const world = worldOf(on)
     await $.session.start({ ...SESSION, surface: 'vscode' })
     await $.session.measure({ ...MEASURE, rateLimits: [{ kind: 'five_hour', percentUsed: 75, resetsAt: '2026-10-03T20:00:00Z' }] })
-    expect(world.statuses.at(-1)).toMatch(/^apex ●GREEN/)
+    expect(world.statuses.at(-1)).toMatch(/^apex GREEN/)
     await world.clock.advance(60_000)
-    expect(world.statuses.at(-1)).toMatch(/^apex ●GREEN/)
+    expect(world.statuses.at(-1)).toMatch(/^apex GREEN/)
     await world.clock.advance(60_000)
-    expect(world.statuses.at(-1)).toMatch(/^apex ●AMBER/)
+    expect(world.statuses.at(-1)).toMatch(/^apex AMBER/)
   })
 
   test('a RED rate limit toasts once from the timer', async ($, on) => {

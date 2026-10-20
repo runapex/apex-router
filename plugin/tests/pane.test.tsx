@@ -11,6 +11,7 @@ import { worldOf } from './fixtures/world.ts'
 const view = (over: Partial<CellView>): CellView => ({
   key: 'explore|GREEN|sonnet', taskType: 'explore', level: 'GREEN', tier: 'sonnet', state: 'WARMING', n: 12, pass: 12, wilsonLo: 0.76, tokMean: 41000, tokN: 12, durationMean: 41000, durationN: 12, unavailable: 0, ...over,
 })
+const sec = (s: { id: string; rows: string[] }[], id: string): string[] => s.find(x => x.id === id)!.rows
 const empty = (over: Partial<PaneInput> = {}): PaneInput => ({
   ds: [], s: EMPTY_SIGNALS, b: EMPTY_BACKEND, cells: [], profile: profileView(EMPTY_PROFILE_STORE), inject: EMPTY_INJECT, ...over,
 })
@@ -23,48 +24,54 @@ const d = (over: Partial<Dispatch>): Dispatch => ({
 describe('pane: sections', () => {
   test('pressure row explains a level that is still settling', () => {
     const rows = (over: object) => paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'AMBER', ...over } })).find(x => x.id === 'signals')!.rows[0]!
-    expect(rows({ observed: 'GREEN', exitIn: 2 })).toBe('pressure AMBER (settling: now GREEN, exits after 2 more calm windows) · burn 5m — / 60m —')
-    expect(rows({ observed: 'AMBER', exitIn: null })).not.toMatch(/settling/)
-    expect(rows({ observed: 'RED', exitIn: null })).not.toMatch(/settling/)
+    expect(rows({ observed: 'GREEN', exitIn: 2 })).toBe('pressure AMBER (now GREEN; drops after 2 more calm checks)')
+    expect(rows({ observed: 'AMBER', exitIn: null })).not.toMatch(/now GREEN|drops/)
+    expect(rows({ observed: 'RED', exitIn: null })).not.toMatch(/drops/)
   })
 
   test('empty: honest placeholders; no Lanes without a backend; never an anomaly or enforce section', () => {
     const s = paneSections(empty())
-    expect(s.map(x => x.title)).toEqual(['Dispatches', 'Signals', 'Evidence', 'Profile'])
-    expect(s[0]!.rows).toEqual(['no dispatches yet'])
-    expect(s[2]!.rows).toEqual(['no finished dispatches yet', NO_LABEL])
+    expect(s.map(x => x.title)).toEqual(['Now', 'Limits and budget', 'Subagents', 'Track record', 'Session'])
+    expect(sec(s, 'now')).toEqual(['GREEN · no action needed', 'advice only: datapce never changes the model; you decide'])
+    expect(sec(s, 'dispatches')).toEqual(['no subagents yet'])
+    expect(sec(s, 'evidence')).toEqual(['no track record yet', NO_LABEL])
     expect(JSON.stringify(s)).not.toMatch(/anomaly|enforce/i)
   })
 
-  test('dispatch rows, the ▲ basis, agreement and ok count', () => {
+  test('dispatch rows, the advice basis, agreement and ok count', () => {
     const s = paneSections(empty({
       ds: [
         d({ advised: 'sonnet', advisedState: 'READY', basis: 'opus→sonnet: 35/35 ok; GREEN now' }),
         d({ description: 'Review diff', taskType: 'review', outcome: 'failed', resolved: 'claude-sonnet-5-5', requested: 'sonnet' }),
       ],
     }))
-    expect(s[0]!.rows).toEqual([
-      'agreement 0/1 with advice · ok 1/2',
-      'Review diff · review · sonnet→sonnet · failed 41s 12k tok(all)',
-      'Find X · explore · inherit→opus · ok 41s 12k tok(all) ▲ sonnet: opus→sonnet: 35/35 ok; GREEN now',
+    expect(sec(s, 'dispatches')).toEqual([
+      '1 of 2 finished ok · 0 of 1 ran the advised tier',
+      'Review diff · review',
+      '  sonnet→sonnet · failed in 41s · 12k tokens',
+      'Find X · explore',
+      '  main model→opus · ok in 41s · 12k tokens',
+      '  advice: sonnet (opus→sonnet: 35/35 ok; GREEN now)',
     ])
   })
 
-  test('ledger: n, ok% with error kinds, tok(all) μ per task type × tier, levels pooled, dur μ shown', () => {
+  test('ledger: runs, ok% with error kinds, avg tokens per task type × tier, levels pooled, avg time shown', () => {
     const rows = ledgerRows([
       view({ n: 10, pass: 9, unavailable: 1, tokMean: 40000, tokN: 10, durationMean: 41000, durationN: 10 }),
       view({ key: 'explore|AMBER|sonnet', level: 'AMBER', n: 10, pass: 7, unavailable: 1, tokMean: 20000, tokN: 10, durationMean: 30000, durationN: 10 }),
       view({ key: 'review|GREEN|opus', taskType: 'review', tier: 'opus', n: 4, pass: 4, tokMean: null, tokN: 0, durationMean: null, durationN: 0 }),
     ])
     expect(rows).toEqual([
-      'explore · sonnet · n 20 · ok 80% (2 unavailable, 2 other) · tok(all) μ 30k · dur μ 35.5s',
-      'review · opus · n 4 · ok 100% · tok(all) μ — · dur μ —',
+      'explore · sonnet · 20 runs · ok 80% (2 unavailable, 2 other)',
+      '  avg 30k tokens · avg 35.5s',
+      'review · opus · 4 runs · ok 100%',
+      '  avg tokens unknown · avg time unknown',
     ])
   })
 
   test('a cell restarted below its lifetime stats renders consistent counts', () => {
     const rows = ledgerRows([view({ n: 5, pass: 3, unavailable: 4, tokN: 5, durationN: 5, durationMean: 2000 })])
-    expect(rows[0]).toContain('n 5 · ok 60% (2 unavailable)')
+    expect(rows[0]).toContain('5 runs · ok 60% (2 unavailable)')
   })
 
   test('cellViews clamps lifetime stats to the cell', () => {
@@ -76,8 +83,8 @@ describe('pane: sections', () => {
   })
 
   test('a workflow dispatch is labelled, not blank', () => {
-    const rows = paneSections(empty({ ds: [d({ description: '', requested: 'unknown', taskType: 'other', subagentType: 'workflow' })] }))[0]!.rows
-    expect(rows[1]).toMatch(/^workflow · other · unknown→opus/)
+    const rows = sec(paneSections(empty({ ds: [d({ description: '', requested: 'unknown', taskType: 'other', subagentType: 'workflow' })] })), 'dispatches')
+    expect(rows.slice(1, 3)).toEqual(['workflow · other', '  unknown→opus · ok in 41s · 12k tokens'])
   })
 
   test('the ledger never states a label count that would suffice', () => {
@@ -87,14 +94,37 @@ describe('pane: sections', () => {
   })
 
   test('shedding is shown as advisory', () => {
-    const rows = paneSections(empty())[1]!.rows
-    expect(rows).toContain('heavy spawns ≤ 10.0/min (advisory)')
+    const rows = sec(paneSections(empty()), 'signals')
+    expect(rows).toContain('suggested: at most 10 new large subagents a minute')
+  })
+
+  test('Now: same cause and action as the band; limits row carries the measure and the budget', () => {
+    const m = { ctxPercent: 61, limitKind: 'five_hour', limitPercent: 95, resetsAt: '2026-10-03T20:00:00Z', costUsd: 4.12 }
+    const s = paneSections(empty({ s: { ...EMPTY_SIGNALS, level: 'RED', observed: 'RED' }, m, budgetUsd: 10 }))
+    expect(sec(s, 'now')[0]).toBe('RED · 5h limit 95%: pause new subagents')
+    expect(sec(s, 'signals')).toContain('5-hour limit 95% used · resets 20:00 UTC')
+    expect(sec(s, 'signals')).toContain('spent $4.12 of $10 budget')
+    expect(sec(s, 'signals')).toContain('failure rate vs target: last 5 min unknown, last hour unknown')
+  })
+
+  test('a long row wraps at a word to 72 columns; nothing is cut', () => {
+    const long = 'a'.repeat(30) + ' ' + 'b'.repeat(30) + ' ' + 'c'.repeat(30)
+    const rows = sec(paneSections(empty({ ds: [d({ description: long })] })), 'dispatches')
+    expect(rows.every(r => r.length <= 72)).toBe(true)
+    expect(rows.slice(1, 3)).toEqual([`${'a'.repeat(30)} ${'b'.repeat(30)}`, `  ${'c'.repeat(30)} · explore`])
+  })
+
+  test('Now names the figures the band dropped for room', () => {
+    const m = { ctxPercent: 61, limitKind: 'five_hour', limitPercent: 62, resetsAt: null, costUsd: 4.12 }
+    const ds = Array.from({ length: 7 }, (_, k) => d({ advised: k < 2 ? 'haiku' : null }))
+    const s = paneSections(empty({ ds, m, budgetUsd: 10, s: { ...EMPTY_SIGNALS, level: 'AMBER' }, b: { ...EMPTY_BACKEND, present: true, conformance: 0.86 } }))
+    expect(sec(s, 'now').slice(0, 2)).toEqual(['AMBER · no action needed · 2 of 7 subagents differ from advice', 'not in the band (no room): 5h 62% · model match 86%'])
   })
 
   test('lanes appear with a backend', () => {
     const s = paneSections(empty({ b: { ...EMPTY_BACKEND, present: true, lanes: { codegen: { n: 4, ok: 3, escalated: 1 } }, drainEtaS: 386 } }))
-    const lanes = s.find(x => x.title === 'Lanes 24h')!
-    expect(lanes.rows).toEqual(['codegen ▇▇▇▇▇▇░░ 3/4 ok · 1 escalated', 'queue drains in 386 s'])
+    const lanes = s.find(x => x.title === 'Local models (24 h)')!
+    expect(lanes.rows).toEqual(['codegen ▇▇▇▇▇▇░░ 3 of 4 ok · 1 sent to a larger model', 'queue empties in 386 s'])
   })
 })
 
@@ -121,8 +151,9 @@ describe('pane: hooks', () => {
     expect(r.text).toBe('pane open (/apex close closes it)')
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'datapce', surface, ...PANE })
-      expect(await ui.find({ type: 'Text', text: 'Dispatches' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /Find pressure gate state file · explore · inherit→opus · running/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Subagents' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Find pressure gate state file · explore' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /main model→opus · running/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /no quality label yet/ })).toBeDefined()
       await ui.unmount()
     }
@@ -151,7 +182,7 @@ describe('pane: hooks', () => {
     await $.session.start(SESSION)
     const r = await $.command.run(command('apex', 'json'))
     const parsed = JSON.parse(r.text ?? '{}') as { sections: { title: string }[] }
-    expect(parsed.sections.map(x => x.title)).toEqual(['Dispatches', 'Signals', 'Evidence', 'Profile'])
+    expect(parsed.sections.map(x => x.title)).toEqual(['Now', 'Limits and budget', 'Subagents', 'Track record', 'Session'])
   })
 
   test('there is no enforce subcommand: it persists nothing and rewrites nothing', async ($, on) => {
@@ -175,7 +206,7 @@ describe('pane: hooks', () => {
     } as never)
     const r = await $.command.run(command('apex', 'json'))
     const ev = (JSON.parse(r.text ?? '{}') as { sections: { id: string; rows: string[] }[] }).sections.find(x => x.id === 'evidence')!
-    expect(ev.rows[0]).toBe('explore · opus · n 1 · ok 100% · tok(all) μ 41k · dur μ 41.0s')
+    expect(ev.rows.slice(0, 2)).toEqual(['explore · opus · 1 run · ok 100%', '  avg 41k tokens · avg 41.0s'])
   })
 
   test('only a known /apex subcommand is logged', async ($, on) => {
@@ -202,6 +233,7 @@ describe('pane: hooks', () => {
     await $.session.start(SESSION)
     const r = await $.command.run(command('apex'))
     expect(world.opened).toEqual([])
-    expect(r.text?.startsWith('Dispatches\n  no dispatches yet')).toBe(true)
+    expect(r.text?.startsWith('Now\n  GREEN · no action needed')).toBe(true)
+    expect(r.text).toContain('Subagents\n  no subagents yet')
   })
 })

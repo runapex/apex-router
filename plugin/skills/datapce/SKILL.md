@@ -15,8 +15,8 @@ dispatching-parallel-agents) and covers the checking that comes after.
 
 Feed the plan's model selection with measured numbers, then pick a tier per task.
 
-- **Read the ledger.** `/apex` opens the pane; its Evidence section has one row per task type and
-  tier: `n`, `ok%` with the failure kinds (unavailable / other), `tok(all) μ` (mean tokens billed: input, output, cache reads and cache writes), `dur μ`
+- **Read the ledger.** `/apex` opens the pane; its Track record section has one entry per task type and
+  tier: `N runs`, `ok%` with the failure kinds (unavailable / other), `avg … tokens` (mean tokens billed: input, output, cache reads and cache writes), `avg …s`
   (mean duration). `/apex json` prints the same sections as JSON for a headless run. Quote those
   numbers in the plan next to each task's tier; never invent a rate.
 - **Read ok% correctly.** There is no quality label yet. `ok%` means the dispatch finished and the
@@ -26,20 +26,20 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
   route needs 35 of 35 clean at a 0.9 target, and none is proven yet). Use the ledger to compare
   cost and duration between tiers you were already considering, and to spot a tier that keeps
   failing; do not use it to justify a cheaper tier on quality grounds.
-- **Cost is the measured part.** `tok(all) μ` and `dur μ` record what a dispatch cost here. Compare
+- **Cost is the measured part.** `avg … tokens` and the average time record what a dispatch cost here. Compare
   within a task type and expect allocation bias (harder work goes to bigger tiers); they do not pick
-  a tier for you. A row with no tokens or duration shows `—`.
+  a tier for you. A row with no tokens or duration shows `unknown`.
 - **Never override an explicit `model:`.** If the user or the task names a model, pass it through.
-  datapce never rewrites it, and neither should you. Where the pane shows `▲ <tier>: basis`, that is
+  datapce never rewrites it, and neither should you. Where the pane shows `advice: <tier> (basis)`, that is
   advice that differed from what ran; it is informational.
 - **Delegate, don't switch.** Changing your own model mid-session evicts the prompt cache. Hand
   uneven subtasks to subagents with a tier each.
-- **Pressure before fan-out.** The band (`apex ●LEVEL …`) and the pane's Signals section show
+- **Pressure before fan-out.** The band (`apex LEVEL · …`) and the pane's Now and Limits and budget sections show
   upstream pressure. GREEN: fan out. AMBER: keep the fan-out small and send explore and mechanical
-  work one tier down unless a model is named. RED: serialize heavy (opus) work; the pane shows the advisory heavy-spawn rate.
+  work one tier down unless a model is named. RED: serialize heavy (opus) work; the pane shows the suggested rate of new large subagents. When you must act, the band names the cause and the action (`5h limit 95%: pause new subagents`, `context 88% full: run /compact`).
   No band (headless `claude -p`) and the backend is installed? Run `apex-router pressure --check`
   first: exit 0 GREEN, 1 AMBER, 2 RED, 3 UNKNOWN, 4 usage error.
-- **Lane breakers.** When the pane's Signals section shows a lane breaker `open`, send that work to
+- **Lane breakers.** When the pane's Limits and budget section shows `lane <name>: paused after failures`, send that work to
   a frontier tier for a while instead of retrying the lane.
 - **Backend extras (only if `apex-router` is installed).** `apex-router route-advise --json` gives
   a cost-only verdict per task type (cheap-start vs heavy-start; it assumes the cheap output was

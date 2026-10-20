@@ -28,13 +28,13 @@ describe('band from session.measure', () => {
   test('measureOf keeps the tightest rate-limit window', () => {
     const m = measureOf(MEASURE)
     expect(m).toEqual({ ctxPercent: 61, limitKind: 'five_hour', limitPercent: 62, resetsAt: '2026-10-03T20:00:00Z', costUsd: 4.12 })
-    expect(measureCells(m)).toEqual(['5h:62%', 'ctx ▇▇▇▇▇░░░ 61%', '$4.12'])
+    expect(measureCells(m)).toEqual(['5h 62%', 'context 61%', '$4.12'])
   })
 
   test('API-key sessions (no rate limits, no cost) draw only what they have', () => {
     const m = measureOf({ context: { window: 200000, tokens: 20000, percent: 10 }, rateLimits: [], changed: ['context'] })
     expect(m).toEqual({ ctxPercent: 10, limitKind: null, limitPercent: null, resetsAt: null, costUsd: null })
-    expect(measureCells(m)).toEqual(['ctx ▇░░░░░░░ 10%'])
+    expect(measureCells(m)).toEqual(['context 10%'])
   })
 
   test('nothing draws before the first measurement', async ($, on) => {
@@ -53,7 +53,7 @@ describe('band from session.measure', () => {
     await $.session.measure(MEASURE)
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: 'datapce', surface, ...BAND })
-      expect((await ui.find({ key: 'datapce-band-line' }))?.text).toBe('apex ●GREEN 5h:62%  ctx ▇▇▇▇▇░░░ 61%  $4.12')
+      expect((await ui.find({ key: 'datapce-band-line' }))?.text).toBe('apex GREEN · 5h 62% · context 61% · $4.12')
       await ui.unmount()
     }
     const ui = await $.ui.mount({ plugin: 'datapce', surface: 'terminal', ...BAND })

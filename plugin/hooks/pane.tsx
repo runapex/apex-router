@@ -1,10 +1,10 @@
-// §6 pane (/apex), advise-only (pivot P1/P5/P6): Dispatches · Signals · Lanes 24h (backend) ·
-// Evidence (the cost/availability ledger) · Profile. No enforce switch, no anomaly card.
+// §6 pane (/apex), advise-only: Now · Limits and budget · Subagents · Local models (24 h, backend) ·
+// Track record (the cost/availability ledger) · Session. No enforce switch, no anomaly card.
 import type { On } from 'claude-code'
 import { atom, read } from 'claude-code'
 
-import type { BackendView, CellView, Dispatch, InjectView, ProfileView, SignalsView, Tier } from '../types/index.d.ts'
-import { meter } from './band.tsx'
+import type { BackendView, CellView, Dispatch, InjectView, Measure, ProfileView, SignalsView, Tier } from '../types/index.d.ts'
+import { alertsOf, bandParts, differsOf, meter, usd } from './band.tsx'
 import { kTok } from './evidence.ts'
 import { HANDOFF_TEMPLATE } from './handoff.ts'
 import type { Host } from './host.ts'
@@ -19,10 +19,11 @@ const backend = atom({ plugin: 'datapce', key: 'backend' } as const, EMPTY_BACKE
 const cells = atom({ plugin: 'datapce', key: 'cells' } as const, [] as CellView[])
 const profile = atom({ plugin: 'datapce', key: 'profile' } as const, profileView(EMPTY_PROFILE_STORE))
 const inject = atom({ plugin: 'datapce', key: 'inject' } as const, EMPTY_INJECT)
+const measure = atom({ plugin: 'datapce', key: 'measure' } as const, null as Measure | null)
 
-const DISPATCH_ROWS = 20
+const DISPATCH_ROWS = 10
 const USAGE = 'usage: /apex [open|close|handoff|json]'
-export const NO_LABEL = 'no quality label yet — ok% is completion and availability, not answer quality'
+export const NO_LABEL = 'no quality label yet: ok% counts finished runs, not answer quality'
 
 const KNOWN_ARGS: readonly string[] = ['open', 'close', 'handoff', 'json']
 /** §10: only a known subcommand is logged; anything else the user typed is not. */
@@ -38,51 +39,85 @@ export type PaneInput = {
   cells: readonly CellView[]
   profile: ProfileView
   inject: InjectView
+  /** The latest session.measure figures (null before the first one). */
+  m?: Measure | null
+  /** userConfig budgetUsd (0 = no budget). */
+  budgetUsd?: number
 }
 
 export type Section = { id: string; title: string; rows: string[] }
 
-const secs = (ms: number | null): string => (ms === null ? '' : ` ${Math.round(ms / 1000)}s`)
-const fixed = (x: number | null, digits = 1): string => (x === null ? '—' : x.toFixed(digits))
-const durMu = (ms: number | null): string => (ms === null ? '—' : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`)
+const secs = (ms: number | null): string => (ms === null ? '' : ` in ${Math.round(ms / 1000)}s`)
+const fixed = (x: number | null, digits = 1): string => (x === null ? 'unknown' : x.toFixed(digits))
+const durMu = (ms: number | null): string => (ms === null ? 'unknown' : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`)
+const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? '' : 's'}`
+/** The router's basis note in plain words: `n 25` → `25 runs`. */
+const plainBasis = (basis: string): string => basis.replace(/\bn (\d+)\b/g, (_, n: string) => plural(Number(n), 'run'))
+
+/** "Now": one summary row per condition, the same words as the band. */
+function nowRows(i: PaneInput): string[] {
+  const alerts = alertsOf({ m: i.m ?? null, s: i.s, budgetUsd: i.budgetUsd ?? 0 })
+  const rows = alerts.map(a => `${i.s.level} · ${a.cause}: ${a.action}`)
+  if (rows.length === 0) {
+    const differs = differsOf(i.ds)
+    rows.push(`${i.s.level} · no action needed${differs > 0 ? ` · ${differs} of ${plural(i.ds.length, 'subagent')} differ from advice` : ''}`)
+  }
+  const { dropped } = bandParts({ m: i.m ?? null, s: i.s, ds: i.ds, b: i.b, budgetUsd: i.budgetUsd ?? 0 })
+  if (dropped.length > 0) rows.push(`not in the band (no room): ${dropped.join(' · ')}`)
+  rows.push('advice only: datapce never changes the model; you decide')
+  return rows
+}
 
 function dispatchRows(ds: readonly Dispatch[]): string[] {
-  if (ds.length === 0) return ['no dispatches yet']
+  if (ds.length === 0) return ['no subagents yet']
   const advised = ds.filter(d => d.advised !== null)
   const agree = advised.filter(d => d.advised === tierOf(d.resolved)).length
   const done = ds.filter(d => d.outcome !== 'running')
-  const rows = [`agreement ${agree}/${advised.length} with advice · ok ${done.filter(d => d.outcome === 'ok').length}/${done.length}`]
+  const running = ds.length - done.length
+  const tally = `${done.filter(d => d.outcome === 'ok').length} of ${done.length} finished ok${running > 0 ? `, ${running} running` : ''}`
+  const rows = [advised.length > 0 ? `${tally} · ${agree} of ${advised.length} ran the advised tier` : `${tally} · no advice given yet`]
   for (const d of [...ds].reverse().slice(0, DISPATCH_ROWS)) {
-    const ran = tierOf(d.resolved) ?? d.resolved ?? '—'
-    const tok = d.tokens === null ? '' : ` ${kTok(d.tokens)} tok(all)`
-    const delta = d.advised !== null && d.advised !== tierOf(d.resolved) ? ` ▲ ${d.advised}: ${d.basis}` : ''
-    rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType} · ${d.requested}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}${delta}`)
+    const ran = tierOf(d.resolved) ?? d.resolved ?? 'unknown'
+    const asked = d.requested === 'inherit' ? 'main model' : d.requested
+    const tok = d.tokens === null ? '' : ` · ${kTok(d.tokens)} tokens`
+    rows.push(`${d.description === '' ? 'workflow' : d.description} · ${d.taskType}`)
+    rows.push(`  ${asked}→${ran} · ${d.outcome}${secs(d.durationMs)}${tok}`)
+    if (d.advised !== null && d.advised !== tierOf(d.resolved)) rows.push(`  advice: ${d.advised} (${plainBasis(d.basis)})`)
   }
   return rows
 }
 
-function signalRows(s: SignalsView, b: BackendView): string[] {
-  const settling = s.exitIn !== null && s.observed !== s.level ? ` (settling: now ${s.observed}, exits after ${s.exitIn} more calm window${s.exitIn === 1 ? '' : 's'})` : ''
-  const rows = [`pressure ${s.level}${settling} · burn 5m ${fixed(s.burnShort)} / 60m ${fixed(s.burnLong)}`]
+const BREAKER: Record<string, string> = { open: 'paused after failures', 'half-open': 'trying again', closed: 'ok' }
+
+function signalRows(s: SignalsView, b: BackendView, m: Measure | null, budgetUsd: number): string[] {
+  const settling = s.exitIn !== null && s.observed !== s.level ? ` (now ${s.observed}; drops after ${plural(s.exitIn, 'more calm check')})` : ''
+  const rows = [`pressure ${s.level}${settling}`]
+  if (m != null) {
+    if (m.limitPercent !== null) rows.push(`${m.limitKind === 'five_hour' ? '5-hour' : m.limitKind === 'seven_day' ? '7-day' : (m.limitKind ?? '')} limit ${Math.round(m.limitPercent)}% used${m.resetsAt === null ? '' : ` · resets ${m.resetsAt.slice(11, 16)} UTC`}`)
+    if (m.ctxPercent !== null) rows.push(`context ${Math.round(m.ctxPercent)}% full`)
+    if (m.costUsd !== null) rows.push(budgetUsd > 0 ? `spent ${usd(m.costUsd)} of $${budgetUsd} budget` : `spent ${usd(m.costUsd)} (no budget set)`)
+  }
+  if (s.budgetBurn !== null) rows.push(`spend pace ${fixed(s.budgetBurn)}× a day-long budget · empty in ${s.minutesToExhaust === null ? 'unknown' : `${Math.round(s.minutesToExhaust)} min`}`)
+  const times = (x: number | null): string => (x === null ? 'unknown' : `${x.toFixed(1)}×`)
+  rows.push(`failure rate vs target: last 5 min ${times(s.burnShort)}, last hour ${times(s.burnLong)}`)
   const families = Object.entries(b.families)
-  if (families.length > 0) rows.push(`families: ${families.map(([f, l]) => `${f} ${l}`).join(', ')}`)
-  const lanes = Object.entries(s.breakers)
-  if (lanes.length > 0) rows.push(`breakers: ${lanes.map(([l, st]) => `${l} ${st}`).join(', ')}`)
-  if (s.budgetBurn !== null) rows.push(`budget burn ${fixed(s.budgetBurn)}× · exhausts in ${s.minutesToExhaust === null ? '—' : `${Math.round(s.minutesToExhaust)} min`}`)
-  rows.push(`heavy spawns ≤ ${fixed(s.admissionRate)}/min (advisory)`)
-  if (s.fanoutRisk !== null) rows.push(`fan-out: P(any slow) ${(100 * s.fanoutRisk).toFixed(1)}%`)
+  if (families.length > 0) rows.push(`model families: ${families.map(([f, l]) => `${f} ${l}`).join(', ')}`)
+  for (const [l, st] of Object.entries(s.breakers)) rows.push(`lane ${l}: ${BREAKER[st] ?? st}`)
+  rows.push(`suggested: at most ${+s.admissionRate.toFixed(1)} new large subagents a minute`)
+  if (s.fanoutRisk !== null) rows.push(`chance one parallel subagent runs slow: ${(100 * s.fanoutRisk).toFixed(0)}%`)
+  if (b.conformance !== null) rows.push(`model match: ${Math.round(100 * b.conformance)}% ran the tier they asked for`)
   return rows
 }
 
 function laneRows(b: BackendView): string[] {
-  const rows = Object.entries(b.lanes ?? {}).map(([lane, x]) => `${lane} ${meter(x.n > 0 ? (100 * x.ok) / x.n : 0)} ${x.ok}/${x.n} ok · ${x.escalated} escalated`)
-  if (b.drainEtaS !== null) rows.push(`queue drains in ${b.drainEtaS} s`)
-  return rows.length > 0 ? rows : ['no lane activity in 24 h']
+  const rows = Object.entries(b.lanes ?? {}).map(([lane, x]) => `${lane} ${meter(x.n > 0 ? (100 * x.ok) / x.n : 0)} ${x.ok} of ${x.n} ok · ${x.escalated} sent to a larger model`)
+  if (b.drainEtaS !== null) rows.push(`queue empties in ${b.drainEtaS} s`)
+  return rows.length > 0 ? rows : ['no local model work in 24 h']
 }
 
 /**
- * The ledger: one row per task type × tier (pressure levels pooled): n, ok% with the kinds of the
- * failures, token mean, duration mean.
+ * The ledger: per task type × tier (pressure levels pooled), two rows: runs, ok% with the kinds of
+ * the failures; then average tokens (all, cache included) and average time.
  */
 export function ledgerRows(cs: readonly CellView[]): string[] {
   type Acc = { taskType: string; tier: Tier; n: number; pass: number; unavailable: number; tokN: number; tokSum: number; durN: number; durSum: number }
@@ -106,20 +141,22 @@ export function ledgerRows(cs: readonly CellView[]): string[] {
   return [...acc.values()]
     .filter(a => a.n > 0)
     .sort((x, y) => x.taskType.localeCompare(y.taskType) || rankOf(x.tier) - rankOf(y.tier))
-    .map(a => {
+    .flatMap(a => {
       const failed = a.n - a.pass
       const kinds = [
         a.unavailable > 0 ? `${a.unavailable} unavailable` : '',
         failed - a.unavailable > 0 ? `${failed - a.unavailable} other` : '',
       ].filter(k => k !== '')
       const ok = `ok ${Math.round((100 * a.pass) / a.n)}%${kinds.length > 0 ? ` (${kinds.join(', ')})` : ''}`
-      return `${a.taskType} · ${a.tier} · n ${a.n} · ${ok} · tok(all) μ ${kTok(a.tokN > 0 ? a.tokSum / a.tokN : null)} · dur μ ${durMu(a.durN > 0 ? a.durSum / a.durN : null)}`
+      const tok = a.tokN > 0 ? `${kTok(a.tokSum / a.tokN)} tokens` : 'tokens unknown'
+      const dur = a.durN > 0 ? durMu(a.durSum / a.durN) : 'time unknown'
+      return [`${a.taskType} · ${a.tier} · ${plural(a.n, 'run')} · ${ok}`, `  avg ${tok} · avg ${dur}`]
     })
 }
 
 function evidenceRows(cs: readonly CellView[]): string[] {
   const rows = ledgerRows(cs)
-  return [...(rows.length > 0 ? rows : ['no finished dispatches yet']), NO_LABEL]
+  return [...(rows.length > 0 ? rows : ['no track record yet']), NO_LABEL]
 }
 
 function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] {
@@ -128,24 +165,49 @@ function profileRows(p: ProfileView, b: BackendView, inj: InjectView): string[] 
       .sort((x, y) => y[1] - x[1])
       .slice(0, 5)
       .map(([k, n]) => `${k} ${n}`)
-      .join(', ') || '—'
+      .join(', ') || 'none yet'
   return [
     `task mix: ${top(p.taskMix)}`,
     `skills: ${top(p.skills)}`,
     `repos seen: ${p.repos}`,
-    `backend: ${b.present ? `present${b.health === null ? '' : ` · health A=${b.health.toFixed(3)}`}` : 'absent'}`,
-    `injection: ${inj.arm} arm · ${inj.bytes} B in ${inj.sections} sections`,
+    `backend: ${b.present ? `present${b.health === null ? '' : ` · availability ${b.health.toFixed(3)}`}` : 'absent'}`,
+    `evidence added to prompts: ${inj.bytes} bytes in ${plural(inj.sections, 'section')} (group: ${inj.arm})`,
   ]
 }
 
+/** Pane body width (the docked pane): every row fits it. */
+export const PANE_WIDTH = 72
+
+/** Wrap a row at a word to PANE_WIDTH; continuation rows keep the indent plus two spaces. Nothing is cut. */
+export function wrapRow(row: string, width = PANE_WIDTH): string[] {
+  if (row.length <= width) return [row]
+  const lead = /^ */.exec(row)![0]
+  const out: string[] = []
+  let line = lead
+  for (const w of row.trim().split(' ')) {
+    const next = line.trim() === '' ? `${line}${w}` : `${line} ${w}`
+    if (next.length > width && line.trim() !== '') {
+      out.push(line)
+      line = `${lead}  ${w}`
+    } else line = next
+  }
+  out.push(line)
+  return out
+}
+
 export function paneSections(i: PaneInput): Section[] {
+  return paneSectionsRaw(i).map(x => ({ ...x, rows: x.rows.flatMap(r => wrapRow(r)) }))
+}
+
+function paneSectionsRaw(i: PaneInput): Section[] {
   const out: Section[] = [
-    { id: 'dispatches', title: 'Dispatches', rows: dispatchRows(i.ds) },
-    { id: 'signals', title: 'Signals', rows: signalRows(i.s, i.b) },
+    { id: 'now', title: 'Now', rows: nowRows(i) },
+    { id: 'signals', title: 'Limits and budget', rows: signalRows(i.s, i.b, i.m ?? null, i.budgetUsd ?? 0) },
+    { id: 'dispatches', title: 'Subagents', rows: dispatchRows(i.ds) },
   ]
-  if (i.b.present) out.push({ id: 'lanes', title: 'Lanes 24h', rows: laneRows(i.b) })
-  out.push({ id: 'evidence', title: 'Evidence', rows: evidenceRows(i.cells) })
-  out.push({ id: 'profile', title: 'Profile', rows: profileRows(i.profile, i.b, i.inject) })
+  if (i.b.present) out.push({ id: 'lanes', title: 'Local models (24 h)', rows: laneRows(i.b) })
+  out.push({ id: 'evidence', title: 'Track record', rows: evidenceRows(i.cells) })
+  out.push({ id: 'profile', title: 'Session', rows: profileRows(i.profile, i.b, i.inject) })
   return out
 }
 
@@ -156,7 +218,7 @@ export async function start(host: Host, rt: Runtime): Promise<void> {
   try {
     await host.registerCommand({
       name: 'apex',
-      description: 'datapce: dispatches, signals, lanes, evidence, profile',
+      description: 'datapce: now, limits and budget, subagents, local models, track record, session',
       argumentHint: '[open|close|handoff|json]',
       immediate: true,
     })
@@ -185,6 +247,8 @@ export function install(on: On, rt: Runtime): void {
       cells: await read($, cells),
       profile: await read($, profile),
       inject: await read($, inject),
+      m: await read($, measure),
+      budgetUsd: rt.options.budgetUsd,
     })
     if (args === 'json') return { text: JSON.stringify({ sections }) }
     if (rt.options.pane === 'off') return { text: summaryText(sections) }
@@ -200,6 +264,8 @@ export function install(on: On, rt: Runtime): void {
       cells: await read($, cells),
       profile: await read($, profile),
       inject: await read($, inject),
+      m: await read($, measure),
+      budgetUsd: rt.options.budgetUsd,
     })
     const { Box, Text } = $.ui.resolve(e)
     return (
