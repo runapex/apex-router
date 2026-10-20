@@ -80,7 +80,9 @@ describe('ux scenarios (measurement fixture)', () => {
     test(sc.id, () => {
       const band = bandLine({ m: sc.m, s: sc.s, ds: sc.ds, b: sc.b, budgetUsd: sc.budgetUsd })
       const status = statusText(sc.s.level, sc.m?.costUsd ?? null)
-      const sections = paneSections({ ds: sc.ds, s: sc.s, b: sc.b, cells: sc.cells, profile: profileView(EMPTY_PROFILE_STORE), inject: EMPTY_INJECT })
+      // m and budgetUsd ride along so a pane that wants a "Now" summary can read them (extra fields are ignored otherwise).
+      const pin = { ds: sc.ds, s: sc.s, b: sc.b, cells: sc.cells, profile: profileView(EMPTY_PROFILE_STORE), inject: EMPTY_INJECT, m: sc.m, budgetUsd: sc.budgetUsd }
+      const sections = paneSections(pin)
       console.log(`UXJSON ${JSON.stringify({ id: sc.id, facts: sc.facts, actionNeeded: sc.actionNeeded, band, status, sections })}`)
       expect(band.length).toBeGreaterThan(0)
     })
