@@ -260,3 +260,26 @@ def test_replay_every_prefix_holds_until_rev6(rg):
         shutil.rmtree(rg.out_path().parent, ignore_errors=True)
         _replay(rg, upto=upto)
         assert rg.check("ux-rsi")["decision"] == "HOLD", upto
+
+
+def test_unknown_author_vendor_cannot_accept(tmp_path, monkeypatch):
+    """xval repro: --author mystery + GPT GO + tests passed gave ACCEPT."""
+    monkeypatch.setenv("APEX_HOME", str(tmp_path))
+    from apex_router import review_gate as g
+    g.record_review("L", 1, "it-entra-gpt-6-astra", "GO", author="mystery", code_access=True)
+    g.record_tests("L", 1, True)
+    r = g.check("L")
+    assert r["decision"] == "HOLD" and "author_unknown" in r["reasons"]
+
+
+def test_finding_confirmed_on_latest_revision_needs_regression(tmp_path, monkeypatch):
+    """xval repro: confirmed F1 on the latest revision with no regression test gave ACCEPT."""
+    monkeypatch.setenv("APEX_HOME", str(tmp_path))
+    from apex_router import review_gate as g
+    g.record_review("L", 1, "it-entra-gpt-6-astra", "GO", author="it-entra-claude-opus-5-5",
+                    code_access=True, confirmed="F1")
+    g.record_tests("L", 1, True)
+    r = g.check("L")
+    assert r["decision"] == "HOLD" and r["regression_missing_ids"] == ["F1"]
+    g.record_regress("L", "F1", "test_f1")
+    assert g.check("L")["decision"] == "ACCEPT"

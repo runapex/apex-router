@@ -213,6 +213,8 @@ def evaluate(st: dict, rev: int) -> dict:
     if not reviews:
         reasons.append("no_review")
     author_v = next((r["author_vendor"] for r in sorted(reviews, key=lambda r: r["ts"], reverse=True) if r.get("author_vendor")), None)
+    if author_v == "unknown":   # an unparsed author vendor cannot prove reviewer independence
+        author_v = None
     if reviews and author_v is None:
         reasons.append("author_unknown")
     gos = [r for r in reviews if r["verdict"] == "GO"]
@@ -239,10 +241,11 @@ def evaluate(st: dict, rev: int) -> dict:
         reasons.append("tests_missing")
     elif not t["passed"]:
         reasons.append("tests_failed")
-    # regression tests for confirmed findings of the earlier revisions
+    # regression tests for confirmed findings of this and the earlier revisions (a finding confirmed
+    # on the latest revision needs its regression test too, or a GO could ship it untested)
     all_ids: set[str] = set()
     anon_need = 0
-    for e in sorted({r["rev"] for r in st["reviews"] if r["rev"] < rev}):
+    for e in sorted({r["rev"] for r in st["reviews"] if r["rev"] <= rev}):
         n, ids = _count([r for r in st["reviews"] if r["rev"] == e], "confirmed")
         all_ids.update(ids)
         anon_need += n - len(ids)
