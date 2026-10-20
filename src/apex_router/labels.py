@@ -138,6 +138,9 @@ def _extract_line(line, tasks, by_call) -> None:
         cur = {"request": t, "calls": [], "last": "", "ts": d.get("timestamp")}
         tasks.append(cur)
     elif role == "assistant" and cur is not None and isinstance(c, list):
+        mdl = m.get("model")
+        if isinstance(mdl, str) and mdl.strip() and not mdl.startswith("<"):
+            cur["model"] = mdl.strip()[:80]       # model id only; the last one of the task wins
         for b in c:
             if not isinstance(b, dict):
                 continue
@@ -557,10 +560,24 @@ def _write(p: Path, rows: list) -> None:
 
 def _row(t) -> dict:
     """What is stored: ids, counts, votes — no text."""
-    return {"id": t["id"], "source": t["source"], "session": t["session"], "index": t["index"],
-            "ts": t.get("ts"), "n_calls": len(t["calls"]),
-            "n_errors": sum(1 for c in t["calls"] if c[2]), "has_next": t.get("next") is not None,
-            "votes": votes(t)}
+    r = {"id": t["id"], "source": t["source"], "session": t["session"], "index": t["index"],
+         "ts": t.get("ts"), "n_calls": len(t["calls"]),
+         "n_errors": sum(1 for c in t["calls"] if c[2]), "has_next": t.get("next") is not None,
+         "votes": votes(t)}
+    r.update(_model_fields(t.get("model")))
+    return r
+
+
+def _model_fields(model) -> dict:
+    """``{"model", "tier"}`` for a model id; a key is left out when unknown (old rows have none)."""
+    if not isinstance(model, str) or not model:
+        return {}
+    from .route_log import tier_of
+    out = {"model": model}
+    tier = tier_of(model)
+    if tier:
+        out["tier"] = tier
+    return out
 
 
 def gold_latest(gold_rows: list | None = None) -> dict:
@@ -688,12 +705,20 @@ def build(judge_limit: int = 0, judge_fn=judge, log=print, rejudge: bool = False
     return relabel(rows)
 
 
-def relabel(rows=None, write: bool = True) -> dict:
+def relabel(rows=None, write: bool = True, calibrated: bool = False) -> dict:
+    """``calibrated``: use the gold-fitted voter accuracies ONLY when the C3 calibration gate
+    passes (``calibrate``); otherwise fit on nothing (uncalibrated: one vote never clears
+    ``EMIT_MIN``). ``res["gate"]`` is then "pass" or "fail"."""
     h = home()
     rows = rows if rows is not None else _read(h / "tasks.jsonl")
     live = {r["id"] for r in rows}
     gold = {k: g["outcome"] for k, g in gold_latest().items() if k in live}
-    acc = voter_accuracy(rows, gold)
+    gate = None
+    if calibrated:
+        cal_gold = gold_outcomes(rows)
+        gate = "pass" if gate_passes(rows, cal_gold) else "fail"
+        gold = {**cal_gold, **gold} if gate == "pass" else gold
+    acc = voter_accuracy(rows, gold) if gate != "fail" else {}
     labels = []
     for r in rows:
         lab, p = posterior(r, acc)
@@ -702,10 +727,108 @@ def relabel(rows=None, write: bool = True) -> dict:
             lab, p = gold[r["id"]], 1.0
         labels.append({"id": r["id"], "source": r["source"], "session": r["session"],
                        "label": lab if p >= EMIT_MIN or src == "gold" else "unknown",
-                       "p": round(p, 3), "from": src, "voters": sorted(_all_votes(r))})
+                       "p": round(p, 3), "from": src, "voters": sorted(_all_votes(r)),
+                       **_model_fields(r.get("model"))})
     if write:
         _write(h / "labels.jsonl", labels)
-    return {"tasks": len(rows), "labels": labels, "acc": acc, "gold": gold}
+    return {"tasks": len(rows), "labels": labels, "acc": acc, "gold": gold, "gate": gate}
+
+# ---- calibration (C3) -----------------------------------------------------------------------
+
+CAL_ACC_MIN = 0.85              # held-out accuracy on emitted labels needed to PASS: the Wilson LOW bound,
+                                # not the point value (a tiny emitted set must not pass on luck)
+CAL_FAIL_MIN = 2                # gold fail rows held out needed to judge fail recall; fewer = not enough data
+CAL_FAIL_HIT = 2                # fail rows that must be recalled when >= CAL_FAIL_MIN are held out
+CAL_MIN_GOLD = 20               # fewer gold rows than this: not enough data (exit 2)
+CAL_SEED = 7
+
+
+def gold_outcomes(rows: list | None = None) -> dict:
+    """id -> outcome: gold.jsonl in force, over the consensus sheet ``gold/consensus.csv``
+    (columns task_id, outcome). Only OUTCOMES count. Read-only; stored votes only."""
+    import csv
+    out: dict = {}
+    f = home() / "gold" / "consensus.csv"
+    if f.exists():
+        try:
+            with open(f, newline="") as fh:
+                for d in csv.DictReader(fh):
+                    if d.get("outcome") in OUTCOMES and d.get("task_id"):
+                        out[d["task_id"]] = d["outcome"]
+        except (OSError, csv.Error, UnicodeError):
+            pass
+    for k, g in gold_latest().items():
+        if g.get("outcome") in OUTCOMES:
+            out[k] = g["outcome"]
+    if rows is not None:
+        live = {r["id"] for r in rows}
+        out = {k: v for k, v in out.items() if k in live}
+    return out
+
+
+def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED) -> dict:
+    """Split gold at random (fixed ``seed``) into a fit half and a held-out half, fit
+    ``voter_accuracy`` on the fit half, run ``posterior`` on the held-out half. Reads stored
+    votes only: no judge call, nothing written. ``status`` is "pass", "fail" or "insufficient"."""
+    by_id = {r["id"]: r for r in rows}
+    ids = sorted(k for k, v in gold.items() if k in by_id and v in OUTCOMES)
+    random.Random(seed).shuffle(ids)
+    n_hold = min(len(ids) - 1, max(1, round(len(ids) * holdout))) if len(ids) > 1 else 0
+    held, fit = ids[:n_hold], ids[n_hold:]
+    res = {"gold": len(ids), "fit": len(fit), "heldout": len(held), "seed": seed,
+           "holdout": holdout, "acc_min": CAL_ACC_MIN, "fail_min": CAL_FAIL_MIN,
+           "fail_hit": CAL_FAIL_HIT}
+    if len(ids) < CAL_MIN_GOLD or not fit or not held:
+        return {**res, "status": "insufficient", "acc": {}}
+    acc = voter_accuracy([by_id[i] for i in fit], {i: gold[i] for i in fit})
+    emitted = correct = 0
+    fails = fails_hit = 0
+    for i in held:
+        lab, p = posterior(by_id[i], acc)
+        emit = p >= EMIT_MIN and lab in OUTCOMES
+        emitted += emit
+        correct += emit and lab == gold[i]
+        if gold[i] == "fail":
+            fails += 1
+            fails_hit += emit and lab == "fail"
+    lo, hi = wilson(correct, emitted)
+    accuracy = correct / emitted if emitted else None
+    acc_ok = emitted > 0 and lo >= CAL_ACC_MIN
+    # Fail recall is required evidence: with fewer than CAL_FAIL_MIN held-out fails the gate cannot
+    # judge it, so the run is "insufficient" (never a pass). Any held-out fail that is missed counts.
+    recall_ok = None if fails < CAL_FAIL_MIN else fails_hit >= CAL_FAIL_HIT
+    status = "insufficient" if recall_ok is None else ("pass" if acc_ok and recall_ok else "fail")
+    return {**res, "status": status, "acc": acc, "emitted": emitted,
+            "emitted_share": emitted / len(held), "correct": correct, "accuracy": accuracy,
+            "wilson_low": lo, "fails_heldout": fails, "fails_recalled": fails_hit,
+            "fail_recall": (fails_hit / fails) if fails else None,
+            "gate": {"accuracy": acc_ok, "fail_recall": recall_ok}}
+
+
+def calibrate_text(r: dict) -> str:
+    if r["status"] == "insufficient" and "gate" not in r:
+        return (f"labels calibrate: not enough data (gold {r['gold']}, fit {r['fit']}, "
+                f"held out {r['heldout']}; need >= {CAL_MIN_GOLD} gold rows)\nGATE: NOT ENOUGH DATA")
+    pct = lambda x: "n/a" if x is None else f"{100 * x:.1f}%"  # noqa: E731
+    g = r["gate"]
+    rec = "n/a" if r["fail_recall"] is None else f"{r['fails_recalled']}/{r['fails_heldout']}"
+    st = lambda v: "n/a" if v is None else ("ok" if v else "FAIL")  # noqa: E731
+    return "\n".join([
+        f"labels calibrate (read-only, stored votes): gold {r['gold']} = fit {r['fit']} + "
+        f"held out {r['heldout']}, seed {r['seed']}",
+        f"  emitted share        {pct(r['emitted_share'])} ({r['emitted']}/{r['heldout']})",
+        f"  accuracy on emitted  {pct(r['accuracy'])} ({r['correct']}/{r['emitted']}), "
+        f"Wilson low {pct(r['wilson_low'])}",
+        f"  fail-class recall    {rec} (held-out fail rows: {r['fails_heldout']})",
+        f"  gate Wilson low >= {CAL_ACC_MIN}: {st(g['accuracy'])}; "
+        f"fail recall >= {CAL_FAIL_HIT} of {CAL_FAIL_MIN}+: {st(g['fail_recall'])}",
+        f"GATE: {'NOT ENOUGH DATA (fewer than ' + str(CAL_FAIL_MIN) + ' held-out fail rows)' if r['status'] == 'insufficient' else r['status'].upper()}"])
+
+
+def gate_passes(rows: list | None = None, gold: dict | None = None) -> bool:
+    """True when ``calibrate`` passes on the data at hand (default seed and split)."""
+    rows = rows if rows is not None else _read(home() / "tasks.jsonl")
+    return calibrate(rows, gold if gold is not None else gold_outcomes(rows))["status"] == "pass"
 
 
 # ---- gold sampling + review -----------------------------------------------------------------
@@ -1158,6 +1281,13 @@ def main(argv=None) -> int:
     b.add_argument("--rejudge", action="store_true",
                    help="drop judge votes the current judge config did not make, then judge "
                         "up to N tasks (newest first)")
+    c = sub.add_parser("calibrate", help="fit voter accuracy on half of gold, score the other "
+                                         "half; gate for `relabel`. Read-only, no judge call")
+    c.add_argument("--holdout", type=float, default=0.5, help="held-out share of gold (default 0.5)")
+    c.add_argument("--seed", type=int, default=CAL_SEED)
+    c.add_argument("--json", action="store_true")
+    sub.add_parser("relabel", help="rewrite labels.jsonl from stored votes; uses gold-fitted "
+                                   "accuracies only when `calibrate` passes")
     sub.add_parser("report", help="coverage, voter accuracy and precision on gold")
     r = sub.add_parser("review", help="label sampled tasks by hand (the gold set)")
     r.add_argument("-n", type=int, default=20)
@@ -1211,6 +1341,21 @@ def main(argv=None) -> int:
             print(f"import-gold: rejected, nothing written: {ex}", file=sys.stderr)
             return 2
         print(f"imported {res['imported']} gold labels by {a.by.strip()}")
+        print(report(res))
+        return 0
+    if a.cmd == "calibrate":
+        if not 0 < a.holdout < 1:
+            print("calibrate: --holdout must be between 0 and 1", file=sys.stderr)
+            return 2
+        rows = _read(home() / "tasks.jsonl")
+        res = calibrate(rows, gold_outcomes(rows), a.holdout, a.seed)
+        print(json.dumps(res, sort_keys=True, default=list) if a.json else calibrate_text(res))
+        return {"pass": 0, "fail": 1}.get(res["status"], 2)
+    if a.cmd == "relabel":
+        res = relabel(calibrated=True)
+        print(f"relabel: gate {res['gate'].upper()}; "
+              + ("gold-fitted accuracies used" if res["gate"] == "pass"
+                 else "gold-fitted accuracies NOT used (uncalibrated)"))
         print(report(res))
         return 0
     if a.cmd == "build":
