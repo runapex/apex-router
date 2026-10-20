@@ -70,7 +70,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: 'budget-burn', facts: { level: 'AMBER', cost: '9.10', budget: 10, ctx: 45 }, actionNeeded: true,
-    m: M(45, 50, 9.1), s: { ...EMPTY_SIGNALS, level: 'AMBER', observed: 'GREEN', exitIn: 2, budgetBurn: 2.6, minutesToExhaust: 18 },
+    m: M(45, 50, 9.1), s: { ...EMPTY_SIGNALS, level: 'AMBER', observed: 'GREEN', exitIn: 2, budgetBurn: 7.2, minutesToExhaust: 18 },
     ds: [d({}), d({})], b: BACK, cells: [cell({})], budgetUsd: 10,
   },
 ]
