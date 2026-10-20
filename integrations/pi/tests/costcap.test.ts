@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { childEnv, costAction, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
+import { childEnv, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-pi.mjs");
 
@@ -91,4 +91,19 @@ test("no max_cost: no steer file, no soft cap fields (old behavior)", async () =
 	assert.equal(r!.capped, undefined);
 	assert.equal(r!.soft_cap_at, undefined);
 	assert.ok(!existsSync(join(root, j.id, "steer.json")));
+});
+
+test("costAdvice: same numbers as cost_advice.py; n gate; no pooling; line only below p75", () => {
+	const row = (c: number, o: Record<string, unknown> = {}) => ({ agent: "worker", model: "opus", thinking: "high", state: "done", cost_usd: c, ...o });
+	const rows: unknown[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(c => row(c));
+	rows.push(row(100, { thinking: "medium" }), row(100, { state: "killed(cost)" }), row(100, { capped: true }), null, "x");
+	assert.deepEqual(costAdvice(rows, "worker", "opus", "high"), { n: 10, p75: 7.75, p90: 9.1 }); // python test: 7.75 / 9.10
+	assert.deepEqual(costAdvice(rows.slice(0, 7), "worker", "opus", "high"), { n: 7 });
+	const d = mkdtempSync(join(tmpdir(), "apexadv-"));
+	const p = join(d, "agent_runs.jsonl");
+	writeFileSync(p, rows.map(r => JSON.stringify(r)).join("\n") + "\nnot json\n");
+	assert.match(costAdviceLine(5, "worker", "opus", "high", p), /no change made.*\$5\.00 is below the done-cost p75 \$7\.75 \(p90 \$9\.10, n=10\)/);
+	assert.equal(costAdviceLine(8, "worker", "opus", "high", p), "");
+	assert.equal(costAdviceLine(undefined, "worker", "opus", "high", p), "");
+	assert.equal(costAdviceLine(1, "worker", "opus", "high", join(d, "missing")), "");
 });

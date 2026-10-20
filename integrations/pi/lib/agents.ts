@@ -765,3 +765,41 @@ export class JobManager {
 		return this.adopt();
 	}
 }
+
+/** A2 advice only (same rule as src/apex_router/cost_advice.py): done-cost p75/p90 for ONE (agent, model, thinking)
+ *  cell, n >= COST_ADVICE_MIN_N, no pooled threshold. Never changes max_cost. */
+export const COST_ADVICE_MIN_N = 8;
+export const AGENT_RUNS = join(homedir(), ".apex-router", "labels", "agent_runs.jsonl");
+export function costAdvice(rows: unknown[], agent: string, model: string | undefined, thinking: string | undefined): { n: number; p75?: number; p90?: number } {
+	const xs = rows
+		.filter((r: any) => r && r.state === "done" && r.capped !== true && r.agent === agent && r.model === (model ?? null) && r.thinking === (thinking ?? null))
+		.map((r: any) => r.cost_usd)
+		.filter((c: unknown): c is number => typeof c === "number" && c > 0)
+		.sort((a, b) => a - b);
+	if (xs.length < COST_ADVICE_MIN_N) return { n: xs.length };
+	const pct = (q: number) => {
+		const k = (xs.length - 1) * q;
+		const lo = Math.floor(k);
+		const hi = Math.min(lo + 1, xs.length - 1);
+		return Math.round((xs[lo]! + (xs[hi]! - xs[lo]!) * (k - lo)) * 1e4) / 1e4;
+	};
+	return { n: xs.length, p75: pct(0.75), p90: pct(0.9) };
+}
+/** The advice line when max_cost is below the cell p75, else "". Any read error gives "". */
+export function costAdviceLine(maxCost: number | undefined, agent: string, model: string | undefined, thinking: string | undefined, path = AGENT_RUNS): string {
+	if (maxCost === undefined) return "";
+	try {
+		const rows = readFileSync(path, "utf8").split("\n").flatMap(l => {
+			try {
+				return l.trim() ? [JSON.parse(l)] : [];
+			} catch {
+				return [];
+			}
+		});
+		const a = costAdvice(rows, agent, model, thinking);
+		if (a.p75 === undefined || maxCost >= a.p75) return "";
+		return `cost advice (no change made): max_cost $${maxCost.toFixed(2)} is below the done-cost p75 $${a.p75.toFixed(2)} (p90 $${a.p90!.toFixed(2)}, n=${a.n}) of ${agent}/${model}/${thinking}.`;
+	} catch {
+		return "";
+	}
+}

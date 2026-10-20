@@ -20,7 +20,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { FINAL, JobManager, softCapGate, type Meta } from "./lib/agents.ts";
+import { costAdviceLine, FINAL, JobManager, softCapGate, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -33,6 +33,12 @@ const depth = () => {
 const maxDepth = () => {
 	const n = Number(process.env.APEX_AGENT_MAX_DEPTH ?? "1");
 	return Number.isInteger(n) && n >= 0 ? Math.min(n, 3) : 1;
+};
+
+/** Value of a flag in the child argv (the model and thinking the job really uses). */
+const argOf = (argv: string[], flag: string): string | undefined => {
+	const i = argv.indexOf(flag);
+	return i >= 0 ? argv[i + 1] : undefined;
 };
 
 const text = (t: string, details: Record<string, unknown> = {}) => ({ content: [{ type: "text" as const, text: t }], details });
@@ -163,17 +169,18 @@ export default function (pi: ExtensionAPI) {
 				tools: def.tools, systemPrompt: def.kind === "xval" ? undefined : systemPrompt(def),
 				timeout_s: p.timeout_s, idle_s: p.idle_s, max_cost: p.max_cost,
 			});
+			const advice = m.kind === "pi" ? costAdviceLine(m.max_cost, m.agent, argOf(m.argv, "--model"), argOf(m.argv, "--thinking")) : "";
 			const wait = Math.min(Math.max(p.wait_s ?? 0, 0), MAX_WAIT_S);
 			if (wait > 0) {
 				const [r] = await holdWait([m.id], () => manager().wait([m.id], wait * 1000, "all", signal));
-				if (r && FINAL.has(r.state)) return text(manager().result(m.id)!.text, { id: m.id, state: r.state });
-				return text(`Job still runs after ${wait}s: ${line(r ?? m)}. You get a message when it ends.`, { id: m.id });
+				if (r && FINAL.has(r.state)) return text(manager().result(m.id)!.text + (advice ? `\n${advice}` : ""), { id: m.id, state: r.state });
+				return text(`Job still runs after ${wait}s: ${line(r ?? m)}. You get a message when it ends.${advice ? `\n${advice}` : ""}`, { id: m.id });
 			}
 			const oneShot = ctx.mode === "print" || ctx.mode === "json";
 			const next = oneShot
 				? "This run is non-interactive (-p): it ends when you stop, so no completion message can arrive. Call agent_wait on this job before your final answer."
 				: "You get a message when it ends. Use agent_wait to block with a limit.";
-			return text(`Started ${line(m)}${p.worktree ? `\nworktree: ${cwd}` : ""}\n${next}`, { id: m.id });
+			return text(`Started ${line(m)}${p.worktree ? `\nworktree: ${cwd}` : ""}${advice ? `\n${advice}` : ""}\n${next}`, { id: m.id });
 		},
 	});
 
