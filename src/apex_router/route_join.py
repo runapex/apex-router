@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import stats
 from .route_conformance import default_conformance_path
 from .route_log import (ALL_TIER_RANK, CHEAP_START_TIERS, CLAUDE_CODE_SURFACE, GPT_FAMILY,
-                        OTHER_TIER, default_labeled_path, default_log_path, format_models,
+                        OTHER_TIER, cause_of, default_labeled_path, default_log_path, format_models,
                         is_cross_family, is_gpt_family, note_other_model, tier_family, tier_of)
 from .telemetry_path import telemetry_path as _resolve_telemetry_path
 
@@ -195,6 +195,9 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
         "resolved_model": conf_row.get("resolved_model"),
         "matched": conf_row.get("matched"),
     }
+    cause = cause_of(route_row)
+    if cause is not None:
+        out["cause"] = cause
     # The outcome's tier is the model that RAN (route_log `model`): on a subscription overlay a
     # pi `sonnet` cue runs gpt-5.6-terra, so the row is gpt-terra's, with `family` as the label.
     tier = tier_of(route_row.get("start_tier")) or tier_of(route_row.get("model"))
@@ -207,6 +210,10 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
     fam = route_row.get("family")
     if isinstance(fam, str):
         out["family"] = fam
+    for key in ("agent_id", "tool_use_id"):
+        value = route_row.get(key) or conf_row.get(key)
+        if isinstance(value, str):
+            out[key] = value
     # context_size: conformance preferred, else route_log.
     cs = conf_row.get("context_size")
     if cs is None:
@@ -497,6 +504,9 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
             "error_count": t["error_count"] if t else 0,
             "escalated_by": None,
         }
+        cause = cause_of(r)
+        if cause is not None:
+            row["cause"] = cause
         cs = r.get("context_size")
         if cs is not None:
             row["context_size"] = cs
@@ -553,7 +563,79 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
     }
 
 
-def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None) -> dict:
+def _quality_labels(path: Path) -> list:
+    """Read label identities and timestamps, including legacy timestamps from tasks.jsonl."""
+    def read(p):
+        try:
+            with p.open(errors="replace") as f:
+                return [r for line in f if line.strip()
+                        for r in [json.loads(line)] if isinstance(r, dict)]
+        except Exception:
+            return []
+
+    tasks = {r.get("id"): r for r in read(path.with_name("tasks.jsonl"))
+             if isinstance(r.get("id"), str)}
+    rows = []
+    for label in read(path):
+        if label.get("label") not in ("success", "partial", "fail"):
+            continue
+        row = {**tasks.get(label.get("id"), {}), **label}
+        row["session_id"] = row.get("session_id") or row.get("session")
+        ts = row.get("ts")
+        if isinstance(ts, str):
+            try:
+                row["ts"] = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+        rows.append(row)
+    return rows
+
+
+def _identity_compatible(a: dict, b: dict) -> bool:
+    return (not b.get("tool_use_id") or a.get("tool_use_id") == b["tool_use_id"]) and all(
+        not a.get(k) or not b.get(k) or a[k] == b[k]
+        for k in ("session_id", "agent_id"))
+
+
+def _match_quality(route: dict, labels: list) -> dict | None:
+    labels = [r for r in labels if _identity_compatible(route, r)]
+    tool = route.get("tool_use_id")
+    sid = route.get("session_id")
+    candidates = [r for r in labels if tool and r.get("tool_use_id") == tool
+                  and (not sid or not r.get("session_id") or sid == r.get("session_id"))]
+    if not candidates and sid and _is_finite_ts(route.get("ts")):
+        candidates = [r for r in labels if r.get("session_id") == sid
+                      and _is_finite_ts(r.get("ts"))
+                      and abs(r["ts"] - route["ts"]) <= _JOIN_WINDOW_S]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: abs(r["ts"] - route["ts"])
+               if _is_finite_ts(r.get("ts")) and _is_finite_ts(route.get("ts")) else float("inf"))
+
+
+def _claim_quality(routes: list, labels: list) -> dict:
+    """Claim exact tool pairs first, then session pairs, greedily by timestamp distance."""
+    pairs = []
+    for ri, route in enumerate(routes):
+        for li, label in enumerate(labels):
+            if not _identity_compatible(route, label):
+                continue
+            exact = bool(route.get("tool_use_id")) and route.get("tool_use_id") == label.get("tool_use_id")
+            distance = (abs(route["ts"] - label["ts"])
+                        if _is_finite_ts(route.get("ts")) and _is_finite_ts(label.get("ts"))
+                        else float("inf"))
+            if exact or (route.get("session_id") and route.get("session_id") == label.get("session_id")
+                         and distance <= _JOIN_WINDOW_S):
+                pairs.append((not exact, distance, ri, li))
+    claims, used_labels = {}, set()
+    for _, _, ri, li in sorted(pairs):
+        if ri not in claims and li not in used_labels:
+            claims[ri] = labels[li]
+            used_labels.add(li)
+    return claims
+
+
+def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None, label_path=None) -> dict:
     """Join route_log rows to conformance rows for the Phase-0 training table.
 
     Returns {"table": [...], "stats": {...}} on success, {} on any failure.
@@ -595,9 +677,13 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
 
         used_conf_indices = set()
         table: List[Dict[str, Any]] = []
+        table_routes = []
         null_ts = 0
         no_partner = 0
 
+        # Reserve exact identities before weaker rows can consume their partners.
+        exact_tools = {c.get("tool_use_id") for c in usable_conf if c.get("tool_use_id")}
+        classic_rows.sort(key=lambda r: r.get("tool_use_id") not in exact_tools)
         for r in classic_rows:
             ts = r.get("ts")
             if not _is_finite_ts(ts):
@@ -608,14 +694,27 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
             best_idx: int | None = None
             best_diff = float("inf")
 
-            # First pass: session-id match (must still satisfy the ts window).
+            # Exact dispatch identity takes precedence over session and time proximity.
+            route_tool = r.get("tool_use_id")
             route_sid = r.get("session_id")
-            if isinstance(route_sid, str):
+            if route_tool:
+                for idx, c in candidates:
+                    if idx in used_conf_indices or c.get("tool_use_id") != route_tool:
+                        continue
+                    if not _identity_compatible(r, c):
+                        continue
+                    diff = abs(ts - c["ts"])
+                    if diff < best_diff:
+                        best_diff, best_idx = diff, idx
+
+            # Next pass: session-id match (must still satisfy the ts window).
+            route_sid = r.get("session_id")
+            if best_idx is None and isinstance(route_sid, str):
                 for idx, c in candidates:
                     if idx in used_conf_indices:
                         continue
                     c_sid = c.get("session_id")
-                    if not isinstance(c_sid, str) or c_sid != route_sid:
+                    if not isinstance(c_sid, str) or c_sid != route_sid or not _identity_compatible(r, c):
                         continue
                     diff = abs(ts - c["ts"])
                     if diff <= _JOIN_WINDOW_S and diff < best_diff:
@@ -626,6 +725,8 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
             if best_idx is None:
                 for idx, c in candidates:
                     if idx in used_conf_indices:
+                        continue
+                    if not _identity_compatible(r, c):
                         continue
                     diff = abs(ts - c["ts"])
                     if diff <= _JOIN_WINDOW_S and diff < best_diff:
@@ -638,6 +739,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
 
             used_conf_indices.add(best_idx)
             table.append(_build_joined(r, usable_conf[best_idx]))
+            table_routes.append(r)
 
         conformance_joined = len(table)
         timed_dispatch = []
@@ -648,11 +750,28 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 null_ts += 1
         cc_table, cc_stats = _build_dispatch_rows(timed_dispatch, tel_p, read_errors)
         table.extend(cc_table)
+        labels_p = Path(label_path) if label_path is not None else log_p.parent / "labels" / "labels.jsonl"
+        quality_labels = _quality_labels(labels_p)
+        # Use the same claims for coverage and table labels; never claim a label twice.
+        unique_dispatch, _ = _dedupe_dispatch(dispatch_rows)
+        claim_routes = classic_rows + unique_dispatch
+        claims = _claim_quality(claim_routes, quality_labels)
+        by_route = {id(claim_routes[i]): label for i, label in claims.items()}
+        label_matches = len(claims)
+        timed_unique, _ = _dedupe_dispatch(timed_dispatch)
+        table_routes.extend(timed_unique)
+        for row, route in zip(table, table_routes):
+            match = by_route.get(id(route))
+            if match is not None:
+                row["quality_label"] = match["label"]
+                row["quality_label_id"] = match.get("id")
 
         return {
             "table": table,
             "stats": {
                 "route_rows": len(route_rows),
+                "label_matches": label_matches,
+                "join_rate": label_matches / len(route_rows) if route_rows else 0.0,
                 "route_skipped": route_skipped,
                 "conformance_rows": len(conf_rows),
                 "conformance_skipped": conf_skipped,
@@ -696,7 +815,7 @@ def cell_rates(table) -> dict:
             escalated = row.get("escalated")
             if not isinstance(tt, str) or not isinstance(escalated, bool):
                 continue
-            if row.get("label_status") == UNLABELED:
+            if row.get("label_status") == UNLABELED and cause_of(row) != "infra":
                 continue
             if row.get("cross_family") is True:
                 continue
@@ -708,6 +827,10 @@ def cell_rates(table) -> dict:
             if not (isinstance(tier, str) and tier in ALL_TIER_RANK):
                 tier = tier_of(row.get("model"))
             sub = cell["by_tier"].setdefault(tier or OTHER_TIER, {"n": 0, "escalated": 0, "rate": 0.0})
+            if cause_of(row) == "infra":
+                cell["infra"] = cell.get("infra", 0) + 1
+                sub["infra"] = sub.get("infra", 0) + 1
+                continue
             sub["n"] += 1
             sub["escalated"] += 1 if escalated else 0
             sub["rate"] = sub["escalated"] / sub["n"]
@@ -831,6 +954,8 @@ def main(argv=None) -> int:
               f"excluded_agent_intent={st.get('excluded_agent_intent', 0)}")
         print(f"  join result:        joined={st.get('joined', 0)}  null_ts={st.get('null_ts', 0)}  "
               f"no_partner={st.get('no_partner', 0)}")
+        print(f"  label match rate:   {st.get('label_matches', 0)}/{st.get('route_rows', 0)} "
+              f"({st.get('join_rate', 0.0):.1%})")
         print(f"  claude-code rows:   {st.get('claude_code_rows', 0)}  "
               f"telemetry_joined={st.get('telemetry_joined', 0)}  "
               f"escalated_inferred={st.get('escalated_inferred', 0)}  "
@@ -865,16 +990,16 @@ def main(argv=None) -> int:
             return 0
 
         rates = cell_rates(table)
-        print(f"\n{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7} {'95% CI':>15} {'with_ctx':>9}")
+        print(f"\n{'task_type':<12} {'n':>5} {'escalated':>10} {'rate':>7} {'95% CI':>15} {'with_ctx':>9} {'infra':>7}")
         for tt in sorted(rates):
             r = rates[tt]
             lo, hi = r["ci"]
             print(f"{tt:<12} {r['n']:>5} {r['escalated']:>10} {r['rate']:>7.2f} "
-                  f"[{lo:>6.2f},{hi:>6.2f}] {r['with_context']:>9}")
+                  f"[{lo:>6.2f},{hi:>6.2f}] {r['with_context']:>9} {r.get('infra', 0):>7}")
             by_tier = r.get("by_tier") or {}
             for tier in sorted(by_tier, key=lambda t: (tier_family(t) or "~", ALL_TIER_RANK.get(t, 99), t)):
                 b = by_tier[tier]
-                print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}")
+                print(f"  {tier:<11}{b['n']:>5} {b['escalated']:>10} {b['rate']:>7.2f}  infra={b.get('infra', 0)}")
                 if b.get("models"):
                     print(f"    models: {format_models(b['models'])}")
         if st.get("cross_family"):

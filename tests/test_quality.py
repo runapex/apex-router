@@ -56,8 +56,8 @@ def test_collect_counts_each_source(tmp_path, monkeypatch):
     monkeypatch.setattr(quality.Path, "home", lambda: tmp_path)    # codeqa log: absent
     q = quality.collect(NOW, tel, home)
     c = q["classification"]
-    assert c["n"] == 3 and c["types"] == {"debug": 2, "review": 1}   # pending + old left out
-    assert c["escalated"] == 1 and c["escalation_causes"] == {"provider error": 1}
+    assert c["n"] == 2 and c["types"] == {"debug": 1, "review": 1}
+    assert c["infra"] == 1 and c["escalated"] == 0 and c["escalation_causes"] == {}
     m = q["conformance"]
     assert (m["n"], m["observed"], m["mismatched"]) == (3, 2, 1)     # null match: not observed
     assert m["mismatches"] == {"explore: sonnet → kimi": 1}
@@ -75,11 +75,11 @@ def test_quality_lines_and_colours(tmp_path, monkeypatch):
     monkeypatch.setattr(quality.Path, "home", lambda: tmp_path)
     lines = snapshot._quality_lines(quality.collect(NOW, tel, home))
     plain = [ln.split(" | ")[0] for ln in lines]
-    assert plain == ["routing 3 tasks · debug 2 review 1 · escalated 1 (33%)",
+    assert plain == ["routing 2 tasks · debug 1 review 1 · escalated 0 (0%)",
                      "tier match 1/2 (50%)",
                      "requests 200 · ok 98% · retries 2 · failed 3",
                      "verify xval 1/2 verdict"]
-    assert "escalated because: provider error 1" in lines[0]
+    assert "escalated because:" not in lines[0]
     assert "explore: sonnet → kimi ×1" in lines[1]
     assert "no cause recorded 1" in lines[2]
     assert all("color=" in ln for ln in lines)

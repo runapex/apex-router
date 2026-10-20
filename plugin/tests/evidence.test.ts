@@ -36,6 +36,19 @@ describe('evidence', () => {
     expect(parseKey('explore|GREEN')).toBeNull()
   })
 
+  test('unavailable runs do not change the pass rate or Wilson gate', () => {
+    const cells: Record<string, Cell> = {}
+    const key = feed(cells, 'explore', 'GREEN', 'sonnet', 35)
+    const before = { ...cells[key]! }
+    for (let i = 0; i < 20; i++) recordOutcome(cells, key, null)
+    expect(cells[key]).toEqual(before)
+    const stats: Stats = { [key]: { unavailable: { n: 55, mean: 20 / 55, m2: 0 }, unavailable_excluded: { n: 55, mean: 20 / 55, m2: 0 } } }
+    const view = cellViews(cells, stats)[0]!
+    expect(view.unavailable).toBe(20)
+    expect(view.n).toBe(35)
+    expect(view.wilsonLo).toBeGreaterThan(0.9)
+  })
+
   test('no evidence, no advice', () => {
     expect(adviceFor({}, {}, 'explore', 'GREEN', 'opus')).toBeNull()
     expect(adviceFor({}, {}, 'explore', 'GREEN', null)).toBeNull()

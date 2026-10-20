@@ -44,6 +44,11 @@ export function unavailableOf(stats: Stats, key: string): number {
   return w !== undefined ? Math.round(w.n * w.mean) : 0
 }
 
+function excludedOf(stats: Stats, key: string): number {
+  const w = stats[key]?.unavailable_excluded
+  return w === undefined ? 0 : Math.round(w.n * w.mean)
+}
+
 export const kTok = (t: number | null): string => (t === null ? '—' : `${Math.round(t / 1000)}k`)
 
 export function basisOf(requested: Tier, tier: Tier, c: Cell, level: Level, tok: number | null): string {
@@ -96,7 +101,7 @@ export function adviceFor(
   return null
 }
 
-export function recordOutcome(cells: Record<string, Cell>, key: string, passed: boolean): { before: CellState; after: CellState } {
+export function recordOutcome(cells: Record<string, Cell>, key: string, passed: boolean | null): { before: CellState; after: CellState } {
   const prev = cells[key] ?? cellNew()
   const next = cellObserve(prev, passed)
   cells[key] = next
@@ -112,7 +117,7 @@ export function cellViews(cells: Record<string, Cell>, stats: Stats): CellView[]
     views.push({
       key, taskType: p.taskType, level: p.level, tier: p.tier, state: c.state, n: c.n, pass: c.pass, wilsonLo: wilsonLo(c.pass, c.n),
       tokMean: tokMean(stats, key), tokN: Math.min(c.n, stats[key]?.tokens?.n ?? 0), durationMean: durationMean(stats, key),
-      durationN: Math.min(c.n, stats[key]?.duration_ms?.n ?? 0), unavailable: Math.min(c.n - c.pass, unavailableOf(stats, key)),
+      durationN: Math.min(c.n, stats[key]?.duration_ms?.n ?? 0), unavailable: Math.min(c.n - c.pass, Math.max(0, unavailableOf(stats, key) - excludedOf(stats, key))) + excludedOf(stats, key),
     })
   }
   return views.sort(

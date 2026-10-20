@@ -190,6 +190,7 @@ def main(argv=None) -> int:
     route_log_p.add_argument("--outcome", required=True,
                              help="ok = cheap succeeded; escalated = re-dispatched heavy")
     route_log_p.add_argument("--note", default="")
+    route_log_p.add_argument("--cause", choices=("infra", "capability"), default=None)
     route_log_p.add_argument("--context-size", type=int, default=None)
     route_log_p.add_argument("--session-id", type=str, default=None)
     # Dispatch-surface fields (claude-code hook rows; any surface may pass them). With
@@ -372,7 +373,8 @@ def main(argv=None) -> int:
                                    tool_use_id=args.tool_use_id,
                                    start_tier=args.start_tier if args.label_pending else None,
                                    description=args.description,
-                                   family=args.family)
+                                   family=args.family,
+                                   cause=args.cause)
         if not ok:
             try:
                 print(f"route-log: not recorded (outcome={args.outcome!r} invalid or "

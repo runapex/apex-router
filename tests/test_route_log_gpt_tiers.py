@@ -190,8 +190,8 @@ class TestFamilyField(unittest.TestCase):
     def test_pi_extension_passes_family(self):
         ts = (ROOT / "integrations" / "pi" / "apex-route.ts").read_text()
         self.assertIn('args.push("--family", family)', ts)
-        self.assertEqual(ts.count("contextSize, family)") + ts.count("contextSize,\n\t\t\t\tcue.family)")
-                         + ts.count("contextSize, cue.family)"), 3)
+        self.assertEqual(ts.count("contextSize, family, keys)") + ts.count("contextSize,\n\t\t\t\tcue.family, keys)")
+                         + ts.count("contextSize, cue.family, keys)"), 3)
 
 
 class TestRouteJoin(unittest.TestCase):
