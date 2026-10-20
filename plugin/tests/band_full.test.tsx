@@ -33,7 +33,7 @@ describe('band line', () => {
     const ctx = bandLine({ m: m(88, 40, 6.4), s: EMPTY_SIGNALS, ds: [], b: EMPTY_BACKEND, budgetUsd: 0 })
     expect(ctx).toBe('apex GREEN · context 88% full · run /compact · 5h 40% · $6.40')
     const burn = bandLine({ m: m(45, 50, 9.1), s: { ...EMPTY_SIGNALS, level: 'AMBER', minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 10 })
-    expect(burn).toBe('apex AMBER · $9.10/$10 · empty in about 18 min · pause new subagents')
+    expect(burn).toBe('apex AMBER · $9.10/$10, empty ≈18 min · pause new subagents · context 45%')
     expect(burn.length).toBeLessThanOrEqual(74)
     const red = bandLine({ m: m(61, 95, 4.12), s: { ...EMPTY_SIGNALS, level: 'RED' }, ds: [dispatch(null, 'claude-opus-5-5'), dispatch(null, 'claude-opus-5-5'), dispatch(null, 'claude-opus-5-5')], b: EMPTY_BACKEND, budgetUsd: 0 })
     expect(red).toBe('apex RED · 5h limit 95% · pause new subagents · context 61% · $4.12')

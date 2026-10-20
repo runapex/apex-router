@@ -80,7 +80,7 @@ export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
     const mins = i.s.minutesToExhaust
     const soon = mins !== null && mins <= BUDGET_MINUTES
     if (soon || m.costUsd >= BUDGET_SHARE * i.budgetUsd) {
-      const when = mins !== null ? ` · empty in about ${Math.round(mins)} min` : ''
+      const when = mins !== null ? `, empty ≈${Math.round(mins)} min` : ''
       out.push({ kind: 'budget', cause: `${budgetCell(m.costUsd, i.budgetUsd)}${when}`, action: 'pause new subagents' })
     }
   }
