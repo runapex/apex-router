@@ -6,7 +6,7 @@ import json
 from apex_router import labels as L
 
 
-def _rows(n_ok=40, n_fail=10, noisy=False):
+def _rows(n_ok=80, n_fail=20, noisy=False):
     """Two rule voters. 'tests' is right on every row; 'commit' is right on every row too
     (or random-ish when noisy). Gold = the true outcome."""
     rows, gold = [], {}
@@ -25,8 +25,8 @@ def test_calibrate_pass_reports_all_numbers():
     rows, gold = _rows()
     r = L.calibrate(rows, gold, 0.5, 7)
     assert r["status"] == "pass"
-    assert r["gold"] == 50 and r["fit"] + r["heldout"] == 50
-    assert r["accuracy"] >= 0.85 and 0 < r["wilson_low"] <= r["accuracy"]
+    assert r["gold"] == 100 and r["fit"] + r["heldout"] == 100
+    assert r["wilson_low"] >= 0.85 and r["wilson_low"] <= r["accuracy"]
     assert r["emitted_share"] > 0 and r["fails_heldout"] >= 2 and r["fail_recall"] >= 0.5
     txt = L.calibrate_text(r)
     for w in ("emitted share", "accuracy on emitted", "Wilson low", "fail-class recall", "GATE: PASS"):
@@ -53,11 +53,28 @@ def test_calibrate_fail_recall_gate_and_na():
     r = L.calibrate(rows, gold, 0.5, 7)
     assert r["fails_heldout"] >= 2 and r["gate"]["fail_recall"] is False
     assert r["status"] == "fail"
-    # fewer than 2 fails held out -> recall is n/a and does not block
-    rows, gold = _rows(n_ok=40, n_fail=1)
+    # fewer than 2 fails held out -> recall cannot be judged: NOT a pass (reviewer finding)
+    rows, gold = _rows(n_ok=80, n_fail=1)
     r = L.calibrate(rows, gold, 0.5, 7)
     assert r["fails_heldout"] < 2 and r["gate"]["fail_recall"] is None
-    assert "n/a" in L.calibrate_text(r)
+    assert r["status"] == "insufficient" and "NOT ENOUGH DATA" in L.calibrate_text(r)
+
+
+def test_tiny_emitted_set_cannot_pass_on_point_accuracy():
+    # reviewer repro: 1 correct emission + abstentions gave PASS on point accuracy 100 %
+    rows, gold = _rows(n_ok=16, n_fail=4)
+    for r in rows:
+        r["votes"] = {"tests": gold[r["id"]]} if r["index"] in (0, 16, 17, 18, 19) else {}
+    r = L.calibrate(rows, gold, 0.5, 7)
+    assert r["status"] != "pass"
+
+
+def test_missed_single_fail_is_not_hidden_by_na():
+    # reviewer repro: predict success throughout; one held-out fail missed -> must not PASS
+    rows, gold = _rows(n_ok=80, n_fail=1)
+    for r in rows:
+        r["votes"] = {"tests": "success", "commit": "success"}
+    assert L.calibrate(rows, gold, 0.5, 7)["status"] != "pass"
 
 
 def test_calibrate_not_enough_data():

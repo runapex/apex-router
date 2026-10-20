@@ -735,8 +735,9 @@ def relabel(rows=None, write: bool = True, calibrated: bool = False) -> dict:
 
 # ---- calibration (C3) -----------------------------------------------------------------------
 
-CAL_ACC_MIN = 0.85              # held-out accuracy on emitted labels needed to PASS
-CAL_FAIL_MIN = 2                # gold fail rows held out needed to judge fail recall
+CAL_ACC_MIN = 0.85              # held-out accuracy on emitted labels needed to PASS: the Wilson LOW bound,
+                                # not the point value (a tiny emitted set must not pass on luck)
+CAL_FAIL_MIN = 2                # gold fail rows held out needed to judge fail recall; fewer = not enough data
 CAL_FAIL_HIT = 2                # fail rows that must be recalled when >= CAL_FAIL_MIN are held out
 CAL_MIN_GOLD = 20               # fewer gold rows than this: not enough data (exit 2)
 CAL_SEED = 7
@@ -792,10 +793,12 @@ def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED
             fails_hit += emit and lab == "fail"
     lo, hi = wilson(correct, emitted)
     accuracy = correct / emitted if emitted else None
-    acc_ok = accuracy is not None and accuracy >= CAL_ACC_MIN
+    acc_ok = emitted > 0 and lo >= CAL_ACC_MIN
+    # Fail recall is required evidence: with fewer than CAL_FAIL_MIN held-out fails the gate cannot
+    # judge it, so the run is "insufficient" (never a pass). Any held-out fail that is missed counts.
     recall_ok = None if fails < CAL_FAIL_MIN else fails_hit >= CAL_FAIL_HIT
-    ok = acc_ok and recall_ok is not False
-    return {**res, "status": "pass" if ok else "fail", "acc": acc, "emitted": emitted,
+    status = "insufficient" if recall_ok is None else ("pass" if acc_ok and recall_ok else "fail")
+    return {**res, "status": status, "acc": acc, "emitted": emitted,
             "emitted_share": emitted / len(held), "correct": correct, "accuracy": accuracy,
             "wilson_low": lo, "fails_heldout": fails, "fails_recalled": fails_hit,
             "fail_recall": (fails_hit / fails) if fails else None,
@@ -803,7 +806,7 @@ def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED
 
 
 def calibrate_text(r: dict) -> str:
-    if r["status"] == "insufficient":
+    if r["status"] == "insufficient" and "gate" not in r:
         return (f"labels calibrate: not enough data (gold {r['gold']}, fit {r['fit']}, "
                 f"held out {r['heldout']}; need >= {CAL_MIN_GOLD} gold rows)\nGATE: NOT ENOUGH DATA")
     pct = lambda x: "n/a" if x is None else f"{100 * x:.1f}%"  # noqa: E731
@@ -817,9 +820,9 @@ def calibrate_text(r: dict) -> str:
         f"  accuracy on emitted  {pct(r['accuracy'])} ({r['correct']}/{r['emitted']}), "
         f"Wilson low {pct(r['wilson_low'])}",
         f"  fail-class recall    {rec} (held-out fail rows: {r['fails_heldout']})",
-        f"  gate accuracy >= {CAL_ACC_MIN}: {st(g['accuracy'])}; "
+        f"  gate Wilson low >= {CAL_ACC_MIN}: {st(g['accuracy'])}; "
         f"fail recall >= {CAL_FAIL_HIT} of {CAL_FAIL_MIN}+: {st(g['fail_recall'])}",
-        f"GATE: {r['status'].upper()}"])
+        f"GATE: {'NOT ENOUGH DATA (fewer than ' + str(CAL_FAIL_MIN) + ' held-out fail rows)' if r['status'] == 'insufficient' else r['status'].upper()}"])
 
 
 def gate_passes(rows: list | None = None, gold: dict | None = None) -> bool:
