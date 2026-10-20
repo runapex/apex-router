@@ -1,0 +1,15 @@
+{"id": "20261020204522-k4nq", "agent": "worker", "model": "it-entra-gpt-6.1-sol", "state": "done", "turns": 60, "cost": 7.701, "wall_s": 1302}
+{"id": "20261020204522-cv9p", "agent": "worker", "model": "it-entra-claude-sonnet-5-5", "state": "done", "turns": 16, "cost": 0.53, "wall_s": 692}
+{"id": "20261020204522-qhhf", "agent": "worker", "model": "it-entra-claude-opus-5-5", "state": "done", "turns": 25, "cost": 4.547, "wall_s": 588}
+{"id": "20261020204523-2km3", "agent": "worker", "model": "it-entra-claude-sonnet-5-5", "state": "done", "turns": 17, "cost": 0.726, "wall_s": 803}
+{"id": "20261020211148-9k84", "agent": "worker", "model": "it-entra-gpt-6.1-sol", "state": "failed", "turns": 26, "cost": 1.602, "wall_s": 892}
+{"id": "20261020205519-hnam", "agent": "xval", "model": "xval", "state": "timed_out(idle)", "turns": 0, "cost": 0, "wall_s": 701}
+{"id": "20261020205703-3mom", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 412}
+{"id": "20261020205855-2gex", "agent": "xval", "model": "xval", "state": "timed_out(idle)", "turns": 0, "cost": 0, "wall_s": 700}
+{"id": "20261020210844-jqye", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 88}
+{"id": "20261020210714-xhsn", "agent": "reviewer", "model": "it-entra-claude-opus-5-5", "state": "done", "turns": 14, "cost": 2.172, "wall_s": 181}
+{"id": "20261020211307-s96y", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 111}
+{"id": "20261020211307-8eou", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 65}
+{"id": "20261020211720-47lh", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 78}
+{"id": "20261020212920-dpsd", "agent": "reviewer", "model": "it-entra-claude-opus-5-5", "state": "done", "turns": 10, "cost": 1.195, "wall_s": 69}
+{"id": "20261020212944-dg3x", "agent": "xval", "model": "xval", "state": "done", "turns": 0, "cost": 0, "wall_s": 716}

@@ -6,6 +6,23 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+### Added
+- Soft cost cap for pi sub-agents (A1): at 85 % of `max_cost` the child is told to write its final
+  report and new tool calls are blocked; the hard stop moves to 110 %. The job ends `done` with
+  `capped: true`. `python -m apex_router.cost_advice` gives per-cell done-cost p75/p90 (A2, n >= 8).
+- `apex-router review-gate record|tests|regress|post-go|check|report` (B1, B3): an advisory
+  acceptance gate (cross-vendor GO with code access, tests passed, regression tests for confirmed
+  findings) and review-loop records with ids, enums and counts only.
+- `apex-router labels calibrate` (C3): held-out check of the weak labeller on gold; the gate needs
+  a Wilson low >= 0.85 and fail recall. `labels relabel` uses gold-fitted accuracies only on PASS.
+- Route and label rows carry join keys (`session_id`, `agent_id`, `tool_use_id`, `model`, `tier`),
+  and `route-join` reports a label match rate (C2).
+
+### Fixed
+- Provider errors no longer count as capability failures (C1). `route_log` rows carry
+  `cause: infra|capability`; old rows derive it from the note. Plugin cells leave out
+  `unavailable` runs from the pass rate.
+
 ### Changed
 - datapce band and `/apex` pane are now plain words. The band reads `apex LEVEL · figures`. When
   you must act, the cause and the action come right after the level: `5h limit 95% · pause new
