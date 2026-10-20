@@ -210,6 +210,10 @@ def _build_joined(route_row: Dict[str, Any], conf_row: Dict[str, Any]) -> Dict[s
     fam = route_row.get("family")
     if isinstance(fam, str):
         out["family"] = fam
+    for key in ("agent_id", "tool_use_id"):
+        value = route_row.get(key) or conf_row.get(key)
+        if isinstance(value, str):
+            out[key] = value
     # context_size: conformance preferred, else route_log.
     cs = conf_row.get("context_size")
     if cs is None:
@@ -559,7 +563,56 @@ def _build_dispatch_rows(rows: List[Dict[str, Any]], telemetry_path: Path,
     }
 
 
-def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None) -> dict:
+def _quality_labels(path: Path) -> list:
+    """Read label identities and timestamps, including legacy timestamps from tasks.jsonl."""
+    def read(p):
+        try:
+            with p.open(errors="replace") as f:
+                return [r for line in f if line.strip()
+                        for r in [json.loads(line)] if isinstance(r, dict)]
+        except Exception:
+            return []
+
+    tasks = {r.get("id"): r for r in read(path.with_name("tasks.jsonl"))
+             if isinstance(r.get("id"), str)}
+    rows = []
+    for label in read(path):
+        if label.get("label") not in ("success", "partial", "fail"):
+            continue
+        row = {**tasks.get(label.get("id"), {}), **label}
+        row["session_id"] = row.get("session_id") or row.get("session")
+        ts = row.get("ts")
+        if isinstance(ts, str):
+            try:
+                row["ts"] = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+        rows.append(row)
+    return rows
+
+
+def _identity_compatible(a: dict, b: dict) -> bool:
+    return all(not a.get(k) or not b.get(k) or a[k] == b[k]
+               for k in ("session_id", "agent_id", "tool_use_id"))
+
+
+def _match_quality(route: dict, labels: list) -> dict | None:
+    labels = [r for r in labels if _identity_compatible(route, r)]
+    tool = route.get("tool_use_id")
+    sid = route.get("session_id")
+    candidates = [r for r in labels if tool and r.get("tool_use_id") == tool
+                  and (not sid or not r.get("session_id") or sid == r.get("session_id"))]
+    if not candidates and sid and _is_finite_ts(route.get("ts")):
+        candidates = [r for r in labels if r.get("session_id") == sid
+                      and _is_finite_ts(r.get("ts"))
+                      and abs(r["ts"] - route["ts"]) <= _JOIN_WINDOW_S]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: abs(r["ts"] - route["ts"])
+               if _is_finite_ts(r.get("ts")) and _is_finite_ts(route.get("ts")) else float("inf"))
+
+
+def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None, label_path=None) -> dict:
     """Join route_log rows to conformance rows for the Phase-0 training table.
 
     Returns {"table": [...], "stats": {...}} on success, {} on any failure.
@@ -604,6 +657,9 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
         null_ts = 0
         no_partner = 0
 
+        # Reserve exact identities before weaker rows can consume their partners.
+        exact_tools = {c.get("tool_use_id") for c in usable_conf if c.get("tool_use_id")}
+        classic_rows.sort(key=lambda r: r.get("tool_use_id") not in exact_tools)
         for r in classic_rows:
             ts = r.get("ts")
             if not _is_finite_ts(ts):
@@ -614,14 +670,27 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
             best_idx: int | None = None
             best_diff = float("inf")
 
-            # First pass: session-id match (must still satisfy the ts window).
+            # Exact dispatch identity takes precedence over session and time proximity.
+            route_tool = r.get("tool_use_id")
             route_sid = r.get("session_id")
-            if isinstance(route_sid, str):
+            if route_tool:
+                for idx, c in candidates:
+                    if idx in used_conf_indices or c.get("tool_use_id") != route_tool:
+                        continue
+                    if not _identity_compatible(r, c):
+                        continue
+                    diff = abs(ts - c["ts"])
+                    if diff < best_diff:
+                        best_diff, best_idx = diff, idx
+
+            # Next pass: session-id match (must still satisfy the ts window).
+            route_sid = r.get("session_id")
+            if best_idx is None and isinstance(route_sid, str):
                 for idx, c in candidates:
                     if idx in used_conf_indices:
                         continue
                     c_sid = c.get("session_id")
-                    if not isinstance(c_sid, str) or c_sid != route_sid:
+                    if not isinstance(c_sid, str) or c_sid != route_sid or not _identity_compatible(r, c):
                         continue
                     diff = abs(ts - c["ts"])
                     if diff <= _JOIN_WINDOW_S and diff < best_diff:
@@ -632,6 +701,8 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
             if best_idx is None:
                 for idx, c in candidates:
                     if idx in used_conf_indices:
+                        continue
+                    if not _identity_compatible(r, c):
                         continue
                     diff = abs(ts - c["ts"])
                     if diff <= _JOIN_WINDOW_S and diff < best_diff:
@@ -654,11 +725,21 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None)
                 null_ts += 1
         cc_table, cc_stats = _build_dispatch_rows(timed_dispatch, tel_p, read_errors)
         table.extend(cc_table)
+        labels_p = Path(label_path) if label_path is not None else log_p.parent / "labels" / "labels.jsonl"
+        quality_labels = _quality_labels(labels_p)
+        label_matches = sum(_match_quality(r, quality_labels) is not None for r in route_rows)
+        for row in table:
+            match = _match_quality(row, quality_labels)
+            if match is not None:
+                row["quality_label"] = match["label"]
+                row["quality_label_id"] = match.get("id")
 
         return {
             "table": table,
             "stats": {
                 "route_rows": len(route_rows),
+                "label_matches": label_matches,
+                "join_rate": label_matches / len(route_rows) if route_rows else 0.0,
                 "route_skipped": route_skipped,
                 "conformance_rows": len(conf_rows),
                 "conformance_skipped": conf_skipped,
@@ -841,6 +922,8 @@ def main(argv=None) -> int:
               f"excluded_agent_intent={st.get('excluded_agent_intent', 0)}")
         print(f"  join result:        joined={st.get('joined', 0)}  null_ts={st.get('null_ts', 0)}  "
               f"no_partner={st.get('no_partner', 0)}")
+        print(f"  label match rate:   {st.get('label_matches', 0)}/{st.get('route_rows', 0)} "
+              f"({st.get('join_rate', 0.0):.1%})")
         print(f"  claude-code rows:   {st.get('claude_code_rows', 0)}  "
               f"telemetry_joined={st.get('telemetry_joined', 0)}  "
               f"escalated_inferred={st.get('escalated_inferred', 0)}  "

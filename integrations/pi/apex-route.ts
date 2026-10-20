@@ -180,6 +180,17 @@ async function resolveTask(task: string): Promise<{ model?: string; task_type?: 
 	}
 }
 
+function routeKeys(event: unknown): { agent_id?: string; tool_use_id?: string } {
+	const e = event as Record<string, unknown>;
+	const valid = (...values: unknown[]) => values.find(v => typeof v === "string" && v.length > 0);
+	const agent = valid(e.agent_id, e.agentId, process.env.PI_AGENT_ID);
+	const tool = valid(e.tool_use_id, e.toolUseId, process.env.PI_TOOL_USE_ID);
+	return {
+		agent_id: typeof agent === "string" && agent ? agent : undefined,
+		tool_use_id: typeof tool === "string" && tool ? tool : undefined,
+	};
+}
+
 /** Fail-safe outcome log — must never break a turn (route-log exits 0 by contract). */
 function logOutcome(
 	taskType: string,
@@ -189,6 +200,7 @@ function logOutcome(
 	sessionId?: string,
 	contextSize?: number,
 	family?: string,
+	keys?: { agent_id?: string; tool_use_id?: string },
 ): void {
 	// startTier is the RESOLVED model id (it decides the tier: gpt-5.6-terra -> gpt-terra);
 	// family is the cued family name (e.g. "sonnet", remapped to GPT on a subscription overlay).
@@ -206,7 +218,7 @@ function logOutcome(
 		const shebang = readFileSync(APEX_BIN, "utf8").split("\n", 1)[0];
 		const python = shebang.startsWith("#!/") ? shebang.slice(2).trim() : "python3";
 		const row = { task_type: taskType, model: startTier, outcome, note,
-			session_id: sessionId, context_size: contextSize, family,
+			session_id: sessionId, context_size: contextSize, family, ...keys,
 			cause: note.includes("provider error") ? "infra" : undefined };
 		execFile(python, ["-m", "apex_router.route_log", "--record", JSON.stringify(row)],
 			{ timeout: 10_000 }, () => {});
@@ -408,9 +420,9 @@ export default function (pi: ExtensionAPI) {
 		let sessionId: string | undefined;
 		let contextSize: number | undefined;
 		try {
-			sessionId = process.env.PI_SESSION_ID || undefined;
+			sessionId = ctx.sessionManager.getSessionId() || process.env.PI_SESSION_ID || undefined;
 		} catch {
-			// env read should never throw, but keep the turn safe
+			sessionId = process.env.PI_SESSION_ID || undefined;
 		}
 		try {
 			const usage = ctx.getContextUsage();
@@ -420,15 +432,16 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			// context usage is advisory; leave unset if unavailable
 		}
+		const keys = routeKeys(event);
 		const note = failed ? "auto: provider error/empty" : "auto";
 		if (cue.taskType) {
 			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok", note, sessionId, contextSize,
-				cue.family);
+				cue.family, keys);
 		} else {
 			// classify once, then log — both fail-safe CLI calls.
 			resolveTask(cue.task).then((r) =>
 				logOutcome(r?.task_type || "adhoc", startTier, failed ? "escalated" : "ok",
-					note, sessionId, contextSize, cue.family));
+					note, sessionId, contextSize, cue.family, keys));
 		}
 	});
 
@@ -460,18 +473,20 @@ export default function (pi: ExtensionAPI) {
 		if (!task || !task.trim()) return; // no task text (e.g. resumed/tool-only run) → nothing to classify
 		let sessionId: string | undefined;
 		let contextSize: number | undefined;
-		try { sessionId = process.env.PI_SESSION_ID || undefined; } catch { /* keep turn safe */ }
+		try { sessionId = ctx.sessionManager.getSessionId() || process.env.PI_SESSION_ID || undefined; }
+		catch { sessionId = process.env.PI_SESSION_ID || undefined; }
 		try {
 			const usage = ctx.getContextUsage();
 			if (usage && typeof usage.tokens === "number" && Number.isFinite(usage.tokens)) {
 				contextSize = Math.max(0, Math.floor(usage.tokens));
 			}
 		} catch { /* advisory */ }
+		const keys = routeKeys(event);
 		const note = failed ? "turn: provider error" : "turn";
 		// Classify the task type in the background (fire-and-forget, fail-safe), then log the outcome.
 		resolveTask(task).then((r) =>
 			logOutcome(r?.task_type || "adhoc", tier, failed ? "escalated" : "ok",
-				note, sessionId, contextSize, family));
+				note, sessionId, contextSize, family, keys));
 	});
 
 	// Session identity: attribute pi traffic per-session through the proxy (B1).
