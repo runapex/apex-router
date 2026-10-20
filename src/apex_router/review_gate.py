@@ -141,7 +141,7 @@ def parse_findings(v: str | None) -> tuple[int, list[str]]:
         return 0, []
     if re.fullmatch(r"\d{1,6}", v):
         return int(v), []
-    ids = sorted({_check(_ID, p, "finding id") for p in v.split(",") if p})
+    ids = sorted({_check(_ID, p, "finding id") for p in v.split(",")})
     return len(ids), ids
 
 
