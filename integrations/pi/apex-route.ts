@@ -184,11 +184,22 @@ function routeKeys(event: unknown): { agent_id?: string; tool_use_id?: string } 
 	const e = event as Record<string, unknown>;
 	const valid = (...values: unknown[]) => values.find(v => typeof v === "string" && v.length > 0);
 	const agent = valid(e.agent_id, e.agentId, process.env.PI_AGENT_ID);
-	const tool = valid(e.tool_use_id, e.toolUseId, process.env.PI_TOOL_USE_ID);
+	const tool = valid(e.tool_use_id, e.toolUseId);
 	return {
 		agent_id: typeof agent === "string" && agent ? agent : undefined,
 		tool_use_id: typeof tool === "string" && tool ? tool : undefined,
 	};
+}
+
+function isAbort(message: any): boolean {
+	return message?.stopReason === "aborted"
+		|| /\b(abort(?:ed)?|cancel(?:led|ed)?)\b/i.test(message?.errorMessage ?? "");
+}
+
+function failureCause(message: any): "infra" | "capability" | undefined {
+	if (isAbort(message) || !(message?.stopReason === "error" || message?.errorMessage)) return undefined;
+	return /provider|transport|rate[ -]?limit|overload|timeout|timed out|network|connection|\b(?:429|502|503|504)\b/i
+		.test(message?.errorMessage ?? "") ? "infra" : "capability";
 }
 
 /** Fail-safe outcome log — must never break a turn (route-log exits 0 by contract). */
@@ -201,6 +212,7 @@ function logOutcome(
 	contextSize?: number,
 	family?: string,
 	keys?: { agent_id?: string; tool_use_id?: string },
+	cause?: "infra" | "capability",
 ): void {
 	// startTier is the RESOLVED model id (it decides the tier: gpt-5.6-terra -> gpt-terra);
 	// family is the cued family name (e.g. "sonnet", remapped to GPT on a subscription overlay).
@@ -208,7 +220,7 @@ function logOutcome(
 		"route-log", "--task-type", taskType, "--start-tier", startTier,
 		"--outcome", outcome, "--note", note,
 	];
-	if (note.includes("provider error")) args.push("--cause", "infra");
+	if (cause) args.push("--cause", cause);
 	if (keys?.agent_id) args.push("--agent-id", keys.agent_id);
 	if (keys?.tool_use_id) args.push("--tool-use-id", keys.tool_use_id);
 	if (family) args.push("--family", family);
@@ -396,7 +408,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Escalation auto-log: when a one-shot cue turn finishes, record ok/escalated.
-	// "escalated" = the cheap turn observably failed (provider error or empty answer) —
+	// "escalated" = the cheap turn has an observable error, excluding user aborts —
 	// observable failure only, never a quality judgment (that's cross-validate's job).
 	pi.on("turn_end", async (event, ctx) => {
 		if (!pendingCue) return;
@@ -407,7 +419,9 @@ export default function (pi: ExtensionAPI) {
 		// POSITIVE failure signals only (model-routing doctrine): a provider error. A
 		// tool-call-only message legitimately has no text — that is NOT a failure (was
 		// mis-logged as escalation on the first turn of every agentic run).
-		const failed = msg?.stopReason === "error" || Boolean(msg?.errorMessage);
+		if (isAbort(msg)) return;
+		const cause = failureCause(msg);
+		const failed = cause !== undefined;
 		const startTier = cue.family === "auto"
 			? (resolvedModelId ?? "auto")
 			: (routes[cue.family]?.id ?? cue.family);
@@ -429,15 +443,15 @@ export default function (pi: ExtensionAPI) {
 			// context usage is advisory; leave unset if unavailable
 		}
 		const keys = routeKeys(event);
-		const note = failed ? "auto: provider error/empty" : "auto";
+		const note = failed ? `auto: ${cause} error` : "auto";
 		if (cue.taskType) {
 			logOutcome(cue.taskType, startTier, failed ? "escalated" : "ok", note, sessionId, contextSize,
-				cue.family, keys);
+				cue.family, keys, cause);
 		} else {
 			// classify once, then log — both fail-safe CLI calls.
 			resolveTask(cue.task).then((r) =>
 				logOutcome(r?.task_type || "adhoc", startTier, failed ? "escalated" : "ok",
-					note, sessionId, contextSize, cue.family, keys));
+					note, sessionId, contextSize, cue.family, keys, cause));
 		}
 	});
 
@@ -463,7 +477,10 @@ export default function (pi: ExtensionAPI) {
 		// Observable failure only (model-routing doctrine): a provider error on ANY message in the run.
 		// A tool-call-only run legitimately has no text — NOT a failure. Never a quality judgment.
 		const msgs: any[] = Array.isArray(event.messages) ? event.messages : [];
-		const failed = msgs.some((m) => m?.stopReason === "error" || Boolean(m?.errorMessage));
+		if (msgs.some(isAbort)) { lastUserInput = undefined; return; }
+		const causes = msgs.map(failureCause);
+		const cause = causes.includes("infra") ? "infra" : causes.find(c => c !== undefined);
+		const failed = cause !== undefined;
 		const task = lastUserInput;
 		lastUserInput = undefined;
 		if (!task || !task.trim()) return; // no task text (e.g. resumed/tool-only run) → nothing to classify
@@ -478,11 +495,11 @@ export default function (pi: ExtensionAPI) {
 			}
 		} catch { /* advisory */ }
 		const keys = routeKeys(event);
-		const note = failed ? "turn: provider error" : "turn";
+		const note = failed ? `turn: ${cause} error` : "turn";
 		// Classify the task type in the background (fire-and-forget, fail-safe), then log the outcome.
 		resolveTask(task).then((r) =>
 			logOutcome(r?.task_type || "adhoc", tier, failed ? "escalated" : "ok",
-				note, sessionId, contextSize, family, keys));
+				note, sessionId, contextSize, family, keys, cause));
 	});
 
 	// Session identity: attribute pi traffic per-session through the proxy (B1).
