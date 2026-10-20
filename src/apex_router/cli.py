@@ -321,7 +321,8 @@ def main(argv=None) -> int:
     sub.add_parser("labels", help="task outcome labels: rules + local judge + hand-labeled gold; "
                                   "`labels build [--judge N] [--rejudge]|report|review [-n N]|"
                                   "export-review --k N --out FILE|import-gold FILE --by NAME|"
-                                  "judge-bench [--models a,b] [--contexts] [--prompts]`",
+                                  "judge-bench [--models a,b] [--contexts] [--prompts]|"
+                                  "calibrate [--holdout 0.5] [--seed N] [--json]|relabel`",
                    add_help=False)
     sub.add_parser("mesh", help="opt-in LAN mesh: `mesh init|up|peers|leader|pick|status|collect|advise` "
                                 "(signed, default OFF)", add_help=False)
