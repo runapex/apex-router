@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Fake `pi --mode json -p` child for the job-manager tests. Writes scripted JSONL events to stdout.
-// argv[2] = mode: normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
+// argv[2] = mode: spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const mode = process.argv[2] ?? "normal";
 const out = o => process.stdout.write(JSON.stringify(o) + "\n");
@@ -42,4 +43,17 @@ if (mode === "grandchild" || mode === "ignore-term") {
   writeFileSync(process.env.FAKE_GC_PID_FILE ?? "/tmp/fake-gc.pid", String(gc.pid));
   out({ type: "tool_execution_start", toolName: "bash", args: { command: "sleep 300" } });
   for (;;) { out({ type: "tool_execution_update", toolName: "bash" }); await sleep(500); }
+}
+// spend: $0.10 per turn; obeys the soft cap (steer.json in APEX_AGENT_JOB_DIR): writes a final report, exits 0.
+// spend-ignore: $0.10 per turn and never stops (the hard stop must kill it).
+if (mode === "spend" || mode === "spend-ignore") {
+  const steer = join(process.env.APEX_AGENT_JOB_DIR ?? "/nonexistent", "steer.json");
+  for (let i = 0; ; i++) {
+    if (mode === "spend" && existsSync(steer)) {
+      out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "SALVAGE REPORT: done A, open B" }], usage: { input: 10, output: 5, cost: { total: 0.05 } }, stopReason: "stop" } });
+      out({ type: "agent_end" }); process.exit(0);
+    }
+    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}` }], usage: { input: 10, output: 5, cost: { total: 0.1 } }, stopReason: "toolUse" } });
+    await sleep(150);
+  }
 }

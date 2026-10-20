@@ -5,6 +5,8 @@
  * A job is a separate `pi --mode json -p` process (or `apex-router xval` for the xval agent) with its own context.
  * agent_spawn returns at once. The parent gets a message when the job ends, so it never polls with sleep.
  * Each job ends in a known state: done, failed, killed, timed_out(idle), timed_out(wall), killed(cost).
+ * Cost: at 85 % of max_cost the child gets one "write the final report now" message and new tool calls are
+ * blocked; the hard stop killed(cost) is at 110 %. A clean end after that is "done" with capped: true.
  * Briefs and the child system prompt use ASD-STE100 (apex-router default format).
  *
  * Env: APEX_AGENT_CAP (4), APEX_AGENTS_KILL_ON_EXIT=1. Nesting: a child gets APEX_AGENT_MAX_DEPTH from its agent
@@ -18,7 +20,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { FINAL, JobManager, type Meta } from "./lib/agents.ts";
+import { FINAL, JobManager, softCapGate, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -55,7 +57,30 @@ function worktree(cwd: string, id: string): string {
 	return dir;
 }
 
+/** Child side of the cost soft cap (A1). The parent manager writes <job dir>/steer.json at 85 % of max_cost.
+ *  This child then blocks every new tool call (the block reason tells the model to report) and steers the model
+ *  once. Runs in every job child, also a leaf, so it is wired before the depth return. */
+function costSoftCap(pi: ExtensionAPI) {
+	const dir = process.env.APEX_AGENT_JOB_DIR;
+	if (!dir) return;
+	let steered = false;
+	pi.on("tool_call", async () => {
+		const g = softCapGate(dir, steered);
+		if (!g.block) return;
+		if (g.steer) {
+			steered = true;
+			try {
+				pi.sendMessage({ customType: "apex-cost-cap", content: g.reason, display: true }, { deliverAs: "steer" });
+			} catch {
+				/* the block reason alone still reaches the model */
+			}
+		}
+		return { block: true, reason: g.reason };
+	});
+}
+
 export default function (pi: ExtensionAPI) {
+	costSoftCap(pi);
 	// A sub-agent at the depth limit gets no tools and no manager: it cannot start jobs or take a parent's messages.
 	if (depth() >= maxDepth()) return;
 	let jobs: JobManager | null = null;
@@ -112,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 			thinking: Type.Optional(Type.String({ description: "off | minimal | low | medium | high | xhigh (default: the agent's, else yours)" })),
 			timeout_s: Type.Optional(Type.Number({ description: "wall-clock limit (default 3600)" })),
 			idle_s: Type.Optional(Type.Number({ description: "no-event limit (default 900; keep above the child's bash timeout)" })),
-			max_cost: Type.Optional(Type.Number({ description: "stop the job above this cost in USD" })),
+			max_cost: Type.Optional(Type.Number({ description: "cost budget in USD: at 85 % the job must write its final report; hard stop above 110 %" })),
 			wait_s: Type.Optional(Type.Number({ description: "wait up to this many seconds for the result (max 600); 0 = background" })),
 		}),
 		async execute(_id, p, signal, _onUpdate, ctx: ExtensionContext) {
