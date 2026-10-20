@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-OPUS, SONNET, GPT = "it-entra-claude-opus-5-5", "it-entra-claude-sonnet-5-5", "it-entra-gpt-6-astra (xval)".split()[0]
+OPUS, SONNET, GPT = "it-entra-claude-opus-5-5", "it-entra-claude-sonnet-5-5", "it-entra-gpt-6-astra"
 QWEN = "qwen3-coder:30b"
 
 
