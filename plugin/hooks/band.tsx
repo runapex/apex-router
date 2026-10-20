@@ -66,7 +66,11 @@ const BUDGET_MINUTES = 60
 /** A condition the user must act on: what is wrong and what to do. The user decides; nothing changes the model. */
 export type Alert = { kind: 'limit' | 'budget' | 'context'; cause: string; action: string }
 
-const budgetCell = (cost: number, budget: number): string => `${usd(cost)}/$${budget}`
+/** Short money for the band: $9.10 below $1,000; then $12.3k, $1.2M (the pane keeps exact figures). */
+export const usdShort = (x: number): string =>
+  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : `$${+(x / 1e6).toFixed(1)}M`
+
+const budgetCell = (cost: number, budget: number): string => `${usdShort(cost)}/${budget < 1000 ? `$${budget}` : usdShort(budget)}`
 
 /** Every condition that needs the user now, most urgent first. Calm states give an empty list. */
 export function alertsOf(i: Pick<BandInput, 'm' | 's' | 'budgetUsd'>): Alert[] {
@@ -128,7 +132,10 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
     kept = kept.filter(f => f.drop !== rank)
   }
   while (line(kept).length > BAND_WIDTH && kept.length > 0) kept = kept.slice(0, -1)
-  return { line: line(kept), dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
+  const full = line(kept)
+  // Last guard: an alert alone can still be too long (odd inputs). Cut the end with "…"; the pane Now row has it in full.
+  const out = full.length <= BAND_WIDTH ? full : `${full.slice(0, BAND_WIDTH - 1)}…`
+  return { line: out, dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
 }
 
 /** The status entry (no band on this surface): the level, the action when one is due, the cost. */

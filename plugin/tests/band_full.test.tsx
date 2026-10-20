@@ -72,6 +72,17 @@ describe('band line', () => {
     expect(bandLine({ m: null, s: EMPTY_SIGNALS, ds: [dispatch(null, 'claude-opus-5-5')], b: EMPTY_BACKEND, budgetUsd: 0 })).toBe('apex GREEN · 1 subagent')
   })
 
+  test('a huge budget still fits 74 columns: short money, then a final cut', () => {
+    const m = { ctxPercent: 40, limitKind: 'five_hour', limitPercent: 10, resetsAt: null, costUsd: 999_999 }
+    const line = bandLine({ m, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1_000_000 })
+    expect(line).toBe('apex pressure GREEN · $1M/$1M, empty ≈18 min · pause new subagents')
+    expect(line.length).toBeLessThanOrEqual(74)
+    for (const cost of [1e9, 123_456_789_012]) {
+      const l = bandLine({ m: { ...m, costUsd: cost }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e12 })
+      expect(l.length).toBeLessThanOrEqual(74)
+    }
+  })
+
   test('status text and token formatting', () => {
     expect(statusText('AMBER', 4.12)).toBe('apex AMBER · $4.12')
     expect(statusText('GREEN', null)).toBe('apex GREEN')
