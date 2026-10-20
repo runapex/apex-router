@@ -36,7 +36,7 @@ Feed the plan's model selection with measured numbers, then pick a tier per task
   uneven subtasks to subagents with a tier each.
 - **Pressure before fan-out.** The band (`apex LEVEL · …`) and the pane's Now and Limits and budget sections show
   upstream pressure. GREEN: fan out. AMBER: keep the fan-out small and send explore and mechanical
-  work one tier down unless a model is named. RED: serialize heavy (opus) work; the pane shows the suggested rate of new large subagents. When you must act, the band names the cause and the action (`5h limit 95%: pause new subagents`, `context 88% full: run /compact`).
+  work one tier down unless a model is named. RED: serialize heavy (opus) work; the pane shows the suggested rate of new large subagents. When you must act, the band names the cause and the action (`5h limit 95% · pause new subagents`, `context 88% full · run /compact`).
   No band (headless `claude -p`) and the backend is installed? Run `apex-router pressure --check`
   first: exit 0 GREEN, 1 AMBER, 2 RED, 3 UNKNOWN, 4 usage error.
 - **Lane breakers.** When the pane's Limits and budget section shows `lane <name>: paused after failures`, send that work to

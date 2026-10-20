@@ -80,7 +80,12 @@ describe('band line', () => {
     for (const cost of [1e9, 123_456_789_012]) {
       const l = bandLine({ m: { ...m, costUsd: cost }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 18 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 1e12 })
       expect(l.length).toBeLessThanOrEqual(74)
+      expect(l.endsWith(' · pause new subagents')).toBe(true)
     }
+    // a cause too long even in short money is cut, the action stays whole
+    const odd = bandLine({ m: { ...m, costUsd: 9e20 }, s: { ...EMPTY_SIGNALS, minutesToExhaust: 1e12 }, ds: [], b: EMPTY_BACKEND, budgetUsd: 9e20 })
+    expect(odd.length).toBeLessThanOrEqual(74)
+    expect(odd.endsWith(' · pause new subagents')).toBe(true)
   })
 
   test('status text and token formatting', () => {

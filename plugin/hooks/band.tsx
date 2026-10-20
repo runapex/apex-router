@@ -68,7 +68,7 @@ export type Alert = { kind: 'limit' | 'budget' | 'context'; cause: string; actio
 
 /** Short money for the band: $9.10 below $1,000; then $12.3k, $1.2M (the pane keeps exact figures). */
 export const usdShort = (x: number): string =>
-  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : `$${+(x / 1e6).toFixed(1)}M`
+  x < 1000 ? usd(x) : x < 999_950 ? `$${+(x / 1e3).toFixed(1)}k` : x < 999_950_000 ? `$${+(x / 1e6).toFixed(1)}M` : x < 1e15 ? `$${+(x / 1e9).toFixed(1)}B` : '$>1e15'
 
 const budgetCell = (cost: number, budget: number): string => `${usdShort(cost)}/${budget < 1000 ? `$${budget}` : usdShort(budget)}`
 
@@ -111,8 +111,13 @@ export const bandLine = (i: BandInput): string => bandParts(i).line
 export function bandParts(i: BandInput): { line: string; dropped: string[] } {
   const alerts = alertsOf(i)
   const first = alerts[0]
-  const head = [`apex ${first !== undefined && i.s.level === 'GREEN' ? 'pressure ' : ''}${i.s.level}`]
-  if (first !== undefined) head.push(`${first.cause} · ${first.action}`)
+  const level = `apex ${first !== undefined && i.s.level === 'GREEN' ? 'pressure ' : ''}${i.s.level}`
+  const head = [level]
+  if (first !== undefined) {
+    // Odd inputs can make the cause too long. Cut the cause, never the level or the action.
+    const room = BAND_WIDTH - level.length - first.action.length - 6
+    head.push(`${first.cause.length <= room ? first.cause : `${first.cause.slice(0, Math.max(1, room - 1))}…`} · ${first.action}`)
+  }
   const m = i.m
   // Optional figures carry a drop rank (lower drops first); 99 drops only in the final width guard.
   const figs: { text: string; drop: number }[] = []
@@ -132,10 +137,7 @@ export function bandParts(i: BandInput): { line: string; dropped: string[] } {
     kept = kept.filter(f => f.drop !== rank)
   }
   while (line(kept).length > BAND_WIDTH && kept.length > 0) kept = kept.slice(0, -1)
-  const full = line(kept)
-  // Last guard: an alert alone can still be too long (odd inputs). Cut the end with "…"; the pane Now row has it in full.
-  const out = full.length <= BAND_WIDTH ? full : `${full.slice(0, BAND_WIDTH - 1)}…`
-  return { line: out, dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
+  return { line: line(kept), dropped: figs.filter(f => !kept.includes(f)).map(f => f.text) }
 }
 
 /** The status entry (no band on this surface): the level, the action when one is due, the cost. */

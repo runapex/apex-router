@@ -69,7 +69,7 @@ def test_route_feeds_ledger_numbers_and_is_advise_only():
     paragraph = " ".join(next(b for b in route.split("\n- ") if "explicit `model:`" in b).split())
     assert "never rewrites" in paragraph
     assert "/apex" in route
-    for field in ["`n`", "`ok%`", "`tok(all) μ`", "`dur μ`", "unavailable"]:
+    for field in ["`N runs`", "`ok%`", "`avg … tokens`", "`avg …s`", "unavailable"]:
         assert field in route, field
     assert "no quality label yet" in route.lower()
     assert "35 of 35" in route
