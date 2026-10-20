@@ -592,8 +592,9 @@ def _quality_labels(path: Path) -> list:
 
 
 def _identity_compatible(a: dict, b: dict) -> bool:
-    return all(not a.get(k) or not b.get(k) or a[k] == b[k]
-               for k in ("session_id", "agent_id", "tool_use_id"))
+    return (not b.get("tool_use_id") or a.get("tool_use_id") == b["tool_use_id"]) and all(
+        not a.get(k) or not b.get(k) or a[k] == b[k]
+        for k in ("session_id", "agent_id"))
 
 
 def _match_quality(route: dict, labels: list) -> dict | None:
@@ -610,6 +611,28 @@ def _match_quality(route: dict, labels: list) -> dict | None:
         return None
     return min(candidates, key=lambda r: abs(r["ts"] - route["ts"])
                if _is_finite_ts(r.get("ts")) and _is_finite_ts(route.get("ts")) else float("inf"))
+
+
+def _claim_quality(routes: list, labels: list) -> dict:
+    """Claim exact tool pairs first, then session pairs, greedily by timestamp distance."""
+    pairs = []
+    for ri, route in enumerate(routes):
+        for li, label in enumerate(labels):
+            if not _identity_compatible(route, label):
+                continue
+            exact = bool(route.get("tool_use_id")) and route.get("tool_use_id") == label.get("tool_use_id")
+            distance = (abs(route["ts"] - label["ts"])
+                        if _is_finite_ts(route.get("ts")) and _is_finite_ts(label.get("ts"))
+                        else float("inf"))
+            if exact or (route.get("session_id") and route.get("session_id") == label.get("session_id")
+                         and distance <= _JOIN_WINDOW_S):
+                pairs.append((not exact, distance, ri, li))
+    claims, used_labels = {}, set()
+    for _, _, ri, li in sorted(pairs):
+        if ri not in claims and li not in used_labels:
+            claims[ri] = labels[li]
+            used_labels.add(li)
+    return claims
 
 
 def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None, label_path=None) -> dict:
@@ -654,6 +677,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None,
 
         used_conf_indices = set()
         table: List[Dict[str, Any]] = []
+        table_routes = []
         null_ts = 0
         no_partner = 0
 
@@ -715,6 +739,7 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None,
 
             used_conf_indices.add(best_idx)
             table.append(_build_joined(r, usable_conf[best_idx]))
+            table_routes.append(r)
 
         conformance_joined = len(table)
         timed_dispatch = []
@@ -727,9 +752,16 @@ def join_labels(route_log_path=None, conformance_path=None, telemetry_path=None,
         table.extend(cc_table)
         labels_p = Path(label_path) if label_path is not None else log_p.parent / "labels" / "labels.jsonl"
         quality_labels = _quality_labels(labels_p)
-        label_matches = sum(_match_quality(r, quality_labels) is not None for r in route_rows)
-        for row in table:
-            match = _match_quality(row, quality_labels)
+        # Use the same claims for coverage and table labels; never claim a label twice.
+        unique_dispatch, _ = _dedupe_dispatch(dispatch_rows)
+        claim_routes = classic_rows + unique_dispatch
+        claims = _claim_quality(claim_routes, quality_labels)
+        by_route = {id(claim_routes[i]): label for i, label in claims.items()}
+        label_matches = len(claims)
+        timed_unique, _ = _dedupe_dispatch(timed_dispatch)
+        table_routes.extend(timed_unique)
+        for row, route in zip(table, table_routes):
+            match = by_route.get(id(route))
             if match is not None:
                 row["quality_label"] = match["label"]
                 row["quality_label_id"] = match.get("id")
