@@ -766,10 +766,55 @@ def gold_outcomes(rows: list | None = None) -> dict:
     return out
 
 
-def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED) -> dict:
+def gold_design(gold: dict) -> dict | None:
+    """id -> design weight ``N_h / r_h`` for the stratified gold sample, or None.
+
+    ``gold/sample_manifest.json`` gives the population ``N_h`` of each (project, task_type)
+    stratum; ``gold/sheet.csv`` gives the stratum of each sampled id. ``r_h`` = the ids of ``gold``
+    in stratum h (rows without an outcome are treated as missing at random inside their stratum).
+    The sample over-represents small strata, so an unweighted mean over gold describes the sample,
+    not the population. None (= no design known, report unweighted only) when the files are
+    missing or bad, when any gold id is not in the sheet (a mixed design has no valid weight), or
+    when a stratum of the population has no gold id (nothing can stand in for its accuracy)."""
+    import csv
+    d = home() / "gold"
+    try:
+        man = json.loads((d / "sample_manifest.json").read_text())
+        pop = {(s["project"], s["task_type"]): s["population"] for s in man["strata"]}
+        with open(d / "sheet.csv", newline="", encoding="utf-8-sig") as fh:
+            stratum = {r["task_id"]: (r["project"], r["task_type"]) for r in csv.DictReader(fh)}
+    except (OSError, ValueError, KeyError, TypeError, csv.Error, UnicodeError):
+        return None
+    if not gold or any(stratum.get(i) not in pop for i in gold):
+        return None
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in pop.values()):
+        return None
+    r = Counter(stratum[i] for i in gold)
+    if any(h not in r for h in pop):
+        return None
+    return {i: pop[stratum[i]] / r[stratum[i]] for i in gold}
+
+
+def _weighted(pairs: list) -> dict:
+    """[(weight, correct)] -> weighted accuracy, Kish effective n and the Wilson low bound on n_eff."""
+    sw = sum(w for w, _ in pairs)
+    if not pairs or sw <= 0:
+        return {"accuracy": None, "n_eff": 0.0, "wilson_low": 0.0, "n": len(pairs)}
+    acc = sum(w for w, ok in pairs if ok) / sw
+    n_eff = sw * sw / sum(w * w for w, _ in pairs)
+    return {"accuracy": acc, "n_eff": n_eff, "wilson_low": wilson(acc * n_eff, n_eff)[0],
+            "n": len(pairs)}
+
+
+def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED,
+              weights: dict | None = None) -> dict:
     """Split gold at random (fixed ``seed``) into a fit half and a held-out half, fit
     ``voter_accuracy`` on the fit half, run ``posterior`` on the held-out half. Reads stored
-    votes only: no judge call, nothing written. ``status`` is "pass", "fail" or "insufficient"."""
+    votes only: no judge call, nothing written. ``status`` is "pass", "fail" or "insufficient".
+
+    ``weights`` (id -> design weight, see ``gold_design``) adds a ``weighted`` block: the
+    population-weighted accuracy on emitted labels, its Kish effective n and the Wilson low bound
+    on that n. Report only: the gate still uses the unweighted numbers."""
     by_id = {r["id"]: r for r in rows}
     ids = sorted(k for k, v in gold.items() if k in by_id and v in OUTCOMES)
     random.Random(seed).shuffle(ids)
@@ -783,16 +828,20 @@ def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED
     acc = voter_accuracy([by_id[i] for i in fit], {i: gold[i] for i in fit})
     emitted = correct = 0
     fails = fails_hit = 0
+    pairs = []                                    # (design weight, correct) of emitted rows
     for i in held:
         lab, p = posterior(by_id[i], acc)
         emit = p >= EMIT_MIN and lab in OUTCOMES
         emitted += emit
         correct += emit and lab == gold[i]
+        if emit and weights is not None and i in weights:
+            pairs.append((float(weights[i]), lab == gold[i]))
         if gold[i] == "fail":
             fails += 1
             fails_hit += emit and lab == "fail"
     lo, hi = wilson(correct, emitted)
     accuracy = correct / emitted if emitted else None
+    weighted = _weighted(pairs) if weights is not None else None
     acc_ok = emitted > 0 and lo >= CAL_ACC_MIN
     # Fail recall is required evidence: with fewer than CAL_FAIL_MIN held-out fails the gate cannot
     # judge it, so the run is "insufficient" (never a pass). Any held-out fail that is missed counts.
@@ -802,7 +851,8 @@ def calibrate(rows: list, gold: dict, holdout: float = 0.5, seed: int = CAL_SEED
             "emitted_share": emitted / len(held), "correct": correct, "accuracy": accuracy,
             "wilson_low": lo, "fails_heldout": fails, "fails_recalled": fails_hit,
             "fail_recall": (fails_hit / fails) if fails else None,
-            "gate": {"accuracy": acc_ok, "fail_recall": recall_ok}}
+            "gate": {"accuracy": acc_ok, "fail_recall": recall_ok},
+            **({"weighted": weighted} if weighted is not None else {})}
 
 
 def calibrate_text(r: dict) -> str:
@@ -819,6 +869,10 @@ def calibrate_text(r: dict) -> str:
         f"  emitted share        {pct(r['emitted_share'])} ({r['emitted']}/{r['heldout']})",
         f"  accuracy on emitted  {pct(r['accuracy'])} ({r['correct']}/{r['emitted']}), "
         f"Wilson low {pct(r['wilson_low'])}",
+        *([(f"  weighted accuracy    {pct(r['weighted']['accuracy'])} (population-weighted, "
+            f"n_eff {r['weighted']['n_eff']:.1f} of {r['weighted']['n']}), Wilson low "
+            f"{pct(r['weighted']['wilson_low'])} [report only, not gated]")]
+          if r.get("weighted") else []),
         f"  fail-class recall    {rec} (held-out fail rows: {r['fails_heldout']})",
         f"  gate Wilson low >= {CAL_ACC_MIN}: {st(g['accuracy'])}; "
         f"fail recall >= {CAL_FAIL_HIT} of {CAL_FAIL_MIN}+: {st(g['fail_recall'])}",
@@ -1348,7 +1402,8 @@ def main(argv=None) -> int:
             print("calibrate: --holdout must be between 0 and 1", file=sys.stderr)
             return 2
         rows = _read(home() / "tasks.jsonl")
-        res = calibrate(rows, gold_outcomes(rows), a.holdout, a.seed)
+        gold = gold_outcomes(rows)
+        res = calibrate(rows, gold, a.holdout, a.seed, weights=gold_design(gold))
         print(json.dumps(res, sort_keys=True, default=list) if a.json else calibrate_text(res))
         return {"pass": 0, "fail": 1}.get(res["status"], 2)
     if a.cmd == "relabel":

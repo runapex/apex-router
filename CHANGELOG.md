@@ -15,6 +15,11 @@ next tag will carry.
   findings) and review-loop records with ids, enums and counts only.
 - `apex-router labels calibrate` (C3): held-out check of the weak labeller on gold; the gate needs
   a Wilson low >= 0.85 and fail recall. `labels relabel` uses gold-fitted accuracies only on PASS.
+- `labels calibrate` reports a population-weighted accuracy for the stratified gold sample
+  (`gold/sample_manifest.json` + `gold/sheet.csv`): weight `N_h / r_h`, Kish `n_eff`, Wilson low
+  on `n_eff`. Report only, the gate is unchanged. Real gold, seed 7: unweighted 26/28, Wilson low
+  77.4 %; weighted 88.5 %, n_eff 11.1, Wilson low 59.7 %. No weights for a mixed design or a
+  stratum without gold. The gate moves to the weighted Wilson low after one release side by side.
 - Route and label rows carry join keys (`session_id`, `agent_id`, `tool_use_id`, `model`, `tier`),
   and `route-join` reports a label match rate (C2).
 
