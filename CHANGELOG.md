@@ -20,6 +20,13 @@ next tag will carry.
   on `n_eff`. Report only, the gate is unchanged. Real gold, seed 7: unweighted 26/28, Wilson low
   77.4 %; weighted 88.5 %, n_eff 11.1, Wilson low 59.7 %. No weights for a mixed design or a
   stratum without gold. The gate moves to the weighted Wilson low after one release side by side.
+- `apex_router.core.reservoir` (stdlib): stratified reservoir. Exact counters per stratum (N_h,
+  Welford moments, enum counts) give totals; a uniform Algorithm R sample of `cap` rows per stratum
+  gives row detail. Allocation (floor + proportional or Neyman) only at `snapshot()`, so each kept
+  row has the exact weight N_h/n_h. `merge()` (hypergeometric split) for mesh nodes, `estimate()`
+  (stratified mean, FPC SE, coverage), `design_effect()`, `rows_needed()`. Rows are flat: numbers,
+  bools, short enum labels. No caller yet. Gold design check: floor 3 over 36 strata gives deff
+  2.60 (199 emitted rows to pass the 0.85 gate at p = 0.93); floor 1 gives deff 1.16 (89 rows).
 - Route and label rows carry join keys (`session_id`, `agent_id`, `tool_use_id`, `model`, `tier`),
   and `route-join` reports a label match rate (C2).
 
