@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Telemetry reservoir (reservoir step 3): rotation no longer deletes old telemetry generations
+  uncounted. `prune()` first folds each generation into `telemetry_reservoir.json` (next to the
+  telemetry file): exact counts per error cause and per `cause|model|client` stratum, plus a
+  fixed-cap sample of flat rows (numbers, bools, closed-vocabulary labels; no ids, no text).
+  Rare error causes keep their exact counts and own samples. A generation is counted once (content
+  SHA-256 ledger). An uncounted generation stays until more than `2 x KEEP` exist (disk bound).
+  The proxy runs the fold in a worker thread, off the event loop. CLI:
+  `apex-router telemetry-reservoir fold [--backfill]` and `report [--json] [--top N]`.
 - Soft cost cap for pi sub-agents (A1): at 85 % of `max_cost` the child is told to write its final
   report and new tool calls are blocked; the hard stop moves to 110 %. The job ends `done` with
   `capped: true`. `python -m apex_router.cost_advice` gives per-cell done-cost p75/p90 (A2, n >= 8).

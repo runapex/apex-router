@@ -32,8 +32,10 @@ async def _heartbeat_loop(telemetry: TelemetryWriter, interval_s: float) -> None
     while True:
         await asyncio.sleep(interval_s)
         try:
-            telemetry.rotate_if_large()
+            telemetry.rotate_if_large(prune=False)       # one rename: cheap, stays on the loop
             telemetry.heartbeat()
+            if len(telemetry._gens()) > telemetry.KEEP:  # fold + delete: off the event loop
+                await asyncio.to_thread(telemetry.prune)
         except Exception:  # noqa: BLE001 — a heartbeat must never take down the proxy
             pass
 

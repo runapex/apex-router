@@ -146,6 +146,10 @@ def main(argv=None) -> int:
         # Advisory review acceptance gate + review-loop records (no text). Own subcommands.
         from .review_gate import main as _review_gate
         return _review_gate(raw[1:])
+    if raw[:1] == ["telemetry-reservoir"]:
+        # Stratified sample of telemetry kept before rotation deletes it. Own subcommands.
+        from .telemetry_reservoir import main as _tres
+        return _tres(raw[1:])
     if raw[:1] == ["retry-ab"]:
         # Retry-action A/B readout (telemetry v11): per-arm P(retry recovers). Own subcommands.
         from .retry_ab import main as _retry_ab
@@ -338,6 +342,9 @@ def main(argv=None) -> int:
                                       "`agent-runs collect|report [--json]`", add_help=False)
     sub.add_parser("review-gate", help="advisory review gate (ACCEPT/HOLD) + review-loop records, no text; "
                                        "`review-gate record|tests|regress|post-go|check|report`", add_help=False)
+    sub.add_parser("telemetry-reservoir", help="stratified sample of proxy telemetry kept before "
+                                               "rotation deletes it; `telemetry-reservoir fold "
+                                               "[--backfill]|report [--json]`", add_help=False)
     sub.add_parser("retry-ab", help="retry-action A/B readout: per-arm P(transport retry recovers) "
                                     "with Wilson CIs; `retry-ab report [--json]`", add_help=False)
     sub.add_parser("mail", help="mail bus between a fan-out's agents and the owner: `mail post|read` "

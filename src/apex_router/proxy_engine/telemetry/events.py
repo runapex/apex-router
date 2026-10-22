@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -326,7 +328,7 @@ class TelemetryWriter:
         pat = _re.compile(_re.escape(self.path.name) + r"\.(\d+)$")
         return sorted(int(m.group(1)) for q in self.path.parent.iterdir() if (m := pat.fullmatch(q.name)) and q.is_file())
 
-    def rotate_if_large(self) -> None:
+    def rotate_if_large(self, prune: bool = True) -> None:
         """If the file exceeds ROTATE_BYTES, rename it to `.<highest+1>` (one rename: it happens or it doesn't),
         then delete the oldest generations beyond KEEP. A failed rename touches nothing; a failed prune only
         leaves extra files, retried next tick. Invoked off the hot path (lifespan tick), never from `emit`
@@ -339,7 +341,41 @@ class TelemetryWriter:
             if target.exists():  # never overwrite (single writer per file, so this is a should-not-happen guard)
                 return
             self.path.replace(target)
-            for n in self._gens()[:-self.KEEP]:
-                self.path.with_name(f"{self.path.name}.{n}").unlink()
+            if prune:
+                self.prune()
         except OSError:
             pass
+
+    _prune_lock = threading.Lock()      # one prune at a time per process (tick thread vs caller)
+
+    def prune(self) -> None:
+        """Delete the generations beyond KEEP, each only after its rows are counted in the
+        telemetry reservoir (`apex_router.telemetry_reservoir`).
+
+        One rule for a generation the fold did not count (failed, or deferred by a busy store
+        lock): it stays, unless more than 2 x KEEP generations exist; then the oldest goes, and a
+        line on stderr names it. Disk use is bounded in every case. A short busy lock never reaches
+        the cap: that takes about KEEP rotations (KEEP x 64 MB of new telemetry) without one
+        successful fold. The fold reads and hashes a 64 MB file: the proxy runs this in a worker
+        thread (`asyncio.to_thread`), never on the event loop. A second prune while one runs
+        returns at once (it would only repeat work)."""
+        if not self._prune_lock.acquire(blocking=False):
+            return
+        try:
+            gens = self._gens()
+            for i, n in enumerate(gens[:-self.KEEP]):
+                gen = self.path.with_name(f"{self.path.name}.{n}")
+                try:
+                    from apex_router.telemetry_reservoir import fold_generation
+                    got = fold_generation(gen)
+                except Exception:  # noqa: BLE001 -- a fold bug must never break rotation
+                    got = False
+                if got is True:
+                    gen.unlink(missing_ok=True)
+                elif len(gens) - i > 2 * self.KEEP:
+                    print(f"apex telemetry: {gen.name} deleted without a reservoir fold "
+                          f"({got or 'failed'}; more than {2 * self.KEEP} generations)",
+                          file=sys.stderr)
+                    gen.unlink(missing_ok=True)
+        finally:
+            self._prune_lock.release()
