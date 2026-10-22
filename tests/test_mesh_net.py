@@ -335,6 +335,78 @@ def test_two_beacons_find_each_other_unicast():
     assert b.stats()["drops"] == {} or set(b.stats()["drops"]) <= {"replay"}
 
 
+def test_one_way_target_is_answered_by_unicast():
+    # VPN case: B's multicast never reaches A, A has no target for B; only A knows B (--peer).
+    # B must answer A's authenticated announce with a direct announce, so A learns B too.
+    pa, pb = _free_udp_port(), _free_udp_port()
+    a, ta = _beacon(NODE_A, pa, [])
+    b, tb = _beacon(NODE_B, pb, [])
+    a.targets = [(LO, pb)]
+    a._mcast_send = b._mcast_send = False                       # no multicast either way
+    a.start()
+    b.start()
+    a._dests = [(LO, pb)]
+    b._dests = []
+    try:
+        assert _wait(lambda: _ids(tb) == {NODE_A, NODE_B})
+        assert _wait(lambda: _ids(ta) == {NODE_A, NODE_B})
+        assert b.stats()["learned"] == 1
+    finally:
+        a.stop()
+    assert _wait(lambda: _ids(tb) == {NODE_B}, timeout=3)      # bye forgets the learned target
+    assert b.learned_targets() == {}
+    b.stop()
+
+
+def test_learned_target_rules(monkeypatch):
+    from apex_router.mesh import beacon as beacon_mod
+    b, _t = _beacon(NODE_A, 0, [("127.0.0.9", 47777)])
+    b._dests = [("127.0.0.9", 47777)]
+    ib = _ident(NODE_B)
+    clock = [1000.0]
+    monkeypatch.setattr(beacon_mod.time, "monotonic", lambda: clock[0])
+    # only an authenticated announce whose source is the card host is learned
+    b.handle(protocol.encode("announce", _card(NODE_B, host="127.0.0.2"), ib), src=(LO, 5000))
+    b.handle(b"not json", src=(LO, 5001))
+    b.handle(protocol.encode("announce", _card(NODE_B), _ident(NODE_B, secret=bytes([3]) * 32)),
+             src=(LO, 5002))                                      # other mesh
+    assert b.learned_targets() == {} and b.stats()["learned"] == 0
+    # a static target is never added twice
+    b.handle(protocol.encode("announce", _card(NODE_B, host="127.0.0.9"), ib),
+             src=("127.0.0.9", 47777))
+    assert b.learned_targets() == {}
+    b.handle(protocol.encode("announce", _card(NODE_B), ib), src=(LO, 5003))
+    assert b.learned_targets() == {NODE_B: (LO, 5003)} and b._learned_dests() == [(LO, 5003)]
+    b.handle(protocol.encode("announce", _card(NODE_B), ib), src=(LO, 5003))
+    assert b.stats()["learned"] == 1                              # a refresh is not a new one
+    clock[0] += beacon_mod.PEER_TTL_S + 1                         # silent peer: forgotten
+    assert b._learned_dests() == [] and b.learned_targets() == {}
+    # at most MAX_TARGETS learned peers
+    monkeypatch.setattr(beacon_mod, "MAX_TARGETS", 2)
+    for i, node in enumerate((NODE_B, "c" * 32, "d" * 32)):
+        b.handle(protocol.encode("announce", _card(node), _ident(node)), src=(LO, 6000 + i))
+    assert len(b.learned_targets()) == 2
+    b.handle(protocol.encode("bye", {"node_id": NODE_B}, ib), src=(LO, 6000))
+    assert NODE_B not in b.learned_targets()
+    # one copy per address, even when many node ids announce from it
+    b._learned.clear()
+    monkeypatch.setattr(beacon_mod, "MAX_TARGETS", 64)
+    for node in ("c" * 32, "d" * 32, "e" * 32):
+        b.handle(protocol.encode("announce", _card(node), _ident(node)), src=(LO, 7000))
+    assert len(b.learned_targets()) == 3 and b._learned_dests() == [(LO, 7000)]
+
+
+def test_learned_target_compares_canonical_addresses():
+    b, _t = _beacon(NODE_A, 0, [])
+    b._learn(NODE_B, "0:0:0:0:0:0:0:1", ("::1", 5000, 0, 0))
+    b._learn("c" * 32, "fe80::2%en0", ("fe80::2%en0", 5001, 0, 4))
+    b._learn("d" * 32, "fe80:0::2", ("fe80::2", 5002, 0, 4))
+    b._learn("e" * 32, "10.0.0.5", ("10.0.0.6", 5003))         # other address: not learned
+    b._learn("f" * 32, "not-an-ip", ("not-an-ip", 5004))
+    assert set(b.learned_targets()) == {NODE_B, "c" * 32, "d" * 32}
+    assert b.learned_targets()["c" * 32] == ("fe80::2%en0", 5001, 0, 4)   # scope id is kept
+
+
 def test_beacon_other_mesh_is_dropped():
     pa, pb = _free_udp_port(), _free_udp_port()
     a, ta = _beacon(NODE_A, pa, [(LO, pb)])

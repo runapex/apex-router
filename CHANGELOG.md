@@ -7,6 +7,10 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- Mesh beacon answers a peer directly ("learned targets"): an authenticated announce from the
+  address in its own card makes the beacon also send unicast announces to that address until the
+  peer goes silent (`PEER_TTL_S`) or says `bye`. One-way multicast (a VPN that routes the LAN
+  subnet) or a `--peer` on one side only is now enough for both nodes to see each other.
 - Telemetry reservoir (reservoir step 3): rotation no longer deletes old telemetry generations
   uncounted. `prune()` first folds each generation into `telemetry_reservoir.json` (next to the
   telemetry file): exact counts per error cause and per `cause|model|client` stratum, plus a

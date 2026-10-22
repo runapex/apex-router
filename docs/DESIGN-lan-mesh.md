@@ -172,6 +172,14 @@ apex-router mesh inbox [--all] [--from NAME] [--json] [--mark-read]
 `--peer` adds a unicast beacon target. PORT is the UDP beacon port of that node (default
 `MCAST_PORT` = 47777), not its HTTP port. Use `[V6]:PORT` for an IPv6 address with a port.
 
+Learned targets: one side with `--peer` (or one side whose multicast arrives) is enough. When an
+authenticated announce comes from the address in its own card, the beacon also sends its
+announces to that address directly, until that peer is silent for `PEER_TTL_S` or says `bye`
+(at most `MAX_TARGETS`). Example: a VPN that routes the home LAN subnet drops one node's
+multicast; the other node's announce still arrives, so both nodes see each other.
+When multicast works both ways, a peer gets each announce twice (group + direct); the receiver
+drops the second copy, so `drops.replay` grows on a healthy mesh and is not an attack signal.
+
 `mesh up` runs in the foreground until SIGINT/SIGTERM. It rewrites `peers.json` (atomic
 replace, 0600) on each beacon cycle, so other tools read the mesh without network access.
 

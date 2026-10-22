@@ -7,6 +7,11 @@ Sockets (all bound to ONE address, never the wildcard):
 - multicast socket on ``(group, port)``, joined on ``iface_ip``: receives group datagrams.
   If the OS refuses the bind or the join, the beacon runs unicast-only (``multicast`` = False).
 
+Learned targets: an authenticated announce whose source address equals the card ``host`` adds
+that source as a unicast target until the peer is silent for ``PEER_TTL_S`` or says ``bye``.
+So when only one side can reach the other (a VPN that routes the LAN subnet drops one node's
+multicast; ``--peer`` on one side), the other side answers directly and both see each other.
+
 One daemon thread announces every ``interval_s`` and receives with a 1 s timeout. Every datagram
 is hostile until ``protocol.decode`` passes: a bad datagram is dropped silently and counted by
 reason in ``stats()["drops"]``. The thread never raises.
@@ -29,6 +34,7 @@ from .protocol import (
     MAX_DATAGRAM,
     MCAST_GROUP,
     MCAST_PORT,
+    PEER_TTL_S,
     ProtocolError,
 )
 
@@ -63,6 +69,16 @@ def drop_reason(err: ProtocolError) -> str:
         if msg.startswith(prefix):
             return reason
     return "invalid"
+
+
+def _addr_key(ip: Any) -> Any:
+    """Canonical address without an IPv6 scope id ("fe80::2%en0" == "fe80:0::2"), or None."""
+    if not isinstance(ip, str):
+        return None
+    try:
+        return ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return None
 
 
 def _set_reuse(sock: socket.socket) -> None:
@@ -124,7 +140,8 @@ class Beacon:
         self._mcast_send = False
         self._lock = threading.Lock()
         self._stats: dict[str, Any] = {"rx": 0, "tx": 0, "send_errors": 0, "own": 0,
-                                       "announces": 0, "byes": 0, "drops": {}}
+                                       "announces": 0, "byes": 0, "learned": 0, "drops": {}}
+        self._learned: dict[str, tuple[Any, float]] = {}   # node_id -> (sockaddr, monotonic seen)
         self.multicast_error: str | None = None
 
     # -- stats -------------------------------------------------------------------------------
@@ -138,7 +155,7 @@ class Beacon:
             d[reason] = d.get(reason, 0) + 1
 
     def stats(self) -> dict:
-        """Counters: rx, tx, send_errors, own, announces, byes, drops {reason: n}."""
+        """Counters: rx, tx, send_errors, own, announces, byes, learned, drops {reason: n}."""
         with self._lock:
             return {**self._stats, "drops": dict(self._stats["drops"])}
 
@@ -214,11 +231,45 @@ class Beacon:
                     pass
 
     # -- send --------------------------------------------------------------------------------
+    def learned_targets(self) -> dict[str, Any]:
+        """node_id -> sockaddr of the peers this beacon answers directly (see module doc)."""
+        with self._lock:
+            return {n: a for n, (a, _t) in self._learned.items()}
+
+    def _learn(self, node_id: str, host: Any, src: Any) -> None:
+        """Answer ``node_id`` directly at ``src`` if ``src`` is its own card address."""
+        if not (isinstance(src, tuple) and len(src) >= 2 and isinstance(host, str)):
+            return
+        if _addr_key(src[0]) is None or _addr_key(src[0]) != _addr_key(host) or src in self._dests:
+            return
+        with self._lock:
+            old = self._learned.get(node_id)
+            if old is None and len(self._learned) >= MAX_TARGETS:
+                return
+            self._learned[node_id] = (src, time.monotonic())
+            if old is None or old[0] != src:
+                self._stats["learned"] += 1
+
+    def _forget(self, node_id: str) -> None:
+        with self._lock:
+            self._learned.pop(node_id, None)
+
+    def _learned_dests(self) -> list[Any]:
+        cutoff = time.monotonic() - PEER_TTL_S
+        with self._lock:
+            for n in [n for n, (_a, t) in self._learned.items() if t < cutoff]:
+                del self._learned[n]
+            out: list[Any] = []                  # one copy per address, whatever node ids it holds
+            for a, _t in self._learned.values():
+                if a not in self._dests and a not in out:
+                    out.append(a)
+            return out
+
     def _send(self, data: bytes) -> None:
         u = self._ucast
         if u is None:
             return
-        for dest in self._dests:
+        for dest in [*self._dests, *self._learned_dests()]:
             try:
                 u.sendto(data, dest)
                 self._count("tx")
@@ -245,8 +296,8 @@ class Beacon:
         self._send(data)
 
     # -- receive -----------------------------------------------------------------------------
-    def handle(self, data: bytes, *, now: float | None = None) -> None:
-        """Process one datagram. Never raises; a bad datagram counts as a drop."""
+    def handle(self, data: bytes, *, now: float | None = None, src: Any = None) -> None:
+        """Process one datagram from sockaddr ``src``. Never raises; a bad one counts as a drop."""
         try:
             self._count("rx")
             if len(data) > MAX_DATAGRAM:
@@ -270,8 +321,10 @@ class Beacon:
                     self._drop("bad_card")
                     return
                 self._count("announces")
+                self._learn(node_id, body.get("host"), src)
             elif kind == "bye":
                 self.table.remove(node_id)
+                self._forget(node_id)
                 self._count("byes")
             else:
                 self._drop("bad_kind")
@@ -281,13 +334,13 @@ class Beacon:
     def _drain(self, sock: socket.socket) -> None:
         for _ in range(DRAIN_MAX):
             try:
-                data, _addr = sock.recvfrom(MAX_DATAGRAM + 1)
+                data, addr = sock.recvfrom(MAX_DATAGRAM + 1)
             except (BlockingIOError, InterruptedError):
                 return
             except OSError:          # e.g. Windows WSAEMSGSIZE on an oversized datagram
                 self._drop("recv_error")
                 return
-            self.handle(data)
+            self.handle(data, src=addr)
 
     def _run(self) -> None:
         next_at = time.monotonic()
