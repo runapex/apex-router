@@ -42,6 +42,7 @@ LANE = "mesh-worker"
 DEFAULT_DAILY_CAP = 20
 DEFAULT_WALL_MIN = 30
 DEFAULT_POLL_S = 5
+FETCH_BACKOFF_MAX_S = 300     # a failing peer is asked at most every 5 min
 CHECK_TIMEOUT_S = 600
 FETCH_TIMEOUT_S = 120
 GIT_TIMEOUT_S = 120
@@ -558,7 +559,7 @@ class Worker:
                  fetch_bundle: Callable | None = None,
                  pressure: Callable[[], int] | None = None,
                  offload_log: Path | None = None, now: Callable[[], float] = time.time,
-                 quiet: bool = False) -> None:
+                 quiet: bool = False, clock: Callable[[], float] = time.monotonic) -> None:
         self.ident = ident
         self.h = Path(h)
         self.daily_cap = int(daily_cap)
@@ -580,6 +581,8 @@ class Worker:
         self.now = now
         self.quiet = quiet
         self._logged: set[str] = set()
+        self._backoff: dict[str, tuple[int, float]] = {}   # node_id -> (fails, next try time)
+        self.clock = clock                    # back-off deadlines: monotonic, not wall time
 
     # -- logging (fail open) --
 
@@ -621,23 +624,44 @@ class Worker:
         except Exception as e:  # noqa: BLE001
             self.log("peers_error", error=type(e).__name__)
             return 0
+        alive = {getattr(p, "node_id", None) for p in peers}
+        for gone in [n for n in self._backoff if n not in alive]:
+            del self._backoff[gone]               # a peer that left: forget its back-off
         for peer in peers:
-            if getattr(peer, "node_id", None) == self.ident.node_id:
+            node = getattr(peer, "node_id", None)
+            if node == self.ident.node_id:
                 continue
+            fails, next_at = self._backoff.get(node, (0, 0.0))
+            if fails and self.clock() < next_at:
+                continue                              # back-off: this peer failed recently
             try:
                 res = self.fetch(peer, self.ident, FETCH_JOBS_TIMEOUT_S)
+                err = None
             except Exception as e:  # noqa: BLE001
-                self.log("fetch_error", peer=getattr(peer, "name", "?"), error=type(e).__name__)
+                res, err = None, type(e).__name__
+            if err is None and (not isinstance(res, dict) or res.get("ok") is not True
+                                or not isinstance(res.get("jobs"), list)):
+                err = str(res.get("error") if isinstance(res, dict) else "bad_response")[:200]
+            if err is not None:
+                self._fetch_failed(peer, node, fails, err)
                 continue
-            if not isinstance(res, dict) or res.get("ok") is not True \
-                    or not isinstance(res.get("jobs"), list):
-                err = res.get("error") if isinstance(res, dict) else "bad_response"
-                self.log("fetch_error", peer=getattr(peer, "name", "?"), error=str(err)[:200])
-                continue
+            if fails:
+                self.log("fetch_ok", peer=getattr(peer, "name", "?"), after_fails=fails)
+                self._backoff.pop(node, None)
             for env in res["jobs"][: jobs.MAX_OFFERED]:
                 if isinstance(env, str) and self.handle(env, peer):
                     ran += 1
         return ran
+
+    def _fetch_failed(self, peer, node, fails: int, err: str) -> None:
+        """Back off from a failing peer: 5 s, 10 s, 20 s ... up to FETCH_BACKOFF_MAX_S. Log the
+        1st, 2nd, 4th, 8th ... failure only, so a peer that is down for hours writes a few lines."""
+        fails += 1
+        delay = min(FETCH_BACKOFF_MAX_S, DEFAULT_POLL_S * 2 ** (fails - 1))
+        self._backoff[node] = (fails, self.clock() + delay)
+        if fails & (fails - 1) == 0:
+            self.log("fetch_error", peer=getattr(peer, "name", "?"), error=err, fails=fails,
+                     retry_s=round(delay))
 
     # -- the 7 checks --
 

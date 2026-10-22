@@ -10,6 +10,7 @@ fe80::/10), ULA (fc00::/7) and loopback (127/8, ::1). This is narrower than
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 
 _PRIVATE_V4 = tuple(ipaddress.ip_network(n) for n in (
@@ -63,14 +64,85 @@ def default_lan_ip() -> str | None:
     return str(addr)
 
 
+# Tunnel and virtual interfaces (macOS names). A VPN takes the default route through one of these;
+# its address is not reachable from the LAN, so the mesh must not bind it by default.
+# Exact name patterns, not loose prefixes: "br-lan" (a LAN bridge) and "local0" must stay eligible.
+_TUNNEL_RE = re.compile(
+    r"\A(?:lo\d*"                                        # loopback
+    r"|(?:utun|ipsec|ppp|tun|tap|gif|stf|awdl|llw|anpi|vmenet)\d+"   # macOS tunnels, AWDL
+    r"|(?:tunl|sit|gre|gretap|erspan|ip6tnl|ip6gre|ip_vti|ip6_vti)\d+"  # Linux IP tunnels
+    r"|bridge\d+"                                         # macOS VM / Internet Sharing bridge
+    r"|wg\d+|tailscale\d+|zt[0-9a-z]{8,}|nebula\d*"      # WireGuard, Tailscale, ZeroTier, Nebula
+    r"|docker\d+|br-[0-9a-f]{12}|veth[0-9a-z]+|virbr\d+" # Docker, libvirt
+    r"|cni\d+|flannel\.\d+|vxlan\.?\w*|kube-\w+|lxcbr\d+|lxdbr\d+|podman\d+)\Z")
+
+
+def _is_tunnel(name: str) -> bool:
+    return bool(_TUNNEL_RE.match(name))
+# Physical LAN names first: macOS en*, Linux eth*, en* (enp0s3, eno1), wl* (wlan0, wlp2s0).
+_LAN_PREFIXES = ("en", "eth", "wl")
+
+
+def _iface_addrs(text: str | None = None) -> list[tuple[str, str, bool]]:
+    """[(interface, IPv4 address, status active)] from ``ifconfig``. [] on any error."""
+    import subprocess
+    if text is None:
+        try:
+            text = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=3,
+                                  check=False).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+    out, name, addrs, active = [], None, [], True
+
+    def flush():
+        if name:
+            out.extend((name, a, active) for a in addrs)
+
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            flush()
+            name, addrs = line.split(":", 1)[0], []
+            # "flags=8863<UP,BROADCAST,...,RUNNING,...>": up and running (macOS and Linux)
+            flags = line.split("<", 1)[1].split(">", 1)[0].split(",") if "<" in line else []
+            active = not flags or ("UP" in flags and "RUNNING" in flags)
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "inet":
+            addrs.append(parts[1])
+        elif len(parts) >= 2 and parts[0] == "status:":
+            active = active and parts[1] == "active"
+    flush()
+    return out
+
+
+def lan_ip(default: str | None = None, ifaces: list[tuple[str, str, bool]] | None = None) -> str | None:
+    """The address to bind when no ``--bind`` is given.
+
+    The source address of the default route, unless it sits on a tunnel interface (a VPN). Then the
+    first private IPv4 of an active non-tunnel interface (``en*`` first). Else the default route
+    address as before. ``default`` and ``ifaces`` are for tests.
+    """
+    ip = default if default is not None else default_lan_ip()
+    rows = _iface_addrs() if ifaces is None else ifaces
+    owner = next((n for n, a, _ in rows if a == ip), None)
+    if ip is not None and (owner is None or not _is_tunnel(owner)):
+        return ip
+    lan = [(n, a) for n, a, up in rows
+           if up and not _is_tunnel(n) and is_private(a)
+           and not _parse(a).is_loopback and not a.startswith("169.254.")]
+    lan.sort(key=lambda r: (not r[0].startswith(_LAN_PREFIXES), r[0]))
+    return lan[0][1] if lan else ip
+
+
 def choose_bind(bind: str | None, *, allow_public: bool = False) -> str:
     """Return the one address to bind. Raises ValueError.
 
-    ``bind=None`` uses ``default_lan_ip()``. Always refused: ``0.0.0.0``, ``::`` (all interfaces)
-    and multicast. A non-private address needs ``allow_public=True``.
+    ``bind=None`` uses ``lan_ip()`` (the default route address, but not a VPN tunnel address).
+    Always refused: ``0.0.0.0``, ``::`` (all interfaces) and multicast. A non-private address
+    needs ``allow_public=True``.
     """
     if bind is None:
-        ip = default_lan_ip()
+        ip = lan_ip()
         if ip is None:
             raise ValueError("no LAN address found; pass --bind IP")
         src = "default LAN address"

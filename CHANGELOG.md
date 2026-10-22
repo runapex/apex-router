@@ -31,6 +31,11 @@ next tag will carry.
   and `route-join` reports a label match rate (C2).
 
 ### Fixed
+- Mesh reliability (seen on mac-work 2026-10-20..22): with a VPN up, `mesh up` bound the tunnel
+  address; a self-update restart hit errno 49 and exited for good; a network change left it bound to an
+  old address while it reported "running"; the worker logged 8,443 `fetch_error` lines in 14 h. Now: no
+  tunnel address by default (macOS and Linux names), an address check every 30 s with restart, bind retry
+  with back-off after a restart, per-peer worker back-off (5 s to 5 min). 3 xval passes; 9 mutants killed.
 - Provider errors no longer count as capability failures (C1). `route_log` rows carry
   `cause: infra|capability`; old rows derive it from the note. Plugin cells leave out
   `unavailable` runs from the pass rate.

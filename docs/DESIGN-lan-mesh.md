@@ -126,6 +126,7 @@ class PeerTable:                          # thread-safe
 def is_private(ip: str) -> bool
 def default_lan_ip() -> str | None        # UDP connect trick, no packet sent
 def choose_bind(bind: str | None, *, allow_public: bool = False) -> str   # raises ValueError
+def lan_ip(default=None, ifaces=None) -> str | None   # default route, but never a tunnel interface
 
 # beacon.py
 class Beacon:
@@ -318,6 +319,17 @@ HTTP), keeps only `--node` (name or node_id) when given, and picks min `(load, n
 not try a second node when the first one fails. The socket is pinned to the LAN interface of the
 running `mesh up` (same as `collect`). Exit 0 = ok, 1 = no node or the call failed, 2 = usage.
 `PROMPT` `-` reads stdin. Text mode prints the content on stdout and one status line on stderr.
+
+## Address and restart rules (reliability, 2026-10-22)
+
+| Event | Behaviour |
+|---|---|
+| No `--bind`, default route on a tunnel (`utun*`, `wg*`, `tailscale*`, `docker*`, `br-<12 hex>`, ...) | `lan_ip()` takes the first private IPv4 of an UP+RUNNING non-tunnel interface (`en*`, `eth*`, `wl*` first). |
+| Bound address on no interface for 2 checks (30 s apart) | `address_gone`: restart. With `--bind`, the restart waits for that address. |
+| No `--bind`, `lan_ip()` gives the same new private address for 2 checks | `address_changed to X`: restart on X. |
+| `ifconfig` unreadable | No restart (never on missing data). |
+| Bind error 48/49 (98/99) or no LAN address after a re-exec (`APEX_MESH_RETRY_BIND=1`) | Wait 2, 4, ... 60 s and retry until stopped. A first manual start fails fast. |
+| Worker fetch error from one peer | Back off 5 s, doubling, max 300 s (monotonic clock). Log failure 1, 2, 4, 8 ... and `fetch_ok`. |
 
 ## Self-update (`selfupdate.py`)
 

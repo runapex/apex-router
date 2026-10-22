@@ -946,7 +946,7 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         shared = datasets.parse_share(args.share)
     except ValueError as e:
         _err(str(e))
-        return 2
+        return NO_ADDR if args.bind is None and "no LAN address" in str(e) else 2
     beacon_port = getattr(args, "beacon_port", MCAST_PORT)
     if isinstance(beacon_port, bool) or not isinstance(beacon_port, int) \
             or not 1 <= beacon_port <= 65535:
@@ -1029,6 +1029,8 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         return 1
     own_pid = os.getpid()
     restart = False
+    cycle = drift_n = 0
+    last_drift: str | None = None
     try:
         server.start()
         state["port"] = int(server.address[1])
@@ -1053,6 +1055,16 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             if stop.wait(interval_s):
                 break
             state["load"] = _local_load()
+            cycle += 1
+            if cycle % ADDR_CHECK_EVERY == 0:
+                drift = _bind_drift(args.bind, host, netif, allow_public=args.allow_public)
+                # two checks in a row with the SAME result (same new address): not a flap
+                drift_n = drift_n + 1 if drift and drift == last_drift else (1 if drift else 0)
+                last_drift = drift
+                if drift_n >= 2:
+                    print(f"mesh up: {drift} ({host}); restarting", flush=True)
+                    restart = True
+                    break
             if updater is not None:
                 updater.tick(table.alive())
                 if updater.restart_needed():
@@ -1080,7 +1092,40 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
     return RESTART if restart else 0
 
 
-RESTART = 75          # run_up result: an update landed; _cmd_up re-execs with the same argv
+RESTART = 75          # run_up result: an update landed or the address moved; _cmd_up re-execs
+NO_ADDR = 3           # run_up result: no --bind and no LAN address now
+ADDR_CHECK_EVERY = 6  # beacon cycles between two address checks (6 x 5 s = 30 s)
+RETRY_ENV = "APEX_MESH_RETRY_BIND"   # set on re-exec: a bind failure waits and retries
+RETRY_MAX_S = 60.0
+_RETRY_ERRNOS = (48, 49)             # EADDRINUSE, EADDRNOTAVAIL (macOS and Linux: 98, 99)
+_RETRY_ERRNOS_ALL = _RETRY_ERRNOS + (98, 99)
+
+
+def _bind_drift(bind: str | None, host: str, netif, *, allow_public: bool = False) -> str | None:
+    """Why the bound address is wrong now, or None.
+
+    "address_gone": ``host`` is on no interface (the network changed). "address_changed to X":
+    no ``--bind`` was given and ``lan_ip()`` now gives X, an address the restart can bind
+    (private, or ``allow_public``). None when the interface list cannot be read: never restart on
+    missing data.
+    """
+    try:
+        rows = netif._iface_addrs()
+        if not rows:
+            return None
+        if host not in {a for _, a, _ in rows} and not netif._parse(host).is_loopback:
+            return "address_gone"
+        if bind is None:
+            now = netif.lan_ip(ifaces=rows)
+            if now is not None and now != host and (allow_public or netif.is_private(now)):
+                return f"address_changed to {now}"
+    except Exception:  # noqa: BLE001 -- a failed check never stops a running node
+        return None
+    return None
+
+
+def _retryable(e: BaseException) -> bool:
+    return isinstance(e, OSError) and e.errno in _RETRY_ERRNOS_ALL
 
 
 def _cmd_up(args) -> int:
@@ -1088,15 +1133,33 @@ def _cmd_up(args) -> int:
     old = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
         old[sig] = signal.signal(sig, lambda *_: stop.set())
+    # A first manual start fails fast. After a re-exec (update or address change) nobody watches
+    # the terminal, so a missing address or a busy port waits with back-off until it is back.
+    retry = os.environ.get(RETRY_ENV) == "1"
+    tries = 0
     try:
-        rc = run_up(args, stop)
-    except Exception as e:  # noqa: BLE001 -- one line, no traceback
-        _err(f"cannot start: {type(e).__name__}: {e}")
-        return 1
+        while True:
+            try:
+                rc = run_up(args, stop)
+                err = None
+            except Exception as e:  # noqa: BLE001 -- one line, no traceback
+                rc, err = 1, e
+            if not retry or stop.is_set() or not (rc == NO_ADDR or _retryable(err)):
+                if err is not None:
+                    _err(f"cannot start: {type(err).__name__}: {err}")
+                break
+            tries += 1
+            delay = min(RETRY_MAX_S, 2.0 ** min(tries, 16))     # no float overflow on long waits
+            why = "no LAN address" if err is None else f"{type(err).__name__}: {err}"
+            print(f"mesh up: cannot bind ({why}); retry {tries} in {delay:.0f} s", flush=True)
+            if stop.wait(delay):
+                rc = 0                                     # stopped while waiting: clean exit
+                break
     finally:
         for sig, h in old.items():
             signal.signal(sig, h)
     if rc == RESTART:
+        os.environ[RETRY_ENV] = "1"
         _submodule("selfupdate").reexec()
     return rc
 

@@ -84,6 +84,7 @@ def test_choose_bind_public_needs_flag():
 
 
 def test_choose_bind_default(monkeypatch):
+    monkeypatch.setattr(netif, "_iface_addrs", lambda text=None: [])     # no interface list
     monkeypatch.setattr(netif, "default_lan_ip", lambda: "10.0.0.9")
     assert netif.choose_bind(None) == "10.0.0.9"
     monkeypatch.setattr(netif, "default_lan_ip", lambda: None)
@@ -439,3 +440,85 @@ def test_two_beacons_find_each_other_multicast():
     finally:
         a.stop()
         b.stop()
+
+
+# ---- default bind avoids a VPN tunnel (mesh reliability 2026-10-22) ---------------------------
+
+_IFCONFIG = """lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 10.3.203.90 netmask 0xfffffc00 broadcast 10.3.203.255
+\tstatus: active
+en5: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 192.168.7.2 netmask 0xffffff00 broadcast 192.168.7.255
+\tstatus: inactive
+utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1400
+\tinet 192.168.132.4 --> 192.168.132.4 netmask 0xffffffff
+"""
+
+
+def test_iface_addrs_parses_ifconfig():
+    rows = netif._iface_addrs(_IFCONFIG)
+    assert ("en0", "10.3.203.90", True) in rows and ("en5", "192.168.7.2", False) in rows
+    assert ("utun4", "192.168.132.4", True) in rows and ("lo0", "127.0.0.1", True) in rows
+
+
+def test_lan_ip_skips_the_vpn_tunnel():
+    rows = netif._iface_addrs(_IFCONFIG)
+    assert netif.lan_ip(default="192.168.132.4", ifaces=rows) == "10.3.203.90"   # VPN on
+    assert netif.lan_ip(default="10.3.203.90", ifaces=rows) == "10.3.203.90"     # VPN off
+    only_vpn = [r for r in rows if r[0] in ("utun4", "lo0")]
+    assert netif.lan_ip(default="192.168.132.4", ifaces=only_vpn) == "192.168.132.4"   # as before
+    assert netif.lan_ip(default="10.0.0.9", ifaces=[]) == "10.0.0.9"             # no ifconfig
+
+
+def test_choose_bind_default_uses_lan_ip(monkeypatch):
+    monkeypatch.setattr(netif, "default_lan_ip", lambda: "192.168.132.4")
+    rows = netif._iface_addrs(_IFCONFIG)
+    monkeypatch.setattr(netif, "_iface_addrs", lambda text=None: rows)
+    assert netif.choose_bind(None) == "10.3.203.90"
+    assert netif.choose_bind("192.168.132.4") == "192.168.132.4"                 # --bind wins
+    monkeypatch.setattr(netif, "default_lan_ip", lambda: None)                   # no default route
+    assert netif.choose_bind(None) == "10.3.203.90"
+
+
+_LINUX = """lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+docker0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 172.17.0.1  netmask 255.255.0.0
+eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 192.168.1.20  netmask 255.255.255.0
+eth1: flags=4098<BROADCAST,MULTICAST>  mtu 1500
+        inet 192.168.9.9  netmask 255.255.255.0
+wg0: flags=209<UP,POINTOPOINT,RUNNING,NOARP>  mtu 1420
+        inet 10.66.0.2  netmask 255.255.255.0
+tailscale0: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1280
+        inet 100.101.102.103  netmask 255.255.255.255
+"""
+
+
+def test_lan_ip_linux_names_and_flags(monkeypatch):
+    monkeypatch.setattr(netif, "default_lan_ip", lambda: None)   # no default route
+    rows = netif._iface_addrs(_LINUX)
+    assert ("eth1", "192.168.9.9", False) in rows                # down: not eligible
+    for default in ("10.66.0.2", "100.101.102.103", "172.17.0.1"):   # wg0, tailscale0, docker0
+        assert netif.lan_ip(default=default, ifaces=rows) == "192.168.1.20"
+    assert netif.lan_ip(default=None, ifaces=rows) == "192.168.1.20"   # eth0 before docker0
+
+
+@pytest.mark.parametrize("name,tunnel", [
+    ("utun4", True), ("ipsec0", True), ("lo0", True), ("lo", True), ("bridge100", True),
+    ("wg0", True), ("tailscale0", True), ("ztabcdef12", True), ("docker0", True),
+    ("br-0123456789ab", True), ("veth1a2b3c", True), ("virbr0", True),
+    ("en0", False), ("en5", False), ("eth0", False), ("enp0s3", False), ("eno1", False),
+    ("wlan0", False), ("wlp2s0", False), ("br-lan", False), ("br0", False), ("local0", False),
+    ("bond0", False), ("ztlan", False), ("tunl0", True), ("sit0", True), ("gre0", True),
+    ("ip6tnl0", True), ("gretap0", True)])
+def test_tunnel_names_are_exact(name, tunnel):
+    assert netif._is_tunnel(name) is tunnel
+
+
+def test_lan_bridge_keeps_its_address():
+    # xval pass 2: "br-lan" was taken for a Docker bridge and the mesh moved to br0
+    rows = [("br-lan", "192.168.1.1", True), ("br0", "192.168.122.1", True)]
+    assert netif.lan_ip(default="192.168.1.1", ifaces=rows) == "192.168.1.1"

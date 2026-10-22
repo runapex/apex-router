@@ -775,6 +775,10 @@ The mesh is opt-in and default OFF. Nothing listens until you run `apex-router m
    ```
 
 `mesh up` binds one private LAN address, never `0.0.0.0`. Use `--bind IP` to choose it.
+With no `--bind`, it takes the default-route address, but not a VPN tunnel address (`utun`, `wg`,
+`tailscale`, ...): then it takes the private address of the LAN interface. Every 30 s it checks the
+address. When the network changes, it restarts on the new address. After a restart, a bind error
+waits and tries again (2 s up to 60 s). A worker backs off from a peer that fails (5 s up to 5 min).
 Use `--share NAME` (repeatable, or `none`) to limit the datasets this node serves.
 Use `--peer HOST[:PORT]` when the network drops multicast. PORT is the UDP beacon port of the
 other node (default 47777), not its HTTP port. Each HTTP request carries a signed auth header

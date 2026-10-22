@@ -440,3 +440,169 @@ def test_up_restarts_when_an_update_lands(home, monkeypatch):
     stop = threading.Event()
     stop.set()
     assert mesh_cli.run_up(off, stop, interval_s=0.01) == 0
+
+
+# ---- reliability: address drift, bind retry (2026-10-22) ---------------------------------------
+
+def _netif_rows(monkeypatch, rows, lan=None):
+    mod = sys.modules["apex_router.mesh.netif"]
+    from apex_router.mesh import netif as real
+    mod._iface_addrs = lambda text=None: rows() if callable(rows) else rows
+    mod._parse = real._parse
+    mod.is_private = real.is_private
+    mod.lan_ip = lambda default=None, ifaces=None: lan() if callable(lan) else lan
+
+
+def test_up_restarts_when_its_address_is_gone(home, monkeypatch, capsys):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    monkeypatch.setattr(mesh_cli, "ADDR_CHECK_EVERY", 1)
+    _netif_rows(monkeypatch, [("en0", "10.3.203.90", True)], lan="10.3.203.90")
+    args = mesh_cli.build_parser().parse_args(["up", "--bind", "10.0.0.84", "--no-auto-update"])
+    stop = threading.Event()
+    threading.Timer(2.0, stop.set).start()                         # a regression fails, not hangs
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == mesh_cli.RESTART
+    assert "address_gone (10.0.0.84); restarting" in capsys.readouterr().out
+    assert record["server_stopped"] and not (home / "mesh.pid").exists()
+
+
+def test_up_follows_a_new_lan_address_only_without_bind(home, monkeypatch, capsys):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    monkeypatch.setattr(mesh_cli, "ADDR_CHECK_EVERY", 1)
+    rows = [("en0", "192.168.1.5", True), ("en1", "10.9.9.9", True)]
+    _netif_rows(monkeypatch, rows, lan="10.9.9.9")              # VPN off: lan_ip moved
+    args = mesh_cli.build_parser().parse_args(["up", "--no-auto-update"])
+    stop = threading.Event()
+    threading.Timer(2.0, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == mesh_cli.RESTART
+    assert "address_changed" in capsys.readouterr().out
+    # --bind given and still present: no restart
+    pinned = mesh_cli.build_parser().parse_args(["up", "--bind", "192.168.1.5", "--no-auto-update"])
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(pinned, stop, interval_s=0.01) == 0
+
+
+def test_up_does_not_restart_on_one_flap_or_missing_data(home, monkeypatch):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    monkeypatch.setattr(mesh_cli, "ADDR_CHECK_EVERY", 1)
+    seq = iter([[("en0", "10.3.203.90", True)]] + [[("en0", "192.168.1.5", True)]] * 10_000)
+    _netif_rows(monkeypatch, lambda: next(seq), lan="192.168.1.5")   # gone once, then back
+    args = mesh_cli.build_parser().parse_args(["up", "--no-auto-update"])
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == 0
+    _netif_rows(monkeypatch, [], lan=None)                           # ifconfig failed
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == 0
+
+
+def _cmd_up_with(monkeypatch, outcomes):
+    """Patch run_up to return or raise each item of outcomes in turn; return the call log."""
+    calls = []
+
+    def fake(args, stop, **kw):
+        calls.append(1)
+        o = outcomes[min(len(calls), len(outcomes)) - 1]
+        if isinstance(o, BaseException):
+            raise o
+        return o
+
+    monkeypatch.setattr(mesh_cli, "run_up", fake)
+    waits = []
+    real_event = threading.Event
+
+    class Ev(real_event):
+        def wait(self, t=None):
+            waits.append(t)
+            return False
+
+    monkeypatch.setattr(mesh_cli.threading, "Event", Ev)
+    return calls, waits
+
+
+def test_first_start_fails_fast_on_a_bind_error(monkeypatch, capsys):
+    monkeypatch.delenv(mesh_cli.RETRY_ENV, raising=False)
+    calls, waits = _cmd_up_with(monkeypatch, [OSError(49, "Can't assign requested address")])
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 1
+    assert calls == [1] and waits == [] and "cannot start" in capsys.readouterr().err
+
+
+def test_restarted_up_retries_a_bind_error_with_backoff(monkeypatch, capsys):
+    monkeypatch.setenv(mesh_cli.RETRY_ENV, "1")
+    err49 = OSError(49, "Can't assign requested address")
+    calls, waits = _cmd_up_with(monkeypatch, [err49, mesh_cli.NO_ADDR, err49, OSError(48, "busy"),
+                                              err49, err49, err49, 0])
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 0
+    assert len(calls) == 8 and waits == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+    out = capsys.readouterr().out
+    assert "retry 1 in 2 s" in out and "no LAN address" in out
+
+
+def test_restarted_up_does_not_retry_other_errors(monkeypatch, capsys):
+    monkeypatch.setenv(mesh_cli.RETRY_ENV, "1")
+    calls, waits = _cmd_up_with(monkeypatch, [OSError(13, "Permission denied")])
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 1
+    calls2, _ = _cmd_up_with(monkeypatch, [2])                       # a config error
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 2
+    assert calls == [1] and calls2 == [1] and waits == []
+
+
+def test_restart_sets_the_retry_flag_for_the_new_process(monkeypatch):
+    monkeypatch.delenv(mesh_cli.RETRY_ENV, raising=False)
+    _cmd_up_with(monkeypatch, [mesh_cli.RESTART])
+    su = types.ModuleType("apex_router.mesh.selfupdate")
+    seen = []
+    su.reexec = lambda: seen.append(os.environ.get(mesh_cli.RETRY_ENV))
+    monkeypatch.setitem(sys.modules, su.__name__, su)
+    mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"]))
+    assert seen == ["1"]
+
+
+def test_drift_needs_the_same_new_address_twice_and_an_eligible_one(home, monkeypatch, capsys):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    monkeypatch.setattr(mesh_cli, "ADDR_CHECK_EVERY", 1)
+    rows = [("en0", "192.168.1.5", True)]
+    cyc = iter(["10.0.0.1", "10.0.0.2", "10.0.0.3"] * 10_000)   # never the same address twice
+    _netif_rows(monkeypatch, rows, lan=lambda: next(cyc))
+    args = mesh_cli.build_parser().parse_args(["up", "--no-auto-update"])
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == 0
+    _netif_rows(monkeypatch, rows, lan="8.8.4.4")               # public: a restart could not bind
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == 0
+    _netif_rows(monkeypatch, rows, lan="10.0.0.7")              # stable private: restart
+    stop = threading.Event()
+    threading.Timer(2.0, stop.set).start()
+    assert mesh_cli.run_up(args, stop, interval_s=0.01) == mesh_cli.RESTART
+    assert "address_changed to 10.0.0.7" in capsys.readouterr().out
+
+
+def test_retry_delay_never_overflows_and_stop_exits_clean(monkeypatch):
+    monkeypatch.setenv(mesh_cli.RETRY_ENV, "1")
+    err49 = OSError(49, "gone")
+    _, waits = _cmd_up_with(monkeypatch, [err49] * 1100 + [0])
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 0
+    assert len(waits) == 1100 and max(waits) == 60.0
+    stop_waits = []
+
+    class StopEv(threading.Event):
+        def wait(self, t=None):
+            stop_waits.append(t)
+            return True                                    # a signal arrives during the wait
+
+    calls2 = []
+    monkeypatch.setattr(mesh_cli, "run_up", lambda a, s, **k: calls2.append(1) or mesh_cli.NO_ADDR)
+    monkeypatch.setattr(mesh_cli.threading, "Event", StopEv)
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 0
+    assert calls2 == [1] and stop_waits == [2.0]

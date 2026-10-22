@@ -6,6 +6,7 @@ repo with a local bare "origin". The mesh home is a temp dir (APEX_MESH_HOME).
 from __future__ import annotations
 
 import base64
+import itertools
 import json
 import os
 import subprocess
@@ -920,3 +921,71 @@ def test_parse_codex_output():
     p = worker.parse_codex_output('{"type": "turn.completed"}\n', "")
     assert p["is_error"] is False and p["tokens_in"] is None and p["report"] == ""
     assert worker.parse_codex_output("", "")["is_error"] is True
+
+
+# -- reliability: per-peer back-off (2026-10-22) -------------------------------------------------
+
+def test_failing_peer_backs_off_and_logs_few_lines(env):
+    t = [1000.0]
+    w = _worker(env, [], now=lambda: t[0], clock=lambda: t[0])
+    calls = []
+
+    def fetch(peer, ident, timeout):
+        calls.append(t[0])
+        return {"ok": False, "jobs": [], "error": "http 403"}
+
+    w.fetch = fetch
+    for _ in range(4000):                     # 4000 polls x 5 s = 5.5 h with the peer refusing
+        w.poll_once()
+        t[0] += 5
+    log = [json.loads(x) for x in worker.log_path(env["home"]).read_text().splitlines()]
+    errs = [r for r in log if r["event"] == "fetch_error"]
+    assert len(calls) < 90                    # was 4000 (one call per poll)
+    assert len(errs) <= 8 and errs[0]["fails"] == 1 and errs[-1]["retry_s"] == 300
+    gaps = [b - a for a, b in itertools.pairwise(calls)]
+    assert max(gaps) <= 305 and gaps[:4] == [5, 10, 20, 40]
+
+
+def test_peer_recovery_resets_back_off(env):
+    t = [1000.0]
+    w = _worker(env, [], now=lambda: t[0], clock=lambda: t[0])
+    state = {"ok": False}
+    w.fetch = lambda p, i, to: {"ok": state["ok"], "jobs": [], "error": "timeout"}
+    for _ in range(40):
+        w.poll_once()
+        t[0] += 5
+    state["ok"] = True
+    for _ in range(80):                       # wait out the current back-off
+        w.poll_once()
+        t[0] += 5
+    log = worker.log_path(env["home"]).read_text()
+    assert '"fetch_ok"' in log
+    assert w._backoff == {}
+    calls = []
+    w.fetch = lambda p, i, to: calls.append(1) or {"ok": True, "jobs": []}
+    w.poll_once()
+    assert calls == [1]                       # asked again on the next poll
+
+
+def test_back_off_ignores_wall_clock_steps_and_forgets_departed_peers(env):
+    mono, wall = [0.0], [1000.0]
+    peers = [env["peer"]]
+    w = _worker(env, [], now=lambda: wall[0], clock=lambda: mono[0], peers=lambda: list(peers))
+    w.fetch = lambda p, i, to: {"ok": False, "jobs": [], "error": "x"}
+    for _ in range(30):
+        w.poll_once()
+        mono[0] += 5
+    wall[0] -= 600                                       # wall clock steps back 10 min
+    calls = []
+    w.fetch = lambda p, i, to: calls.append(mono[0]) or {"ok": True, "jobs": []}
+    start = mono[0]
+    while not calls and mono[0] - start < 400:
+        w.poll_once()
+        mono[0] += 5
+    assert calls and calls[0] - start <= 300             # cap holds on the monotonic clock
+    w.fetch = lambda p, i, to: {"ok": False, "jobs": [], "error": "x"}
+    w.poll_once()
+    assert env["peer"].node_id in w._backoff
+    peers.clear()                                        # the peer left the mesh
+    w.poll_once()
+    assert w._backoff == {}
