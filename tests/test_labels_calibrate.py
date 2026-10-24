@@ -189,7 +189,10 @@ def test_gold_design_is_none_without_a_valid_single_design(tmp_path, monkeypatch
     h = _store(tmp_path, monkeypatch, rows, gold)
     assert L.gold_design(gold) is None                                    # no manifest, no sheet
     _design(h, {("p", "A"): 900, ("p", "B"): 100}, sheet)
-    assert L.gold_design({**gold, "other": "fail"}) is None               # id outside the design
+    # milestone 5: an id outside the design gets no weight (it no longer voids the design), so
+    # gold from a later draw cannot hide the weighted numbers of a complete design
+    w = L.gold_design({**gold, "other": "fail"})
+    assert w is not None and "other" not in w and set(w) == set(gold)
     assert L.gold_design({}) is None
     _design(h, {("p", "A"): 900}, sheet)
     assert L.gold_design(gold) is None                                    # stratum without N_h

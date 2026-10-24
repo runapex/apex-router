@@ -19,6 +19,17 @@ next tag will carry.
   n 570 -> 117, review 328 -> 31; both verdicts unchanged).
 
 ### Added
+- Gold sampling designs (reservoir step 5 / milestone 5). `labels export-review --design K
+  [--floor 1]` draws a stratified simple random sample of the whole task frame (project x
+  task_type, floor 1 per stratum, the rest proportional): deff 1.16 on the current frame, against
+  2.60 for the first gold sample (floor 3). The draw is stored in `gold/designs/<id>.json` (ids,
+  stratum labels, pi; no text; 0600; never replaced) only after the review file is written.
+  `import-gold` copies design, stratum and pi from that file onto each gold row (values in the
+  import file are ignored). `export-review --strata` stores a "purposive" design with a
+  conditional pi (never used for weights). `labels report` shows a population-weighted voter
+  accuracy next to the unweighted one. Report only: labels and the gate do not change.
+  `gold_design` now uses the newest probability design whose every stratum has gold; a gold id
+  outside it gets no weight (before: it voided the design).
 - Mesh beacon answers a peer directly ("learned targets"): an authenticated announce from the
   address in its own card makes the beacon also send unicast announces to that address until the
   peer goes silent (`PEER_TTL_S`) or says `bye`. One-way multicast (a VPN that routes the LAN

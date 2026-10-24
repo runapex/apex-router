@@ -473,6 +473,20 @@ def voter_accuracy(rows: list, gold: dict) -> dict:
     return acc
 
 
+def voter_accuracy_weighted(rows: list, gold: dict, weights: dict) -> dict:
+    """Per voter, on gold tasks with a design weight: {accuracy, n, n_eff, wilson_low}
+    (population-weighted, see ``gold_design``). Report only: ``posterior`` and the gate use the
+    unweighted ``voter_accuracy``."""
+    pairs: dict = {}
+    for r in rows:
+        g = gold.get(r["id"])
+        if g not in OUTCOMES or r["id"] not in weights:
+            continue
+        for name, v in _all_votes(r).items():
+            pairs.setdefault(name, []).append((float(weights[r["id"]]), v == g))
+    return {name: _weighted(ps) for name, ps in pairs.items()}
+
+
 # calibrated on gold: the lowest confidence bin from which every bin up is >= 0.75 accurate
 def _env_float(name: str, default: float) -> float:
     """A float from the environment; unset, empty, garbage or non-finite -> `default` (a bad knob
@@ -766,33 +780,208 @@ def gold_outcomes(rows: list | None = None) -> dict:
     return out
 
 
-def gold_design(gold: dict) -> dict | None:
-    """id -> design weight ``N_h / r_h`` for the stratified gold sample, or None.
+# ---- sampling designs for gold ----------------------------------------------------------------
+# A design records how gold tasks were drawn, as ids and stratum labels only (no text):
+# - "probability": ``export-review --design K`` draws a stratified simple random sample of the
+#   whole task frame (strata = project x task_type, ``floor`` per stratum, the rest proportional).
+#   pi = take_h / N_h. ``gold_design`` weights gold from it.
+# - "purposive": ``export-review --strata`` (suspected-fail / test-split / random). pi is the
+#   probability CONDITIONAL on the strata drawn before it (``pi_kind``); never used for weights.
+# - the first gold sample (``gold/sample_manifest.json`` + ``gold/sheet.csv``, built by
+#   ``gold/build_sheet.py``) is read as the probability design "manifest" (floor 3).
+# ``import-gold`` copies design id, stratum and pi from the newest design that drew the id onto the
+# gold row; values in the import file are ignored.
+DESIGN_FLOOR = 1          # floor 1: deff ~1.16 on the first gold frame, against 2.60 at floor 3
 
-    ``gold/sample_manifest.json`` gives the population ``N_h`` of each (project, task_type)
-    stratum; ``gold/sheet.csv`` gives the stratum of each sampled id. ``r_h`` = the ids of ``gold``
-    in stratum h (rows without an outcome are treated as missing at random inside their stratum).
-    The sample over-represents small strata, so an unweighted mean over gold describes the sample,
-    not the population. None (= no design known, report unweighted only) when the files are
-    missing or bad, when any gold id is not in the sheet (a mixed design has no valid weight), or
-    when a stratum of the population has no gold id (nothing can stand in for its accuracy)."""
+
+def _designs_dir() -> Path:
+    return home() / "gold" / "designs"
+
+
+def _legacy_design() -> dict | None:
+    """The first gold sample as a design dict, or None when its files are missing or bad."""
     import csv
     d = home() / "gold"
     try:
         man = json.loads((d / "sample_manifest.json").read_text())
-        pop = {(s["project"], s["task_type"]): s["population"] for s in man["strata"]}
+        strata = [{"project": x["project"], "task_type": x["task_type"],
+                   "population": x["population"], "take": x.get("sampled", 0)} for x in man["strata"]]
         with open(d / "sheet.csv", newline="", encoding="utf-8-sig") as fh:
-            stratum = {r["task_id"]: (r["project"], r["task_type"]) for r in csv.DictReader(fh)}
+            drawn = {r["task_id"]: [r["project"], r["task_type"]] for r in csv.DictReader(fh)}
     except (OSError, ValueError, KeyError, TypeError, csv.Error, UnicodeError):
         return None
-    if not gold or any(stratum.get(i) not in pop for i in gold):
+    take = {(x["project"], x["task_type"]): (x["take"], x["population"]) for x in strata}
+    pi = {}
+    for i, h in drawn.items():
+        t, n = take.get(tuple(h), (0, 0))
+        if isinstance(t, int) and isinstance(n, int) and not isinstance(n, bool) and n > 0 and t > 0:
+            pi[i] = t / n
+    return {"id": "manifest", "kind": "probability", "created": 0, "strata": strata,
+            "drawn": drawn, "pi": pi}
+
+
+def load_designs() -> list:
+    """All designs, newest first (``created``); the first gold sample last. Bad files are skipped."""
+    out = []
+    dd = _designs_dir()
+    if dd.is_dir():
+        for f in dd.glob("*.json"):
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if _design_ok(d):
+                out.append(d)
+    out.sort(key=lambda d: float(d["created"]), reverse=True)
+    leg = _legacy_design()
+    return out + ([leg] if leg else [])
+
+
+DESIGN_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,80}\Z")
+
+
+def _design_ok(d) -> bool:
+    """A design file is used only when its fields have the right types (else it is skipped)."""
+    if not isinstance(d, dict) or not isinstance(d.get("id"), str) or not DESIGN_ID_RE.match(d["id"]):
+        return False
+    c = d.get("created")
+    if isinstance(c, bool) or not isinstance(c, (int, float)) or not 0 <= c < 1e11:
+        return False                          # a unix time; also no NaN, inf or a huge int
+    if d.get("kind") not in ("probability", "purposive"):
+        return False
+    if not isinstance(d.get("drawn"), dict) or not isinstance(d.get("pi"), dict):
+        return False
+    if not all(isinstance(h, list) and all(isinstance(x, str) for x in h) for h in d["drawn"].values()):
+        return False
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 1
+               for v in d["pi"].values()):
+        return False
+    return isinstance(d.get("strata"), list) and all(isinstance(x, dict) for x in d["strata"])
+
+
+def _design_id(seed: int, tag: str = "s") -> str:
+    """Time, seed and a random part: two draws in the same second never share an id."""
+    import secrets
+    return time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"-{tag}{seed}-{secrets.token_hex(4)}"
+
+
+def save_design(d: dict) -> Path:
+    """Write ``d`` to ``gold/designs/<id>.json`` (0600). Never replaces a design: an existing id
+    raises GoldImportError (``O_EXCL``). Each writer has its own temp file."""
+    if not _design_ok(d):
+        raise GoldImportError("bad design")
+    dd = _designs_dir()
+    dd.mkdir(parents=True, exist_ok=True)
+    os.chmod(dd, 0o700)
+    p = dd / f"{d['id']}.json"
+    tmp = dd / f".{d['id']}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(d, fh, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, p)                   # fails if p exists: a design is never replaced
+        except FileExistsError:
+            raise GoldImportError(f"design {d['id']} exists") from None
+        except OSError:                       # no hard links here: exclusive create, same content
+            try:
+                fd2 = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                raise GoldImportError(f"design {d['id']} exists") from None
+            with os.fdopen(fd2, "w") as fh:   # a torn write fails _design_ok and is skipped
+                json.dump(d, fh, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+    finally:
+        tmp.unlink(missing_ok=True)
+    return p
+
+
+def draw_design(strata: dict, budget: int, floor: int = DESIGN_FLOOR, seed: int = 7) -> dict:
+    """Stratified simple random sample of the frame ``strata`` (task id -> (project, task_type)).
+    ``floor`` per stratum, the rest proportional (``core.reservoir.allocate``). Every task of the
+    frame can be drawn, gold or not: pi stays n_h / N_h. -> a "probability" design dict."""
+    from .core import reservoir as R
+    by: dict = {}
+    for i in sorted(strata):
+        by.setdefault(tuple(strata[i]), []).append(i)
+    pop = {h: len(v) for h, v in by.items()}
+    try:
+        take = R.allocate(pop, budget, floor=floor)
+    except ValueError as e:
+        raise GoldImportError(f"cannot draw {budget} rows at floor {floor} over {len(pop)} "
+                              f"strata: {e}") from None
+    rng = random.Random(seed)
+    drawn, pi = {}, {}
+    for h in sorted(by):
+        for i in rng.sample(by[h], take.get(h, 0)):
+            drawn[i] = list(h)
+            pi[i] = take[h] / pop[h]
+    return {"id": _design_id(seed), "kind": "probability", "created": time.time(), "seed": seed, "floor": floor,
+            "budget": budget, "frame_size": len(strata),
+            "strata": [{"project": h[0], "task_type": h[1], "population": pop[h],
+                        "take": take.get(h, 0)} for h in sorted(pop)],
+            "drawn": drawn, "pi": pi, "deff": R.design_effect(pop, take)}
+
+
+def _design_rows(designs: list | None = None) -> dict:
+    """task id -> {design, stratum, pi} from the newest design that drew it."""
+    out: dict = {}
+    for d in (designs if designs is not None else load_designs()):
+        for i, h in d["drawn"].items():
+            if i not in out and isinstance(d.get("pi"), dict) and i in d["pi"]:
+                out[i] = {"design": d["id"], "stratum": list(h), "pi": d["pi"][i]}
+    return out
+
+
+def _design_weights(d: dict, gold: dict) -> dict | None:
+    """id -> N_h / r_h for the gold ids drawn by probability design ``d``, or None when a stratum
+    of its population has no gold (nothing can stand in for it) or a population is bad."""
+    if d.get("kind") != "probability":
         return None
-    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in pop.values()):
+    try:
+        pop = {(s["project"], s["task_type"]): s["population"] for s in d["strata"]}
+    except (KeyError, TypeError):
         return None
-    r = Counter(stratum[i] for i in gold)
-    if any(h not in r for h in pop):
+    if not pop or any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in pop.values()):
         return None
-    return {i: pop[stratum[i]] / r[stratum[i]] for i in gold}
+    ids = [i for i in gold if i in d["drawn"]]
+    stratum = {i: tuple(d["drawn"][i]) for i in ids}
+    if any(h not in pop for h in stratum.values()):
+        return None
+    r = Counter(stratum.values())
+    if not ids or any(h not in r for h in pop):
+        return None
+    return {i: pop[stratum[i]] / r[stratum[i]] for i in ids}
+
+
+def gold_design(gold: dict) -> dict | None:
+    """id -> design weight ``N_h / r_h`` for the gold ids of ONE probability design, or None.
+
+    The design is the newest probability design whose every stratum has gold (``r_h`` = its
+    drawn ids with gold; rows without an outcome are missing at random inside their stratum).
+    Gold ids outside that design get no weight: the weighted numbers describe that design's
+    frame, from its own draw. The sample over-represents small strata, so an unweighted mean over
+    gold describes the sample, not the population. None when no design is complete."""
+    got = _pick_design(gold)
+    return got[1] if got else None
+
+
+def gold_design_id(gold: dict) -> str | None:
+    got = _pick_design(gold)
+    return got[0] if got else None
+
+
+def _pick_design(gold: dict) -> tuple | None:
+    if not gold:
+        return None
+    for d in load_designs():
+        w = _design_weights(d, gold)
+        if w:
+            return d["id"], w
+    return None
 
 
 def _weighted(pairs: list) -> dict:
@@ -871,7 +1060,8 @@ def calibrate_text(r: dict) -> str:
         f"Wilson low {pct(r['wilson_low'])}",
         *([(f"  weighted accuracy    {pct(r['weighted']['accuracy'])} (population-weighted, "
             f"n_eff {r['weighted']['n_eff']:.1f} of {r['weighted']['n']}), Wilson low "
-            f"{pct(r['weighted']['wilson_low'])} [report only, not gated]")]
+            f"{pct(r['weighted']['wilson_low'])} [report only, not gated]"
+            + (f", design {r['weighted']['design']}" if r["weighted"].get("design") else ""))]
           if r.get("weighted") else []),
         f"  fail-class recall    {rec} (held-out fail rows: {r['fails_heldout']})",
         f"  gate Wilson low >= {CAL_ACC_MIN}: {st(g['accuracy'])}; "
@@ -1072,9 +1262,11 @@ def _test_priority(r: dict, lab: dict) -> int:
 
 
 def sample_strata(rows: list, labels: list, gold: dict, strata: list, test_keys: set,
-                  seed: int = 7) -> list:
+                  seed: int = 7, pis: dict | None = None) -> list:
     """[(row, stratum)] drawn per ``strata`` (see ``STRATA``); a stratum with fewer candidates
-    than asked gives what it has."""
+    than asked gives what it has. ``pis`` (when given) gets id -> the inclusion probability of the
+    row, CONDITIONAL on the strata drawn before it: n / pool for a uniform draw; for test-split
+    (drawn by priority rank) 1.0 for a rank taken whole and n_r / N_r for the boundary rank."""
     rng = random.Random(seed)
     lab = {x["id"]: x.get("label") for x in labels}
     taken = set(gold)
@@ -1090,30 +1282,117 @@ def sample_strata(rows: list, labels: list, gold: dict, strata: list, test_keys:
             pool.sort(key=lambda r: _test_priority(r, lab))
         else:
             rng.shuffle(pool)
-        for r in pool[:n]:
+        got = pool[:n]
+        if pis is not None and got:
+            if name == "test-split":
+                rank = Counter(_test_priority(r, lab) for r in pool)
+                rank_got = Counter(_test_priority(r, lab) for r in got)
+                for r in got:
+                    k = _test_priority(r, lab)
+                    pis[r["id"]] = rank_got[k] / rank[k]
+            else:
+                for r in got:
+                    pis[r["id"]] = len(got) / len(pool)
+        for r in got:
             out.append((r, name))
             taken.add(r["id"])
     return out
 
 
+def _project_of(path: Path) -> str:
+    """Project of a transcript: basename of its cwd, '-wt-*' worktree suffix removed (the rule of
+    the first gold sample, ``gold/build_sheet.py``)."""
+    cwd = None
+    try:
+        with open(path, errors="replace") as f:
+            for n, line in enumerate(f):
+                if n > 200:
+                    break
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and isinstance(d.get("cwd"), str):
+                    cwd = d["cwd"]
+                    break
+    except OSError:
+        pass
+    if not cwd:
+        return "unknown"
+    if cwd.rstrip("/") == str(Path.home()):
+        return "~home"
+    return re.sub(r"-wt-.*", "", cwd.rstrip("/").split("/")[-1])
+
+
+def _task_type_of(t: dict) -> str:
+    """Task type of a task (the rule of the first gold sample): route_log.classify_dispatch on the
+    request; the default 'explore' plus an edit tool -> classify_request(tools)."""
+    from .classify import classify_request
+    from .route_log import classify_dispatch
+    tt = classify_dispatch(description=t["request"][:300])
+    edits = sorted({c[0].lower() for c in t["calls"] if c[0] in EDIT_TOOLS})
+    if tt == "explore" and edits:
+        tt = classify_request(tools=edits).task_type
+    return tt
+
+
+def task_strata(rows: list, by_session: dict | None = None) -> dict:
+    """task id -> (project, task_type) for every task whose transcript is readable (the frame).
+    Reads each transcript once; nothing is stored."""
+    by_session = _session_paths() if by_session is None else by_session
+    want: dict = {}
+    for r in rows:
+        want.setdefault(r["session"], set()).add(r["id"])
+    out = {}
+    for sid, ids in want.items():
+        p = by_session.get(sid)
+        if not p:
+            continue
+        proj = _project_of(p)
+        for t in extract(p):
+            if t["id"] in ids:
+                out[t["id"]] = (proj, _task_type_of(t))
+    return out
+
+
 def export_review(k: int, out_path, seed: int = 7, ids: list | None = None,
-                  strata: list | None = None, test_keys: set | None = None) -> int:
+                  strata: list | None = None, test_keys: set | None = None,
+                  design: tuple | None = None) -> int:
     """Write k tasks sampled by ``sample_for_review`` — or exactly the tasks in ``ids``, gold or
-    not, or the tasks ``sample_strata`` draws for ``strata`` — to ``out_path`` (mode 0600), one
-    JSON line each. A task that already has gold carries the row in force (outcome, ts, by) so a
-    correction can name it in ``supersedes``; a stratified row carries its ``stratum``. Nothing
-    is stored under the labels home. Returns the number written."""
+    not, or the tasks ``sample_strata`` draws for ``strata``, or a probability sample
+    ``design`` = (budget, floor) of the whole frame — to ``out_path`` (mode 0600), one JSON line
+    each. A task that already has gold carries the row in force (outcome, ts, by) so a correction
+    can name it in ``supersedes``; a stratified row carries its ``stratum`` and ``pi``. With
+    ``strata`` or ``design`` the draw is stored as a design file (``gold/designs/<id>.json``: ids,
+    stratum labels, pi; no text), so ``import-gold`` can put pi on the gold rows. A design task that
+    already has gold is drawn (pi stays exact) but not exported: its gold row is reused.
+    Returns the number written."""
     h = home()
     rows = _read(h / "tasks.jsonl")
     labels = _read(h / "labels.jsonl")
     latest = gold_latest()
     gold = {g: x["outcome"] for g, x in latest.items()}
     stratum: dict = {}
-    if strata is not None:
+    extra: dict = {}
+    d = None                                  # the design to store, only after the export worked
+    if design is not None:
+        budget, floor = design
+        by_id = {r["id"]: r for r in rows}
+        d = draw_design(task_strata(rows), budget, floor=floor, seed=seed)
+        picked = [by_id[i] for i in d["drawn"] if i not in latest]
+        extra = {i: {"design": d["id"], "stratum": h, "pi": d["pi"][i]} for i, h in d["drawn"].items()}
+    elif strata is not None:
+        pis: dict = {}
         drawn = sample_strata(rows, labels, gold, strata,
-                              split_test_keys() if test_keys is None else test_keys, seed=seed)
+                              split_test_keys() if test_keys is None else test_keys, seed=seed,
+                              pis=pis)
         picked = [r for r, _ in drawn]
         stratum = {r["id"]: s for r, s in drawn}
+        d = {"id": _design_id(seed, "p"), "kind": "purposive",
+             "created": time.time(), "seed": seed, "pi_kind": "conditional on earlier strata",
+             "strata": [{"name": nm, "take": n} for nm, n in strata],
+             "drawn": {i: [s] for i, s in stratum.items()}, "pi": pis}
+        extra = {i: {"design": d["id"], "pi": pis[i]} for i in stratum if i in pis}
     elif ids is not None:
         by_id = {r["id"]: r for r in rows}
         missing = [i for i in ids if i not in by_id]
@@ -1142,9 +1421,16 @@ def export_review(k: int, out_path, seed: int = 7, ids: list | None = None,
                 "votes": votes(t), "judge": r.get("judge"), "signals": signals(t),
                 "gold": ({f: latest[r["id"]].get(f) for f in ("outcome", "ts", "by")}
                          if r["id"] in latest else None),
-                **({"stratum": stratum[r["id"]]} if r["id"] in stratum else {})},
+                **({"stratum": stratum[r["id"]]} if r["id"] in stratum else {}),
+                **extra.get(r["id"], {})},
                 ensure_ascii=False) + "\n")
             n += 1
+    if d is not None:
+        try:
+            save_design(d)
+        except BaseException:
+            out_path.unlink(missing_ok=True)  # no review file without its design
+            raise
     return n
 
 
@@ -1176,6 +1462,7 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
     ids = {r["id"] for r in _read(h / "tasks.jsonl")}
     gold_rows = _read(h / "gold.jsonl")
     have = gold_latest(gold_rows)
+    drawn = _design_rows()                 # design, stratum, pi: from the design file only
     errs, new, seen = [], [], set()
     now = max([time.time()] + [float(g.get("ts") or 0) + 1e-3 for g in gold_rows])
     for i, ln in enumerate(Path(path).read_text().splitlines(), 1):
@@ -1214,6 +1501,8 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
             g["reason"] = reason
         if sup is not None:
             g["supersedes"] = sup
+        if isinstance(tid, str) and tid in drawn:
+            g.update(drawn[tid])
         new.append(g)
     if errs:
         more = f" (+{len(errs) - 20} more)" if len(errs) > 20 else ""
@@ -1291,13 +1580,22 @@ def report(res: dict | None = None) -> str:
     cov = Counter(v for x in labels for v in x["voters"])
     if not acc and gold:                       # uncalibrated relabel fits nothing: measure on gold
         acc = voter_accuracy(_read(h / "tasks.jsonl"), gold)
-    lines.append("voter            votes  coverage   gold n  accuracy  95% CI")
+    w = gold_design(gold)
+    wacc = voter_accuracy_weighted(_read(h / "tasks.jsonl"), gold, w) if w else {}
+    lines.append("voter            votes  coverage   gold n  accuracy  95% CI"
+                 + ("        weighted (n_eff)" if w else ""))
     for name in list(LFS) + ["judge"]:
         k, m = acc.get(name, (0, 0))
         lo, hi = wilson(k, m)
         a = f"{k / m:.2f}" if m else "  – "
+        wv = wacc.get(name)
+        wt = (f"  {wv['accuracy']:.2f} ({wv['n_eff']:.1f})" if wv and wv["accuracy"] is not None
+              else "      –" if w else "")
         lines.append(f"  {name:15} {cov[name]:5d}  {100 * cov[name] / max(n, 1):6.1f}%  {m:7d}  "
-                     f"{a:>8}  [{lo:.2f}, {hi:.2f}]")
+                     f"{a:>8}  [{lo:.2f}, {hi:.2f}]{wt}")
+    if w:
+        lines.append(f"weighted = population-weighted on design {gold_design_id(gold)} "
+                     f"({len(w)} gold rows); report only, not used by labels or the gate")
     # precision of EMITTED weak labels, measured on gold that the weak model also labeled
     wk = {x["id"]: x for x in labels}
     rows = _read(h / "tasks.jsonl")
@@ -1362,6 +1660,11 @@ def main(argv=None) -> int:
     e.add_argument("--strata", help="stratified holdout instead of the review sample: "
                                     "NAME:COUNT,... with NAME in " + "|".join(STRATA)
                                     + " (drawn in order, never a task with gold)")
+    e.add_argument("--design", type=int, default=None, metavar="K",
+                   help="probability sample of K tasks over the whole frame (strata project x "
+                        "task_type, --floor per stratum, rest proportional); stores the design "
+                        "so import-gold puts pi on each gold row")
+    e.add_argument("--floor", type=int, default=DESIGN_FLOOR, help="rows per stratum for --design")
     e.add_argument("--seed", type=int, default=7)
     g = sub.add_parser("import-gold", help="append {id, outcome, reason?, supersedes?} lines to "
                                            "gold as by=NAME")
@@ -1387,12 +1690,22 @@ def main(argv=None) -> int:
         return _bench(a)
     if a.cmd == "export-review":
         ids = [x.strip() for x in a.ids.split(",") if x.strip()] if a.ids else None
+        if sum(x is not None for x in (a.ids, a.strata, a.design)) > 1:
+            print("export-review: use one of --ids, --strata, --design", file=sys.stderr)
+            return 2
         try:
             strata = parse_strata(a.strata) if a.strata else None
-            n = export_review(a.k, a.out, ids=ids, strata=strata, seed=a.seed)
+            n = export_review(a.k, a.out, ids=ids, strata=strata, seed=a.seed,
+                              design=(a.design, a.floor) if a.design is not None else None)
         except GoldImportError as ex:
             print(f"export-review: {ex}", file=sys.stderr)
             return 2
+        if a.design is not None or strata is not None:
+            d = load_designs()[0]
+            print(f"design {d['id']} ({d['kind']}): {len(d['drawn'])} drawn"
+                  + (f", {len(d['strata'])} strata, floor {d['floor']}, deff {d['deff']:.2f}"
+                     if d["kind"] == "probability" else "")
+                  + f"; {len(d['drawn']) - n} already have gold (reused)")
         print(f"exported {n} tasks to {a.out} (0600; it holds transcript text: delete it after "
               f"importing)")
         return 0
@@ -1412,6 +1725,8 @@ def main(argv=None) -> int:
         rows = _read(home() / "tasks.jsonl")
         gold = gold_outcomes(rows)
         res = calibrate(rows, gold, a.holdout, a.seed, weights=gold_design(gold))
+        if res.get("weighted"):
+            res["weighted"]["design"] = gold_design_id(gold)
         print(json.dumps(res, sort_keys=True, default=list) if a.json else calibrate_text(res))
         return {"pass": 0, "fail": 1}.get(res["status"], 2)
     if a.cmd == "relabel":
