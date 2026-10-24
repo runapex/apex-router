@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 
 import pytest
 
@@ -66,6 +67,16 @@ def test_collect_is_idempotent_and_skips_running_jobs(ar, tmp_path):
     ("# job 2026-x — done\nagent xval · 379 s · 0 turns · $0.0000\nGO\n\nMUST-FIX: none.", "GO"),
     ("# job 2026-x — done\nagent xval · 9 s · 0 turns · $0.0000\n**NO-GO**\n\nMUST-FIX: a", "NO-GO"),
     ("GO for `ec781c4`.\n\n- MUST-FIX: None.", None),
+    # cross-validation scheme (xval briefs ask for AGREE | PARTIAL | DISAGREE)
+    ("findings...\n\n**Verdict: AGREE**", "AGREE"),
+    ("**VERDICT: PARTIAL**", "PARTIAL"),
+    ("table\n\nVERDICT: DISAGREE", "DISAGREE"),
+    ("No new findings.\n\nAGREE", "AGREE"),
+    ("# job 2026-x — done\nagent xval · 9 s · 0 turns · $0.0000\nPARTIAL\n\nP1 open", "PARTIAL"),
+    ("I partially agree with the plan, but verdict: pending.", None),
+    ("We do not AGREE yet; I will DISAGREE if tests fail.", None),
+    ("VERDICT: PENDING", None),                         # not in either scheme: no label
+    ("table\n\nAPPROVED", None),
 ])
 def test_judge_verdict_is_an_enum(ar, tmp_path, answer, want):
     _job(tmp_path, "j1", task="You are judge J2. vote", result=answer)
@@ -169,3 +180,86 @@ def test_soft_capped_done_job_keeps_its_flag(ar, tmp_path):
     assert rows["j2"]["capped"] is False
     (cell,) = ar.report()["by_role_model"]
     assert cell["soft_capped"] == 1 and cell["cost_capped"] == 0
+
+
+def test_refresh_verdicts_rewrites_old_rows_once(ar, tmp_path):
+    # rows written by an older parser have verdict None; refresh re-reads result.md (enum only)
+    _job(tmp_path, "x1", agent="xval", kind="xval", result="table\n\n**Verdict: AGREE**")
+    _job(tmp_path, "w1", task="You are engineer E1.", result="VERDICT: AGREE")      # not a judge: stays None
+    _job(tmp_path, "j1", task="You are judge J1.", result="VERDICT: GO")
+    ar.collect_runs()
+    rows = [json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()]
+    for r in rows:
+        r["verdict"] = None                                                      # as an old collector left it
+    ar.RUNS_OUT.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    assert ar.refresh_verdicts() == 2
+    got = {r["id"]: r["verdict"] for r in map(json.loads, ar.RUNS_OUT.read_text().splitlines())}
+    assert got == {"x1": "AGREE", "w1": None, "j1": "GO"}
+    assert ar.refresh_verdicts() == 0                                            # idempotent
+    assert oct(ar.RUNS_OUT.stat().st_mode & 0o777) in ("0o600", "0o644")
+    assert "SECRET" not in ar.RUNS_OUT.read_text()
+
+
+def test_refresh_keeps_rows_whose_job_dir_is_gone(ar, tmp_path):
+    import shutil
+    _job(tmp_path, "x1", agent="xval", kind="xval", result="AGREE")
+    ar.collect_runs()
+    shutil.rmtree(tmp_path / "pi-jobs" / "x1")
+    before = ar.RUNS_OUT.read_text()
+    assert ar.refresh_verdicts() == 0 and ar.RUNS_OUT.read_text() == before
+
+
+def test_refresh_and_append_never_lose_a_row(ar, tmp_path, monkeypatch):
+    # P1: an append that arrives while a refresh holds its snapshot waits for the lock, then lands
+    import threading
+    _job(tmp_path, "x1", agent="xval", kind="xval", result="AGREE")
+    ar.collect_runs()
+    rows = [json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()]
+    rows[0]["verdict"] = None
+    ar.RUNS_OUT.write_text(json.dumps(rows[0], sort_keys=True) + "\n")
+    in_refresh, appended = threading.Event(), threading.Event()
+    real = ar._verdict
+
+    def slow_verdict(text):
+        in_refresh.set()
+        appended.wait(0.5)                    # the append below is blocked by the lock: times out
+        return real(text)
+
+    monkeypatch.setattr(ar, "_verdict", slow_verdict)
+    t = threading.Thread(target=ar.refresh_verdicts)
+    t.start()
+    assert in_refresh.wait(5)
+    w = threading.Thread(target=lambda: (ar._append(ar.RUNS_OUT, [{"id": "late", "role": "worker"}]),
+                                         appended.set()))
+    w.start()
+    t.join(5)
+    w.join(5)
+    ids = [json.loads(l)["id"] for l in ar.RUNS_OUT.read_text().splitlines()]
+    assert ids == ["x1", "late"]
+    assert json.loads(ar.RUNS_OUT.read_text().splitlines()[0])["verdict"] == "AGREE"
+
+
+def test_refresh_temp_file_is_never_world_readable(ar, tmp_path, monkeypatch):
+    # P2: the temp copy is created 0600, then gets the log's own mode
+    _job(tmp_path, "x1", agent="xval", kind="xval", result="AGREE")
+    ar.collect_runs()
+    rows = [json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()]
+    rows[0]["verdict"] = None
+    ar.RUNS_OUT.write_text(json.dumps(rows[0], sort_keys=True) + "\n")
+    os.chmod(ar.RUNS_OUT, 0o600)
+    os.chmod(ar.RUNS_OUT, 0o644)              # a public log: the temp copy must still START 0600
+    seen = []
+    real_fdopen = os.fdopen
+
+    def spy(fd, *a, **kw):                    # mode of the temp file while its content is written
+        seen.append(os.fstat(fd).st_mode & 0o777)
+        return real_fdopen(fd, *a, **kw)
+
+    monkeypatch.setattr(ar.os, "fdopen", spy)
+    old = os.umask(0o022)
+    try:
+        assert ar.refresh_verdicts() == 1
+    finally:
+        os.umask(old)
+    assert seen == [0o600] and (ar.RUNS_OUT.stat().st_mode & 0o777) == 0o644
+    assert not ar.RUNS_OUT.with_name(ar.RUNS_OUT.name + ".tmp").exists()

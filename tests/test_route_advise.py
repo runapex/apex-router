@@ -202,3 +202,27 @@ class TestAdviseAggregate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheapStartDenominator(unittest.TestCase):
+    """C6: "is cheap-first cheaper?" is about CHEAP starts. An opus start cannot escalate within
+    reach of the question, so counting it pulls the rate down and fakes evidence for cheap-first."""
+
+    def test_uses_only_cheap_claude_tiers_when_by_tier_present(self):
+        cell = {"n": 570, "escalated": 7, "by_tier": {
+            "haiku": {"n": 31, "escalated": 0}, "sonnet": {"n": 84, "escalated": 2},
+            "opus": {"n": 455, "escalated": 5}, "gpt-sol-6.1": {"n": 44, "escalated": 0}}}
+        r = ra.advise(rates={"debug": cell})["debug"]
+        self.assertEqual((r["n"], r["basis"]), (115, "cheap_starts"))
+        self.assertAlmostEqual(r["rate"], 2 / 115)
+
+    def test_all_opus_cell_is_inconclusive_not_cheap(self):
+        cell = {"n": 400, "escalated": 1, "by_tier": {"opus": {"n": 400, "escalated": 1}}}
+        r = ra.advise(rates={"review": cell})["review"]
+        self.assertEqual(r["verdict"], ra.INCONCLUSIVE)
+        self.assertEqual((r["n"], r["basis"]), (0, "cheap_starts"))
+
+    def test_old_node_without_by_tier_falls_back_and_says_so(self):
+        r = ra.advise(rates={"t": {"n": 100, "escalated": 95}})["t"]
+        self.assertEqual((r["n"], r["basis"]), (100, "all_starts"))
+        self.assertEqual(r["verdict"], ra.COST_FAVORS_HEAVY_START)

@@ -501,6 +501,8 @@ def main(argv=None) -> int:
                 be = next(iter(recs.values()))["break_even"]
                 print(f"cost break-even escalation rate = {be:.2f} "
                       f"(cheap-first cheaper below it). COST-ONLY — assumes kept cheap output is acceptable.")
+                print(f"n = cheap Claude starts ({'/'.join(route_advise.CHEAP_CLAUDE_TIERS)}) only; "
+                      "opus/fable and GPT starts are not in the sample.")
                 print(f"{'task_type':<12} {'n':>5} {'rate':>6} {'95% CI':>13}  verdict")
                 for tt in sorted(recs):
                     r = recs[tt]

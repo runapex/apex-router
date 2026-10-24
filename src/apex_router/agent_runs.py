@@ -5,7 +5,8 @@ Two streams, both append-only JSONL under ~/.apex-router/labels/ (idempotent: a 
 1. ``agent_runs.jsonl`` — one row per finished pi sub-agent job (``~/.apex-router/pi-jobs/<id>``):
    agent type, role, model, provider, thinking, final state, turns (assistant ``turn_end`` events,
    one rule for every pi job; xval jobs use codex model calls, marked in ``turns_source``), tool calls, tokens, cost, wall time, cost cap, and a judge verdict
-   label (GO / NO-GO / GO-WITH-CHANGES) when the answer states one. xval jobs also get the codex
+   label when the answer states one: GO / NO-GO / GO-WITH-CHANGES (review gate) or AGREE / PARTIAL /
+   DISAGREE (cross-validation). The two schemes are kept apart, never mapped onto each other. xval jobs also get the codex
    token counts from ``xval_runs.jsonl`` (matched by time; no USD price is invented).
 2. ``band_alerts.jsonl`` — one row per context alert the datapce band shows (context >= 80 %),
    from the plugin's ``observe/*.jsonl`` measure rows, and whether context dropped below 50 %
@@ -14,7 +15,7 @@ Two streams, both append-only JSONL under ~/.apex-router/labels/ (idempotent: a 
 Privacy: the collector never copies the brief, the answer, file paths or descriptions. The role is
 an enum read from the brief's first line ("You are judge J1" -> judge). The verdict is an enum.
 
-Usage:  apex-router agent-runs collect [--json]
+Usage:  apex-router agent-runs collect [--json] [--refresh-verdicts]
         apex-router agent-runs report  [--json] [--since DAYS]
 """
 from __future__ import annotations
@@ -38,7 +39,8 @@ ALERTS_OUT = OUT_DIR / "band_alerts.jsonl"
 SCHEMA = 1
 FINAL = {"done", "failed", "killed", "killed(cost)", "timed_out(idle)", "timed_out(wall)"}
 ROLE_RE = re.compile(r"\bYou are (?:the )?(judge|engineer|researcher|reviewer|scout|worker)\b", re.I)
-VERDICT_RE = re.compile(r"\b(GO-WITH-CHANGES|NO-GO|GO)\b")
+VERDICTS = "GO-WITH-CHANGES|NO-GO|GO|AGREE|PARTIAL|DISAGREE"      # longest first: NO-GO before GO
+VERDICT_RE = re.compile(rf"\b({VERDICTS})\b")
 CTX_ALERT = 80.0
 CTX_CLEARED = 50.0
 ACT_WINDOW_MS = 30 * 60 * 1000
@@ -61,7 +63,7 @@ def _role(meta: dict) -> str:
 def _verdict(text: str) -> str | None:
     """The judge's verdict, enum only. Counts (a) the last line that starts with a VERDICT label, or
     (b) a last (else first) non-empty line that is only the verdict. A verdict word in prose never counts."""
-    marked = re.findall(r"^[\s*#>_-]*VERDICT[\s*_]*[:\-][\s*_]*(GO-WITH-CHANGES|NO-GO|GO)\b", text, re.I | re.M)
+    marked = re.findall(rf"^[\s*#>_-]*VERDICT[\s*_]*[:\-][\s*_]*({VERDICTS})\b", text, re.I | re.M)
     if marked:
         return marked[-1].upper()
     # result.md starts with the harness header ("# job <id> — <state>", "agent <name> · …"): skip it.
@@ -69,7 +71,7 @@ def _verdict(text: str) -> str | None:
     lines = [l.strip().strip("*_#").strip() for l in body]
     # A line that is only the verdict: the last line, else the first (xval answers lead with it).
     for line in (lines[-1:] + lines[:1]):
-        if re.fullmatch(r"(GO-WITH-CHANGES|NO-GO|GO)\.?", line):
+        if re.fullmatch(rf"({VERDICTS})\.?", line):
             return line.rstrip(".")
     return None
 
@@ -165,11 +167,29 @@ def _seen(path: Path, key: str) -> set:
     return out
 
 
+class _locked:
+    """Exclusive lock on ``<path>.lock``: an append and a refresh never interleave (a refresh
+    rewrites the file from a snapshot; an append inside that window would be lost)."""
+
+    def __init__(self, path: Path) -> None:
+        self.lock = path.with_name(path.name + ".lock")
+
+    def __enter__(self):
+        import fcntl
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        os.close(self.fd)                     # closing the fd releases the flock
+
+
 def _append(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
+    with _locked(path), path.open("a") as f:
         for r in rows:
             f.write(json.dumps(r, sort_keys=True) + "\n")
 
@@ -190,6 +210,51 @@ def collect_runs() -> int:
                     new.append(r)
     _append(RUNS_OUT, new)
     return len(new)
+
+
+def refresh_verdicts() -> int:
+    """Re-parse the verdict of every judge/reviewer row from its job's answer (rows from an older
+    parser). Rewrites ``agent_runs.jsonl`` atomically; a row whose job dir is gone stays as is.
+    Returns the number of rows changed."""
+    if not RUNS_OUT.is_file():
+        return 0
+    with _locked(RUNS_OUT):
+        return _refresh_locked()
+
+
+def _refresh_locked() -> int:
+    try:
+        lines = RUNS_OUT.read_text().splitlines()
+    except OSError:
+        return 0
+    out, changed = [], 0
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            out.append(line)
+            continue
+        if isinstance(r, dict) and r.get("role") in ("judge", "reviewer") and isinstance(r.get("id"), str):
+            res = JOBS / r["id"] / "result.md"
+            if res.is_file():
+                v = _verdict(res.read_text(errors="replace"))
+                if v != r.get("verdict"):
+                    r["verdict"] = v
+                    changed += 1
+                    line = json.dumps(r, sort_keys=True)
+        out.append(line)
+    if changed:
+        tmp = RUNS_OUT.with_name(RUNS_OUT.name + ".tmp")
+        mode = RUNS_OUT.stat().st_mode & 0o777
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # never wider than 0600
+        with os.fdopen(fd, "w") as f:
+            f.write("".join(x + "\n" for x in out))
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, RUNS_OUT)
+    return changed
 
 
 def _measures() -> list[dict]:
@@ -325,13 +390,18 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("--json", action="store_true")
+    c.add_argument("--refresh-verdicts", action="store_true",
+                   help="also re-parse the verdict of rows already collected (after a parser change)")
     r = sub.add_parser("report")
     r.add_argument("--json", action="store_true")
     r.add_argument("--since", type=float, default=None, help="only the last N days")
     a = ap.parse_args(argv)
     if a.cmd == "collect":
         res = {"runs_new": collect_runs(), "alerts_new": collect_alerts(), "runs_file": str(RUNS_OUT), "alerts_file": str(ALERTS_OUT)}
-        print(json.dumps(res) if a.json else f"agent runs +{res['runs_new']}, band alerts +{res['alerts_new']}")
+        if a.refresh_verdicts:
+            res["verdicts_refreshed"] = refresh_verdicts()
+        tail = f", verdicts refreshed {res['verdicts_refreshed']}" if a.refresh_verdicts else ""
+        print(json.dumps(res) if a.json else f"agent runs +{res['runs_new']}, band alerts +{res['alerts_new']}{tail}")
         return 0
     rep = report(a.since)
     if a.json:

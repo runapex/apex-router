@@ -6,6 +6,18 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+### Fixed
+- `agent-runs`: the verdict parser also reads the cross-validation scheme AGREE / PARTIAL /
+  DISAGREE (kept apart from GO / NO-GO). `agent-runs collect --refresh-verdicts` re-parses rows
+  already collected; it rewrites the log under a lock shared with `collect` (no lost append) and
+  the temp copy is never wider than 0600. Before: about half of xval runs had no verdict.
+- `labels report` counts gold from the same source as `labels calibrate` (gold.jsonl over
+  `gold/consensus.csv`). Before: "gold 0" next to a calibrate run on 84 gold rows. Labels and the
+  gate are unchanged.
+- `route-advise` measures the escalation rate on cheap Claude starts (haiku, sonnet) only, and each
+  result carries `basis`. Before: opus starts (nothing to escalate to) were in the sample (debug
+  n 570 -> 117, review 328 -> 31; both verdicts unchanged).
+
 ### Added
 - Mesh beacon answers a peer directly ("learned targets"): an authenticated announce from the
   address in its own card makes the beacon also send unicast announces to that address until the

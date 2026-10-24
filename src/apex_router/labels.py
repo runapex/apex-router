@@ -1262,13 +1262,19 @@ def report(res: dict | None = None) -> str:
     h = home()
     if res is None:
         res = relabel(write=False)  # report is read-only: no relabel on disk
-    labels, acc, gold = res["labels"], res["acc"], res["gold"]
+    labels, acc = res["labels"], res["acc"]
+    # MEASUREMENT gold = the same source `calibrate` uses (gold.jsonl over consensus.csv), so the
+    # report and the gate never disagree on how much gold exists. Labels still come from `relabel`
+    # (consensus gold enters labels only when the calibration gate passes).
+    gold = gold_outcomes(_read(h / "tasks.jsonl"))
+    n_cons = len(gold) - len(res["gold"])
     n = len(labels)
     emitted = [x for x in labels if x["label"] != "unknown"]
     weak = sum(1 for x in emitted if x.get("from") == "weak")
     lines = [(f"tasks {n} · labeled {len(emitted)} ({100 * len(emitted) / max(n, 1):.0f}%; "
               f"weak-emitted {weak}, from gold {len(emitted) - weak}) · "
-              f"gold {len(gold)} / target {gold_target(n)}")]
+              f"gold {len(gold)} / target {gold_target(n)}"
+              + (f" (gold.jsonl {len(res['gold'])}, consensus {n_cons})" if n_cons else ""))]
     gb = gold_by()
     orphaned = gb.pop("orphaned", 0)
     if gb:
@@ -1283,6 +1289,8 @@ def report(res: dict | None = None) -> str:
     lines.append("labels: " + ", ".join(f"{k} {by[k]}" for k in OUTCOMES + ("unknown",)))
     lines.append(class_prior_line(labels, gold, _read(h / "tasks.jsonl")))
     cov = Counter(v for x in labels for v in x["voters"])
+    if not acc and gold:                       # uncalibrated relabel fits nothing: measure on gold
+        acc = voter_accuracy(_read(h / "tasks.jsonl"), gold)
     lines.append("voter            votes  coverage   gold n  accuracy  95% CI")
     for name in list(LFS) + ["judge"]:
         k, m = acc.get(name, (0, 0))

@@ -235,3 +235,19 @@ def test_cli_reports_weighted_block_and_keeps_exit_codes(tmp_path, monkeypatch, 
     assert "weighted accuracy" in out and "not gated" in out and "GATE: PASS" in out
     assert L.main(["calibrate", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["weighted"]["n_eff"] > 0
+
+
+def test_report_counts_consensus_gold_like_calibrate(tmp_path, monkeypatch):
+    # consensus.csv gold (no gold.jsonl) must show in `labels report`, as `calibrate` uses it
+    rows, gold = _rows(n_ok=30, n_fail=10)
+    h = _store(tmp_path, monkeypatch, rows, gold)
+    assert not (h / "gold.jsonl").exists()
+    txt = L.report()
+    assert "gold 40 / target" in txt and "consensus 40" in txt
+    assert "no gold yet" not in txt
+    assert "emitted-label precision on gold" in txt
+    tests_row = next(line for line in txt.splitlines() if line.strip().startswith("tests "))
+    assert tests_row.split()[3] == "40"                 # voter accuracy measured on the 40 gold rows
+    # the relabel/gate path is unchanged: without a passing gate no label comes from consensus gold
+    assert L.relabel(write=False)["gold"] == {}
+    assert not (h / "labels.jsonl").exists()

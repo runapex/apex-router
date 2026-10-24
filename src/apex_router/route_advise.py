@@ -143,6 +143,32 @@ def advise_one(n: int, escalated: int, *, min_n: int = _DEFAULT_MIN_N,
                 null_ts=null_ts)
 
 
+# The question is "is starting CHEAP cheaper?": its sample is the cheap Claude starts only. An opus
+# start has (almost) nothing to escalate to, so counting it pulls the rate down and fakes evidence
+# for cheap-first. GPT tiers are priced apart (route_log keeps them out of the headline) and stay out.
+CHEAP_CLAUDE_TIERS = ("haiku", "sonnet")
+
+
+def _cheap_counts(cell: dict) -> tuple[int, int, str] | None:
+    """(n, escalated, basis) for the advice. ``by_tier`` present: the cheap Claude tiers only
+    (basis "cheap_starts"). Absent (a node that predates the split): the cell headline, all start
+    tiers (basis "all_starts", shown in the reason). None for a malformed cell."""
+    by_tier = cell.get("by_tier")
+    if isinstance(by_tier, dict):
+        n = esc = 0
+        for t in CHEAP_CLAUDE_TIERS:
+            b = by_tier.get(t)
+            if isinstance(b, dict) and isinstance(b.get("n"), int) and isinstance(b.get("escalated"), int) \
+                    and not isinstance(b.get("n"), bool) and not isinstance(b.get("escalated"), bool):
+                n += b["n"]
+                esc += b["escalated"]
+        return n, esc, "cheap_starts"
+    n, esc = cell.get("n"), cell.get("escalated")
+    if not isinstance(n, int) or not isinstance(esc, int):
+        return None
+    return n, esc, "all_starts"
+
+
 def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _DEFAULT_COST_RATIO,
            z: float = _DEFAULT_Z, alpha: float = _DEFAULT_ALPHA, rates: dict | None = None) -> dict:
     """Per-task-type cost-efficiency verdicts over the whole route log. Fail-safe: any error → {}.
@@ -163,15 +189,18 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
         for tt, cell in (rates or {}).items():
             if not isinstance(tt, str) or not isinstance(cell, dict):
                 continue
-            n = cell.get("n")
-            esc = cell.get("escalated")
-            if not isinstance(n, int) or not isinstance(esc, int):
+            got = _cheap_counts(cell)
+            if got is None:
                 continue
+            n, esc, basis = got
             null_ts = cell.get("null_ts", 0)
             if isinstance(null_ts, bool) or not isinstance(null_ts, int) or null_ts < 0:
                 null_ts = 0
             out[tt] = advise_one(n, esc, min_n=min_n, cost_ratio=cost_ratio, z=z,
                                  null_ts=null_ts)
+            out[tt]["basis"] = basis
+            if basis == "all_starts":
+                out[tt]["reason"] += " (sample: all start tiers; this node has no per-tier split)"
 
         # Pass 2: BH multiplicity correction. The FAMILY is every TESTED cell (met min_n), so family
         # membership is independent of the outcome — building it from only the CI-significant cells
@@ -191,6 +220,7 @@ def advise(*, log_path=None, min_n: int = _DEFAULT_MIN_N, cost_ratio: float = _D
                                    f"per-cell significant but did not survive BH across {len(family)} "
                                    f"tested task-types (multiplicity) — keep the default", tested=True,
                                    null_ts=r.get("null_ts", 0))
+                    out[tt]["basis"] = r["basis"]
         return out
     except Exception:
         return {}
