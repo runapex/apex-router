@@ -320,3 +320,37 @@ def test_reviewed_unknown_and_consensus_are_never_sampled_again(tmp_path, monkey
     monkeypatch.setattr(L, "sample_for_review", spy)
     L.review(5, inp=lambda prompt: "q", out=lambda *a: None)
     assert seen <= set(got_gold)
+
+
+def test_import_gold_refuses_to_replace_consensus_without_override(tmp_path, monkeypatch):
+    h, rows, _strata = _home(tmp_path, monkeypatch)
+    cid, other = rows[0]["id"], rows[1]["id"]
+    (h / "gold" / "consensus.csv").write_text(f"task_id,outcome\n{cid},success\n")
+    f = tmp_path / "in.jsonl"
+    f.write_text(json.dumps({"id": cid, "outcome": "fail"}) + "\n"
+                 + json.dumps({"id": other, "outcome": "fail"}) + "\n")
+    with pytest.raises(L.GoldImportError, match="consensus"):
+        L.import_gold(f, by="tester")
+    assert not (h / "gold.jsonl").exists()                              # all-or-nothing
+    assert L.gold_outcomes(rows)[cid] == "success"
+    L.import_gold(f, by="owner", override_consensus=True)
+    g = L.gold_latest()
+    assert g[cid]["outcome"] == "fail" and g[cid]["supersedes_consensus"] == "success"
+    assert "supersedes_consensus" not in g[other]
+    assert L.gold_outcomes(rows)[cid] == "fail"
+    # a row that only repeats the consensus outcome is refused too (nothing to import)
+    f.write_text(json.dumps({"id": rows[2]["id"], "outcome": "partial"}) + "\n")
+    (h / "gold" / "consensus.csv").write_text(f"task_id,outcome\n{rows[2]['id']},partial\n")
+    with pytest.raises(L.GoldImportError, match="consensus"):
+        L.import_gold(f, by="tester")
+
+
+def test_cli_override_consensus_flag(tmp_path, monkeypatch, capsys):
+    h, rows, _strata = _home(tmp_path, monkeypatch)
+    cid = rows[0]["id"]
+    (h / "gold" / "consensus.csv").write_text(f"task_id,outcome\n{cid},success\n")
+    f = tmp_path / "in.jsonl"
+    f.write_text(json.dumps({"id": cid, "outcome": "fail"}) + "\n")
+    assert L.main(["import-gold", str(f), "--by", "t"]) == 2
+    assert "--override-consensus" in capsys.readouterr().err
+    assert L.main(["import-gold", str(f), "--by", "owner", "--override-consensus"]) == 0

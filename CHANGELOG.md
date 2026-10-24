@@ -11,6 +11,9 @@ next tag will carry.
   DISAGREE (kept apart from GO / NO-GO). `agent-runs collect --refresh-verdicts` re-parses rows
   already collected; it rewrites the log under a lock shared with `collect` (no lost append) and
   the temp copy is never wider than 0600. Before: about half of xval runs had no verdict.
+- `labels import-gold` refuses a row that would replace gold held only in `gold/consensus.csv`
+  (that gold has no ts, so `supersedes` cannot name it) unless `--override-consensus` is given;
+  the new row then records the replaced outcome in `supersedes_consensus`.
 - `labels export-review` (all modes) and `labels review` never offer a task a reviewer already saw:
   gold in `gold/consensus.csv` and gold.jsonl rows with outcome `unknown` count too (new
   `gold_reviewed`). Before: the first `--design 100` draw exported 19 consensus-gold tasks again.

@@ -1453,7 +1453,13 @@ class GoldImportError(ValueError):
 TAG_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 
-def import_gold(path, by: str, tag: str | None = None) -> dict:
+def _consensus_only() -> dict:
+    """id -> outcome of consensus.csv gold that no gold.jsonl row overrides yet."""
+    have = gold_latest()
+    return {k: v for k, v in gold_outcomes().items() if k not in have}
+
+
+def import_gold(path, by: str, tag: str | None = None, override_consensus: bool = False) -> dict:
     """Append ``{id, outcome, reason?}`` lines from ``path`` to gold.jsonl as ``by=NAME`` (and
     ``tag=TAG`` on every row when given, e.g. a holdout batch), then
     ``relabel()``. All-or-nothing: any bad line rejects the whole file and nothing is written.
@@ -1464,7 +1470,11 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
 
     Corrections never edit a row: a line for an id that already has gold must carry
     ``supersedes`` = the ``ts`` of the row currently in force for that id; the new row is
-    appended and wins (``gold_latest``). A stale or unknown ``supersedes`` is rejected."""
+    appended and wins (``gold_latest``). A stale or unknown ``supersedes`` is rejected.
+
+    A line for an id whose gold is only in ``gold/consensus.csv`` (no ts there, so ``supersedes``
+    cannot name it) is rejected unless ``override_consensus``; then the new row records the
+    consensus outcome it replaces in ``supersedes_consensus``."""
     by = (by or "").strip()
     if not by or len(by) > 64 or any(ch.isspace() for ch in by):
         raise GoldImportError("--by must be a non-empty name without spaces (<= 64 chars)")
@@ -1475,6 +1485,7 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
     gold_rows = _read(h / "gold.jsonl")
     have = gold_latest(gold_rows)
     drawn = _design_rows()                 # design, stratum, pi: from the design file only
+    cons = _consensus_only()
     errs, new, seen = [], [], set()
     now = max([time.time()] + [float(g.get("ts") or 0) + 1e-3 for g in gold_rows])
     for i, ln in enumerate(Path(path).read_text().splitlines(), 1):
@@ -1498,6 +1509,9 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
                                   or abs(float(have[tid].get("ts") or 0) - sup) > 1e-6):
             errs.append(f"line {i}: supersedes {sup!r} is not the ts of the gold row in force "
                         f"for {tid}")
+        elif tid in cons and not override_consensus:
+            errs.append(f"line {i}: id {tid} already has consensus gold ({cons[tid]}); pass "
+                        f"--override-consensus to replace it")
         elif tid in seen:
             errs.append(f"line {i}: id {tid} appears twice")
         if o not in GOLD_OUTCOMES:
@@ -1515,6 +1529,8 @@ def import_gold(path, by: str, tag: str | None = None) -> dict:
             g["supersedes"] = sup
         if isinstance(tid, str) and tid in drawn:
             g.update(drawn[tid])
+        if isinstance(tid, str) and tid in cons:
+            g["supersedes_consensus"] = cons[tid]
         new.append(g)
     if errs:
         more = f" (+{len(errs) - 20} more)" if len(errs) > 20 else ""
@@ -1683,6 +1699,9 @@ def main(argv=None) -> int:
     g.add_argument("file")
     g.add_argument("--by", required=True)
     g.add_argument("--tag", default=None, help="mark every imported row tag=TAG (e.g. a holdout)")
+    g.add_argument("--override-consensus", action="store_true",
+                   help="allow a row to replace gold that exists only in gold/consensus.csv "
+                        "(the row records the replaced outcome)")
     jb = sub.add_parser("judge-bench", help="score judge variants (model x context x prompt) "
                                             "against gold; cached, no text stored")
     jb.add_argument("--models", default=None, help=f"comma-separated (default {JUDGE_MODEL})")
@@ -1723,7 +1742,7 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "import-gold":
         try:
-            res = import_gold(a.file, a.by, tag=a.tag)
+            res = import_gold(a.file, a.by, tag=a.tag, override_consensus=a.override_consensus)
         except GoldImportError as ex:
             print(f"import-gold: rejected, nothing written: {ex}", file=sys.stderr)
             return 2
