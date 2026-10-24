@@ -248,3 +248,75 @@ def test_save_design_without_hard_links(tmp_path, monkeypatch):
     with pytest.raises(L.GoldImportError):
         L.save_design(d)                                                # still never replaced
     assert not list(p.parent.glob("*.tmp")) and not list(p.parent.glob(".*.tmp"))
+
+
+def test_design_export_reuses_consensus_gold_too(tmp_path, monkeypatch):
+    # live bug: gold in gold/consensus.csv (not gold.jsonl) was exported again for review
+    h, _rows, strata = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(L, "task_strata", lambda rows, by_session=None: strata)
+    monkeypatch.setattr(L, "_session_paths", dict)
+    monkeypatch.setattr(L, "_load_task", lambda r, by: {"calls": [], "request": "x", "last": "y",
+                                                        "next": None})
+    for f in ("votes", "signals", "_tool_summary"):
+        monkeypatch.setattr(L, f, lambda t: {})
+    d0 = L.draw_design(strata, budget=12, floor=1, seed=3)
+    cons = list(d0["drawn"])[:4]
+    (h / "gold" / "consensus.csv").write_text(
+        "task_id,outcome\n" + "".join(f"{i},success\n" for i in cons))
+    out = tmp_path / "rev.jsonl"
+    n = L.export_review(0, out, seed=3, design=(12, 1))
+    got = {json.loads(x)["id"] for x in out.read_text().splitlines()}
+    assert n == 8 and not (got & set(cons))
+
+
+def test_strata_and_default_export_skip_consensus_gold(tmp_path, monkeypatch):
+    h, rows, _strata = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(L, "_session_paths", dict)
+    monkeypatch.setattr(L, "_load_task", lambda r, by: {"calls": [], "request": "x", "last": "y",
+                                                        "next": None})
+    for f in ("votes", "signals", "_tool_summary"):
+        monkeypatch.setattr(L, f, lambda t: {})
+    cons = [r["id"] for r in rows[:50]]                                 # 50 of 60 have consensus gold
+    (h / "gold" / "consensus.csv").write_text(
+        "task_id,outcome\n" + "".join(f"{i},success\n" for i in cons))
+    out = tmp_path / "a.jsonl"
+    L.export_review(0, out, seed=3, strata=[("random", 30)], test_keys=set())
+    got = {json.loads(x)["id"] for x in out.read_text().splitlines()}
+    assert len(got) == 10 and not (got & set(cons))
+    L.export_review(30, out, seed=3)
+    got = {json.loads(x)["id"] for x in out.read_text().splitlines()}
+    assert got and not (got & set(cons))
+
+
+def test_reviewed_unknown_and_consensus_are_never_sampled_again(tmp_path, monkeypatch):
+    h, rows, strata = _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(L, "task_strata", lambda rows, by_session=None: strata)
+    monkeypatch.setattr(L, "_session_paths", dict)
+    monkeypatch.setattr(L, "_load_task", lambda r, by: {"calls": [], "request": "x", "last": "y",
+                                                        "next": None})
+    for f in ("votes", "signals", "_tool_summary"):
+        monkeypatch.setattr(L, f, lambda t: {})
+    unk = [r["id"] for r in rows[:40]]                                  # reviewed: "unknown"
+    (h / "gold.jsonl").write_text("".join(json.dumps({"id": i, "outcome": "unknown", "ts": 1.0,
+                                                      "by": "t"}) + "\n" for i in unk))
+    (h / "gold" / "consensus.csv").write_text(
+        "task_id,outcome\n" + "".join(f"{r['id']},success\n" for r in rows[40:50]))
+    seen = set(unk) | {r["id"] for r in rows[40:50]}
+    assert set(L.gold_reviewed(rows)) == seen
+    assert set(L.gold_outcomes(rows)) == {r["id"] for r in rows[40:50]}   # measuring: unchanged
+    out = tmp_path / "a.jsonl"
+    for kw in ({"strata": [("random", 30)], "test_keys": set()}, {"design": (12, 1)}, {}):
+        L.export_review(30, out, seed=3, **kw)
+        got = {json.loads(x)["id"] for x in out.read_text().splitlines()}
+        assert not (got & seen), kw
+    # interactive review(): the sampler it calls must get every reviewed id as "gold"
+    real = L.sample_for_review
+    got_gold = {}
+
+    def spy(rows_, labels_, gold_, k, seed=7):
+        got_gold.update(gold_)
+        return real(rows_, labels_, gold_, k, seed=seed)
+
+    monkeypatch.setattr(L, "sample_for_review", spy)
+    L.review(5, inp=lambda prompt: "q", out=lambda *a: None)
+    assert seen <= set(got_gold)

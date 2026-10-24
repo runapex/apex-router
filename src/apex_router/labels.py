@@ -957,6 +957,18 @@ def _design_weights(d: dict, gold: dict) -> dict | None:
     return {i: pop[stratum[i]] / r[stratum[i]] for i in ids}
 
 
+def gold_reviewed(rows: list | None = None) -> dict:
+    """id -> outcome of every task a reviewer already saw: ``gold_outcomes`` (gold.jsonl over
+    consensus.csv) plus gold.jsonl rows in force with outcome ``unknown`` (reviewed, no verdict).
+    Sampling for review skips all of them; measuring uses ``gold_outcomes`` only."""
+    out = {k: g.get("outcome") for k, g in gold_latest().items()}
+    out.update(gold_outcomes(rows))
+    if rows is not None:
+        live = {r["id"] for r in rows}
+        out = {k: v for k, v in out.items() if k in live}
+    return out
+
+
 def gold_design(gold: dict) -> dict | None:
     """id -> design weight ``N_h / r_h`` for the gold ids of ONE probability design, or None.
 
@@ -1132,7 +1144,7 @@ def review(k: int = 20, inp=input, out=print) -> int:
     rows = _read(h / "tasks.jsonl")
     labels = _read(h / "labels.jsonl")
     gold_rows = _read(h / "gold.jsonl")
-    gold = {g["id"]: g["outcome"] for g in gold_rows}
+    gold = gold_reviewed(rows)                # never show a task that already has gold
     by_session = _session_paths()
     keys = {"s": "success", "p": "partial", "f": "fail", "u": "unknown"}
     done = 0
@@ -1371,7 +1383,7 @@ def export_review(k: int, out_path, seed: int = 7, ids: list | None = None,
     rows = _read(h / "tasks.jsonl")
     labels = _read(h / "labels.jsonl")
     latest = gold_latest()
-    gold = {g: x["outcome"] for g, x in latest.items()}
+    gold = gold_reviewed(rows)                # gold.jsonl (also "unknown") + consensus.csv
     stratum: dict = {}
     extra: dict = {}
     d = None                                  # the design to store, only after the export worked
@@ -1379,7 +1391,7 @@ def export_review(k: int, out_path, seed: int = 7, ids: list | None = None,
         budget, floor = design
         by_id = {r["id"]: r for r in rows}
         d = draw_design(task_strata(rows), budget, floor=floor, seed=seed)
-        picked = [by_id[i] for i in d["drawn"] if i not in latest]
+        picked = [by_id[i] for i in d["drawn"] if i not in gold]
         extra = {i: {"design": d["id"], "stratum": h, "pi": d["pi"][i]} for i, h in d["drawn"].items()}
     elif strata is not None:
         pis: dict = {}
