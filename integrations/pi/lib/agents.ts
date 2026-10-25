@@ -19,9 +19,10 @@
  * (pi's bash tool runs commands in their own group, and SIGKILL alone leaves them as orphans).
  */
 import { spawn, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export type JobState = "queued" | "queued(pressure)" | "running" | "done" | "failed" | "killed" | "timed_out(idle)" | "timed_out(wall)" | "killed(cost)";
 export const FINAL: ReadonlySet<string> = new Set(["done", "failed", "killed", "timed_out(idle)", "timed_out(wall)", "killed(cost)"]);
@@ -74,6 +75,8 @@ export type Meta = {
 	owner?: string;
 	/** Bytes of events.jsonl already counted into usage (lets an adopter continue without a double count). */
 	events_offset?: number;
+	/** Bytes of stderr.log seen (kind != "pi": stderr growth is liveness, not result). */
+	stderr_offset?: number;
 	notify_attempts?: number;
 	/** Error of the LAST assistant message; a later successful message clears it (pi retried and recovered). */
 	model_error?: string;
@@ -109,6 +112,60 @@ export function costAction(cost: number, maxCost: number | undefined, softSent: 
 	if (!softSent && cost >= maxCost * SOFT_CAP) return "soft";
 	return "none";
 }
+
+/** Write <dir>/steer.json atomically. Parent and child use this one function: same content shape. */
+export function writeSteer(dir: string, at: number, tag: string): void {
+	const p = join(dir, STEER_FILE);
+	const tmp = `${p}.${tag}.tmp`;
+	writeFileSync(tmp, JSON.stringify({ kind: "soft_cap", message: SOFT_CAP_MESSAGE, at }));
+	renameSync(tmp, p);
+}
+
+/** Child side (C1a): the child steers itself at SOFT_CAP of its own budget, also when the parent runs old code.
+ *  Writes steer.json once (only when no steer.json exists). Returns true when it wrote the file. */
+export function childSelfSteer(dir: string | undefined, cost: number, maxCost: number | undefined, at: number): boolean {
+	if (!dir || costAction(cost, maxCost, false) === "none" || readSteer(dir)) return false;
+	writeSteer(dir, at, `child-${process.pid}`);
+	return true;
+}
+
+/** Child side (F1): the job dir and budget of this child, also under a parent with old code.
+ *  Every parent passes APEX_AGENT_JOB (no path separator, not "." or ".."). Dir: APEX_AGENT_JOB_DIR when its last
+ *  segment is that id, else <root>/<id>. Budget: APEX_AGENT_MAX_COST only with an owned dir, else max_cost of
+ *  <dir>/meta.json (read once). Fail safe: no id, no dir or no budget gives undefined (no self-steer). */
+export function childCostCap(env: NodeJS.ProcessEnv, root: string = DEFAULT_ROOT): { dir: string | undefined; maxCost: number | undefined } {
+	const id = env.APEX_AGENT_JOB ?? "";
+	const okId = id !== "" && id !== "." && id !== ".." && !/[/\\]/.test(id);
+	if (!okId) return { dir: undefined, maxCost: undefined };
+	// A parent from before 3796382 copies its env as is: APEX_AGENT_JOB_DIR / APEX_AGENT_MAX_COST can be the
+	// grandparent's. Trust them only when the dir belongs to this job (its last segment is APEX_AGENT_JOB).
+	const envDir = env.APEX_AGENT_JOB_DIR;
+	const owned = !!envDir && basename(envDir) === id;
+	const dir = owned ? envDir : join(root, id);
+	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+	const envCost = owned && env.APEX_AGENT_MAX_COST ? num(Number(env.APEX_AGENT_MAX_COST)) : undefined;
+	if (envCost !== undefined) return { dir, maxCost: envCost };
+	try {
+		return { dir, maxCost: num(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))?.max_cost) };
+	} catch {
+		return { dir, maxCost: undefined };
+	}
+}
+
+/** SHA-256 of the files (a missing file hashes as empty). C1b: detects extension code that changed after load. */
+export function codeHash(paths: string[]): string {
+	const h = createHash("sha256");
+	for (const p of paths) {
+		h.update(p);
+		try {
+			h.update(readFileSync(p));
+		} catch {
+			h.update("\0missing");
+		}
+	}
+	return h.digest("hex");
+}
+export const STALE_CODE_NOTE = "pi extension code changed since load; run /reload.";
 
 /** Child-side gate for one tool call. After the soft cap: block the call; steer the model once. */
 export function softCapGate(dir: string | undefined, steered: boolean): { block: false } | { block: true; reason: string; steer: boolean } {
@@ -167,7 +224,7 @@ export function readPressure(path = join(homedir(), ".apex-router", "pressure.js
  *  inherited env: a plain child (no maxDepth) gets max = its depth, so it cannot spawn; a child with
  *  maxDepth N may nest N - 1 more levels. Hard ceiling MAX_TREE_DEPTH, and bad inputs mean "leaf". */
 export const MAX_TREE_DEPTH = 3;
-export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number, jobDir?: string): NodeJS.ProcessEnv {
+export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: number, jobDir?: string, maxCost?: number): NodeJS.ProcessEnv {
 	const parent = Number(env.APEX_AGENT_DEPTH ?? "0");
 	const depth = Math.min((Number.isInteger(parent) && parent >= 0 ? parent : MAX_TREE_DEPTH) + 1, MAX_TREE_DEPTH + 1);
 	const extra = maxDepth !== undefined && Number.isInteger(maxDepth) && maxDepth > 1 ? maxDepth - 1 : 0;
@@ -175,6 +232,8 @@ export function childEnv(env: NodeJS.ProcessEnv, jobId: string, maxDepth?: numbe
 	const out: NodeJS.ProcessEnv = { ...env, APEX_AGENT_DEPTH: String(depth), APEX_AGENT_MAX_DEPTH: String(max), APEX_AGENT_JOB: jobId };
 	if (jobDir) out.APEX_AGENT_JOB_DIR = jobDir;
 	else delete out.APEX_AGENT_JOB_DIR; // never inherit the parent's job dir (it would read the parent's steer)
+	if (maxCost !== undefined && Number.isFinite(maxCost)) out.APEX_AGENT_MAX_COST = String(maxCost);
+	else delete out.APEX_AGENT_MAX_COST; // never inherit the parent's budget
 	return out;
 }
 
@@ -437,7 +496,7 @@ export class JobManager {
 		try {
 			const child = spawn(cmd!, args, {
 				cwd: m.cwd, detached: true, stdio: ["ignore", out, err],
-				env: childEnv(process.env, m.id, m.max_depth, dir),
+				env: childEnv(process.env, m.id, m.max_depth, dir, m.max_cost),
 			});
 			pid = child.pid;
 			child.on("error", e => {
@@ -474,7 +533,8 @@ export class JobManager {
 	}
 
 	/** Read new event lines; update liveness, usage, last tool, final text. */
-	private ingest(m: Meta): Meta {
+	private ingest(m0: Meta): Meta {
+		const m = this.ingestStderr(m0);
 		const path = join(this.dir(m.id), "events.jsonl");
 		if (!existsSync(path)) return m;
 		const size = statSync(path).size;
@@ -519,13 +579,35 @@ export class JobManager {
 		return n;
 	}
 
+	/** C9: kind != "pi" (xval / codex) writes its progress to stderr.log. Growth there is liveness only. */
+	private ingestStderr(m: Meta): Meta {
+		if (m.kind === "pi") return m;
+		const p = join(this.dir(m.id), "stderr.log");
+		let size: number;
+		try {
+			size = statSync(p).size;
+		} catch {
+			return m; // F2: missing during a rotate: no throw, no change
+		}
+		// F2: growth, or a shrink (truncate / rotate / replace) resets the offset; both count as activity
+		return size !== (m.stderr_offset ?? 0) ? { ...m, last_event: this.o.now(), stderr_offset: size } : m;
+	}
+
+	/** F3: the child can write steer.json itself (C1a). Record soft_cap_at from it, so finish() sees the cap.
+	 *  The parent stays the only meta.json writer. */
+	private syncSteer(m: Meta): Meta {
+		if (m.soft_cap_at !== undefined) return m;
+		const s = readSteer(this.dir(m.id));
+		return s && typeof s.at === "number" ? { ...m, soft_cap_at: s.at } : m;
+	}
+
 	tick() {
 		this.tickNo++;
 		if (this.tickNo % 15 === 0) this.adoptOrphans();
 		const now = this.o.now();
 		for (const m0 of this.managed().filter(x => x.state === "running")) {
 			if (this.cancelling.has(m0.id)) continue;
-			const m = this.ingest(m0);
+			const m = this.syncSteer(this.ingest(m0));
 			this.write(m);
 			if (!ours(m)) {
 				this.finish(m);
@@ -544,16 +626,13 @@ export class JobManager {
 	/** Write the soft-cap message for the child once, and record soft_cap_at. No text goes into meta.json. */
 	private softCap(m: Meta) {
 		const now = this.o.now();
-		const p = join(this.dir(m.id), STEER_FILE);
-		const tmp = `${p}.${this.self}.tmp`;
-		writeFileSync(tmp, JSON.stringify({ kind: "soft_cap", message: SOFT_CAP_MESSAGE, at: now }));
-		renameSync(tmp, p);
+		writeSteer(this.dir(m.id), now, this.self);
 		this.write({ ...m, soft_cap_at: now, soft_cap_cost: m.usage.cost });
 	}
 
 	/** Decide the final state of a job whose process is gone, write result.md, notify. */
 	private finish(m0: Meta) {
-		const m = this.ingest(m0);
+		const m = this.syncSteer(this.ingest(m0));
 		if (!FINAL.has(m.state)) {
 			const clean = m.kind === "pi" ? !m.model_error && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
 			m.state = clean ? "done" : "failed";

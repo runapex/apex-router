@@ -7,6 +7,18 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Fixed
+- pi `apex-agents` (C9): an xval job (codex) writes its progress to stderr.log. Growth of stderr.log
+  now counts as liveness (`stderr_offset` in meta.json); stdout stays the result. Before: 12 of 14
+  xval `timed_out(idle)` jobs were alive.
+- pi `apex-agents` (C1): the child gets `APEX_AGENT_MAX_COST` and writes the same `steer.json` at
+  85 % of its own cost, also when the parent runs code from before the soft cap. `agent_spawn`
+  adds "pi extension code changed since load; run /reload." when `apex-agents.ts` or
+  `lib/agents.ts` changed after load (no auto reload, no block).
+- pi `apex-agents` (review of C1/C9): (F1) a child under an old parent (only `APEX_AGENT_JOB`) finds
+  its job dir under `~/.apex-router/pi-jobs/<id>` and its budget in `meta.json`, so it self-steers;
+  no budget means no self-steer. (F2) a smaller `stderr.log` (truncate, rotate) resets
+  `stderr_offset`; a missing file does not throw. (F3) the parent sets `soft_cap_at` from a child
+  `steer.json`, so a job that ends before the next tick is "done" with `capped: true`.
 - `agent-runs`: the verdict parser also reads the cross-validation scheme AGREE / PARTIAL /
   DISAGREE (kept apart from GO / NO-GO). `agent-runs collect --refresh-verdicts` re-parses rows
   already collected; it rewrites the log under a lock shared with `collect` (no lost append) and
