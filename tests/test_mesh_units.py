@@ -79,3 +79,35 @@ def test_cli_bad_up_arg_exits_2_and_writes_nothing(tmp_path, capsys):
     assert cli.main(["units", "--dir", str(tmp_path), "--", "--bogus"]) == 2
     assert list(tmp_path.iterdir()) == []
     assert "mesh units:" in capsys.readouterr().err
+
+
+# review 18359b3 (fable): whitespace in Environment=, help output, abbreviations, interpreter message
+@pytest.mark.parametrize("val", ["/usr/bin APEX_MESH_HOME=/srv/evil", "/home/u/My Tools/bin", "/a\tb"])
+def test_env_value_with_whitespace_is_refused(val):
+    with pytest.raises(ValueError):
+        units.render_up([], py="/p/python", env={"PATH": val})
+
+
+def test_help_is_refused_without_printing(capsys):
+    for flag in ("--help", "-h"):
+        with pytest.raises(ValueError, match="help"):
+            units.check_up_args([flag])
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""
+
+
+def test_abbreviated_up_flag_is_refused():
+    with pytest.raises(ValueError, match="--pee"):
+        units.check_up_args(["--pee", "10.0.0.1"])
+    units.check_up_args(["--peer=10.0.0.1", "--infer-slots", "2"])   # full names, = form
+
+
+def test_interpreter_path_with_space_has_its_own_message():
+    with pytest.raises(ValueError, match="interpreter"):
+        units.render_up([], py="/Applications/Python 3.12/bin/python3", env={})
+
+
+def test_cli_says_overwrote_for_an_existing_unit(tmp_path, capsys):
+    assert cli.main(["units", "--dir", str(tmp_path)]) == 0
+    assert cli.main(["units", "--dir", str(tmp_path)]) == 0
+    assert "overwrote " in capsys.readouterr().out

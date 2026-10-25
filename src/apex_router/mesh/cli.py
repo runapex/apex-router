@@ -1251,8 +1251,9 @@ def _cmd_units(args) -> int:
     d = Path(args.dir).expanduser() if args.dir else Path.home() / ".config/systemd/user"
     d.mkdir(parents=True, exist_ok=True)
     for name, body in files.items():
+        verb = "overwrote" if (d / name).exists() else "wrote"
         (d / name).write_text(body)
-        print(f"wrote {d / name}")
+        print(f"{verb} {d / name}")
     print("next (run them yourself):")
     print("  systemctl --user daemon-reload")
     for name in files:
