@@ -22,7 +22,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export type JobState = "queued" | "queued(pressure)" | "running" | "done" | "failed" | "killed" | "timed_out(idle)" | "timed_out(wall)" | "killed(cost)";
 export const FINAL: ReadonlySet<string> = new Set(["done", "failed", "killed", "timed_out(idle)", "timed_out(wall)", "killed(cost)"]);
@@ -130,16 +130,20 @@ export function childSelfSteer(dir: string | undefined, cost: number, maxCost: n
 }
 
 /** Child side (F1): the job dir and budget of this child, also under a parent with old code.
- *  Dir: APEX_AGENT_JOB_DIR, else <root>/<APEX_AGENT_JOB> (every parent passes the id; the id must have no path
- *  separator and must not be "." or ".."). Budget: APEX_AGENT_MAX_COST, else max_cost of <dir>/meta.json (read
- *  once). Fail safe: no dir or no budget gives undefined (no self-steer). */
+ *  Every parent passes APEX_AGENT_JOB (no path separator, not "." or ".."). Dir: APEX_AGENT_JOB_DIR when its last
+ *  segment is that id, else <root>/<id>. Budget: APEX_AGENT_MAX_COST only with an owned dir, else max_cost of
+ *  <dir>/meta.json (read once). Fail safe: no id, no dir or no budget gives undefined (no self-steer). */
 export function childCostCap(env: NodeJS.ProcessEnv, root: string = DEFAULT_ROOT): { dir: string | undefined; maxCost: number | undefined } {
 	const id = env.APEX_AGENT_JOB ?? "";
 	const okId = id !== "" && id !== "." && id !== ".." && !/[/\\]/.test(id);
-	const dir = env.APEX_AGENT_JOB_DIR || (okId ? join(root, id) : undefined);
-	if (!dir) return { dir: undefined, maxCost: undefined };
+	if (!okId) return { dir: undefined, maxCost: undefined };
+	// A parent from before 3796382 copies its env as is: APEX_AGENT_JOB_DIR / APEX_AGENT_MAX_COST can be the
+	// grandparent's. Trust them only when the dir belongs to this job (its last segment is APEX_AGENT_JOB).
+	const envDir = env.APEX_AGENT_JOB_DIR;
+	const owned = !!envDir && basename(envDir) === id;
+	const dir = owned ? envDir : join(root, id);
 	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-	const envCost = env.APEX_AGENT_MAX_COST ? num(Number(env.APEX_AGENT_MAX_COST)) : undefined;
+	const envCost = owned && env.APEX_AGENT_MAX_COST ? num(Number(env.APEX_AGENT_MAX_COST)) : undefined;
 	if (envCost !== undefined) return { dir, maxCost: envCost };
 	try {
 		return { dir, maxCost: num(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))?.max_cost) };

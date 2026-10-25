@@ -76,9 +76,24 @@ test("childCostCap: old parent (only APEX_AGENT_JOB): job dir from the default r
 	assert.equal(childSelfSteer(c.dir, 0.9, c.maxCost, 7), true);
 	assert.deepEqual(softCapGate(c.dir, false), { block: true, reason: SOFT_CAP_MESSAGE, steer: true }); // gate reads the same dir
 	// parent since 3796382: APEX_AGENT_JOB_DIR set, no APEX_AGENT_MAX_COST: budget from meta.json
-	assert.deepEqual(childCostCap({ APEX_AGENT_JOB: "x", APEX_AGENT_JOB_DIR: join(root, "job1") }, root), { dir: join(root, "job1"), maxCost: 1 });
-	// env budget wins over meta.json
-	assert.deepEqual(childCostCap({ APEX_AGENT_JOB_DIR: join(root, "job1"), APEX_AGENT_MAX_COST: "2.5" }, root), { dir: join(root, "job1"), maxCost: 2.5 });
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB: "job1", APEX_AGENT_JOB_DIR: join(root, "job1") }, root), { dir: join(root, "job1"), maxCost: 1 });
+	// env budget wins over meta.json when the env dir is this job's dir
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB: "job1", APEX_AGENT_JOB_DIR: join(root, "job1"), APEX_AGENT_MAX_COST: "2.5" }, root), { dir: join(root, "job1"), maxCost: 2.5 });
+});
+
+test("childCostCap: mixed-version nesting: an inherited parent dir and budget are not trusted (F1, xval pass 2)", () => {
+	const root = mkdtempSync(join(tmpdir(), "apexnest-"));
+	for (const [id, cost] of [["parent", 50], ["child", 2]] as const) {
+		mkdirSync(join(root, id));
+		writeFileSync(join(root, id, "meta.json"), JSON.stringify({ id, max_cost: cost }));
+	}
+	// an old parent copied its own env to the child: JOB_DIR and MAX_COST belong to "parent"
+	const c = childCostCap({ APEX_AGENT_JOB: "child", APEX_AGENT_JOB_DIR: join(root, "parent"), APEX_AGENT_MAX_COST: "50" }, root);
+	assert.deepEqual(c, { dir: join(root, "child"), maxCost: 2 });
+	assert.equal(childSelfSteer(c.dir, 1.8, c.maxCost, 7), true);
+	assert.equal(readSteer(join(root, "parent")), null); // the parent's steer.json is not touched
+	// no job id: nothing is trusted, even a dir in the env
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB_DIR: join(root, "parent"), APEX_AGENT_MAX_COST: "50" }, root), { dir: undefined, maxCost: undefined });
 });
 
 test("childCostCap: no budget gives no self-steer; a bad job id gives no dir (F1)", () => {
