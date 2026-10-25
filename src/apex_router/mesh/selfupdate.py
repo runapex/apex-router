@@ -104,7 +104,12 @@ def has_commit(repo: Path, sha: str, run: Runner = _run) -> bool:
 
 def is_ancestor(repo: Path, sha: str, run: Runner = _run) -> bool:
     """True if ``sha`` is HEAD or in HEAD's history. An object that only exists (a fetched
-    FETCH_HEAD, a bundle, a rolled-back update) is NOT in our history."""
+    FETCH_HEAD, a bundle, a rolled-back update) is NOT in our history.
+
+    A git error or timeout gives False (never cached, so it is asked again). In a shallow clone
+    an older commit can exist while the path to it is cut off: then a peer behind us looks
+    ahead, and the node fetches once per MIN_GAP_S. That is bounded; the code checkout of a
+    mesh node is a full clone."""
     if not isinstance(sha, str) or not _SHA_RE.match(sha):
         return False
     r = _git(repo, "merge-base", "--is-ancestor", sha, "HEAD", run=run, timeout=30)

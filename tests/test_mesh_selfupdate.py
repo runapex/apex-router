@@ -370,3 +370,41 @@ def test_tool_receipt_reads_extras(tmp_path, monkeypatch):
     assert su.tool_receipt() == {"editable": "/x/apex-router", "extras": ["proxy"]}
     monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "none"))
     assert su.tool_receipt() is None
+
+
+def test_is_ancestor_git_error_or_timeout_is_false_and_not_cached(env):
+    head = su.head(env.node)
+
+    def broken(argv, **kw):
+        return None                                     # _run gives None on a timeout or OSError
+    assert su.is_ancestor(env.node, head, run=broken) is False
+    fail = lambda argv, **kw: subprocess.CompletedProcess(argv, 128, b"", b"fatal")
+    assert su.is_ancestor(env.node, head, run=fail) is False
+    clock = [time.time()]
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],
+                        update_fn=lambda: {"status": "ok"})
+    au.run = broken
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    other = "d" * 40
+    assert au.tick([_peer(other)]) is True              # unknown: treated as ahead
+    au._thread.join(5)
+    assert other not in au._known
+
+
+def test_autoupdater_many_diverged_peers_share_one_fetch_per_gap(env):
+    clock = [time.time()]
+    calls = []
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],
+                        update_fn=lambda: calls.append(1) or {"status": "diverged"})
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    peers = [_peer(c * 40) for c in "abc"]
+    assert au.tick(peers) is True
+    au._thread.join(5)
+    for _ in range(5):
+        clock[0] += 60
+        au.tick(peers)
+    assert calls == [1]                                 # one fetch in the gap, for all peers
+    clock[0] += su.MIN_GAP_S
+    assert au.tick(peers) is True
+    au._thread.join(5)
+    assert calls == [1, 1]
