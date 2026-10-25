@@ -190,10 +190,21 @@ Config in `worker.json` (read once when the worker starts):
 |---|---|---|
 | `runner` | `"claude"` or `"codex"` | `"claude"` |
 | `codex_search` | `true` or `false` | `false` |
+| `network` | `true` or `false` | `false` |
 | `codex_models` | `{step: [model, effort]}`, effort `minimal`, `low`, `medium`, `high` or `xhigh` | table below |
 
 `mesh worker --runner claude|codex` overrides `runner`. A bad value stops the worker (exit 2).
-`mesh worker --status` shows `runner` (and the codex values on a codex node).
+`mesh worker --status` shows `runner`, `network` (and the codex values on a codex node).
+
+`"network": true` lets the agent use the network. Only the worker node sets it; a job cannot.
+- Prompt rule 3 allows network use and keeps "do not send code, secrets or local data to any host".
+- claude only: the job gets `<job dir>/<step>.settings.json`: `worker-settings.json` minus the deny
+  rules `Bash(curl:*)`, `Bash(wget:*)`, `WebFetch`, `WebSearch`, plus allow `WebFetch`, `WebSearch`
+  (`dontAsk` blocks a tool that is not allowed). ssh, scp, gh, git push and the secret dirs stay
+  denied. `worker-settings.json` is not changed. A bad file stops the job (`bad_settings`).
+- codex: not supported. `network_access=true` lifts the OS sandbox for every command (git push,
+  ssh), and `--ignore-rules` leaves no deny list. `network` with runner codex stops the worker
+  (`bad_network_codex`, exit 2). Use `codex_search` for web search on a codex node.
 
 Default ladder for codex:
 

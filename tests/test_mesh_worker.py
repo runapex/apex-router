@@ -989,3 +989,133 @@ def test_back_off_ignores_wall_clock_steps_and_forgets_departed_peers(env):
     peers.clear()                                        # the peer left the mesh
     w.poll_once()
     assert w._backoff == {}
+
+
+# -- network switch (worker.json "network") ----------------------------------------------------------
+
+def test_network_default_off(env):
+    assert worker.load_runner_config(env["home"])["network"] is False
+    assert "Do not use the network.\n" in worker.build_prompt({"task": "x"})
+
+
+def test_network_on_prompt_allows_network_keeps_secret_rule():
+    p = worker.build_prompt({"task": "x"}, network=True)
+    rules, _, _task = p.partition("\nBEGIN TASK-")
+    assert "You can use the network" in rules and "Do not use the network" not in rules
+    assert "Do not read or send secrets" in rules
+    assert "Do not send code, secrets or local data to any host." in rules
+
+
+def test_network_on_codex_fails_closed(env):
+    """codex network_access=true lifts the sandbox for git push and ssh: not supported."""
+    _worker_json(env, network=True, runner="codex")
+    with pytest.raises(ValueError, match="bad_network_codex"):
+        worker.load_runner_config(env["home"])
+    _worker_json(env, network=True)
+    with pytest.raises(ValueError, match="bad_network_codex"):
+        _codex_worker(env, [])                               # --runner codex hits it too
+    assert worker.main(["--once", "--runner", "codex"], peers=list) == 2
+
+
+def test_network_off_codex_argv_unchanged(env):
+    jid, envb = _job(env)
+    _codex_worker(env, [envb]).poll_once()
+    assert _result(env, jid)["status"] == "done"
+    assert _cfg(_fake_rows(env)[0]["argv"], "sandbox_workspace_write.network_access") == "false"
+
+
+def test_network_on_claude_settings_drop_only_network_denies(env):
+    _worker_json(env, network=True)
+    jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    assert _result(env, jid)["status"] == "done"
+    a = _fake_rows(env)[0]["argv"]
+    used = Path(a[a.index("--settings") + 1])
+    assert used != worker.settings_path(env["home"])
+    assert used.parent == worker.jobs_root(env["home"]) / jid
+    perms = json.loads(used.read_text())["permissions"]
+    deny = perms["deny"]
+    assert not set(worker.NETWORK_DENY) & set(deny)
+    assert {"WebFetch", "WebSearch"} <= set(perms["allow"])   # dontAsk needs an allow
+    assert perms["defaultMode"] == "dontAsk"
+    base_doc = json.loads(worker.settings_path(env["home"]).read_text())
+    assert deny == [d for d in base_doc["permissions"]["deny"] if d not in worker.NETWORK_DENY]
+    for keep in ("Bash(git push:*)", "Bash(gh:*)", "Bash(ssh:*)", "Bash(scp:*)",
+                 "Bash(security:*)", "Read(~/.ssh/**)", "Read(~/.apex-router/mesh/**)"):
+        assert keep in deny
+    base = json.loads(worker.settings_path(env["home"]).read_text())["permissions"]["deny"]
+    assert set(worker.NETWORK_DENY) <= set(base)              # the shared file is not changed
+
+
+def test_network_off_claude_uses_shared_settings(env):
+    _worker_json(env)
+    _jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    a = _fake_rows(env)[0]["argv"]
+    assert a[a.index("--settings") + 1] == str(worker.settings_path(env["home"]))
+
+
+def test_network_status_shows_switch(env, capsys):
+    _worker_json(env, network=True)
+    assert worker.main(["--status"]) == 0
+    assert json.loads(capsys.readouterr().out)["network"] is True
+
+
+def test_bad_network_value_fails_closed(env):
+    _worker_json(env, network="yes")
+    with pytest.raises(ValueError, match="bad_network"):
+        worker.load_runner_config(env["home"])
+
+
+def test_network_on_bad_settings_fails_closed(env):
+    _worker_json(env, network=True)
+    worker.settings_path(env["home"]).write_text("not json")
+    jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    _assert_rejected(env, jid, "bad_settings")
+
+
+@pytest.mark.parametrize("perms", [{"deny": "x", "allow": []}, {"deny": [], "allow": "x"}])
+def test_network_on_bad_lists_stop_before_agent(env, perms):
+    _worker_json(env, network=True)
+    worker.settings_path(env["home"]).write_text(json.dumps({"permissions": perms}))
+    jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and r["reason"] == "bad_settings"
+    assert len(r["steps"]) == 1                                # the ladder stops
+    assert _fake_rows(env) == []                               # no agent started
+
+
+def test_network_on_write_error_stops_before_agent(env, monkeypatch):
+    _worker_json(env, network=True)
+    real = worker.jobs.write_private
+
+    def boom(path, data):
+        if str(path).endswith(".settings.json"):
+            raise OSError("disk")
+        return real(path, data)
+    monkeypatch.setattr(worker.jobs, "write_private", boom)
+    jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    r = _result(env, jid)
+    assert r["status"] == "failed" and r["reason"] == "bad_settings"
+    assert _fake_rows(env) == []
+
+
+def test_network_shared_settings_file_bytes_unchanged(env):
+    worker.ensure_settings(env["home"])
+    before = worker.settings_path(env["home"]).read_bytes()
+    _worker_json(env, network=True)
+    _jid, envb = _job(env)
+    _worker(env, [envb]).poll_once()
+    assert worker.settings_path(env["home"]).read_bytes() == before
+
+
+def test_network_job_field_cannot_turn_it_on(env):
+    """Only worker.json sets network: a job body with "network" gets no network rights."""
+    _worker_json(env)
+    jid, envb = _raw_job(env, {"network": True})
+    _worker(env, [envb]).poll_once()
+    assert _result(env, jid)["status"] != "done"              # the job schema refuses the field
+    assert _fake_rows(env) == []

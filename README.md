@@ -836,6 +836,9 @@ runner in `~/.apex-router/mesh/worker.json`, or use `mesh worker --runner codex`
 ```
 The ladder then uses `gpt-5.6-terra` and `gpt-5.6-sol`. `codex_models` overrides a step, for
 example `{"medium": ["gpt-5.6-luna", "low"]}`. `cost_usd` is null (subscription).
+Network: by default the prompt forbids network use and the settings deny curl, wget and the web
+tools (best-effort: Bash can still reach the network). `"network": true` in `worker.json` allows it on
+a claude-runner node (ssh, scp, gh and git push stay denied). A codex node refuses it. Restart `mesh worker` after a change.
 Design: [docs/superpowers/specs/2026-10-17-mesh-worker-design.md](docs/superpowers/specs/2026-10-17-mesh-worker-design.md).
 
 ### Served datasets (allowlist)
