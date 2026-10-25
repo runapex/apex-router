@@ -129,6 +129,25 @@ export function childSelfSteer(dir: string | undefined, cost: number, maxCost: n
 	return true;
 }
 
+/** Child side (F1): the job dir and budget of this child, also under a parent with old code.
+ *  Dir: APEX_AGENT_JOB_DIR, else <root>/<APEX_AGENT_JOB> (every parent passes the id; the id must have no path
+ *  separator and must not be "." or ".."). Budget: APEX_AGENT_MAX_COST, else max_cost of <dir>/meta.json (read
+ *  once). Fail safe: no dir or no budget gives undefined (no self-steer). */
+export function childCostCap(env: NodeJS.ProcessEnv, root: string = DEFAULT_ROOT): { dir: string | undefined; maxCost: number | undefined } {
+	const id = env.APEX_AGENT_JOB ?? "";
+	const okId = id !== "" && id !== "." && id !== ".." && !/[/\\]/.test(id);
+	const dir = env.APEX_AGENT_JOB_DIR || (okId ? join(root, id) : undefined);
+	if (!dir) return { dir: undefined, maxCost: undefined };
+	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+	const envCost = env.APEX_AGENT_MAX_COST ? num(Number(env.APEX_AGENT_MAX_COST)) : undefined;
+	if (envCost !== undefined) return { dir, maxCost: envCost };
+	try {
+		return { dir, maxCost: num(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))?.max_cost) };
+	} catch {
+		return { dir, maxCost: undefined };
+	}
+}
+
 /** SHA-256 of the files (a missing file hashes as empty). C1b: detects extension code that changed after load. */
 export function codeHash(paths: string[]): string {
 	const h = createHash("sha256");
@@ -560,9 +579,22 @@ export class JobManager {
 	private ingestStderr(m: Meta): Meta {
 		if (m.kind === "pi") return m;
 		const p = join(this.dir(m.id), "stderr.log");
-		if (!existsSync(p)) return m;
-		const size = statSync(p).size;
-		return size > (m.stderr_offset ?? 0) ? { ...m, last_event: this.o.now(), stderr_offset: size } : m;
+		let size: number;
+		try {
+			size = statSync(p).size;
+		} catch {
+			return m; // F2: missing during a rotate: no throw, no change
+		}
+		// F2: growth, or a shrink (truncate / rotate / replace) resets the offset; both count as activity
+		return size !== (m.stderr_offset ?? 0) ? { ...m, last_event: this.o.now(), stderr_offset: size } : m;
+	}
+
+	/** F3: the child can write steer.json itself (C1a). Record soft_cap_at from it, so finish() sees the cap.
+	 *  The parent stays the only meta.json writer. */
+	private syncSteer(m: Meta): Meta {
+		if (m.soft_cap_at !== undefined) return m;
+		const s = readSteer(this.dir(m.id));
+		return s && typeof s.at === "number" ? { ...m, soft_cap_at: s.at } : m;
 	}
 
 	tick() {
@@ -571,7 +603,7 @@ export class JobManager {
 		const now = this.o.now();
 		for (const m0 of this.managed().filter(x => x.state === "running")) {
 			if (this.cancelling.has(m0.id)) continue;
-			const m = this.ingest(m0);
+			const m = this.syncSteer(this.ingest(m0));
 			this.write(m);
 			if (!ours(m)) {
 				this.finish(m);
@@ -596,7 +628,7 @@ export class JobManager {
 
 	/** Decide the final state of a job whose process is gone, write result.md, notify. */
 	private finish(m0: Meta) {
-		const m = this.ingest(m0);
+		const m = this.syncSteer(this.ingest(m0));
 		if (!FINAL.has(m.state)) {
 			const clean = m.kind === "pi" ? !m.model_error && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
 			m.state = clean ? "done" : "failed";

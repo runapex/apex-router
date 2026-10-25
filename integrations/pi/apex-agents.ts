@@ -21,7 +21,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { childSelfSteer, codeHash, costAdviceLine, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
+import { childCostCap, childSelfSteer, codeHash, costAdviceLine, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -70,14 +70,13 @@ function worktree(cwd: string, id: string): string {
 
 /** Child side of the cost soft cap (A1). The parent manager writes <job dir>/steer.json at 85 % of max_cost.
  *  C1a: the child also sums its own assistant cost and writes the same steer.json at 85 % of APEX_AGENT_MAX_COST
- *  (a parent with old code never writes it). This child then blocks every new tool call (the block reason tells
- *  the model to report) and steers the model once. Runs in every job child, also a leaf, so it is wired before
- *  the depth return. */
+ *  (a parent with old code never writes it). F1: dir and budget come from childCostCap (old parents pass only
+ *  APEX_AGENT_JOB; the budget then comes from meta.json, read once here). This child then blocks every new tool
+ *  call (the block reason tells the model to report) and steers the model once. Runs in every job child, also a
+ *  leaf, so it is wired before the depth return. */
 function costSoftCap(pi: ExtensionAPI) {
-	const dir = process.env.APEX_AGENT_JOB_DIR;
+	const { dir, maxCost } = childCostCap(process.env);
 	if (!dir) return;
-	const budget = Number(process.env.APEX_AGENT_MAX_COST);
-	const maxCost = Number.isFinite(budget) && process.env.APEX_AGENT_MAX_COST ? budget : undefined;
 	let spent = 0;
 	let selfSteered = false;
 	if (maxCost !== undefined) {

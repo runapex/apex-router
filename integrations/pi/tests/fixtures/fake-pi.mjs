@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Fake `pi --mode json -p` child for the job-manager tests. Writes scripted JSONL events to stdout.
-// argv[2] = mode: xval-stderr | spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
+// argv[2] = mode: xval-truncate | xval-rotate | self-steer | xval-stderr | spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, renameSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const mode = process.argv[2] ?? "normal";
@@ -28,6 +28,24 @@ if (mode === "fail-429") {
 if (mode === "xval-stderr") {
   for (let i = 0; i < 10; i++) { process.stderr.write(`codex progress ${i}\n`); await sleep(300); }
   process.stdout.write("XVAL RESULT: no findings\n"); process.exit(0);
+}
+// self-steer: like a child at 85 % of its own budget: writes steer.json itself, a final report, exits 0 at once.
+if (mode === "self-steer") {
+  writeFileSync(join(process.env.APEX_AGENT_JOB_DIR, "steer.json"), JSON.stringify({ kind: "soft_cap", message: "COST LIMIT", at: 4242 }));
+  msg("SALVAGE REPORT: self-steered"); out({ type: "agent_end" }); process.exit(0);
+}
+// xval-truncate: big stderr, then stderr.log is truncated to 0; small progress after that, then the result (F2).
+// xval-rotate: big stderr, then stderr.log is renamed away (missing for 600 ms); a new small stderr.log grows (F2).
+if (mode === "xval-truncate" || mode === "xval-rotate") {
+  const log = join(process.env.APEX_AGENT_JOB_DIR, "stderr.log");
+  process.stderr.write("x".repeat(4000) + "\n"); await sleep(600);
+  if (mode === "xval-truncate") truncateSync(log, 0);
+  else { renameSync(log, `${log}.1`); await sleep(600); }
+  for (let i = 0; i < 12; i++) {
+    if (mode === "xval-truncate") process.stderr.write(`p${i}\n`); else appendFileSync(log, `p${i}\n`);
+    await sleep(300);
+  }
+  process.stdout.write("XVAL RESULT: rotated ok\n"); process.exit(0);
 }
 if (mode === "crash") { process.stderr.write("boom: fake crash\n"); process.exit(3); }
 if (mode === "slow") { for (;;) { out({ type: "tool_execution_update", toolName: "bash" }); await sleep(500); } }

@@ -120,6 +120,18 @@ test("xval job: stderr progress keeps it alive past idle_s; stdout stays the res
 	m.stop();
 });
 
+for (const mode of ["xval-truncate", "xval-rotate"]) {
+	test(`xval job: stderr.log shrinks (${mode}); later growth is still liveness; a missing file does not throw (F2)`, async () => {
+		const { m } = mgr();
+		const j = m.spawn({ task: `mode:${mode}`, kind: "xval", idle_s: 2 });
+		const [r] = await m.wait([j.id], 20_000);
+		m.stop();
+		assert.equal(r!.state, "done", r!.reason);
+		assert.match(m.result(j.id)!.text, /XVAL RESULT: rotated ok/);
+		assert.ok((r!.stderr_offset ?? 0) < 4000); // the offset follows the smaller file
+	});
+}
+
 test("xval job with no output at all: still timed_out(idle)", async () => {
 	const { m } = mgr();
 	const j = m.spawn({ task: "mode:silent", kind: "xval", idle_s: 1 });

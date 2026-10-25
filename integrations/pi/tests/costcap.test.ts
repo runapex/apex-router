@@ -1,12 +1,12 @@
 // node --test integrations/pi/tests/*.test.ts — A1 cost soft cap: pure decision, fake clock, fake child.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { childEnv, childSelfSteer, codeHash, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
+import { childCostCap, childEnv, childSelfSteer, codeHash, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-pi.mjs");
 
@@ -65,6 +65,45 @@ test("parent and child write the same steer.json content (C1a)", async () => {
 	const d = mkdtempSync(join(tmpdir(), "apexself-"));
 	childSelfSteer(d, 0.5, 0.5, parent.at);
 	assert.deepEqual(JSON.parse(readFileSync(join(d, "steer.json"), "utf8")), parent);
+});
+
+test("childCostCap: old parent (only APEX_AGENT_JOB): job dir from the default root, budget from meta.json; child self-steers (F1)", () => {
+	const root = mkdtempSync(join(tmpdir(), "apexold-"));
+	mkdirSync(join(root, "job1"));
+	writeFileSync(join(root, "job1", "meta.json"), JSON.stringify({ id: "job1", max_cost: 1 }));
+	const c = childCostCap({ APEX_AGENT_JOB: "job1" }, root);
+	assert.deepEqual(c, { dir: join(root, "job1"), maxCost: 1 });
+	assert.equal(childSelfSteer(c.dir, 0.9, c.maxCost, 7), true);
+	assert.deepEqual(softCapGate(c.dir, false), { block: true, reason: SOFT_CAP_MESSAGE, steer: true }); // gate reads the same dir
+	// parent since 3796382: APEX_AGENT_JOB_DIR set, no APEX_AGENT_MAX_COST: budget from meta.json
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB: "x", APEX_AGENT_JOB_DIR: join(root, "job1") }, root), { dir: join(root, "job1"), maxCost: 1 });
+	// env budget wins over meta.json
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB_DIR: join(root, "job1"), APEX_AGENT_MAX_COST: "2.5" }, root), { dir: join(root, "job1"), maxCost: 2.5 });
+});
+
+test("childCostCap: no budget gives no self-steer; a bad job id gives no dir (F1)", () => {
+	const root = mkdtempSync(join(tmpdir(), "apexold-"));
+	mkdirSync(join(root, "nocap"));
+	writeFileSync(join(root, "nocap", "meta.json"), JSON.stringify({ id: "nocap" }));
+	const c = childCostCap({ APEX_AGENT_JOB: "nocap" }, root);
+	assert.deepEqual(c, { dir: join(root, "nocap"), maxCost: undefined });
+	assert.equal(childSelfSteer(c.dir, 99, c.maxCost, 7), false);
+	assert.deepEqual(childCostCap({ APEX_AGENT_JOB: "missing" }, root), { dir: join(root, "missing"), maxCost: undefined }); // no meta.json
+	writeFileSync(join(root, "nocap", "meta.json"), "{junk");
+	assert.equal(childCostCap({ APEX_AGENT_JOB: "nocap" }, root).maxCost, undefined); // bad meta.json: fail safe
+	for (const id of ["../nocap", "a/b", "a\\b", "..", ".", ""]) assert.deepEqual(childCostCap({ APEX_AGENT_JOB: id }, root), { dir: undefined, maxCost: undefined }, id);
+	assert.deepEqual(childCostCap({}, root), { dir: undefined, maxCost: undefined });
+});
+
+test("child steer.json before the parent tick: finish() marks done with capped: true (F3)", async () => {
+	const { m } = mgr();
+	const j = m.spawn({ task: "self-steer", max_cost: 10 }); // parent cost stays far below 85 %
+	const [r] = await m.wait([j.id], 15_000);
+	m.stop();
+	assert.equal(r!.state, "done");
+	assert.equal(r!.capped, true);
+	assert.equal(typeof r!.soft_cap_at, "number");
+	assert.equal(r!.soft_cap_at, readSteer(join(m.root, j.id))!.at);
 });
 
 test("codeHash: changes when a file changes; a missing file does not throw (C1b)", () => {
