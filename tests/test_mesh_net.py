@@ -594,3 +594,69 @@ def test_lan_bridge_keeps_its_address():
     # xval pass 2: "br-lan" was taken for a Docker bridge and the mesh moved to br0
     rows = [("br-lan", "192.168.1.1", True), ("br0", "192.168.122.1", True)]
     assert netif.lan_ip(default="192.168.1.1", ifaces=rows) == "192.168.1.1"
+
+
+# `ip -o` output from a Linux host with no ifconfig (lab, openSUSE, k3s): one line per entry.
+_IP_ADDR = """1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever
+2: wlp1s0    inet 10.0.0.221/24 brd 10.0.0.255 scope global dynamic noprefixroute wlp1s0\\       valid_lft 104148sec preferred_lft 104148sec
+3: flannel.1    inet 10.42.0.0/32 scope global flannel.1\\       valid_lft forever preferred_lft forever
+4: cni0    inet 10.42.0.1/24 brd 10.42.0.255 scope global cni0\\       valid_lft forever preferred_lft forever
+6: eth1    inet 192.168.9.9/24 brd 192.168.9.255 scope global eth1\\       valid_lft forever preferred_lft forever
+"""
+_IP_LINK = """1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+2: wlp1s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DORMANT group default qlen 1000\\    link/ether 02:00:00:00:00:01 brd ff:ff:ff:ff:ff:ff
+3: flannel.1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 0\\    link/ether 02:00:00:00:00:02 brd ff:ff:ff:ff:ff:ff
+4: cni0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:00:03 brd ff:ff:ff:ff:ff:ff
+5: veth1a2b3c4d@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue master cni0 state UP mode DEFAULT group default qlen 0\\    link/ether 02:00:00:00:00:04 brd ff:ff:ff:ff:ff:ff
+6: eth1: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc fq_codel state DOWN mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:00:05 brd ff:ff:ff:ff:ff:ff
+"""
+
+
+def test_ip_addrs_parses_ip_o():
+    rows = netif._ip_addrs(_IP_ADDR, _IP_LINK)
+    assert ("wlp1s0", "10.0.0.221", True) in rows
+    assert ("lo", "127.0.0.1", True) in rows and ("cni0", "10.42.0.1", True) in rows
+    assert ("eth1", "192.168.9.9", False) in rows                 # UP but no LOWER_UP (no carrier)
+    assert all("/" not in a for _, a, _ in rows)                  # prefix length stripped
+
+
+def test_ip_addrs_without_link_list_counts_as_active():
+    rows = netif._ip_addrs(_IP_ADDR, "")
+    assert ("eth1", "192.168.9.9", True) in rows                  # no state known: as ifconfig w/o flags
+
+
+def test_lan_ip_from_ip_rows_skips_k3s_interfaces(monkeypatch):
+    monkeypatch.setattr(netif, "default_lan_ip", lambda: None)   # no default route
+    rows = netif._ip_addrs(_IP_ADDR, _IP_LINK)
+    for default in ("10.42.0.1", "10.42.0.0", None):              # cni0, flannel.1, no route
+        assert netif.lan_ip(default=default, ifaces=rows) == "10.0.0.221"
+
+
+def test_iface_addrs_falls_back_to_ip_when_ifconfig_is_missing(monkeypatch):
+    import subprocess
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[0].endswith("ifconfig"):
+            raise FileNotFoundError(cmd[0])
+        text = _IP_ADDR if "addr" in cmd else _IP_LINK
+        return subprocess.CompletedProcess(cmd, 0, stdout=text, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(netif, "_ip_bin", lambda: "/usr/sbin/ip")
+    rows = netif._iface_addrs()
+    assert ("wlp1s0", "10.0.0.221", True) in rows
+    assert [c[0] for c in calls] == ["/sbin/ifconfig", "/usr/sbin/ip", "/usr/sbin/ip"]
+
+
+def test_iface_addrs_no_tools_gives_empty(monkeypatch):
+    import subprocess
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(netif, "_ip_bin", lambda: None)
+    assert netif._iface_addrs() == []
