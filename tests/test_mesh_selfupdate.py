@@ -243,6 +243,82 @@ def test_autoupdater_skips_known_older_commit(env):
     assert au.tick([_peer(old)]) is False              # the peer is behind us
 
 
+def test_is_ancestor_means_in_head_history(env):
+    old = su.head(env.node)
+    new = _advance(env)
+    _git("fetch", "-q", "origin", cwd=env.node)      # the object is here, HEAD is not on it
+    assert su.has_commit(env.node, new) is True
+    assert su.is_ancestor(env.node, new) is False
+    assert su.is_ancestor(env.node, old) is True       # HEAD itself
+    assert su.is_ancestor(env.node, "f" * 40) is False # no such object
+    assert su.is_ancestor(env.node, "not-a-sha") is False
+
+
+def test_autoupdater_object_present_but_not_in_history_is_ahead(env):
+    new = _advance(env)
+    _git("fetch", "-q", "origin", cwd=env.node)      # e.g. an old FETCH_HEAD or a bundle
+    clock = [time.time()]
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],
+                        update_fn=lambda: {"status": "ok"})
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    assert au.tick([_peer(new)]) is True
+    au._thread.join(5)
+    assert new not in au._known
+
+
+def test_autoupdater_peer_on_older_history_commit_is_not_ahead(env):
+    old = su.head(env.node)
+    mid = _advance(env, msg="v2")
+    _advance(env, text="A = 3\n", msg="v3")
+    _update(env)
+    clock = [time.time()]
+    calls = []
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],
+                        update_fn=lambda: calls.append(1) or {"status": "ok"})
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    assert au.tick([_peer(old), _peer(mid)]) is False
+    assert calls == [] and {old, mid} <= au._known
+
+
+def test_autoupdater_retries_commit_not_yet_on_origin(env):
+    (env.dev / "a.py").write_text("A = 9\n")
+    _git("commit", "-qam", "peer-only", cwd=env.dev)
+    peer = _git("rev-parse", "HEAD", cwd=env.dev)      # the peer runs it; origin has not got it
+    clock = [time.time()]
+    results = []
+
+    def upd():
+        res, _ = _update(env)
+        results.append(res["status"])
+        return res
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0], update_fn=upd)
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    assert au.tick([_peer(peer)]) is True
+    au._thread.join(5)
+    assert results == ["ok"] and peer not in au._known
+    clock[0] += 1
+    assert au.tick([_peer(peer)]) is False              # the gap still holds
+    _git("push", "-q", "origin", "HEAD:main", cwd=env.dev)
+    clock[0] += su.MIN_GAP_S
+    assert au.tick([_peer(peer)]) is True               # tried again after the gap
+    au._thread.join(5)
+    assert results == ["ok", "updated"] and su.head(env.node) == peer
+
+
+def test_autoupdater_retries_after_failed_update_with_fetched_object(env):
+    new = _advance(env)
+    clock = [time.time()]
+    au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],
+                        update_fn=lambda: _update(env, smoke_ok=False)[0])
+    au.last = clock[0] - su.MIN_GAP_S - 1
+    assert au.tick([_peer(new)]) is True
+    au._thread.join(5)
+    assert au.status["status"] == "error" and su.has_commit(env.node, new)
+    clock[0] += su.MIN_GAP_S + 1
+    assert au.tick([_peer(new)]) is True                # the object is here; still not in HEAD
+    au._thread.join(5)
+
+
 def test_autoupdater_periodic_and_off(env):
     clock = [time.time()]
     au = su.AutoUpdater(env.home, repo=env.node, now=lambda: clock[0],

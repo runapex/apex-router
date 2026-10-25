@@ -102,6 +102,15 @@ def has_commit(repo: Path, sha: str, run: Runner = _run) -> bool:
     return r is not None and r.returncode == 0
 
 
+def is_ancestor(repo: Path, sha: str, run: Runner = _run) -> bool:
+    """True if ``sha`` is HEAD or in HEAD's history. An object that only exists (a fetched
+    FETCH_HEAD, a bundle, a rolled-back update) is NOT in our history."""
+    if not isinstance(sha, str) or not _SHA_RE.match(sha):
+        return False
+    r = _git(repo, "merge-base", "--is-ancestor", sha, "HEAD", run=run, timeout=30)
+    return r is not None and r.returncode == 0
+
+
 def tool_receipt() -> dict | None:
     """The uv tool receipt of apex-router: {"editable": path|None, "extras": [..]} or None."""
     base = os.environ.get("UV_TOOL_DIR") or str(Path.home() / ".local/share/uv/tools")
@@ -350,8 +359,8 @@ class AutoUpdater:
             if not isinstance(c, str) or not _SHA_RE.match(c) or c == self.start_commit \
                     or c in self._known:
                 continue
-            if self.repo is not None and has_commit(self.repo, c, self.run):
-                self._known.add(c)     # we have it: the peer is behind us or on our history
+            if self.repo is not None and is_ancestor(self.repo, c, self.run):
+                self._known.add(c)     # in HEAD history: the peer is behind us or equal
                 continue
             return True
         return False
