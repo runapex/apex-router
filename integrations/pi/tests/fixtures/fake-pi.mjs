@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fake `pi --mode json -p` child for the job-manager tests. Writes scripted JSONL events to stdout.
-// argv[2] = mode: spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
+// argv[2] = mode: xval-stderr | spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,6 +23,11 @@ if (mode === "recover-429") {
 if (mode === "fail-429") {
   for (let a = 1; a <= 3; a++) { msg("", { stopReason: "error", errorMessage: E429 }); out({ type: "auto_retry_start", attempt: a, maxAttempts: 3, delayMs: 10, errorMessage: E429 }); await sleep(20); }
   msg("", { stopReason: "error", errorMessage: E429 }); out({ type: "auto_retry_end", success: false, attempt: 3, finalError: E429 }); out({ type: "agent_end" }); process.exit(0);
+}
+// xval-stderr: like apex-router xval / codex: progress only on stderr for ~3 s, then the result on stdout, exit 0.
+if (mode === "xval-stderr") {
+  for (let i = 0; i < 10; i++) { process.stderr.write(`codex progress ${i}\n`); await sleep(300); }
+  process.stdout.write("XVAL RESULT: no findings\n"); process.exit(0);
 }
 if (mode === "crash") { process.stderr.write("boom: fake crash\n"); process.exit(3); }
 if (mode === "slow") { for (;;) { out({ type: "tool_execution_update", toolName: "bash" }); await sleep(500); } }

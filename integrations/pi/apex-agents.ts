@@ -15,15 +15,20 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { costAdviceLine, FINAL, JobManager, softCapGate, type Meta } from "./lib/agents.ts";
+import { childSelfSteer, codeHash, costAdviceLine, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
+// C1b: pi loads an extension once per session. Hash the code at load; agent_spawn warns when the files changed.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CODE_FILES = [join(HERE, "apex-agents.ts"), join(HERE, "lib", "agents.ts")];
+const LOAD_HASH = codeHash(CODE_FILES);
 // A bad depth value (junk, NaN, negative, fraction) counts as "at the ceiling": it can never spawn.
 const depth = () => {
 	const n = Number(process.env.APEX_AGENT_DEPTH ?? "0");
@@ -64,11 +69,25 @@ function worktree(cwd: string, id: string): string {
 }
 
 /** Child side of the cost soft cap (A1). The parent manager writes <job dir>/steer.json at 85 % of max_cost.
- *  This child then blocks every new tool call (the block reason tells the model to report) and steers the model
- *  once. Runs in every job child, also a leaf, so it is wired before the depth return. */
+ *  C1a: the child also sums its own assistant cost and writes the same steer.json at 85 % of APEX_AGENT_MAX_COST
+ *  (a parent with old code never writes it). This child then blocks every new tool call (the block reason tells
+ *  the model to report) and steers the model once. Runs in every job child, also a leaf, so it is wired before
+ *  the depth return. */
 function costSoftCap(pi: ExtensionAPI) {
 	const dir = process.env.APEX_AGENT_JOB_DIR;
 	if (!dir) return;
+	const budget = Number(process.env.APEX_AGENT_MAX_COST);
+	const maxCost = Number.isFinite(budget) && process.env.APEX_AGENT_MAX_COST ? budget : undefined;
+	let spent = 0;
+	let selfSteered = false;
+	if (maxCost !== undefined) {
+		pi.on("message_end", async event => {
+			const msg = event.message as { role?: string; usage?: { cost?: { total?: number } } };
+			if (msg?.role !== "assistant") return;
+			spent += msg.usage?.cost?.total ?? 0;
+			if (!selfSteered) selfSteered = childSelfSteer(dir, spent, maxCost, Date.now());
+		});
+	}
 	let steered = false;
 	pi.on("tool_call", async () => {
 		const g = softCapGate(dir, steered);
@@ -169,7 +188,9 @@ export default function (pi: ExtensionAPI) {
 				tools: def.tools, systemPrompt: def.kind === "xval" ? undefined : systemPrompt(def),
 				timeout_s: p.timeout_s, idle_s: p.idle_s, max_cost: p.max_cost,
 			});
-			const advice = m.kind === "pi" ? costAdviceLine(m.max_cost, m.agent, argOf(m.argv, "--model"), argOf(m.argv, "--thinking")) : "";
+			const advice0 = m.kind === "pi" ? costAdviceLine(m.max_cost, m.agent, argOf(m.argv, "--model"), argOf(m.argv, "--thinking")) : "";
+			const stale = codeHash(CODE_FILES) !== LOAD_HASH ? STALE_CODE_NOTE : ""; // C1b: warn only; no reload, no block
+			const advice = [advice0, stale].filter(Boolean).join("\n");
 			const wait = Math.min(Math.max(p.wait_s ?? 0, 0), MAX_WAIT_S);
 			if (wait > 0) {
 				const [r] = await holdWait([m.id], () => manager().wait([m.id], wait * 1000, "all", signal));

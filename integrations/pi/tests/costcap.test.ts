@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { childEnv, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
+import { childEnv, childSelfSteer, codeHash, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-pi.mjs");
 
@@ -34,6 +34,47 @@ test("costAction: soft at 85 %, hard only above 110 %, once, no cap = none", () 
 test("childEnv: job dir is passed, and a parent job dir is never inherited", () => {
 	assert.equal(childEnv({}, "j", undefined, "/x/j").APEX_AGENT_JOB_DIR, "/x/j");
 	assert.equal(childEnv({ APEX_AGENT_JOB_DIR: "/parent" }, "j").APEX_AGENT_JOB_DIR, undefined);
+});
+
+test("childEnv: max_cost goes to the child as APEX_AGENT_MAX_COST; unset stays unset (C1a)", () => {
+	assert.equal(childEnv({}, "j", undefined, "/x/j", 2.5).APEX_AGENT_MAX_COST, "2.5");
+	assert.equal(childEnv({}, "j", undefined, "/x/j").APEX_AGENT_MAX_COST, undefined);
+	assert.equal(childEnv({ APEX_AGENT_MAX_COST: "9" }, "j", undefined, "/x/j").APEX_AGENT_MAX_COST, undefined); // never inherited
+});
+
+test("child self-steer: at 85 % of its budget, no parent steer.json, the child writes it once (C1a)", () => {
+	const d = mkdtempSync(join(tmpdir(), "apexself-"));
+	assert.equal(childSelfSteer(d, 0.84, 1, 7), false);
+	assert.equal(existsSync(join(d, "steer.json")), false);
+	assert.equal(childSelfSteer(d, 0.5, undefined, 7), false); // no budget: no steer
+	assert.equal(childSelfSteer(undefined, 0.9, 1, 7), false); // no job dir: no steer
+	assert.equal(childSelfSteer(d, 0.85, 1, 7), true);
+	assert.deepEqual(JSON.parse(readFileSync(join(d, "steer.json"), "utf8")), { kind: "soft_cap", message: SOFT_CAP_MESSAGE, at: 7 });
+	assert.equal(childSelfSteer(d, 0.95, 1, 8), false); // once: an existing steer.json is kept
+	assert.equal(readSteer(d)!.at, 7);
+	assert.deepEqual(softCapGate(d, false), { block: true, reason: SOFT_CAP_MESSAGE, steer: true });
+});
+
+test("parent and child write the same steer.json content (C1a)", async () => {
+	let t = 2_000_000;
+	const { m, root } = mgr(() => t);
+	const j = m.spawn({ task: "spend", max_cost: 0.5 });
+	await m.wait([j.id], 15_000);
+	m.stop();
+	const parent = JSON.parse(readFileSync(join(root, j.id, "steer.json"), "utf8"));
+	const d = mkdtempSync(join(tmpdir(), "apexself-"));
+	childSelfSteer(d, 0.5, 0.5, parent.at);
+	assert.deepEqual(JSON.parse(readFileSync(join(d, "steer.json"), "utf8")), parent);
+});
+
+test("codeHash: changes when a file changes; a missing file does not throw (C1b)", () => {
+	const d = mkdtempSync(join(tmpdir(), "apexhash-"));
+	const a = join(d, "a.ts");
+	writeFileSync(a, "one");
+	const h1 = codeHash([a, join(d, "missing.ts")]);
+	assert.equal(codeHash([a, join(d, "missing.ts")]), h1);
+	writeFileSync(a, "two");
+	assert.notEqual(codeHash([a, join(d, "missing.ts")]), h1);
 });
 
 test("softCapGate: no steer = allow; steer = block, steer the model once", () => {
