@@ -94,6 +94,7 @@ class AzureTokenProvider:
         self._token: str | None = None
         self._exp: float = 0.0         # epoch seconds; 0 → nothing cached yet
         self._next_retry: float = 0.0  # earliest time a re-mint may be attempted after a failure
+        self._last_error: str = ""      # message of the last failed mint (re-raised inside the backoff)
         self._lock = threading.Lock()
 
     def _mint(self) -> tuple[str, float]:
@@ -127,18 +128,23 @@ class AzureTokenProvider:
         rather than failing every caller through the whole skew window. We only propagate the error
         when there is no usable token left (cache empty, or the cached token is truly past `exp`).
         """
-        now = time.time()
         with self._lock:
+            # Read the clock AFTER the lock: a caller can wait here for a whole mint (up to timeout_s),
+            # and a clock read from before the wait can hand back a token that expired meanwhile.
+            now = time.time()
             if self._token is not None and now < self._exp - self._skew_s:
                 return self._token
-            # A recent refresh failed → don't stampede `az`: while the cached token is still valid,
-            # only ONE caller per backoff window re-attempts a mint; the rest serve the cached token
-            # immediately (no serialized convoy of 30s `az` calls exhausting the thread pool).
-            if self._token is not None and now < self._next_retry and now < self._exp:
-                return self._token
+            # A recent refresh failed → don't stampede `az`: inside the backoff window no caller
+            # re-attempts a mint. With a still-valid cached token, serve it; with none (cold cache or
+            # past exp), fail at once with the last error — not one serialized 30s `az` call per request.
+            if now < self._next_retry:
+                if self._token is not None and now < self._exp:
+                    return self._token
+                raise RuntimeError(f"az token mint in back-off after a failure: {self._last_error}")
             try:
                 token, exp = self._mint()
-            except Exception:
+            except Exception as e:
+                self._last_error = str(e)[:300]
                 self._next_retry = time.time() + self._retry_backoff_s
                 # Re-read the clock: _mint() may have blocked for seconds, so the cached token could
                 # have crossed its hard exp during the attempt — never hand back an expired token.

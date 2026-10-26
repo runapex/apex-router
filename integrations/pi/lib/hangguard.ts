@@ -15,6 +15,9 @@
  * the whole command (quotes balanced, no heredoc) and the program is in command position. In all other cases
  * the command text stays unchanged. A missed rewrite costs one possible hang; a wrong rewrite breaks a command.
  */
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+
 export type Decision = { command: string; timeout?: number; block?: boolean; reason?: string; changes: string[] };
 
 export const DEFAULT_TIMEOUT_S = 600;
@@ -165,4 +168,59 @@ export function decide(command: string, timeout: number | undefined, opts: { job
 		d.changes.push("timeout");
 	}
 	return d;
+}
+
+// ---- log (B1, 2026-10-26) ------------------------------------------------------------------------------------
+// The log keeps WHAT changed, never the command text: a command can hold a token or a password. The readers
+// (scripts/presentation_data.py) count `changes` and `blocked`. Layout: one file per pi process per day,
+// <dir>/YYYY-MM-DD-<pid>.jsonl, mode 0600. Only that process appends to it, so no lock and no rotation race.
+// Files older than LOG_KEEP_DAYS are deleted; no process writes to a file of an earlier day.
+export const LOG_KEEP_DAYS = 14;
+const LOG_NAME = /^\d{4}-\d{2}-\d{2}-\d+\.jsonl$/;
+
+/** One log row: time, changes, blocked, timeouts. No command text. */
+export function logRow(ts: number, d: Decision, before: { timeout?: number }): Record<string, unknown> {
+	return { ts, changes: d.changes, blocked: !!d.block, timeout_before: before.timeout ?? null, timeout_after: d.timeout ?? null };
+}
+
+/** The file of this process for the day of `ts` (local date). */
+export function logFile(dir: string, ts: number, pid: number = process.pid): string {
+	const d = new Date(ts);
+	const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	return join(dir, `${day}-${pid}.jsonl`);
+}
+
+const fixedModes = new Set<string>(); // files whose mode this process already set (one chmod per file)
+
+/** Append one row to this process's file for today. The dir gets 0700 and the file 0600, also when they
+ *  existed before with wider rights (once per file per process). Never throws: logging never blocks a call. */
+export function appendLog(dir: string, row: Record<string, unknown>, ts: number, pid: number = process.pid): void {
+	try {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		const f = logFile(dir, ts, pid);
+		appendFileSync(f, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+		if (!fixedModes.has(f)) {
+			chmodSync(dir, 0o700);
+			chmodSync(f, 0o600);
+			fixedModes.add(f);
+		}
+	} catch {
+		/* logging never blocks a call */
+	}
+}
+
+/** Delete log files (name YYYY-MM-DD-<pid>.jsonl only) not written for more than `keepDays`. Never throws. */
+export function pruneLogs(dir: string, now: number, keepDays: number = LOG_KEEP_DAYS): void {
+	try {
+		for (const f of readdirSync(dir)) {
+			if (!LOG_NAME.test(f)) continue;
+			try {
+				if (now - statSync(join(dir, f)).mtimeMs > keepDays * 86_400_000) unlinkSync(join(dir, f));
+			} catch {
+				/* gone already */
+			}
+		}
+	} catch {
+		/* no dir yet */
+	}
 }

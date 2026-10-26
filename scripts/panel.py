@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from apex_router import gate  # noqa: E402
+from apex_router import gate, safe_http  # noqa: E402
 from apex_router.core import verdict  # noqa: E402
 
 HOME = Path.home() / ".apex-router" / "panel"
@@ -236,7 +236,7 @@ class Client:
                 req = urllib.request.Request(URL, body, {"Authorization": f"Bearer {self._token()}",
                                                          "Content-Type": "application/json"})
                 try:
-                    with urllib.request.urlopen(req, timeout=180) as r:
+                    with safe_http.urlopen(req, timeout=180) as r:  # no Bearer token on a cross-origin redirect
                         d = json.load(r)
                     text = "".join(c.get("text", "") for o in d.get("output", []) for c in (o.get("content") or [])
                                    if isinstance(c, dict))

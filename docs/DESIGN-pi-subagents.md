@@ -64,7 +64,7 @@ Two extensions in `integrations/pi/`, loaded in the parent and passed to every c
 - **ssh**: add `-o BatchMode=yes -o ConnectTimeout=15` to `ssh`/`scp` when absent (prompts become errors, not hangs).
 - **Polling**: block a bare `sleep N` with N > 120 when a sub-agent job is running, with
   `reason: "use agent_wait(job, timeout) instead of sleep-polling"`; otherwise allow.
-- **Never blocks anything else.** Every rewrite is logged to `~/.apex-router/pi-hangguard.jsonl`
+- **Never blocks anything else.** Every rewrite is logged to `~/.apex-router/pi-hangguard/` (one file per process per day, no command text)
   (original → rewritten), so false positives are auditable.
 
 ### 2. `apex-agents.ts` — the sub-agent tools

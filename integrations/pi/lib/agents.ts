@@ -165,6 +165,13 @@ export function codeHash(paths: string[]): string {
 	}
 	return h.digest("hex");
 }
+/** M1: an xval job (codex) reports no USD usage, so the manager cannot enforce max_cost: the budget was ignored
+ *  in silence (25 of 251 xval jobs set one). The budget is dropped and the caller gets this note. Pure. */
+export const XVAL_NO_COST_NOTE = "max_cost ignored: xval jobs report no USD cost, so no budget is enforced. Use timeout_s.";
+export function effectiveMaxCost(kind: string | undefined, maxCost: number | undefined): { maxCost: number | undefined; note: string } {
+	if (kind === "xval" && maxCost !== undefined) return { maxCost: undefined, note: XVAL_NO_COST_NOTE };
+	return { maxCost, note: "" };
+}
 export const STALE_CODE_NOTE = "pi extension code changed since load; run /reload.";
 
 /** Child-side gate for one tool call. After the soft cap: block the call; steer the model once. */

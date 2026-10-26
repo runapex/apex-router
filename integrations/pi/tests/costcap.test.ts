@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { childCostCap, childEnv, childSelfSteer, codeHash, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
+import { effectiveMaxCost, XVAL_NO_COST_NOTE, childCostCap, childEnv, childSelfSteer, codeHash, costAction, costAdvice, costAdviceLine, FINAL, JobManager, readSteer, SOFT_CAP_MESSAGE, softCapGate, type Meta, type Spec } from "../lib/agents.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-pi.mjs");
 
@@ -201,4 +201,12 @@ test("costAdvice: same numbers as cost_advice.py; n gate; no pooling; line only 
 	assert.equal(costAdviceLine(8, "worker", "opus", "high", p), "");
 	assert.equal(costAdviceLine(undefined, "worker", "opus", "high", p), "");
 	assert.equal(costAdviceLine(1, "worker", "opus", "high", join(d, "missing")), "");
+});
+
+
+test("effectiveMaxCost: xval drops max_cost with a note; pi keeps it (M1)", () => {
+	assert.deepEqual(effectiveMaxCost("xval", 5), { maxCost: undefined, note: XVAL_NO_COST_NOTE });
+	assert.deepEqual(effectiveMaxCost("xval", undefined), { maxCost: undefined, note: "" });
+	assert.deepEqual(effectiveMaxCost("pi", 5), { maxCost: 5, note: "" });
+	assert.deepEqual(effectiveMaxCost(undefined, 2), { maxCost: 2, note: "" });
 });

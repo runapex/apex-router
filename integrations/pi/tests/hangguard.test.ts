@@ -66,3 +66,56 @@ for (const c of cases) {
 test("hangguard: APEX_PI_BASH_TIMEOUT overrides the default", () => {
 	assert.equal(decide("ls", undefined, { env: { APEX_PI_BASH_TIMEOUT: "90" } }).timeout, 90);
 });
+
+// ---- log (B1) ----
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { appendLog, logFile, logRow, pruneLogs } from "../lib/hangguard.ts";
+
+test("hangguard log: a row has no command text (a command can hold a secret)", () => {
+	const secret = "curl -H 'Authorization: Bearer sk-SECRET' https://x";
+	const d = decide(secret, undefined, {});
+	const row = logRow(7, d, { timeout: undefined });
+	assert.deepEqual(row, { ts: 7, changes: ["timeout"], blocked: false, timeout_before: null, timeout_after: DEFAULT_TIMEOUT_S });
+	assert.ok(!JSON.stringify(row).includes("sk-SECRET"));
+	assert.ok(!JSON.stringify(row).includes("curl"));
+});
+
+test("hangguard log: one file per process per day, mode 0600, appends in order; never throws", () => {
+	const dir = join(mkdtempSync(join(tmpdir(), "hg-")), "pi-hangguard");
+	const t = new Date(2026, 9, 26, 12).getTime();
+	appendLog(dir, { a: 1 }, t, 111);
+	appendLog(dir, { a: 2 }, t, 111);
+	appendLog(dir, { b: 1 }, t, 222); // another process: its own file
+	appendLog(dir, { a: 3 }, t + 86_400_000, 111); // next day: a new file
+	assert.deepEqual(readdirSync(dir).sort(), ["2026-10-26-111.jsonl", "2026-10-26-222.jsonl", "2026-10-27-111.jsonl"]);
+	assert.equal(readFileSync(logFile(dir, t, 111), "utf8"), '{"a":1}\n{"a":2}\n');
+	assert.equal(statSync(logFile(dir, t, 111)).mode & 0o777, 0o600);
+	writeFileSync(join(dir, "..", "file"), "x");
+	appendLog(join(dir, "..", "file", "sub"), { c: 1 }, t, 1); // mkdir fails: no throw
+});
+
+test("hangguard log: prune deletes only own-format files older than the limit", () => {
+	const dir = mkdtempSync(join(tmpdir(), "hg-"));
+	const now = Date.now();
+	for (const f of ["2026-01-01-1.jsonl", "2026-10-26-2.jsonl", "notes.txt", "2026-01-01-1.jsonl.bak"]) writeFileSync(join(dir, f), "{}\n");
+	const old = (now - 15 * 86_400_000) / 1000;
+	for (const f of ["2026-01-01-1.jsonl", "notes.txt", "2026-01-01-1.jsonl.bak"]) utimesSync(join(dir, f), old, old);
+	pruneLogs(dir, now, 14);
+	assert.deepEqual(readdirSync(dir).sort(), ["2026-01-01-1.jsonl.bak", "2026-10-26-2.jsonl", "notes.txt"]);
+	pruneLogs(join(dir, "missing"), now); // no dir: no throw
+});
+
+
+test("hangguard log: an existing wide dir and file get 0700 / 0600 (review pass 3)", () => {
+	const dir = join(mkdtempSync(join(tmpdir(), "hg-")), "pi-hangguard");
+	mkdirSync(dir, { mode: 0o755 });
+	chmodSync(dir, 0o755);
+	const t = new Date(2026, 9, 26, 12).getTime();
+	writeFileSync(logFile(dir, t, 333), "", { mode: 0o644 });
+	chmodSync(logFile(dir, t, 333), 0o644);
+	appendLog(dir, { a: 1 }, t, 333);
+	assert.equal(statSync(dir).mode & 0o777, 0o700);
+	assert.equal(statSync(logFile(dir, t, 333)).mode & 0o777, 0o600);
+});

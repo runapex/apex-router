@@ -281,7 +281,7 @@ Those units read `ornith.env` at startup — no plist edits required.
 | Extension | Function | Off |
 |---|---|---|
 | `apex-ste.ts` | Adds the ASD-STE100 rules to the system prompt (see `docs/STE.md`). `/ste` shows them. | `APEX_STE=0` |
-| `apex-hangguard.ts` | Changes bash calls that can hang (see below). Log: `~/.apex-router/pi-hangguard.jsonl`. | `APEX_HANGGUARD=0`, or `# apex-hangguard: off` in one command |
+| `apex-hangguard.ts` | Changes bash calls that can hang (see below). Log: `~/.apex-router/pi-hangguard/YYYY-MM-DD-<pid>.jsonl` (no command text, 14 days). | `APEX_HANGGUARD=0`, or `# apex-hangguard: off` in one command |
 | `apex-agents.ts` | Tools `agent_spawn`, `agent_status`, `agent_wait`, `agent_cancel`, `agent_result`, and `/agents`. | remove the package |
 
 Hang guard rules:

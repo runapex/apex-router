@@ -21,7 +21,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { childCostCap, childSelfSteer, codeHash, costAdviceLine, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
+import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -161,7 +161,7 @@ export default function (pi: ExtensionAPI) {
 			thinking: Type.Optional(Type.String({ description: "off | minimal | low | medium | high | xhigh (default: the agent's, else yours)" })),
 			timeout_s: Type.Optional(Type.Number({ description: "wall-clock limit (default 3600)" })),
 			idle_s: Type.Optional(Type.Number({ description: "no-event limit (default 900; keep above the child's bash timeout)" })),
-			max_cost: Type.Optional(Type.Number({ description: "cost budget in USD: at 85 % the job must write its final report; hard stop above 110 %" })),
+			max_cost: Type.Optional(Type.Number({ description: "cost budget in USD: at 85 % the job must write its final report; hard stop above 110 %. Not for agent=xval (no USD usage)" })),
 			wait_s: Type.Optional(Type.Number({ description: "wait up to this many seconds for the result (max 600); 0 = background" })),
 		}),
 		async execute(_id, p, signal, _onUpdate, ctx: ExtensionContext) {
@@ -178,6 +178,7 @@ export default function (pi: ExtensionAPI) {
 					return text(`worktree failed: ${(e as Error).message}`);
 				}
 			}
+			const budget = effectiveMaxCost(def.kind ?? "pi", p.max_cost); // M1: no silent budget on xval
 			const m = manager().spawn({
 				task: p.task, agent: def.name, kind: def.kind ?? "pi", cwd,
 				model: p.model ?? def.model ?? (def.kind === "xval" ? undefined : ctx.model?.id),
@@ -185,11 +186,11 @@ export default function (pi: ExtensionAPI) {
 				thinking: def.kind === "xval" ? undefined : (p.thinking ?? def.thinking ?? ctx.thinkingLevel),
 				maxDepth: def.kind === "xval" ? undefined : def.max_depth,
 				tools: def.tools, systemPrompt: def.kind === "xval" ? undefined : systemPrompt(def),
-				timeout_s: p.timeout_s, idle_s: p.idle_s, max_cost: p.max_cost,
+				timeout_s: p.timeout_s, idle_s: p.idle_s, max_cost: budget.maxCost,
 			});
 			const advice0 = m.kind === "pi" ? costAdviceLine(m.max_cost, m.agent, argOf(m.argv, "--model"), argOf(m.argv, "--thinking")) : "";
 			const stale = codeHash(CODE_FILES) !== LOAD_HASH ? STALE_CODE_NOTE : ""; // C1b: warn only; no reload, no block
-			const advice = [advice0, stale].filter(Boolean).join("\n");
+			const advice = [advice0, budget.note, stale].filter(Boolean).join("\n");
 			const wait = Math.min(Math.max(p.wait_s ?? 0, 0), MAX_WAIT_S);
 			if (wait > 0) {
 				const [r] = await holdWait([m.id], () => manager().wait([m.id], wait * 1000, "all", signal));

@@ -7,6 +7,21 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Fixed
+- pi `apex-hangguard` (B1): the log no longer stores command text (a command can hold a token). A row
+  has `ts`, `changes`, `blocked`, `timeout_before`, `timeout_after`. New layout:
+  `~/.apex-router/pi-hangguard/YYYY-MM-DD-<pid>.jsonl`, one file per pi process per day, mode 0600,
+  files older than 14 days deleted. No shared file, so no lock and no rotation race. The old file
+  `pi-hangguard.jsonl` is never written again; the extension sets it to 0600 at load.
+  `presentation_data.py` reads the old file and the new folder. Before: 17.9 MB, mode 0644, full
+  commands, 197 rows matched a secret pattern.
+- `scripts/panel.py` (D1): the Bearer-token call uses `safe_http.urlopen`, which drops credential
+  headers on a cross-origin redirect.
+- proxy `az_auth` (A6, M2): after a failed mint with no usable cached token, callers inside the
+  back-off fail at once with the last error (before: each request ran its own `az`, 30 s timeout).
+  The clock is read after the lock, so a caller that waited never gets a token that expired during
+  the wait.
+- pi `apex-agents` (M1): `max_cost` on an xval job is dropped with a note. xval reports no USD usage,
+  so the budget was ignored in silence (25 of 251 xval jobs set one).
 - pi `apex-agents` (C9): an xval job (codex) writes its progress to stderr.log. Growth of stderr.log
   now counts as liveness (`stderr_offset` in meta.json); stdout stays the result. Before: 12 of 14
   xval `timed_out(idle)` jobs were alive.

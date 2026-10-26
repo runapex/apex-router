@@ -247,7 +247,8 @@ def data_volume(tel):
             if r.get("ev") != "hb":
                 strata[r.get("stratum") or "unknown"] += 1
     hg = collections.Counter()
-    for r in jl(AR / "pi-hangguard.jsonl"):
+    hg_files = [AR / "pi-hangguard.jsonl", *sorted((AR / "pi-hangguard").glob("*.jsonl"))]  # old file + per-day files
+    for r in (row for f in hg_files for row in jl(f)):
         for c in r.get("changes", []):
             hg[c] += 1
         hg["blocked"] += bool(r.get("blocked"))

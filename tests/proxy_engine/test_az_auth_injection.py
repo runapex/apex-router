@@ -262,3 +262,86 @@ def test_failed_refresh_backoff_avoids_remint_stampede(monkeypatch):
     p.get_token()   # in skew → mint #2 FAILS, sets backoff, serves cached (calls=2)
     p.get_token()   # within backoff → serve cached, NO new mint attempt
     assert calls[0] == 2, "backoff must prevent a re-mint stampede"
+
+
+def test_cold_cache_failure_backs_off_without_remint(monkeypatch):
+    # No token cached and az fails: callers inside the back-off window fail at once with the last
+    # error. Before: every request ran its own `az` (30 s timeout) and filled the thread pool.
+    calls = [0]
+
+    class _Fail:
+        returncode = 1
+        stdout = ""
+        stderr = "Please run 'az login'"
+
+    def fail(*_a, **_k):
+        calls[0] += 1
+        return _Fail()
+
+    monkeypatch.setattr(az_auth.subprocess, "run", fail)
+    p = az_auth.AzureTokenProvider(resource="r", retry_backoff_s=999)
+    for _ in range(5):
+        try:
+            p.get_token()
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "az login" in str(e)
+    assert calls[0] == 1, "a cold-cache failure must back off, not run az for every caller"
+
+
+def test_cold_cache_retries_after_backoff(monkeypatch):
+    calls = [0]
+    good = _jwt(time.time() + 3600)
+
+    def flaky(*_a, **_k):
+        calls[0] += 1
+
+        class _Ok:
+            returncode = 0
+            stdout = json.dumps({"accessToken": good})
+            stderr = ""
+
+        class _Fail:
+            returncode = 1
+            stdout = ""
+            stderr = "down"
+
+        return _Fail() if calls[0] == 1 else _Ok()
+
+    clock = [time.time()]
+    monkeypatch.setattr(az_auth.subprocess, "run", flaky)
+    monkeypatch.setattr(az_auth.time, "time", lambda: clock[0])
+    p = az_auth.AzureTokenProvider(resource="r", retry_backoff_s=30)
+    try:
+        p.get_token()
+    except RuntimeError:
+        pass
+    clock[0] += 31
+    assert p.get_token() == good and calls[0] == 2
+
+
+def test_waiter_reads_clock_after_lock_and_never_gets_expired_token(monkeypatch):
+    # A caller that waited on the lock must not use a clock read from before the wait: the cached
+    # token can expire during the wait (reproduced by the review, M2).
+    exp = time.time() + 1000
+    clock = [exp - 400]                     # outside the 300 s skew: the cache is fresh
+    monkeypatch.setattr(az_auth.time, "time", lambda: clock[0])
+    p = az_auth.AzureTokenProvider(resource="r", skew_s=300, retry_backoff_s=999)
+    p._token, p._exp = _jwt(exp), exp
+    p._next_retry = exp + 500               # a failed refresh is in back-off
+    real_lock = p._lock
+
+    class _SlowLock:
+        def __enter__(self):
+            clock[0] = exp + 1              # the token expires while this caller waits
+            return real_lock.__enter__()
+
+        def __exit__(self, *a):
+            return real_lock.__exit__(*a)
+
+    p._lock = _SlowLock()
+    try:
+        tok = p.get_token()
+        assert False, f"an expired token was returned: {tok!r}"
+    except RuntimeError:
+        pass
