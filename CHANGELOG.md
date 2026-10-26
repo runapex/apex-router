@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Fixed
+- mesh (A4): `mesh up` and `mesh worker` run the smoke import of the new checkout before a
+  re-exec. A failed smoke prints one line and the process keeps its running code; it checks
+  again only when HEAD moves to another commit. Before: a broken local commit stopped the node.
+- mesh (A8): `fetch_failed` and a failed merge keep the last 300 chars of git stderr in
+  `update-status.json` as `error` (credentials in URLs and tokens removed). `mesh status` shows
+  the update status and the error.
+- mesh (B2): each line that `mesh up` and `mesh worker` print starts with an ISO-8601 local
+  timestamp (`up.log`, `worker.log`). The text after it is unchanged.
 - pi `apex-hangguard` (B1): the log no longer stores command text (a command can hold a token). A row
   has `ts`, `changes`, `blocked`, `timeout_before`, `timeout_after`. New layout:
   `~/.apex-router/pi-hangguard/YYYY-MM-DD-<pid>.jsonl`, one file per pi process per day, mode 0600,
@@ -52,6 +60,11 @@ next tag will carry.
   n 570 -> 117, review 328 -> 31; both verdicts unchanged).
 
 ### Added
+- `apex-router mesh launchd install|uninstall|status` (A3, macOS): runs `mesh up` and
+  `mesh worker` as LaunchAgents `com.apex-router.mesh-up` / `com.apex-router.mesh-worker`
+  (KeepAlive, RunAtLoad, ThrottleInterval 30 s, logs to `up.log` / `worker.log`, PATH of the
+  installing shell). `install` refuses while a mesh process runs outside launchd and never
+  stops one; `--dry-run` prints the plists.
 - Gold sampling designs (reservoir step 5 / milestone 5). `labels export-review --design K
   [--floor 1]` draws a stratified simple random sample of the whole task frame (project x
   task_type, floor 1 per stratum, the rest proportional): deff 1.16 on the current frame, against

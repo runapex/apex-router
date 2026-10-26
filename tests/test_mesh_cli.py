@@ -427,6 +427,9 @@ def test_up_restarts_when_an_update_lands(home, monkeypatch):
         def restart_needed(self):
             return len(ticks) >= 2
 
+        def smoke_ok(self):
+            return True
+
     su = types.ModuleType("apex_router.mesh.selfupdate")
     su.AutoUpdater = FakeUpdater
     monkeypatch.setitem(sys.modules, su.__name__, su)
@@ -560,6 +563,7 @@ def test_restart_sets_the_retry_flag_for_the_new_process(monkeypatch):
     su = types.ModuleType("apex_router.mesh.selfupdate")
     seen = []
     su.reexec = lambda: seen.append(os.environ.get(mesh_cli.RETRY_ENV))
+    su.smoke = lambda: True
     monkeypatch.setitem(sys.modules, su.__name__, su)
     mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"]))
     assert seen == ["1"]
@@ -606,3 +610,83 @@ def test_retry_delay_never_overflows_and_stop_exits_clean(monkeypatch):
     monkeypatch.setattr(mesh_cli.threading, "Event", StopEv)
     assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 0
     assert calls2 == [1] and stop_waits == [2.0]
+
+
+# ---- 2026-10-26: smoke before re-exec, update error in status, log timestamps -------------------
+
+_TS = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} "
+
+
+def test_up_keeps_running_when_the_smoke_import_fails(home, monkeypatch, capsys):
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    smokes = []
+
+    class BrokenHead:
+        def __init__(self, h):
+            pass
+
+        def card_build(self):
+            return {"commit": "c" * 40, "update": "updated", "caps": ["bundle", "update"]}
+
+        def tick(self, peers):
+            pass
+
+        def restart_needed(self):
+            return not smokes             # the real gate blocks the same bad HEAD after one fail
+
+        def smoke_ok(self):
+            smokes.append(1)
+            return False
+
+    su = types.ModuleType("apex_router.mesh.selfupdate")
+    su.AutoUpdater = BrokenHead
+    monkeypatch.setitem(sys.modules, su.__name__, su)
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    assert mesh_cli.run_up(mesh_cli.build_parser().parse_args(["up"]), stop, interval_s=0.01) == 0
+    out = capsys.readouterr().out
+    assert smokes == [1] and "smoke import failed; keeping the running code" in out
+    assert "updated; restarting" not in out
+
+
+def test_cmd_up_does_not_reexec_into_a_broken_checkout(monkeypatch, capsys):
+    monkeypatch.delenv(mesh_cli.RETRY_ENV, raising=False)
+    calls, _ = _cmd_up_with(monkeypatch, [mesh_cli.RESTART, 0])   # address drift, then a stop
+    su = types.ModuleType("apex_router.mesh.selfupdate")
+    execs = []
+    su.reexec = lambda: execs.append(1)
+    su.smoke = lambda: False
+    monkeypatch.setitem(sys.modules, su.__name__, su)
+    assert mesh_cli._cmd_up(mesh_cli.build_parser().parse_args(["up"])) == 0
+    assert execs == [] and len(calls) == 2                        # ran again in this process
+    assert "no re-exec" in capsys.readouterr().out
+
+
+def test_up_lines_start_with_an_iso_timestamp(home, monkeypatch, capsys):
+    import re
+    identity.init()
+    record: dict = {}
+    _fake_modules(monkeypatch, record)
+    stop = threading.Event()
+    stop.set()
+    mesh_cli.run_up(mesh_cli.build_parser().parse_args(["up", "--no-auto-update"]), stop,
+                    interval_s=0.01)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines and all(re.match(_TS + r"mesh (up: |down)", ln) for ln in lines), lines
+
+
+def test_status_shows_the_update_error(home, capsys):
+    from apex_router.mesh import selfupdate as su
+    identity.init(name="me")
+    home.mkdir(parents=True, exist_ok=True)
+    (home / su.STATUS_FILE).write_text(json.dumps(
+        {"status": "fetch_failed", "at": time.time(),
+         "error": "fatal: unable to access 'https://***@github.com/x/': Could not resolve host"}))
+    rc, out, _ = _run(capsys, "status", "--json")
+    assert rc == 0 and json.loads(out)["update"]["status"] == "fetch_failed"
+    assert "Could not resolve host" in json.loads(out)["update"]["error"]
+    rc, out, _ = _run(capsys, "status")
+    line = next(ln for ln in out.splitlines() if ln.startswith("update"))
+    assert "fetch_failed" in line and "error: fatal: unable to access" in line

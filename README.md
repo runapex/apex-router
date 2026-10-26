@@ -820,6 +820,13 @@ its own `origin` and fast-forwards a clean `main`; `mesh up` and `mesh worker` t
 idle. A dirty tree, another branch or diverged history is never changed. `mesh peers` shows each
 node's build and update status; `mesh update --check` reports without a change. Turn it off with
 `{"auto_update": false}` in `update.json` in the mesh home, or `APEX_MESH_NO_UPDATE=1`.
+A re-exec runs only after a smoke import of the new code passes. `mesh status` shows the last
+update result and its git error.
+
+Supervisor (macOS): `apex-router mesh launchd install` runs `mesh up` and `mesh worker` as LaunchAgents.
+launchd starts them at login and again after a crash (30 s throttle); logs stay in `up.log` and `worker.log`.
+First stop a `mesh up` or `mesh worker` that you started by hand: `install` refuses and prints the pids.
+Use `--dry-run` to print the plists, `mesh launchd status` to check, `mesh launchd uninstall` to remove.
 
 Cross-validation on a worker node (`mesh xval`): one command submits the work to a reviewer node, waits and prints the verdict.
 A worker with this version needs no setup for it: the sender sends its built-in `xval` scratch repo as a bundle. An older worker needs a scratch repo named `xval` in its allowlist (an empty git repo with an `origin`). On a codex node the reviewer is a different vendor than a Claude author.
