@@ -292,8 +292,11 @@ class Store:
                             raise
 
     # ---- lifecycle ----
-    def gc(self, *, now: float | None = None) -> int:
-        """Delete state older than retention_days. Returns rows removed. §3.1."""
+    def gc(self, *, now: float | None = None, pause_s: float = 0.0) -> int:
+        """Delete state older than retention_days. Returns rows removed. §3.1.
+
+        ``pause_s``: sleep between sessions with the lock free. RLock is not fair, so without a
+        pause a gc thread can take the lock again before a waiting request (xval 2026-10-26)."""
         now = time.time() if now is None else now
         cutoff = now - self.retention_days * 86400
         removed = 0
@@ -305,7 +308,9 @@ class Store:
             "SELECT session_id FROM sessions WHERE last_seen_at < ? OR last_seen_at IS NULL",
             (cutoff,),
         ).fetchall()]
-        for sid in stale:
+        for n, sid in enumerate(stale):
+            if pause_s and n:
+                time.sleep(pause_s)
             with self._conn.transaction() as tx:
                 # re-check inside the transaction: a request can touch the session after the SELECT
                 if not tx.execute(

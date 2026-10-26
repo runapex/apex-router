@@ -457,3 +457,24 @@ def test_gc_keeps_a_session_touched_after_the_scan(tmp_path):
         s.gc(now=now)
         assert s.get_session("a") is None
         assert s.get_session("b") is not None
+
+
+def test_gc_with_pause_lets_a_waiting_caller_in_before_gc_ends(tmp_path):
+    """xval 2026-10-26: RLock is not fair; with pause_s a caller waits for about one session."""
+    import threading
+    import time as _t
+    with Store(tmp_path / "state.db", retention_days=14) as s:
+        now = 1_000_000.0
+        s.upsert_epoch("ep1", "{}", "0.0.1", "default", now=now)
+        for i in range(200):
+            s.create_session(f"stale{i}", "ep1", "claude", now=now - 20 * 86400)
+        done = threading.Event()
+        t = threading.Thread(target=lambda: (s.gc(now=now, pause_s=0.01), done.set()))
+        t.start()
+        _t.sleep(0.2)
+        t0 = _t.monotonic()
+        n = s.counts()["sessions"]
+        waited = _t.monotonic() - t0
+        t.join()
+        assert not done.is_set() or n > 0, "caller starved until gc ended"
+        assert 0 < n < 200 and waited < 0.5

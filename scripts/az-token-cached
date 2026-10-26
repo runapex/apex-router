@@ -30,11 +30,15 @@ valid() { [ -s "$TOK" ] && [ "$(left)" -gt "$1" ]; }
 # refresh <seconds>: exit 0 = new token stored; 75 = lock held by another process; other = az failed or timed out.
 # The lock is held for the whole az run and the cache write, and released only when perl exits.
 refresh() {
-  perl -MFcntl=:flock -MJSON::PP -e '
+  perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -MJSON::PP -e '
     my ($lock, $tok, $exp, $limit, @cmd) = @ARGV;
     open(my $L, ">>", $lock) or exit 70;
     flock($L, LOCK_EX | LOCK_NB) or exit 75;
     exit 124 if $limit < 1;
+    # keep the lock fd open across exec: the lock lives as long as az (and its group), also when
+    # this supervisor is killed. Then no second az can start while an orphaned az still runs.
+    fcntl($L, F_SETFD, fcntl($L, F_GETFD, 0) & ~FD_CLOEXEC) or exit 70;
+    unlink grep { -M $_ > 1/1440 } glob("$tok.out.*");   # outputs of killed supervisors (lock held)
     my $out = "$tok.out.$$";
     my $p = fork; exit 71 unless defined $p;
     if (!$p) { setpgrp(0, 0); open(STDOUT, ">", $out); open(STDERR, ">", "/dev/null"); open(STDIN, "<", "/dev/null");

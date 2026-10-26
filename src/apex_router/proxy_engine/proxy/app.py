@@ -32,6 +32,7 @@ from apex_router.proxy_engine.telemetry.events import TELEMETRY_SCHEMA_VERSION, 
 # A5: the proxy runs for days, so a startup-only gc lets stale sessions pile up in state.db.
 # Run Store.gc() again about once per hour from the heartbeat loop (retention is unchanged).
 GC_INTERVAL_S = 3600.0
+GC_PAUSE_S = 0.005   # hourly gc: lock-free pause between sessions, so requests get the lock
 
 
 async def _heartbeat_loop(
@@ -116,7 +117,7 @@ def create_app(cfg: Config | None = None) -> Starlette:
 
         hb_task = asyncio.ensure_future(_heartbeat_loop(
             state["telemetry"], cfg.heartbeat_s,
-            gc=state["store"].gc, gc_interval_s=GC_INTERVAL_S, on_gc=_gc_done,
+            gc=lambda: state["store"].gc(pause_s=GC_PAUSE_S), gc_interval_s=GC_INTERVAL_S, on_gc=_gc_done,
         ))
         try:
             yield

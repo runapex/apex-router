@@ -38,7 +38,7 @@ def env(tmp_path):
 
 def run(env, **extra):
     t = time.monotonic()
-    p = subprocess.run([str(SCRIPT)], env={**env, **extra}, capture_output=True, text=True, timeout=30)
+    p = subprocess.run([str(SCRIPT)], env={**env, **extra}, capture_output=True, text=True, timeout=30, check=False)
     return p.returncode, p.stdout, time.monotonic() - t
 
 
@@ -50,7 +50,7 @@ def calls(env):
 def cache(env):
     d = Path(env["XDG_CACHE_HOME"]) / "az-token"
     key = subprocess.run("printf %s https://cognitiveservices.azure.com | shasum | cut -c1-16", shell=True,
-                         capture_output=True, text=True).stdout.strip()
+                         capture_output=True, text=True, check=False).stdout.strip()
     return d / f"{key}.token", d / f"{key}.exp", d / f"{key}.flock"
 
 
@@ -64,7 +64,7 @@ def test_cold_cache_parallel_callers_one_az_call(env):
 
 def test_fresh_cache_no_call(env):
     run(env)
-    rc, out, el = run(env)
+    rc, _, el = run(env)
     assert (rc, calls(env)) == (0, 1) and el < 1.5
 
 
@@ -103,12 +103,14 @@ def test_failed_az_keeps_valid_old_token(env):
     assert tok.read_text() == "OLDTOK"
 
 
+HOLD_LOCK = 'open(my $l,">>",$ARGV[0]) or die; flock($l,LOCK_EX) or die; print "ok\\n"; $|=1; sleep 30'
+
+
 def test_waiter_never_runs_az_while_lock_is_held(env):
     _, _, lock = cache(env)
     lock.parent.mkdir(parents=True)
     holder = subprocess.Popen(["perl", "-MFcntl=:flock", "-e",
-                               'open(my $l,">>",$ARGV[0]) or die; flock($l,LOCK_EX) or die; print "ok\\n"; '
-                               '$|=1; sleep 30', str(lock)], stdout=subprocess.PIPE, text=True)
+                               HOLD_LOCK, str(lock)], stdout=subprocess.PIPE, text=True)
     try:
         assert holder.stdout.readline() == "ok\n"
         rc, _, el = run(env, AZ_TOKEN_DEADLINE_S="3")
@@ -123,7 +125,7 @@ def test_dead_lock_holder_does_not_block(env):
     _, _, lock = cache(env)
     lock.parent.mkdir(parents=True)
     subprocess.run(["perl", "-MFcntl=:flock", "-e", 'open(my $l,">>",$ARGV[0]); flock($l,LOCK_EX); kill "KILL",$$',
-                    str(lock)])
+                    str(lock)], check=False)
     assert lock.exists()
     rc, out, el = run(env, FAKE_SLEEP="0")
     assert rc == 0 and out.startswith("TOK") and calls(env) == 1 and el < 3
@@ -138,3 +140,36 @@ def test_takeover_after_holder_fails_stays_inside_one_deadline(env):
         ra, rb = a.result(), b.result()
     assert ra[0] == 1 and rb[0] == 1
     assert rb[2] < 5.5  # one deadline (4 s) + slack, not 2 x deadline
+
+
+def test_killed_supervisor_keeps_the_lock_while_az_runs(env, tmp_path):
+    # the perl supervisor dies (SIGKILL) while az runs: az keeps the lock fd, so no 2nd az starts
+    a = subprocess.Popen([str(SCRIPT)], env={**env, "FAKE_SLEEP": "6", "AZ_TOKEN_DEADLINE_S": "8"},
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(40):
+            if calls(env) == 1:
+                break
+            time.sleep(0.1)
+        assert calls(env) == 1
+        az_pid = subprocess.run(["pgrep", "-f", env["AZ_BIN"]], capture_output=True, text=True,
+                                check=False).stdout.split()[0]
+        sup = subprocess.run(["ps", "-o", "ppid=", "-p", az_pid], capture_output=True, text=True,
+                             check=False).stdout.strip()
+        os.kill(int(sup), 9)   # the perl supervisor of THIS fake az only (never a live az-token-cached)
+        rc, _, _ = run(env, AZ_TOKEN_DEADLINE_S="2", FAKE_SLEEP="0")
+        assert rc == 1 and calls(env) == 1   # waited; never ran az while the orphan held the lock
+    finally:
+        a.kill()
+        a.wait()
+        subprocess.run(["pkill", "-KILL", "-f", env["AZ_BIN"]], check=False)
+
+
+def test_old_output_files_are_removed(env):
+    tok, _, _ = cache(env)
+    tok.parent.mkdir(parents=True)
+    stale = tok.with_name(tok.name + ".out.12345")
+    stale.write_text("{}")
+    os.utime(stale, (time.time() - 300, time.time() - 300))
+    rc, _, _ = run(env, FAKE_SLEEP="0")
+    assert rc == 0 and not stale.exists()
