@@ -8,7 +8,9 @@ change: a dirty tree, another branch, diverged history, an origin that is not an
 After a fast-forward: reinstall only if ``pyproject.toml`` or ``uv.lock`` changed (the same uv
 commands as ``install.sh``), then a smoke import in a new process. A failed reinstall or smoke
 resets the checkout to the old commit. The long-running ``mesh up`` and ``mesh worker`` processes
-compare their start commit with the checkout HEAD at idle points and re-exec themselves.
+compare their start commit with the checkout HEAD at idle points and re-exec themselves, but only
+after a smoke import of the new HEAD passes (``RestartGate``): a broken local commit never stops a
+running node. A failed fetch or merge keeps the git error tail in the status (``error``).
 
 Opt out: ``{"auto_update": false}`` in ``<mesh home>/update.json``, or ``APEX_MESH_NO_UPDATE=1``.
 """
@@ -64,6 +66,27 @@ def _run(argv: list[str], *, cwd: str | Path | None = None, timeout: float = GIT
 def _git(repo: Path, *args: str, run: Runner = _run, timeout: float = GIT_TIMEOUT_S
          ) -> subprocess.CompletedProcess | None:
     return run([*_GIT, "-C", str(repo), *args], timeout=timeout)
+
+
+ERR_TAIL = 300                              # chars of git stderr kept in the status
+_CRED_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@")              # https://user:tok@
+_TOKEN_RE = re.compile(r"(?i)\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+                       r"|glpat-[A-Za-z0-9_-]{20,})")
+_AUTH_RE = re.compile(r"(?i)(authorization:\s*\S+\s+|bearer\s+|basic\s+)\S+")
+
+
+def git_error(r: subprocess.CompletedProcess | None) -> str:
+    """The last ERR_TAIL chars of git stderr (stdout if empty), with credentials removed.
+    None (git did not start or timed out) gives "no_result"."""
+    if r is None:
+        return "no_result"
+    raw = r.stderr or r.stdout or b""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    text = _CRED_RE.sub(r"\1***@", text)
+    text = _TOKEN_RE.sub("***", text)
+    text = _AUTH_RE.sub(r"\1***", text)
+    text = " ".join(text.split())                # one line for the status and `mesh status`
+    return text[-ERR_TAIL:] or f"exit {r.returncode}"
 
 
 def _out(r: subprocess.CompletedProcess | None) -> str | None:
@@ -279,7 +302,7 @@ def _update_locked(repo: Path, old: str | None, *, dry_run: bool, run: Runner,
                    reinstall_fn: Callable[[Path], bool], smoke_fn: Callable[[], bool]) -> dict:
     r = _git(repo, "fetch", "--no-tags", "--quiet", "origin", "main", run=run)
     if r is None or r.returncode != 0:
-        return {"status": "fetch_failed"}
+        return {"status": "fetch_failed", "error": git_error(r)}
     new = _out(_git(repo, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}", run=run))
     if not old or not new or not _SHA_RE.match(new):
         return {"status": "error", "error": "rev_parse"}
@@ -294,7 +317,7 @@ def _update_locked(repo: Path, old: str | None, *, dry_run: bool, run: Runner,
     deps = sorted(set(names.splitlines()) & set(DEP_FILES))
     m = _git(repo, "merge", "--ff-only", "--quiet", new, run=run)
     if m is None or m.returncode != 0:
-        return {"status": "error", "error": "merge"}
+        return {"status": "error", "error": f"merge: {git_error(m)}"}
     if (deps and not reinstall_fn(repo)) or not smoke_fn():
         _git(repo, "reset", "--hard", "--quiet", old, run=run)
         if deps:
@@ -312,6 +335,35 @@ def restart_needed(start_commit: str | None, repo: Path | None, run: Runner = _r
         return False
     now = head(repo, run)
     return bool(now) and now != start_commit
+
+
+class RestartGate:
+    """Re-exec only into code that imports: ``smoke()`` before ``reexec()``.
+
+    ``needed()`` is True when HEAD moved since start AND that HEAD did not fail the smoke check
+    already. ``smoke_ok()`` runs the smoke check; a failure remembers the HEAD, so the process
+    keeps running its old code and checks again only when HEAD moves to another commit."""
+
+    def __init__(self, start_commit: str | None, repo: Path | None, run: Runner = _run,
+                 smoke_fn: Callable[[], bool] | None = None) -> None:
+        self.start_commit, self.repo, self.run = start_commit, repo, run
+        self.smoke_fn = smoke_fn or (lambda: smoke(run))
+        self.bad_head: str | None = None
+
+    def needed(self) -> bool:
+        if not restart_needed(self.start_commit, self.repo, self.run):
+            return False
+        return self.repo is None or head(self.repo, self.run) != self.bad_head
+
+    def smoke_ok(self) -> bool:
+        now = head(self.repo, self.run) if self.repo is not None else None
+        try:
+            ok = bool(self.smoke_fn())
+        except Exception:  # noqa: BLE001 -- a broken check is a failed check
+            ok = False
+        if not ok:
+            self.bad_head = now
+        return ok
 
 
 def reexec() -> None:
@@ -335,6 +387,7 @@ class AutoUpdater:
         self.h, self.run, self.now = h, run, now
         self.repo = repo if repo is not None else code_checkout(run)
         self.start_commit = head(self.repo, run) if self.repo is not None else None
+        self.gate = RestartGate(self.start_commit, self.repo, run)
         self.update_fn = update_fn or (lambda: update(self.h, repo=self.repo, run=self.run))
         self.every_s, self.gap_s = float(every_s), float(gap_s)
         self.cfg = load_config(h)
@@ -392,4 +445,8 @@ class AutoUpdater:
     def restart_needed(self) -> bool:
         if self._thread is not None and self._thread.is_alive():
             return False
-        return restart_needed(self.start_commit, self.repo, self.run)
+        return self.gate.needed()
+
+    def smoke_ok(self) -> bool:
+        """Smoke check before the re-exec; a failure blocks restarts until HEAD moves again."""
+        return self.gate.smoke_ok()

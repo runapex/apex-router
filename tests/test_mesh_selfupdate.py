@@ -408,3 +408,75 @@ def test_autoupdater_many_diverged_peers_share_one_fetch_per_gap(env):
     assert au.tick(peers) is True
     au._thread.join(5)
     assert calls == [1, 1]
+
+
+# ---- 2026-10-26: git error in the status, smoke gate before re-exec -------------------------------
+
+def test_fetch_failure_keeps_the_git_error_tail(env):
+    gone = env.tmp / "gone.git"
+    _git("remote", "set-url", "origin", str(gone), cwd=env.node)
+    (env.home / su.CONFIG_FILE).write_text(json.dumps({"upstreams": [str(gone)]}))
+    res = _update(env)[0]
+    assert res["status"] == "fetch_failed"
+    assert "gone.git" in res["error"] and 0 < len(res["error"]) <= su.ERR_TAIL
+    assert su.read_status(env.home)["error"] == res["error"]           # update-status.json too
+
+
+def test_git_error_removes_credentials_and_keeps_the_tail():
+    stderr = ("x" * 400 + "\nfatal: unable to access 'https://bob:ghp_" + "a" * 36
+              + "@github.com/r/'\nAuthorization: Bearer s3cr3t-tok\n").encode()
+    text = su.git_error(subprocess.CompletedProcess([], 128, b"", stderr))
+    assert len(text) == su.ERR_TAIL and "\n" not in text
+    assert "ghp_" not in text and "bob" not in text and "s3cr3t" not in text
+    assert "https://***@github.com/r/" in text
+    assert su.git_error(None) == "no_result"
+    assert su.git_error(subprocess.CompletedProcess([], 1, b"", b"")) == "exit 1"
+
+
+def test_merge_failure_keeps_the_git_error(env):
+    new = _advance(env)
+    real = su._run
+
+    def run(argv, **kw):
+        if "merge" in argv and "--ff-only" in argv:
+            return subprocess.CompletedProcess(argv, 1, b"", b"error: Your local changes ...\n")
+        return real(argv, **kw)
+    res = su.update(env.home, repo=env.node, run=run, reinstall_fn=lambda _r: True,
+                    smoke_fn=lambda: True)
+    assert res["status"] == "error" and res["error"] == "merge: error: Your local changes ..."
+    assert _git("rev-parse", "HEAD", cwd=env.node) != new
+
+
+def test_restart_gate_smokes_before_reexec_and_blocks_a_bad_head(env):
+    start = su.head(env.node)
+    ok = {"v": False, "n": 0}
+
+    def smoke():
+        ok["n"] += 1
+        return ok["v"]
+    gate = su.RestartGate(start, env.node, smoke_fn=smoke)
+    assert gate.needed() is False                                    # HEAD did not move
+    _advance(env)
+    _update(env)                                                     # fast-forward lands
+    assert gate.needed() is True
+    assert gate.smoke_ok() is False and ok["n"] == 1                 # broken commit: no re-exec
+    assert gate.needed() is False                                    # same bad HEAD: no retry
+    _advance(env, text="A = 3\n", msg="v3")
+    _update(env)                                                     # HEAD moves again
+    ok["v"] = True
+    assert gate.needed() is True and gate.smoke_ok() is True and ok["n"] == 2
+
+
+def test_restart_gate_counts_a_raising_smoke_as_failed(env):
+    gate = su.RestartGate(su.head(env.node), env.node,
+                          smoke_fn=lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert gate.smoke_ok() is False
+
+
+def test_autoupdater_exposes_the_gate(env):
+    au = su.AutoUpdater(env.home, repo=env.node, update_fn=lambda: {"status": "ok"})
+    au.gate.smoke_fn = lambda: False
+    _advance(env)
+    _update(env)
+    assert au.restart_needed() is True and au.smoke_ok() is False
+    assert au.restart_needed() is False

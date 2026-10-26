@@ -1119,3 +1119,33 @@ def test_network_job_field_cannot_turn_it_on(env):
     _worker(env, [envb]).poll_once()
     assert _result(env, jid)["status"] != "done"              # the job schema refuses the field
     assert _fake_rows(env) == []
+
+
+# -- 2026-10-26: smoke before re-exec, timestamped lines ---------------------------------------------
+
+def test_worker_does_not_reexec_into_a_commit_that_fails_smoke(env, monkeypatch, capsys):
+    from apex_router.mesh import selfupdate as su
+    heads = iter(["a" * 40] + ["b" * 40] * 100)       # start commit, then an update landed
+    monkeypatch.setattr(su, "code_checkout", lambda run=None: env["tmp"])
+    monkeypatch.setattr(su, "head", lambda repo, run=None: next(heads))
+    monkeypatch.delenv("APEX_MESH_NO_UPDATE", raising=False)
+    smokes, execs = [], []
+    monkeypatch.setattr(su, "smoke", lambda run=None: smokes.append(1) or False)
+    monkeypatch.setattr(su, "reexec", lambda: execs.append(1))
+    sleeps = []
+
+    def sleep(_s):
+        sleeps.append(1)
+        if len(sleeps) >= 3:
+            raise KeyboardInterrupt
+    monkeypatch.setattr(worker.time, "sleep", sleep)
+    rc = worker.main(["--poll-s", "0.01"], fetch=lambda p, i, t: {"ok": True, "jobs": []},
+                     peers=list, pressure=lambda: 0,
+                     offload_log=env["tmp"] / "off.jsonl")
+    assert rc == 0 and execs == [] and smokes == [1]          # smoked once, then gate blocks
+    rows = [json.loads(x) for x in worker.log_path(env["home"]).read_text().splitlines()]
+    assert [r["event"] for r in rows if r["event"].startswith("restart")] == ["restart_skipped"]
+    import re
+    err = capsys.readouterr().err
+    assert re.search(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} mesh worker: "
+                     r"restart_skipped reason=smoke_failed", err, re.MULTILINE), err

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from . import collect as collect_mod
-from . import datasets, identity, infer, notes, protocol
+from . import datasets, identity, infer, notes, protocol, tslog
 from .identity import Identity, MeshNotInitialized
 from .peers import LOAD_MAX, MODELS_MAX, PeerTable, parse_card, valid_model
 from .protocol import (
@@ -60,6 +60,11 @@ def _version() -> str:
 
 def _err(msg: str) -> None:
     print(f"apex-router mesh: {msg}", file=sys.stderr)
+
+
+def _up_err(msg: str) -> None:
+    """``_err`` for the long-running ``mesh up``: the same text after a timestamp."""
+    tslog.say(f"apex-router mesh: {msg}", file=sys.stderr)
 
 
 def _dump(obj: Any) -> None:
@@ -256,7 +261,8 @@ def _cmd_status(args) -> int:
            "bind": pid_doc.get("host") if running and isinstance(pid_doc, dict) else None,
            "port": pid_doc.get("port") if running and isinstance(pid_doc, dict) else None,
            "n_alive": view["n_alive"] if view else 0,
-           "leader": view["leader"] if view else None}
+           "leader": view["leader"] if view else None,
+           "update": _update_status(home)}
     if args.json:
         _dump(out)
         return 0
@@ -269,7 +275,27 @@ def _cmd_status(args) -> int:
     else:
         print("up       not running")
     print(f"alive    {out['n_alive']}")
+    upd = out["update"]
+    if upd:
+        at = upd.get("at")
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at)) \
+            if isinstance(at, (int, float)) and not isinstance(at, bool) else "?"
+        err = f"  error: {upd['error']}" if upd.get("error") else ""
+        print(f"update   {upd.get('status')} ({when}){err}")
     return 0
+
+
+def _update_status(home: Path) -> dict | None:
+    """status, at and error of the last self-update (update-status.json), or None."""
+    try:
+        doc = _submodule("selfupdate").read_status(home)
+    except Exception:  # noqa: BLE001 -- status never fails on a bad update file
+        return None
+    if not doc:
+        return None
+    err = doc.get("error")
+    return {"status": doc.get("status"), "at": doc.get("at"),
+            "error": str(err)[:400] if err else None}
 
 
 def _load_ident() -> tuple[Identity, Path] | None:
@@ -945,38 +971,38 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         host = netif.choose_bind(args.bind, allow_public=args.allow_public)
         shared = datasets.parse_share(args.share)
     except ValueError as e:
-        _err(str(e))
+        _up_err(str(e))
         return NO_ADDR if args.bind is None and "no LAN address" in str(e) else 2
     beacon_port = getattr(args, "beacon_port", MCAST_PORT)
     if isinstance(beacon_port, bool) or not isinstance(beacon_port, int) \
             or not 1 <= beacon_port <= 65535:
-        _err(f"bad --beacon-port {beacon_port}: use 1..65535")
+        _up_err(f"bad --beacon-port {beacon_port}: use 1..65535")
         return 2
     targets = []
     for spec in args.peer or []:
         got_t = _parse_peer(spec, beacon_port)
         if got_t is None:
-            _err(f"bad --peer {spec!r}: use HOST or HOST:PORT (UDP beacon port)")
+            _up_err(f"bad --peer {spec!r}: use HOST or HOST:PORT (UDP beacon port)")
             return 2
         targets.append(got_t)
     models = list(dict.fromkeys(getattr(args, "serve_model", None) or []))
     bad_m = [m for m in models if not valid_model(m)]
     if bad_m or len(models) > MODELS_MAX:
-        _err(f"bad --serve-model: at most {MODELS_MAX} names of [A-Za-z0-9._:/-], <= 128 chars")
+        _up_err(f"bad --serve-model: at most {MODELS_MAX} names of [A-Za-z0-9._:/-], <= 128 chars")
         return 2
     slots = getattr(args, "infer_slots", 1)
     if not isinstance(slots, int) or not 1 <= slots <= 4:
-        _err(f"bad --infer-slots {slots}: use 1..4")
+        _up_err(f"bad --infer-slots {slots}: use 1..4")
         return 2
     if models:
         try:
             infer.ollama_url()
         except ValueError as e:
-            _err(str(e))
+            _up_err(str(e))
             return 2
     started = time.time()
     if not 0 <= args.port <= 65535:
-        _err(f"bad --port {args.port}")
+        _up_err(f"bad --port {args.port}")
         return 2
     # --port 0 = OS picks; the card needs a valid port until the server reports the real one.
     # load is computed once per beacon cycle (it may run launchctl); card_fn only reads it, so
@@ -1001,13 +1027,13 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
     try:
         table = PeerTable(card_fn())
     except ValueError as e:
-        _err(f"bad self card: {e}")
+        _up_err(f"bad self card: {e}")
         return 2
     if models:
         # The beacon drops an announce larger than one datagram: refuse at start, not silently.
         probe = _self_card(ident, host, 65535, args.role or [], started, LOAD_MAX, models)
         if len(protocol.encode("announce", probe, ident)) > MAX_DATAGRAM:
-            _err(f"--serve-model names make the beacon card > {MAX_DATAGRAM} bytes; "
+            _up_err(f"--serve-model names make the beacon card > {MAX_DATAGRAM} bytes; "
                  "serve fewer or shorter names")
             return 2
     server_mod, beacon_mod = _submodule("server"), _submodule("beacon")
@@ -1018,14 +1044,14 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         server = server_mod.MeshServer(ident, table, card_fn, host=host, port=args.port,
                                        **server_kw)
     except ValueError as e:
-        _err(str(e))
+        _up_err(str(e))
         return 2
     state["server"] = server
     beacon = None
     pid_path, peers_path = home / PID_FILE, home / PEERS_FILE
     lock_fd = _take_lock(home)
     if lock_fd is None:
-        _err(f"already running (lock {home / LOCK_FILE} is held)")
+        _up_err(f"already running (lock {home / LOCK_FILE} is held)")
         return 1
     own_pid = os.getpid()
     restart = False
@@ -1041,9 +1067,9 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
         _write_json(pid_path, {"pid": own_pid, "host": host, "port": state["port"],
                                "beacon_port": beacon_port, "started_at": started,
                                "shared": sorted(shared)})
-        print(f"mesh up: {ident.name} {ident.node_id[:12]} on {host}:{state['port']} "
-              f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s), "
-              f"serving {len(models)} model(s))", flush=True)
+        tslog.say(f"mesh up: {ident.name} {ident.node_id[:12]} on {host}:{state['port']} "
+                  f"(mesh {ident.mesh_id}, sharing {len(shared)} dataset(s), "
+                  f"serving {len(models)} model(s))")
         while True:
             table.update(card_fn())     # refresh self.last_seen so readers see us alive
             snap = table.snapshot()
@@ -1051,7 +1077,7 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             try:
                 _write_json(peers_path, snap)
             except (OSError, TypeError, ValueError) as e:
-                _err(f"cannot write {PEERS_FILE}: {e}")
+                _up_err(f"cannot write {PEERS_FILE}: {e}")
             if stop.wait(interval_s):
                 break
             state["load"] = _local_load()
@@ -1062,15 +1088,20 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
                 drift_n = drift_n + 1 if drift and drift == last_drift else (1 if drift else 0)
                 last_drift = drift
                 if drift_n >= 2:
-                    print(f"mesh up: {drift} ({host}); restarting", flush=True)
+                    tslog.say(f"mesh up: {drift} ({host}); restarting")
                     restart = True
                     break
             if updater is not None:
                 updater.tick(table.alive())
                 if updater.restart_needed():
-                    print("mesh up: apex-router updated; restarting", flush=True)
-                    restart = True
-                    break
+                    # Smoke the new HEAD first: a commit that does not import must not replace
+                    # a running node. A failure is one line; the gate blocks it until HEAD moves.
+                    if updater.smoke_ok():
+                        tslog.say("mesh up: apex-router updated; restarting")
+                        restart = True
+                        break
+                    tslog.say("mesh up: apex-router updated but the smoke import failed; "
+                              "keeping the running code")
     finally:
         if beacon is not None:
             try:
@@ -1088,7 +1119,7 @@ def run_up(args, stop: threading.Event, *, interval_s: float = BEACON_INTERVAL_S
             except OSError:
                 pass
         os.close(lock_fd)                  # releases the flock
-    print("mesh down", flush=True)
+    tslog.say("mesh down")
     return RESTART if restart else 0
 
 
@@ -1136,25 +1167,16 @@ def _cmd_up(args) -> int:
     # A first manual start fails fast. After a re-exec (update or address change) nobody watches
     # the terminal, so a missing address or a busy port waits with back-off until it is back.
     retry = os.environ.get(RETRY_ENV) == "1"
-    tries = 0
     try:
         while True:
-            try:
-                rc = run_up(args, stop)
-                err = None
-            except Exception as e:  # noqa: BLE001 -- one line, no traceback
-                rc, err = 1, e
-            if not retry or stop.is_set() or not (rc == NO_ADDR or _retryable(err)):
-                if err is not None:
-                    _err(f"cannot start: {type(err).__name__}: {err}")
+            rc = _run_up_retrying(args, stop, retry)
+            # Every re-exec (update or address change) needs code that imports: a broken HEAD
+            # must not stop the node. On a failed smoke, run again in this process (old code).
+            if rc != RESTART or _submodule("selfupdate").smoke():
                 break
-            tries += 1
-            delay = min(RETRY_MAX_S, 2.0 ** min(tries, 16))     # no float overflow on long waits
-            why = "no LAN address" if err is None else f"{type(err).__name__}: {err}"
-            print(f"mesh up: cannot bind ({why}); retry {tries} in {delay:.0f} s", flush=True)
-            if stop.wait(delay):
-                rc = 0                                     # stopped while waiting: clean exit
-                break
+            tslog.say("mesh up: smoke import of the checkout failed; no re-exec, "
+                      "starting again with the running code")
+            retry = True                   # as after a re-exec: nobody watches the terminal
     finally:
         for sig, h in old.items():
             signal.signal(sig, h)
@@ -1162,6 +1184,27 @@ def _cmd_up(args) -> int:
         os.environ[RETRY_ENV] = "1"
         _submodule("selfupdate").reexec()
     return rc
+
+
+def _run_up_retrying(args, stop: threading.Event, retry: bool) -> int:
+    """``run_up`` once; with ``retry`` a bind failure waits with back-off and runs it again."""
+    tries = 0
+    while True:
+        try:
+            rc = run_up(args, stop)
+            err = None
+        except Exception as e:  # noqa: BLE001 -- one line, no traceback
+            rc, err = 1, e
+        if not retry or stop.is_set() or not (rc == NO_ADDR or _retryable(err)):
+            if err is not None:
+                _up_err(f"cannot start: {type(err).__name__}: {err}")
+            return rc
+        tries += 1
+        delay = min(RETRY_MAX_S, 2.0 ** min(tries, 16))     # no float overflow on long waits
+        why = "no LAN address" if err is None else f"{type(err).__name__}: {err}"
+        tslog.say(f"mesh up: cannot bind ({why}); retry {tries} in {delay:.0f} s")
+        if stop.wait(delay):
+            return 0                                       # stopped while waiting: clean exit
 
 
 def _cmd_update(args) -> int:
@@ -1178,6 +1221,11 @@ def _cmd_update(args) -> int:
         if res["status"] == "updated":
             print("mesh update: running `mesh up` and `mesh worker` restart themselves at idle")
     return 0 if res["status"] in ("ok", "updated") else 1
+
+
+def _cmd_launchd(args) -> int:
+    """``mesh launchd install|uninstall|status`` (launchd.py)."""
+    return _submodule("launchd").cmd(args.action, dry_run=args.dry_run, as_json=args.json)
 
 
 # ---- parser ---------------------------------------------------------------------------------
@@ -1330,6 +1378,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.add_argument("--mark-read", action="store_true", help="mark the printed notes read")
     p.set_defaults(fn=_cmd_inbox)
+
+    p = sub.add_parser("launchd", help="macOS: run `mesh up` and `mesh worker` as LaunchAgents "
+                                       "(restart after a crash and at login)")
+    p.add_argument("action", choices=("install", "uninstall", "status"))
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the plists (install) or the steps (uninstall); change nothing")
+    p.add_argument("--json", action="store_true", help="status as JSON")
+    p.set_defaults(fn=_cmd_launchd)
 
     p = sub.add_parser("worker", help="run the job worker (all args go to the worker)",
                        add_help=False)

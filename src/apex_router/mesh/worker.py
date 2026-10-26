@@ -36,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import identity, jobs
+from . import identity, jobs, tslog
 
 LANE = "mesh-worker"
 DEFAULT_DAILY_CAP = 20
@@ -632,8 +632,8 @@ class Worker:
             _append_line(log_path(self.h), row)
         if not self.quiet:
             with contextlib.suppress(Exception):
-                print(f"mesh worker: {event} " + " ".join(f"{k}={v}" for k, v in kw.items()),
-                      file=sys.stderr)
+                tslog.say(f"mesh worker: {event} " + " ".join(f"{k}={v}" for k, v in kw.items()),
+                          file=sys.stderr)
 
     # -- results --
 
@@ -1308,13 +1308,13 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
         return 2
     fd = _take_lock(h)
     if fd is None:
-        print("mesh worker: another worker runs on this mesh home", file=sys.stderr)
+        tslog.say("mesh worker: another worker runs on this mesh home", file=sys.stderr)
         return 1
     if cfg["runner"] == "claude" and ensure_settings(h) is None:
-        print(f"mesh worker: {settings_path(h)} is not a valid settings file; jobs are rejected",
-              file=sys.stderr)
+        tslog.say(f"mesh worker: {settings_path(h)} is not a valid settings file; jobs are "
+                  "rejected", file=sys.stderr)
     if load_allowlist(h) is None:
-        print(f"mesh worker: no {allowlist_path(h)}; every job is rejected", file=sys.stderr)
+        tslog.say(f"mesh worker: no {allowlist_path(h)}; every job is rejected", file=sys.stderr)
     overrides.setdefault("runner", cfg["runner"])
     w = Worker(ident, h, daily_cap=args.daily_cap, wall_s=args.wall_min * 60, **overrides)
     if args.recover:
@@ -1337,9 +1337,9 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
               "mesh worker: not recovered (a job process still holds the agent lock)")
         return 0 if ok else 1
     if not w.recover():
-        print("mesh worker: a crashed job is left (running.json); new jobs are rejected as busy. "
-              "Make sure no process of it runs, then run: apex-router mesh worker --recover",
-              file=sys.stderr)
+        tslog.say("mesh worker: a crashed job is left (running.json); new jobs are rejected as "
+                  "busy. Make sure no process of it runs, then run: apex-router mesh worker "
+                  "--recover", file=sys.stderr)
 
     def _term(signum, frame):
         raise KeyboardInterrupt
@@ -1348,17 +1348,23 @@ def main(argv: list[str] | None = None, **overrides: Any) -> int:
     from . import selfupdate
     code_repo = None if args.once or args.no_auto_restart else selfupdate.code_checkout()
     start_commit = selfupdate.head(code_repo) if code_repo is not None else None
+    # Smoke the new HEAD before the re-exec: a commit that does not import must not stop the
+    # worker. A failed smoke logs once and blocks restarts until HEAD moves again.
+    gate = selfupdate.RestartGate(start_commit, code_repo)
     try:
         while True:
             w.poll_once()
             if args.once:
                 return 0
-            if selfupdate.restart_needed(start_commit, code_repo) \
-                    and not running_path(h).exists():
-                w.log("restart", reason="update", commit=(selfupdate.head(code_repo) or "")[:12])
-                os.close(fd)
-                fd = -1
-                selfupdate.reexec()
+            if gate.needed() and not running_path(h).exists():
+                commit = (selfupdate.head(code_repo) or "")[:12]
+                if gate.smoke_ok():
+                    w.log("restart", reason="update", commit=commit)
+                    os.close(fd)
+                    fd = -1
+                    selfupdate.reexec()
+                else:
+                    w.log("restart_skipped", reason="smoke_failed", commit=commit)
             time.sleep(args.poll_s)
     except KeyboardInterrupt:
         return 0
