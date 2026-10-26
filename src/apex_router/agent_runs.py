@@ -15,6 +15,11 @@ Two streams, both append-only JSONL under ~/.apex-router/labels/ (idempotent: a 
 Privacy: the collector never copies the brief, the answer, file paths or descriptions. The role is
 an enum read from the brief's first line ("You are judge J1" -> judge). The verdict is an enum.
 
+Report-time mapping (stored rows are not changed): rows group by a canonical model id
+(``canonical_model``: provider prefix stripped, a bare tier name resolved, the version kept). An xval
+row gets USD from its codex tokens only at an audited rate (``list:`` or ``negotiated:``); a
+``provisional:`` or unknown rate gives ``cost_usd`` None and the cell says "usd unknown".
+
 Usage:  apex-router agent-runs collect [--json] [--refresh-verdicts]
         apex-router agent-runs report  [--json] [--since DAYS]
 """
@@ -44,6 +49,60 @@ VERDICT_RE = re.compile(rf"\b({VERDICTS})\b")
 CTX_ALERT = 80.0
 CTX_CLEARED = 50.0
 ACT_WINDOW_MS = 30 * 60 * 1000
+
+
+# Provider prefixes, stripped in any order and repeated: "anthropic/claude-x", "it-entra-claude-x".
+_MODEL_PREFIXES = ("anthropic/", "openai/", "it-entra-", "claude-")
+# A canonical id is a Claude tier with an optional version ("sonnet", "sonnet-5-5") or a GPT id.
+_CANON_RE = re.compile(r"^(?:(haiku|sonnet|opus|fable)(?:-\d[\w.-]*)?|gpt-[\w.-]+)$")
+# Rates that are a real price. "provisional:" is a placeholder (gpt-6 carries gpt-5 rates): not USD.
+_AUDITED_REGIMES = ("list:", "negotiated:")
+
+
+def canonical_model(raw, registry: dict | None = None):
+    """One id per model version, for grouping only. Strips provider prefixes, keeps family and version:
+    'it-entra-claude-sonnet-5-5', 'claude-sonnet-5-5', 'sonnet-5-5' -> 'sonnet-5-5'. A bare tier name
+    ('sonnet') resolves through the model registry tier map. Other versions stay apart ('sonnet-4-6').
+    A string that is not a known family comes back unchanged."""
+    if not isinstance(raw, str) or not raw.strip():
+        return raw
+    s = raw.strip().lower()
+    stripped = True
+    while stripped:
+        stripped = False
+        for p in _MODEL_PREFIXES:
+            if s.startswith(p) and len(s) > len(p):
+                s, stripped = s[len(p):], True
+    m = _CANON_RE.match(s)
+    if not m:
+        return raw
+    if m.group(1) and s == m.group(1):                       # bare tier name: resolve to its version
+        from . import model_registry
+        mid = model_registry.tier_model(s, registry=registry if registry is not None else model_registry.load())
+        if isinstance(mid, str) and mid and mid.lower() != raw.strip().lower():
+            resolved = canonical_model(mid, registry)
+            if isinstance(resolved, str) and _CANON_RE.match(resolved):
+                return resolved
+    return s
+
+
+def xval_usd(model, input_tokens, cached, output) -> tuple[float | None, str]:
+    """(USD, pricing regime) for codex tokens on the OpenAI wire. `input_tokens` includes `cached`
+    (OpenAI usage), so fresh = input - cached. USD is None unless the rate is audited (list or
+    negotiated) and the token counts are numbers: a price is never invented."""
+    from .proxy_engine.readout.pricing import rates_for
+
+    def num(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0
+
+    if not (num(input_tokens) and num(output) and (cached is None or num(cached))):
+        return None, "unknown:no token counts"
+    r = rates_for(model, "openai")
+    if not r.pricing_regime.startswith(_AUDITED_REGIMES):
+        return None, r.pricing_regime
+    cached = min(cached or 0, input_tokens)
+    usd = ((input_tokens - cached) * r.input + cached * r.cache_read + output * r.output) / 1e6
+    return round(usd, 6), r.pricing_regime
 
 
 def _argv_opt(argv: list[str], *names: str) -> str | None:
@@ -343,11 +402,21 @@ def report(since_days: float | None = None) -> dict:
         cut = (time.time() - since_days * 86400) * 1000
         runs = [r for r in runs if isinstance(r.get("ts"), (int, float)) and r["ts"] >= cut]
         alerts = [a for a in alerts if a["ts"] >= cut]
+    from . import model_registry
+    reg = model_registry.load()
     cells: dict[tuple, dict] = {}
     for r in runs:
-        k = (r.get("role") or "?", r.get("model") or "?")
-        c = cells.setdefault(k, {"n": 0, "done": 0, "capped": 0, "soft_capped": 0, "turns": [], "cost": [], "wall": [], "verdicts": {}})
+        raw = r.get("model") or "?"
+        k = (r.get("role") or "?", canonical_model(raw, reg) or "?")
+        c = cells.setdefault(k, {"n": 0, "done": 0, "capped": 0, "soft_capped": 0, "turns": [], "cost": [], "wall": [], "verdicts": {},
+                                 "raw": {}, "cost_unknown": 0, "regimes": set()})
         c["n"] += 1
+        c["raw"][raw] = c["raw"].get(raw, 0) + 1
+        if r.get("kind") == "xval" and not isinstance(r.get("cost_usd"), (int, float)):
+            usd, regime = xval_usd(raw, r.get("input"), r.get("cached"), r.get("output"))
+            r = {**r, "cost_usd": usd}                         # report-time only; the stored row is not changed
+            c["regimes"].add(regime)
+            c["cost_unknown"] += usd is None
         c["done"] += r.get("state") == "done"
         c["capped"] += r.get("state") == "killed(cost)"
         c["soft_capped"] += r.get("state") == "done" and r.get("capped") is True
@@ -363,7 +432,9 @@ def report(since_days: float | None = None) -> dict:
 
     table = [{"role": k[0], "model": k[1], "n": c["n"], "done_rate": round(c["done"] / c["n"], 3),
               "cost_capped": c["capped"], "soft_capped": c["soft_capped"], "turns_med": med(c["turns"]), "cost_med": med(c["cost"]),
-              "cost_sum": round(sum(c["cost"]), 2), "wall_med": med(c["wall"]), "verdicts": c["verdicts"]}
+              "cost_sum": None if c["cost_unknown"] and not c["cost"] else round(sum(c["cost"]), 2),
+              "cost_unknown": c["cost_unknown"], "cost_note": "usd unknown" if c["cost_unknown"] else None,
+              "pricing": sorted(c["regimes"]), "wall_med": med(c["wall"]), "verdicts": c["verdicts"], "models_raw": c["raw"]}
              for k, c in sorted(cells.items())]
     acted = [a for a in alerts if a.get("acted") is not None]
     return {
@@ -371,17 +442,21 @@ def report(since_days: float | None = None) -> dict:
         "by_role_model": table,
         "alerts": len(alerts),
         "context_alerts_acted": f"{sum(1 for a in acted if a['acted'])}/{len(acted)}",
-        "note": "acted = context fell below 50% within 30 min (proxy). Costs: pi USD; xval has token counts only.",
+        "note": "acted = context fell below 50% within 30 min (proxy). Costs: pi USD; xval USD from codex tokens only at a list or "
+                "negotiated rate, else 'usd unknown' (no price is invented). model = canonical id; models_raw has the raw strings.",
     }
 
 
 def _print_report(rep: dict) -> None:
     print(f"agent runs: {rep['runs']}   band context alerts: {rep['alerts']} (acted {rep['context_alerts_acted']})")
-    print(f"{'role':<10} {'model':<28} {'n':>4} {'done':>5} {'cap':>4} {'turns':>6} {'$ med':>7} {'$ sum':>8} {'wall s':>7}  verdicts")
+    print(f"{'role':<10} {'model':<28} {'n':>4} {'done':>5} {'cap':>4} {'turns':>6} {'$ med':>7} {'$ sum':>11} {'wall s':>7}  verdicts")
     for r in rep["by_role_model"]:
         f = lambda x, d=1: "-" if x is None else f"{x:.{d}f}"  # noqa: E731
+        total = "usd unknown" if r["cost_sum"] is None else f"{r['cost_sum']:.2f}"
+        if r["cost_sum"] is not None and r["cost_unknown"]:
+            total += f" +{r['cost_unknown']}?"
         print(f"{r['role']:<10} {r['model'][:28]:<28} {r['n']:>4} {r['done_rate']:>5.2f} {r['cost_capped']:>4} "
-              f"{f(r['turns_med'], 0):>6} {f(r['cost_med'], 2):>7} {r['cost_sum']:>8.2f} {f(r['wall_med'], 0):>7}  {r['verdicts'] or ''}")
+              f"{f(r['turns_med'], 0):>6} {f(r['cost_med'], 2):>7} {total:>11} {f(r['wall_med'], 0):>7}  {r['verdicts'] or ''}")
     print(rep["note"])
 
 

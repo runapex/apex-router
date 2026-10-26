@@ -263,3 +263,73 @@ def test_refresh_temp_file_is_never_world_readable(ar, tmp_path, monkeypatch):
         os.umask(old)
     assert seen == [0o600] and (ar.RUNS_OUT.stat().st_mode & 0o777) == 0o644
     assert not ar.RUNS_OUT.with_name(ar.RUNS_OUT.name + ".tmp").exists()
+
+
+# --- C2: one canonical id per model version (report-time only) ---
+
+@pytest.mark.parametrize("raw", ["it-entra-claude-sonnet-5-5", "sonnet", "sonnet-5-5", "claude-sonnet-5-5",
+                                 "anthropic/claude-sonnet-5-5"])
+def test_sonnet_strings_give_one_canonical_id(ar, raw):
+    from apex_router import model_registry
+    assert ar.canonical_model(raw, model_registry.DEFAULTS) == "sonnet-5-5"
+
+
+def test_canonical_id_keeps_versions_apart_and_unknown_unchanged(ar):
+    from apex_router import model_registry
+    reg = model_registry.DEFAULTS
+    ids = {ar.canonical_model(m, reg) for m in ("it-entra-claude-sonnet-5-5", "it-entra-claude-sonnet-4-6",
+                                                "claude-opus-4-5", "it-entra-claude-opus-5-5")}
+    assert ids == {"sonnet-5-5", "sonnet-4-6", "opus-4-5", "opus-5-5"}
+    assert ar.canonical_model("it-entra-gpt-6.1-sol", reg) == "gpt-6.1-sol"
+    assert ar.canonical_model("openai/gpt-5.5", reg) == "gpt-5.5"
+    assert ar.canonical_model("it-entra-gpt-6-astra", reg) != ar.canonical_model("it-entra-gpt-6.1-sol", reg)
+    for raw in ("deepseek-v4-pro", "kimi-k2.6", "MyModel", None, ""):
+        assert ar.canonical_model(raw, reg) == raw
+
+
+def test_report_groups_sonnet_strings_and_keeps_raw(ar, tmp_path):
+    for i, m in enumerate(("it-entra-claude-sonnet-5-5", "sonnet-5-5", "claude-sonnet-5-5", "it-entra-claude-sonnet-4-6")):
+        _job(tmp_path, f"j{i}", model=m)
+    ar.collect_runs()
+    stored = {json.loads(l)["model"] for l in ar.RUNS_OUT.read_text().splitlines()}
+    assert "sonnet-5-5" in stored and "claude-sonnet-5-5" in stored      # stored rows keep the raw string
+    cells = {c["model"]: c for c in ar.report()["by_role_model"]}
+    assert set(cells) == {"sonnet-5-5", "sonnet-4-6"}
+    assert cells["sonnet-5-5"]["n"] == 3 and len(cells["sonnet-5-5"]["models_raw"]) == 3
+
+
+# --- C3: xval USD only from an audited rate ---
+
+def test_xval_usd_from_a_known_list_price(ar):
+    usd, regime = ar.xval_usd("it-entra-gpt-5.5", 1_000_000, 400_000, 100_000)
+    # gpt-5 list: input 15, cache_read 1.5, output 60 $/M; fresh = 600k
+    assert regime.startswith("list:gpt-5/openai")
+    assert usd == pytest.approx(0.6 * 15 + 0.4 * 1.5 + 0.1 * 60)
+
+
+def test_xval_usd_unknown_price_gives_null(ar):
+    assert ar.xval_usd("it-entra-gpt-6-astra", 1000, 0, 10)[0] is None      # provisional placeholder rate
+    assert ar.xval_usd("some-unpriced-model", 1000, 0, 10)[0] is None
+    assert ar.xval_usd("it-entra-gpt-5-mini", 1000, 0, 10)[0] is None       # variant: no own rate
+    assert ar.xval_usd("it-entra-gpt-5.5", None, None, None)[0] is None     # no token counts
+
+
+def _xval_job(tmp_path, jid, model, t0):
+    _job(tmp_path, jid, agent="xval", kind="xval", model=model, turns=0, started=t0 * 1000, ended=t0 * 1000 + 100_000)
+    meta = json.loads((tmp_path / "pi-jobs" / jid / "meta.json").read_text())
+    meta["usage"]["cost"] = 0
+    (tmp_path / "pi-jobs" / jid / "meta.json").write_text(json.dumps(meta))
+    return {"ts": t0 + 50.0, "calls": 3, "input": 1_000_000, "cached": 400_000, "output": 100_000, "cost": 218919.8, "model": model}
+
+
+def test_report_xval_cost_in_usd_or_unknown(ar, tmp_path):
+    x = [_xval_job(tmp_path, "x1", "it-entra-gpt-5.5", 1_000), _xval_job(tmp_path, "x2", "it-entra-gpt-6-astra", 5_000)]
+    (tmp_path / "xval_runs.jsonl").write_text("\n".join(json.dumps(r) for r in x) + "\n")
+    ar.collect_runs()
+    rows = [json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()]
+    assert all(r["cost_usd"] is None for r in rows)                          # stored schema unchanged
+    cells = {c["model"]: c for c in ar.report()["by_role_model"]}
+    assert cells["gpt-5.5"]["cost_sum"] == pytest.approx(15.6) and cells["gpt-5.5"]["cost_unknown"] == 0
+    astra = cells["gpt-6-astra"]
+    assert astra["cost_sum"] is None and astra["cost_note"] == "usd unknown" and astra["cost_unknown"] == 1
+    assert astra["pricing"][0].startswith("provisional:")

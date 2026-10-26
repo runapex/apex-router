@@ -38,6 +38,14 @@ next tag will carry.
   DISAGREE (kept apart from GO / NO-GO). `agent-runs collect --refresh-verdicts` re-parses rows
   already collected; it rewrites the log under a lock shared with `collect` (no lost append) and
   the temp copy is never wider than 0600. Before: about half of xval runs had no verdict.
+- `agent-runs report` (C2): rows group by a canonical model id (`canonical_model`). It strips provider
+  prefixes, resolves a bare tier name through the model registry and keeps the version. Before: one
+  model showed as 4 strings (`it-entra-claude-sonnet-5-5`, `sonnet`, `sonnet-5-5`, `claude-sonnet-5-5`).
+  `sonnet-5-5` and `sonnet-4-6` stay apart. `models_raw` keeps the raw strings. Stored rows do not change.
+- `agent-runs report` (C3): an xval cell gets USD from its codex tokens only at a `list:` or
+  `negotiated:` rate (`xval_usd`). A `provisional:` or unknown rate gives `cost_sum` null and
+  `cost_note` "usd unknown" (before: 0.00). Today `gpt-6-astra` has only a provisional rate, so it
+  shows "usd unknown".
 - `labels import-gold` refuses a row that would replace gold held only in `gold/consensus.csv`
   (that gold has no ts, so `supersedes` cannot name it) unless `--override-consensus` is given;
   the new row then records the replaced outcome in `supersedes_consensus`.
