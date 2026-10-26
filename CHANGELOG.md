@@ -24,6 +24,18 @@ next tag will carry.
   the update status and the error.
 - mesh (B2): each line that `mesh up` and `mesh worker` print starts with an ISO-8601 local
   timestamp (`up.log`, `worker.log`). The text after it is unchanged.
+- pi `apex-agents` (A2): a final report (assistant message with stopReason "stop") after the soft cap
+  sets `final_turn_at`. A hard cost stop then waits up to 30 s (`FINAL_EXIT_GRACE_MS`) for the child
+  to exit, so the job ends "done" with `capped: true`. SOFT_CAP and SALVAGE are unchanged. Before: the
+  cost of the final message itself could pass 110 % and the job with a written report was
+  `killed(cost)` (example `20261026173658-meer`, $7.44 of $6).
+- `scripts/az-token-cached` (A1, new in the repo; install to `~/.local/bin`): only the lock owner
+  calls `az`; others use a still-valid cached token or wait; the `az` call has a hard 8 s limit
+  (process group kill), under pi's 10 s apiKey limit. A token with less than 15 min left gets one
+  background refresh. Before: parallel pi starts each ran `az` and failed with "Failed to resolve
+  API key" (13 failures).
+- `scripts/judge_probe.py` (D29 PIN, owner decision 2026-10-26): the credentialed judge call uses
+  `safe_http.urlopen` (no credential header on a cross-origin redirect). Scoring is unchanged.
 - pi `apex-hangguard` (B1): the log no longer stores command text (a command can hold a token). A row
   has `ts`, `changes`, `blocked`, `timeout_before`, `timeout_after`. New layout:
   `~/.apex-router/pi-hangguard/YYYY-MM-DD-<pid>.jsonl`, one file per pi process per day, mode 0600,

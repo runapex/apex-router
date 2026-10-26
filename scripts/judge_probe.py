@@ -28,6 +28,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# D29 PIN: the credentialed judge call uses safe_http (no credential header on a cross-origin redirect).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from apex_router import safe_http
+
 BASELINE_PATH = Path(os.environ.get(
     "APEX_JUDGE_PROBE_BASELINE", Path.home() / ".apex-router" / "judge_probe_baseline.json"))
 
@@ -112,7 +116,7 @@ def _call_judge(base: str, model: str, prompt: str, *, timeout: float = 60.0) ->
     req = urllib.request.Request(base.rstrip("/") + "/v1/messages", data=body,
                                  headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_http.urlopen(req, timeout=timeout) as resp:  # D29: no credential on a cross-origin redirect
             payload = json.loads(resp.read().decode("utf-8"))
     except (OSError, ValueError) as e:
         raise ProbeError(f"judge call failed: {e}") from e

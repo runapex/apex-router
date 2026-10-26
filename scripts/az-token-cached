@@ -1,0 +1,76 @@
+#!/bin/sh
+# Print an Azure access token for a resource, from a local cache when possible.
+# Why: pi runs its apiKey command on EVERY request, with a 10 s limit and stderr hidden. Under load
+# `az account get-access-token` can take ~10 s, so requests failed with "Failed to resolve API key".
+# Rules (A1, 2026-10-26):
+#  1. Cached token with > REFRESH_S left: print it. No az call.
+#  2. Cached token still valid (> MIN_S left) but inside REFRESH_S: print it now, and start ONE background
+#     refresh (lock owner only, output detached). The caller never waits for az.
+#  3. No valid token: one process (the lock owner) runs az with a hard limit (AZ_LIMIT_S). The others never
+#     run az: they wait for the owner's token until DEADLINE_S, then fail.
+# Total time of one call stays under DEADLINE_S + AZ_LIMIT_S <= 9 s. Usage: az-token-cached [resource]
+RES="${1:-https://cognitiveservices.azure.com}"
+DIR="${XDG_CACHE_HOME:-$HOME/.cache}/az-token"
+KEY=$(printf %s "$RES" | shasum | cut -c1-16)
+TOK="$DIR/$KEY.token"; EXP="$DIR/$KEY.exp"; LOCK="$DIR/$KEY.lock"
+REFRESH_S=${AZ_TOKEN_REFRESH_S:-900}   # refresh in the background when less than this is left
+MIN_S=60                               # a token with less than this left is not used
+AZ_LIMIT_S=${AZ_TOKEN_AZ_LIMIT_S:-8}   # hard limit for one az call
+DEADLINE_S=8                           # waiters give up after this
+AZ="${AZ_BIN:-az}"
+umask 077
+mkdir -p "$DIR"
+
+left() { e=$(cat "$EXP" 2>/dev/null || echo 0); case "$e" in ''|*[!0-9]*) e=0 ;; esac; echo $((e - $(date +%s))); }
+valid() { [ -s "$TOK" ] && [ "$(left)" -gt "$1" ]; }
+take_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then return 0; fi
+  # a lock older than 60 s is stale (a killed refresh): remove it once and try again
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null && return 0; fi
+  return 1
+}
+refresh() {   # lock owner only. Writes TOK/EXP atomically. Returns 0 on success.
+  # az in its own process group; at the limit the WHOLE group is killed (a child of az can keep the pipe open)
+  json=$(perl -e '$l=shift; $p=fork; if(!$p){setpgrp(0,0); exec @ARGV; exit 127}
+    $SIG{ALRM}=sub{kill "KILL",-$p; exit 124}; alarm $l; waitpid($p,0); exit($?>>8)' \
+    "$AZ_LIMIT_S" "$AZ" account get-access-token --resource "$RES" -o json 2>/dev/null)
+  t=$(printf %s "$json" | jq -r '.accessToken // empty' 2>/dev/null)
+  e=$(printf %s "$json" | jq -r '.expires_on // empty' 2>/dev/null)
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$t" ] || return 1
+  printf %s "$t" > "$TOK.tmp.$$" && mv "$TOK.tmp.$$" "$TOK"
+  printf %s "$e" > "$EXP.tmp.$$" && mv "$EXP.tmp.$$" "$EXP"
+  return 0
+}
+
+# 1. fresh
+if valid "$REFRESH_S"; then cat "$TOK"; exit 0; fi
+
+# 2. still valid: answer now, refresh in the background (one owner)
+if valid "$MIN_S"; then
+  if take_lock; then
+    ( refresh; rmdir "$LOCK" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  fi
+  cat "$TOK"; exit 0
+fi
+
+# 3. no valid token
+if take_lock; then
+  refresh; ok=$?
+  rmdir "$LOCK" 2>/dev/null
+  [ $ok = 0 ] && { cat "$TOK"; exit 0; }
+  exit 1
+fi
+end=$(( $(date +%s) + DEADLINE_S ))
+while [ "$(date +%s)" -lt "$end" ]; do
+  sleep 0.25
+  if valid "$MIN_S"; then cat "$TOK"; exit 0; fi
+  # the owner ended without a valid token (its az failed): take over once
+  if [ ! -d "$LOCK" ] && take_lock; then
+    refresh; ok=$?
+    rmdir "$LOCK" 2>/dev/null
+    [ $ok = 0 ] && { cat "$TOK"; exit 0; }
+    exit 1
+  fi
+done
+exit 1

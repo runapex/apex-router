@@ -92,6 +92,9 @@ export type Meta = {
 	soft_cap_at?: number;
 	/** Cost when the soft cap fired. */
 	soft_cap_cost?: number;
+	/** A2: time of the final turn (assistant message with stopReason "stop") after the soft cap. The report exists,
+	 *  so a hard cost stop must not kill the job: it ends by itself. */
+	final_turn_at?: number;
 	/** true on a "done" job that ended after the soft-cap message (the final report is a salvage report). */
 	capped?: boolean;
 };
@@ -100,6 +103,8 @@ export type Meta = {
 export const SOFT_CAP = 0.85;
 /** Salvage budget: hard stop only above max_cost x SALVAGE. */
 export const SALVAGE = 1.1;
+/** A2: after the final turn, the child gets this long to exit by itself before a hard cost stop kills it. */
+export const FINAL_EXIT_GRACE_MS = 30_000;
 export const STEER_FILE = "steer.json";
 export const SOFT_CAP_MESSAGE =
 	"COST LIMIT: you used 85 % of your cost budget. Stop the work now. Do not call tools. "
@@ -577,6 +582,8 @@ export class JobManager {
 				n.usage.cost += u.cost?.total ?? 0;
 				const t = (e.message.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n").trim();
 				if (t) n.final_preview = t.slice(0, 400);
+				// A2: a final turn after the soft cap = the report is written; the cost of THIS message can pass 110 %
+				if (e.message.stopReason === "stop" && t && n.soft_cap_at !== undefined && n.final_turn_at === undefined) n.final_turn_at = this.o.now();
 				if (e.message.stopReason === "error") {
 					n.model_error = e.message.errorMessage ?? "model error";
 					if (RATE_LIMIT.test(n.model_error)) n.rate_limited_at = this.o.now();
@@ -621,7 +628,10 @@ export class JobManager {
 				continue;
 			}
 			const act = costAction(m.usage.cost, m.max_cost, m.soft_cap_at !== undefined);
-			if (act === "hard") void this.cancel(m.id, "killed(cost)");
+			// A2: the final report exists (final turn after the soft cap): let the child exit; kill only after a grace
+			const reported = m.final_turn_at !== undefined && now - m.final_turn_at < FINAL_EXIT_GRACE_MS;
+			if (act === "hard" && !reported) void this.cancel(m.id, "killed(cost)");
+			else if (act === "hard") { /* wait for the child to exit after its final report */ }
 			else if (act === "soft") this.softCap(m);
 			else if (now - (m.started ?? now) > m.timeout_s * 1000) void this.cancel(m.id, "timed_out(wall)");
 			else if (now - (m.last_event ?? now) > m.idle_s * 1000) void this.cancel(m.id, "timed_out(idle)");

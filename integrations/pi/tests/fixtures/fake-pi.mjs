@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fake `pi --mode json -p` child for the job-manager tests. Writes scripted JSONL events to stdout.
-// argv[2] = mode: xval-truncate | xval-rotate | self-steer | xval-stderr | spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
+// argv[2] = mode: spend-big-final | xval-truncate | xval-rotate | self-steer | xval-stderr | spend | spend-ignore | normal | slow | silent | crash | grandchild | ignore-term | term-spawn | error | recover-429 | fail-429
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, renameSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -66,6 +66,19 @@ if (mode === "grandchild" || mode === "ignore-term") {
   writeFileSync(process.env.FAKE_GC_PID_FILE ?? "/tmp/fake-gc.pid", String(gc.pid));
   out({ type: "tool_execution_start", toolName: "bash", args: { command: "sleep 300" } });
   for (;;) { out({ type: "tool_execution_update", toolName: "bash" }); await sleep(500); }
+}
+// spend-big-final (A2): obeys the soft cap, but its one final report costs $0.40 (cache writes): the total passes
+// 110 % in ONE message. It exits 1 s after the report (pi writes agent_settled, then exits).
+if (mode === "spend-big-final") {
+  const steer = join(process.env.APEX_AGENT_JOB_DIR ?? "/nonexistent", "steer.json");
+  for (let i = 0; ; i++) {
+    if (existsSync(steer)) {
+      out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "BIG FINAL REPORT: done A" }], usage: { input: 10, output: 5, cost: { total: 0.4 } }, stopReason: "stop" } });
+      out({ type: "agent_end" }); await sleep(1000); out({ type: "agent_settled" }); process.exit(0);
+    }
+    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `step ${i}` }], usage: { input: 10, output: 5, cost: { total: 0.1 } }, stopReason: "toolUse" } });
+    await sleep(150);
+  }
 }
 // spend: $0.10 per turn; obeys the soft cap (steer.json in APEX_AGENT_JOB_DIR): writes a final report, exits 0.
 // spend-ignore: $0.10 per turn and never stops (the hard stop must kill it).

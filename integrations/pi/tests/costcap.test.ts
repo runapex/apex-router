@@ -177,6 +177,28 @@ test("ignoring child: runs past max_cost into the salvage budget, killed(cost) o
 	assert.ok(existsSync(join(root, j.id, "steer.json")));
 });
 
+test("A2: a final report after the soft cap that passes 110 % in one message ends done + capped, not killed(cost)", async () => {
+	const { m } = mgr();
+	const j = m.spawn({ task: "spend-big-final", max_cost: 0.5 });
+	const [r] = await m.wait([j.id], 15_000);
+	m.stop();
+	assert.ok(r!.usage.cost > 0.5 * 1.1, String(r!.usage.cost)); // the overrun is real and stays visible
+	assert.equal(r!.state, "done");
+	assert.equal(r!.capped, true);
+	assert.ok(r!.final_turn_at !== undefined);
+	assert.match(m.result(j.id)!.text, /BIG FINAL REPORT/);
+});
+
+test("A2: no final report (tool calls only) above 110 % is still killed(cost)", async () => {
+	// spend-ignore never writes a stop message: the hard stop is unchanged (covered above); this checks the field
+	const { m } = mgr();
+	const j = m.spawn({ task: "spend-ignore", max_cost: 0.5 });
+	const [r] = await m.wait([j.id], 20_000);
+	m.stop();
+	assert.equal(r!.state, "killed(cost)");
+	assert.equal(r!.final_turn_at, undefined);
+});
+
 test("no max_cost: no steer file, no soft cap fields (old behavior)", async () => {
 	const { m, root } = mgr();
 	const j = m.spawn({ task: "normal" });
