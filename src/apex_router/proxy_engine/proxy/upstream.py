@@ -266,9 +266,8 @@ class Upstream:
                 raise TypeError(f"az token is not a string: {type(token).__name__}")
             auth_value = b"Bearer " + token.encode("latin-1")  # inside the guard (finding: encode)
         except Exception as e:  # noqa: BLE001 — fail-open: forward unauthed, upstream returns 401
-            import sys
-            print(f"apex: azure token injection failed, forwarding without auth: {e!r}",
-                  file=sys.stderr)
+            from apex_router.proxy_engine.logfmt import eprint
+            eprint(f"apex: azure token injection failed, forwarding without auth: {e!r}")
             return headers
         return [*headers, (b"authorization", auth_value)]
 

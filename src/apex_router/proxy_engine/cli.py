@@ -19,6 +19,7 @@ def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from apex_router.proxy_engine.config import Config
+    from apex_router.proxy_engine.logfmt import eprint, uvicorn_log_config
 
     # Only override fields the user actually passed (else Config(host=None) clobbers the default).
     overrides = {}
@@ -53,27 +54,28 @@ def _serve(args: argparse.Namespace) -> int:
         except OSError as e:
             if e.errno != errno.EADDRINUSE:
                 raise  # a family mismatch / permission error is uvicorn's to surface, not a false "in use"
-            print(
+            eprint(
                 f"apex serve: cannot bind {cfg.host}:{cfg.port} (address already in use). "
                 f"Another process already owns this port — likely a launchd apex proxy "
                 f"(check: lsof -nP -iTCP:{cfg.port} -sTCP:LISTEN). "
                 f"Stop that owner or pass a different --port; do not run a second serve on the same port.",
-                file=sys.stderr,
             )
             return 1
         finally:
             probe.close()
-    print(
+    eprint(
         f"apex {APEX_VERSION} serving on http://{cfg.host}:{cfg.port} "
         f"→ anthropic={cfg.anthropic_upstream}",
-        file=sys.stderr,
     )
+    # B2: every stderr line of the serve process starts with an ISO-8601 local timestamp
+    # (uvicorn + library logs via log_config; direct prints via eprint). sys.stderr is not wrapped.
     uvicorn.run(
         "apex_router.proxy_engine.proxy.app:create_app",
         factory=True,
         host=cfg.host,
         port=cfg.port,
         log_level=args.log_level,
+        log_config=uvicorn_log_config(),
         access_log=False,
     )
     return 0

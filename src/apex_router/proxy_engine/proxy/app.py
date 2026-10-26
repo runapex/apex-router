@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+import traceback
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
@@ -17,6 +20,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from apex_router.proxy_engine.config import APEX_VERSION, CONFIG, Config
+from apex_router.proxy_engine.logfmt import eprint
 from apex_router.proxy_engine.policy import EvidenceBundle, InvalidPolicy, PolicyVersion
 from apex_router.proxy_engine.proxy.handlers import passthrough
 from apex_router.proxy_engine.proxy.handlers import shadow as shadow_handler
@@ -25,10 +29,28 @@ from apex_router.proxy_engine.session.store import Store
 from apex_router.proxy_engine.telemetry.events import TELEMETRY_SCHEMA_VERSION, TelemetryWriter
 
 
-async def _heartbeat_loop(telemetry: TelemetryWriter, interval_s: float) -> None:
+# A5: the proxy runs for days, so a startup-only gc lets stale sessions pile up in state.db.
+# Run Store.gc() again about once per hour from the heartbeat loop (retention is unchanged).
+GC_INTERVAL_S = 3600.0
+
+
+async def _heartbeat_loop(
+    telemetry: TelemetryWriter,
+    interval_s: float,
+    *,
+    gc: Callable[[], int] | None = None,
+    gc_interval_s: float = GC_INTERVAL_S,
+    on_gc: Callable[[int], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
     """Emit a heartbeat + rotate-check every `interval_s`, off the request path. Runs until
     cancelled at shutdown. Fail-open: an exception in a tick is swallowed so the ticker never dies
-    silently and never touches the data plane."""
+    silently and never touches the data plane.
+
+    If `gc` is given, it runs in a worker thread when `gc_interval_s` passed since the last run
+    (the startup gc counts as the first run). `on_gc` gets the removed-row count. A gc error is
+    logged to stderr and the next try is one full interval later (no retry storm)."""
+    last_gc = clock()
     while True:
         await asyncio.sleep(interval_s)
         try:
@@ -38,6 +60,15 @@ async def _heartbeat_loop(telemetry: TelemetryWriter, interval_s: float) -> None
                 await asyncio.to_thread(telemetry.prune)
         except Exception:  # noqa: BLE001 — a heartbeat must never take down the proxy
             pass
+        if gc is None or clock() - last_gc < gc_interval_s:
+            continue
+        last_gc = clock()
+        try:
+            removed = await asyncio.to_thread(gc)
+            if on_gc is not None:
+                on_gc(removed)
+        except Exception:  # noqa: BLE001 — a gc failure must never stop the loop or the proxy
+            eprint("apex: periodic state-store gc failed:\n" + traceback.format_exc().rstrip())
 
 
 def _load_policy(cfg: Config) -> PolicyVersion | None:
@@ -80,7 +111,13 @@ def create_app(cfg: Config | None = None) -> Starlette:
         # Heartbeat ticker: emit a heartbeat every heartbeat_s so an idle proxy is visibly alive to
         # a consumer (the TUI), and rotate the telemetry file off the hot path. Off the request path
         # entirely; cancelled on shutdown.
-        hb_task = asyncio.ensure_future(_heartbeat_loop(state["telemetry"], cfg.heartbeat_s))
+        def _gc_done(removed: int) -> None:
+            state["gc_removed"] = state.get("gc_removed", 0) + removed  # cumulative since start
+
+        hb_task = asyncio.ensure_future(_heartbeat_loop(
+            state["telemetry"], cfg.heartbeat_s,
+            gc=state["store"].gc, gc_interval_s=GC_INTERVAL_S, on_gc=_gc_done,
+        ))
         try:
             yield
         finally:
