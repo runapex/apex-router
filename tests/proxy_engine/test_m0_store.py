@@ -459,22 +459,46 @@ def test_gc_keeps_a_session_touched_after_the_scan(tmp_path):
         assert s.get_session("b") is not None
 
 
-def test_gc_with_pause_lets_a_waiting_caller_in_before_gc_ends(tmp_path):
-    """xval 2026-10-26: RLock is not fair; with pause_s a caller waits for about one session."""
+def test_gc_pause_happens_with_the_lock_free(tmp_path, monkeypatch):
+    """xval 2026-10-26: RLock is not fair, so gc pauses between sessions. The pause must run with
+    the store lock FREE (another thread can take it). Deterministic: no timing assertions."""
     import threading
-    import time as _t
+
+    from apex_router.proxy_engine.session import store as store_mod
     with Store(tmp_path / "state.db", retention_days=14) as s:
         now = 1_000_000.0
         s.upsert_epoch("ep1", "{}", "0.0.1", "default", now=now)
-        for i in range(200):
+        for i in range(5):
             s.create_session(f"stale{i}", "ep1", "claude", now=now - 20 * 86400)
-        done = threading.Event()
-        t = threading.Thread(target=lambda: (s.gc(now=now, pause_s=0.01), done.set()))
-        t.start()
-        _t.sleep(0.2)
-        t0 = _t.monotonic()
-        n = s.counts()["sessions"]
-        waited = _t.monotonic() - t0
-        t.join()
-        assert not done.is_set() or n > 0, "caller starved until gc ended"
-        assert 0 < n < 200 and waited < 0.5
+        free = []
+
+        def other_thread_can_lock():
+            ok = []
+
+            def probe():
+                got = s._lock.acquire(blocking=False)
+                ok.append(got)
+                if got:
+                    s._lock.release()
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join(5)
+            return ok == [True]
+
+        class FakeTime:
+            time = staticmethod(store_mod.time.time)
+
+            @staticmethod
+            def sleep(_s):
+                free.append(other_thread_can_lock())
+
+        monkeypatch.setattr(store_mod, "time", FakeTime)
+        s.gc(now=now, pause_s=0.01)
+        assert free == [True] * 4          # 5 sessions -> 4 pauses, each with the lock free
+        assert s.counts()["sessions"] == 0
+        free.clear()
+        s.upsert_epoch("ep1", "{}", "0.0.1", "default", now=now)
+        s.create_session("x", "ep1", "claude", now=now - 20 * 86400)
+        s.create_session("y", "ep1", "claude", now=now - 20 * 86400)
+        s.gc(now=now)                        # startup gc: no pause
+        assert free == []

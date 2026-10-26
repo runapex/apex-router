@@ -20,6 +20,7 @@ pytestmark = pytest.mark.skipif(not all(shutil.which(b) for b in ("perl", "shasu
 FAKE_AZ = """#!/bin/sh
 echo call >> "$FAKE_LOG"
 [ -n "${FAKE_ORPHAN:-}" ] && { sleep 30 & }
+[ -n "${FAKE_DETACH:-}" ] && { perl -MPOSIX -e '$0="apex-az-detached-child"; POSIX::setsid(); sleep 30' & sleep 0.5; }
 sleep "${FAKE_SLEEP:-1}"
 [ "${FAKE_FAIL:-0}" = 1 ] && exit 1
 e=$(( $(date +%s) + 3600 )); printf '{"accessToken":"TOK%s","expires_on":"%s"}' "$e" "$e"
@@ -142,34 +143,28 @@ def test_takeover_after_holder_fails_stays_inside_one_deadline(env):
     assert rb[2] < 5.5  # one deadline (4 s) + slack, not 2 x deadline
 
 
-def test_killed_supervisor_keeps_the_lock_while_az_runs(env, tmp_path):
-    # the perl supervisor dies (SIGKILL) while az runs: az keeps the lock fd, so no 2nd az starts
-    a = subprocess.Popen([str(SCRIPT)], env={**env, "FAKE_SLEEP": "6", "AZ_TOKEN_DEADLINE_S": "8"},
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def test_detached_child_of_az_never_holds_the_lock(env):
+    # a child of az that leaves the process group (setsid) survives the group kill. It must not
+    # hold the lock: the next refresh runs az at once (xval 2026-10-26, pass 3)
+    rc, out, _ = run(env, FAKE_DETACH="1", FAKE_SLEEP="0")
+    assert rc == 0 and out.startswith("TOK")
+    tok, exp, _ = cache(env)
+    exp.write_text("0")
     try:
-        for _ in range(40):
-            if calls(env) == 1:
-                break
-            time.sleep(0.1)
-        assert calls(env) == 1
-        az_pid = subprocess.run(["pgrep", "-f", env["AZ_BIN"]], capture_output=True, text=True,
-                                check=False).stdout.split()[0]
-        sup = subprocess.run(["ps", "-o", "ppid=", "-p", az_pid], capture_output=True, text=True,
-                             check=False).stdout.strip()
-        os.kill(int(sup), 9)   # the perl supervisor of THIS fake az only (never a live az-token-cached)
-        rc, _, _ = run(env, AZ_TOKEN_DEADLINE_S="2", FAKE_SLEEP="0")
-        assert rc == 1 and calls(env) == 1   # waited; never ran az while the orphan held the lock
+        rc, out, el = run(env, FAKE_SLEEP="0")
+        assert rc == 0 and calls(env) == 2 and el < 3
     finally:
-        a.kill()
-        a.wait()
-        subprocess.run(["pkill", "-KILL", "-f", env["AZ_BIN"]], check=False)
+        subprocess.run(["pkill", "-KILL", "-f", "apex-az-detached-child"], check=False)
 
 
 def test_old_output_files_are_removed(env):
     tok, _, _ = cache(env)
     tok.parent.mkdir(parents=True)
     stale = tok.with_name(tok.name + ".out.12345")
+    other = tok.with_name("unrelated.out.1")   # not ours: must stay
+    other.write_text("x")
+    os.utime(other, (time.time() - 300, time.time() - 300))
     stale.write_text("{}")
     os.utime(stale, (time.time() - 300, time.time() - 300))
     rc, _, _ = run(env, FAKE_SLEEP="0")
-    assert rc == 0 and not stale.exists()
+    assert rc == 0 and not stale.exists() and other.exists()
