@@ -152,3 +152,40 @@ def test_cli_parses_launchd_and_injects(tmp_path, monkeypatch, capsys):
     lc = FakeLaunchctl()
     assert real_cmd("status", agents=tmp_path, run=lc, ps=lambda: "", out=out) == 0
     assert "com.apex-router.mesh-up" in out.getvalue() and "loaded=no" in out.getvalue()
+
+
+def test_mesh_procs_sees_python_module_forms():
+    ps = ("  201 /usr/bin/python3 -m apex_router.mesh.worker --poll-s 5\n"
+          "  202 /opt/py/bin/python -m apex_router.mesh.cli up\n"
+          "  203 /opt/py/bin/python -m apex_router.mesh.cli status\n")
+    got = {(p, r) for p, r, _ in launchd.mesh_procs(ps)}
+    assert got == {(201, "worker"), (202, "up")}
+
+
+@pytest.mark.parametrize("role", ["up", "worker"])
+def test_install_refuses_while_a_mesh_lock_is_held(tmp_path, monkeypatch, role):
+    import fcntl
+    import os
+    lock = tmp_path / "mesh" / launchd.LOCKS[role]
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        # a holder with a command line ps does not match (renamed binary): the lock still refuses
+        rc, out, lc = _install(tmp_path, ps_text="  300 /opt/x/renamed-binary\n", monkeypatch=monkeypatch)
+        assert rc == 1 and f"mesh {role}" in out
+        assert not any(c[1] == "bootstrap" for c in lc.calls)
+    finally:
+        os.close(fd)
+    assert _install(tmp_path, monkeypatch=monkeypatch)[0] == 0  # free lock file: install goes on
+
+
+def test_relative_apex_mesh_home_becomes_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APEX_MESH_HOME", "rel/mesh")
+    seen = {}
+    monkeypatch.setattr(launchd, "install", lambda **k: seen.update(k) or 0)
+    assert launchd.cmd("install", dry_run=True, agents=tmp_path / "LA", run=lambda a: None,
+                       ps=lambda: "", exe="/x/apex-router") == 0
+    assert seen["mesh_home_env"] == str((tmp_path / "rel/mesh").resolve())
+    assert seen["mesh_home"] == (tmp_path / "rel/mesh").resolve()

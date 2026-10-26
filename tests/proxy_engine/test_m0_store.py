@@ -416,3 +416,44 @@ def test_canonical_json_golden_vector():
     assert hash_obj({"role": "user", "content": "hi"}) == (
         "9017285104d1b249960a30732b8e92f6e2fb3acf8d8e4b2a16c116ad0c1ed211"
     )
+
+
+def test_gc_frees_the_lock_between_sessions(tmp_path):
+    """xval 2026-10-26: hourly gc runs in a thread, and the request path takes the same store lock
+    from the event loop. gc must use one short transaction per stale session, not one for all."""
+    with Store(tmp_path / "state.db", retention_days=14) as s:
+        now = 1_000_000.0
+        s.upsert_epoch("ep1", "{}", "0.0.1", "default", now=now)
+        for i in range(5):
+            s.create_session(f"stale{i}", "ep1", "claude", now=now - 20 * 86400)
+        s.create_session("fresh", "ep1", "claude", now=now)
+        txs = []
+        real = s._conn.transaction
+
+        def counting(*a, **k):
+            txs.append(1)
+            return real(*a, **k)
+
+        s._conn.transaction = counting
+        assert s.gc(now=now) >= 5
+        assert len(txs) == 5  # one per stale session
+        assert s.get_session("fresh") is not None
+        assert all(s.get_session(f"stale{i}") is None for i in range(5))
+
+
+def test_gc_keeps_a_session_touched_after_the_scan(tmp_path):
+    with Store(tmp_path / "state.db", retention_days=14) as s:
+        now = 1_000_000.0
+        s.upsert_epoch("ep1", "{}", "0.0.1", "default", now=now)
+        s.create_session("a", "ep1", "claude", now=now - 20 * 86400)
+        s.create_session("b", "ep1", "claude", now=now - 20 * 86400)
+        real = s._conn.transaction
+
+        def touch_b_first(*a, **k):
+            s._conn.execute("UPDATE sessions SET last_seen_at = ? WHERE session_id = 'b'", (now,))
+            return real(*a, **k)
+
+        s._conn.transaction = touch_b_first
+        s.gc(now=now)
+        assert s.get_session("a") is None
+        assert s.get_session("b") is not None

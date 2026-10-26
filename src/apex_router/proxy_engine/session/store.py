@@ -297,15 +297,22 @@ class Store:
         now = time.time() if now is None else now
         cutoff = now - self.retention_days * 86400
         removed = 0
-        # Single transaction so GC is all-or-nothing, not a half-deleted session on crash.
-        # NULL last_seen_at is treated as stale (an un-timestamped orphan).
-        with self._conn.transaction() as tx:
-            cur = tx.execute(
-                "SELECT session_id FROM sessions WHERE last_seen_at < ? OR last_seen_at IS NULL",
-                (cutoff,),
-            )
-            stale = [r["session_id"] for r in cur.fetchall()]
-            for sid in stale:
+        # One transaction PER SESSION: a session is all-or-nothing (no half-deleted session on a
+        # crash), and the store lock is free between sessions, so the request path (which uses the
+        # same lock, also from the event loop) waits for at most one session, not the whole gc
+        # (xval 2026-10-26: hourly gc in a thread). NULL last_seen_at is treated as stale.
+        stale = [r["session_id"] for r in self._conn.execute(
+            "SELECT session_id FROM sessions WHERE last_seen_at < ? OR last_seen_at IS NULL",
+            (cutoff,),
+        ).fetchall()]
+        for sid in stale:
+            with self._conn.transaction() as tx:
+                # re-check inside the transaction: a request can touch the session after the SELECT
+                if not tx.execute(
+                    "SELECT 1 FROM sessions WHERE session_id = ? AND (last_seen_at < ? OR last_seen_at IS NULL)",
+                    (sid, cutoff),
+                ).fetchall():
+                    continue
                 for tbl in _GC_BY_SESSION:
                     removed += tx.execute(
                         f"DELETE FROM {tbl} WHERE session_id = ?", (sid,)

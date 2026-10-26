@@ -16,6 +16,7 @@ so tests never touch the real ones.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import plistlib
@@ -99,14 +100,47 @@ def mesh_procs(ps_text: str, *, own_pid: int | None = None) -> list[tuple[int, s
             continue
         pid, cmd = int(parts[0]), parts[1]
         toks = cmd.split()
-        if pid == own_pid or not any(Path(t).name == "apex-router" or "apex_router" in t
-                                     for t in toks):
+        if pid == own_pid:
+            continue
+        # python -m apex_router.mesh.worker / python -m apex_router.mesh.cli up (xval 2026-10-26)
+        mods = {toks[i + 1]: i + 1 for i, t in enumerate(toks[:-1]) if t == "-m"}
+        if "apex_router.mesh.worker" in mods:
+            out.append((pid, "worker", cmd))
+            continue
+        i = mods.get("apex_router.mesh.cli")
+        if i is not None and i + 1 < len(toks) and toks[i + 1] in ROLES:
+            out.append((pid, toks[i + 1], cmd))
+            continue
+        if not any(Path(t).name == "apex-router" or "apex_router" in t for t in toks):
             continue
         for i, t in enumerate(toks[:-1]):
             if t == "mesh" and toks[i + 1] in ROLES:
                 out.append((pid, toks[i + 1], cmd))
                 break
     return out
+
+
+# The locks `mesh up` and `mesh worker` hold while they run (cli.LOCK_FILE, worker._take_lock).
+LOCKS = {"up": "mesh.lock", "worker": "worker/lock"}
+
+
+def held_locks(mesh_home: Path) -> list[str]:
+    """Roles whose lock in this mesh home is held by a live process (any command line, any pid)."""
+    held = []
+    for role in ROLES:
+        try:
+            fd = os.open(mesh_home / LOCKS[role], os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held.append(role)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return held
 
 
 def label_state(label: str, *, uid: int, run: Runner) -> dict:
@@ -167,6 +201,11 @@ def install(*, agents: Path, uid: int, run: Runner, ps: Callable[[], str], exe: 
         print(f"stop them, then run install again: {_stop_hint([p for p, _, _ in procs])}",
               file=out)
         return 1
+    held = held_locks(mesh_home)
+    if held:
+        print(f"mesh launchd: a process holds the lock of mesh {', '.join(held)} in {mesh_home}; "
+              "install does not stop it. Stop it, then run install again.", file=out)
+        return 1
     loaded = [LABELS[r] for r in ROLES if label_state(LABELS[r], uid=uid, run=run)["loaded"]]
     if loaded:
         print(f"mesh launchd: already loaded: {', '.join(loaded)}; run "
@@ -191,6 +230,12 @@ def install(*, agents: Path, uid: int, run: Runner, ps: Callable[[], str], exe: 
         else:
             print(f"mesh launchd: loaded {LABELS[role]} ({p})", file=out)
     return rc
+
+
+def _abs_env(v: str | None) -> str | None:
+    """APEX_MESH_HOME as an absolute path: launchd runs with WorkingDirectory = home, so a relative
+    value would point to another mesh home (xval 2026-10-26)."""
+    return str(Path(v).expanduser().resolve()) if v else None
 
 
 def uninstall(*, agents: Path, uid: int, run: Runner, out: TextIO | None = None) -> int:
@@ -224,9 +269,10 @@ def cmd(action: str, *, dry_run: bool = False, as_json: bool = False,
     if action == "install":
         return install(agents=agents, uid=uid, run=run, ps=ps,
                        exe=exe if exe is not None else exe_path(),
-                       mesh_home=identity.mesh_home(),
+                       mesh_home=identity.mesh_home().resolve(),
                        path_env=os.environ.get("PATH") or DEFAULT_PATH, home_dir=Path.home(),
-                       mesh_home_env=os.environ.get("APEX_MESH_HOME"), dry_run=dry_run, out=out)
+                       mesh_home_env=_abs_env(os.environ.get("APEX_MESH_HOME")),
+                       dry_run=dry_run, out=out)
     if action == "uninstall":
         if dry_run:
             for role in ROLES:
