@@ -5,6 +5,7 @@ A fake `az` (shell script) stands in for the real CLI. No network, no real az.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import contextlib
 import os
 import shutil
 import subprocess
@@ -20,7 +21,11 @@ pytestmark = pytest.mark.skipif(not all(shutil.which(b) for b in ("perl", "shasu
 FAKE_AZ = """#!/bin/sh
 echo call >> "$FAKE_LOG"
 [ -n "${FAKE_ORPHAN:-}" ] && { sleep 30 & }
-[ -n "${FAKE_DETACH:-}" ] && { perl -MPOSIX -e '$0="apex-az-detached-child"; POSIX::setsid(); sleep 30' & sleep 0.5; }
+if [ -n "${FAKE_DETACH:-}" ]; then
+  perl -MPOSIX -e 'POSIX::setsid() > 0 or exit 1; open(my $f, ">", "$ARGV[0].tmp") or exit 1; print $f $$; close $f;
+                   rename("$ARGV[0].tmp", $ARGV[0]); sleep 30' "$FAKE_DETACH" &
+  i=0; while [ ! -s "$FAKE_DETACH" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+fi
 sleep "${FAKE_SLEEP:-1}"
 [ "${FAKE_FAIL:-0}" = 1 ] && exit 1
 e=$(( $(date +%s) + 3600 )); printf '{"accessToken":"TOK%s","expires_on":"%s"}' "$e" "$e"
@@ -143,18 +148,24 @@ def test_takeover_after_holder_fails_stays_inside_one_deadline(env):
     assert rb[2] < 5.5  # one deadline (4 s) + slack, not 2 x deadline
 
 
-def test_detached_child_of_az_never_holds_the_lock(env):
+def test_detached_child_of_az_never_holds_the_lock(env, tmp_path):
     # a child of az that leaves the process group (setsid) survives the group kill. It must not
     # hold the lock: the next refresh runs az at once (xval 2026-10-26, pass 3)
-    rc, out, _ = run(env, FAKE_DETACH="1", FAKE_SLEEP="0")
-    assert rc == 0 and out.startswith("TOK")
-    tok, exp, _ = cache(env)
-    exp.write_text("0")
+    pidf = tmp_path / "detached.pid"
     try:
+        rc, out, _ = run(env, FAKE_DETACH=str(pidf), FAKE_SLEEP="0")
+        assert rc == 0 and out.startswith("TOK")
+        pid = int(pidf.read_text())          # the child detached (setsid done) before az ended
+        os.kill(pid, 0)                      # and it is still alive
+        _, exp, _ = cache(env)
+        exp.write_text("0")
         rc, out, el = run(env, FAKE_SLEEP="0")
         assert rc == 0 and calls(env) == 2 and el < 3
+        os.kill(pid, 0)                      # still alive during the 2nd refresh: the lock was not its
     finally:
-        subprocess.run(["pkill", "-KILL", "-f", "apex-az-detached-child"], check=False)
+        if pidf.exists():
+            with contextlib.suppress(OSError):
+                os.kill(int(pidf.read_text()), 9)
 
 
 def test_old_output_files_are_removed(env):

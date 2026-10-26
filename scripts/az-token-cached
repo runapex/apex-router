@@ -27,13 +27,17 @@ END=$(( $(date +%s) + DEADLINE_S ))
 left() { e=$(cat "$EXP" 2>/dev/null || echo 0); case "$e" in ''|*[!0-9]*) e=0 ;; esac; echo $((e - $(date +%s))); }
 valid() { [ -s "$TOK" ] && [ "$(left)" -gt "$1" ]; }
 
-# refresh <seconds>: exit 0 = new token stored; 75 = lock held by another process; other = az failed or timed out.
+# refresh <seconds> <need_s>: exit 0 = a token with > need_s left is stored (new, or by the last holder); 75 = lock held by another process; other = az failed or timed out.
 # The lock is held for the whole az run and the cache write, and released only when perl exits.
 refresh() {
   perl -MFcntl=:flock -MJSON::PP -e '
-    my ($lock, $tok, $exp, $limit, @cmd) = @ARGV;
+    my ($lock, $tok, $exp, $limit, $need, @cmd) = @ARGV;
     open(my $L, ">>", $lock) or exit 70;
     flock($L, LOCK_EX | LOCK_NB) or exit 75;
+    # check again under the lock: the last holder can have stored a new token after our first check
+    my $have = "";
+    if (open(my $f, "<", $exp)) { local $/; $have = <$f> // "" }
+    exit 0 if -s $tok && $have =~ /^\d+$/ && $have - time > $need;
     exit 124 if $limit < 1;
     # The lock fd closes on exec: only this supervisor holds the lock, never az or a child of az.
     # So no detached process can hold the lock forever ("never block" wins over "never two az").
@@ -57,7 +61,7 @@ refresh() {
     exit 1 unless defined $t && length $t && defined $e && $e =~ /^\d+$/;
     for ([$tok, $t], [$exp, $e]) { my ($f, $v) = @$_; open(my $o, ">", "$f.tmp.$$") or exit 1; print $o $v;
                                    close $o or exit 1; rename("$f.tmp.$$", $f) or exit 1 }
-    exit 0' "$LOCK" "$TOK" "$EXP" "$1" "$AZ" account get-access-token --resource "$RES" -o json
+    exit 0' "$LOCK" "$TOK" "$EXP" "$1" "$2" "$AZ" account get-access-token --resource "$RES" -o json
 }
 
 # 1. fresh
@@ -65,7 +69,7 @@ if valid "$REFRESH_S"; then cat "$TOK"; exit 0; fi
 
 # 2. still valid: answer now, refresh in the background (only one process gets the lock)
 if valid "$MIN_S"; then
-  ( refresh "$DEADLINE_S" ) </dev/null >/dev/null 2>&1 &
+  ( refresh "$DEADLINE_S" "$REFRESH_S" ) </dev/null >/dev/null 2>&1 &
   cat "$TOK"; exit 0
 fi
 
@@ -73,7 +77,7 @@ fi
 while :; do
   now=$(date +%s)
   [ "$now" -lt "$END" ] || exit 1
-  refresh $(( END - now )); rc=$?
+  refresh $(( END - now )) "$MIN_S"; rc=$?
   if [ $rc = 0 ]; then cat "$TOK"; exit 0; fi
   [ $rc = 75 ] || exit 1                 # we ran az and it failed: do not retry inside the deadline
   sleep 0.25
