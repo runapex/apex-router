@@ -7,6 +7,15 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Fixed
+- proxy state store (A5): `Store.gc()` also runs about once per hour from the heartbeat loop, in a
+  worker thread. Before: gc ran only at startup, so a proxy that ran for days kept stale sessions
+  (139 sessions older than 14 days; `state.db` 16.9 MB plus a 4.2 MB WAL). A gc error goes to
+  stderr; the loop continues and tries again one hour later. Retention (14 days) is unchanged.
+  `/stats` `gc_removed` now counts all gc runs since start.
+- proxy serve stderr (B2): every line starts with an ISO-8601 local timestamp. uvicorn and library
+  logs use a `log_config` with a formatter that stamps each line, also each traceback line. Direct
+  proxy messages use `logfmt.eprint`. `sys.stderr` is not wrapped. Before: 433 tracebacks in
+  `com.apex-router.serve.err` had no time.
 - pi `apex-hangguard` (B1): the log no longer stores command text (a command can hold a token). A row
   has `ts`, `changes`, `blocked`, `timeout_before`, `timeout_after`. New layout:
   `~/.apex-router/pi-hangguard/YYYY-MM-DD-<pid>.jsonl`, one file per pi process per day, mode 0600,

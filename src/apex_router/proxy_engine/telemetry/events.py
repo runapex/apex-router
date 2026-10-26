@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -373,9 +372,9 @@ class TelemetryWriter:
                 if got is True:
                     gen.unlink(missing_ok=True)
                 elif len(gens) - i > 2 * self.KEEP:
-                    print(f"apex telemetry: {gen.name} deleted without a reservoir fold "
-                          f"({got or 'failed'}; more than {2 * self.KEEP} generations)",
-                          file=sys.stderr)
+                    from apex_router.proxy_engine.logfmt import eprint
+                    eprint(f"apex telemetry: {gen.name} deleted without a reservoir fold "
+                           f"({got or 'failed'}; more than {2 * self.KEEP} generations)")
                     gen.unlink(missing_ok=True)
         finally:
             self._prune_lock.release()
