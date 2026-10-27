@@ -1054,16 +1054,24 @@ export function headInfo(cwd: string, git: GitRun, timeoutMs: number): { repo: s
 	return { repo, head, ...(ref && ref !== "HEAD" ? { branch: ref } : {}) };
 }
 
+const lastLine = (text: string) => text.split("\n").map(l => l.replace(/[*_`#>|]/g, "").trim()).filter(Boolean).pop() ?? "";
 /** true when the last non-empty line (markdown marks removed) ends in NO-GO. */
 export function endsNoGo(text: string): boolean {
-	const last = text.split("\n").map(l => l.replace(/[*_`#>|]/g, "").trim()).filter(Boolean).pop() ?? "";
-	return /\bNO-GO[.!]?$/i.test(last);
+	return /\bNO-GO[.!]?$/i.test(lastLine(text));
 }
+/** true when the last non-empty line ends in GO (not NO-GO): the round count starts again after it. */
+export function endsGo(text: string): boolean {
+	const l = lastLine(text);
+	return /\bGO[.!]?$/i.test(l) && !/\bNO-GO[.!]?$/i.test(l);
+}
+export const ROUND_WINDOW_MS = 7 * 24 * 3600 * 1000; // older rounds do not count
 
 const JOB_ID = /^\d{14}-[A-Za-z0-9]+$/;
-/** Earlier xval jobs on (repo, branch) whose result.md ends in NO-GO. Reads the newest JOB_SCAN_CAP job names only.
+/** Earlier xval jobs on (repo, branch) whose result.md ends in NO-GO, newest first, back to the newest GO on that
+ *  branch and inside ROUND_WINDOW_MS (one change = the rounds since its last GO; a long-lived branch such as main
+ *  is not refused for ever). Reads the newest JOB_SCAN_CAP job names only.
  *  skipped: unreadable or too large meta.json. partial: the time budget ended before the scan did. */
-export function reviewRounds(root: string, repo: string, branch: string, io: GateIO, deadline: number): { nogo: string[]; skipped: number; partial: boolean; capped: boolean } {
+export function reviewRounds(root: string, repo: string, branch: string, io: GateIO, deadline: number, now = Date.now()): { nogo: string[]; skipped: number; partial: boolean; capped: boolean } {
 	const r = { nogo: [] as string[], skipped: 0, partial: false, capped: false };
 	const ls = io.list(root, JOB_LIST_CEILING);
 	if (!ls) return r;
@@ -1074,7 +1082,7 @@ export function reviewRounds(root: string, repo: string, branch: string, io: Gat
 			r.partial = true;
 			break;
 		}
-		let m: { kind?: unknown; repo?: unknown; branch?: unknown };
+		let m: { kind?: unknown; repo?: unknown; branch?: unknown; created?: unknown };
 		try {
 			const f = io.read(join(root, id, "meta.json"), META_READ_CAP);
 			if (!f) continue; // a folder without meta.json is not a job
@@ -1088,8 +1096,10 @@ export function reviewRounds(root: string, repo: string, branch: string, io: Gat
 			continue;
 		}
 		if (m?.kind !== "xval" || m.repo !== repo || m.branch !== branch) continue;
+		if (typeof m.created === "number" && now - m.created > ROUND_WINDOW_MS) break; // newest first: the rest is older
 		try {
 			const res = io.read(join(root, id, "result.md"), RESULT_TAIL_CAP, true);
+			if (res && endsGo(res.text)) break; // the change before this GO is done
 			if (res && endsNoGo(res.text)) r.nogo.push(id);
 		} catch {
 			r.skipped++;

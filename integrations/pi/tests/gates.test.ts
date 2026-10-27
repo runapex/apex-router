@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
-	EVIDENCE_LINE, JobManager, ROUND_MESSAGE, endsNoGo, headInfo, openDecisions, pendingBranches, reviewRounds, runGit,
+	EVIDENCE_LINE, JobManager, ROUND_MESSAGE, ROUND_WINDOW_MS, endsGo, endsNoGo, headInfo, openDecisions, pendingBranches, reviewRounds, runGit,
 	spawnGate, withEvidence, FS_IO, type GitRun,
 } from "../lib/agents.ts";
 
@@ -51,9 +51,9 @@ function decisions(rows: unknown[]): string {
 const open = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `D${i + 1}`, ts: 1, topic: `t${i + 1}`, text: `question ${i + 1}`, state: "open" }));
 
 /** An xval job dir with meta.json (repo, branch) and a result.md whose last line is `verdict`. */
-function xvalJob(root: string, id: string, repoDir: string, branch: string, verdict: string, kind = "xval") {
+function xvalJob(root: string, id: string, repoDir: string, branch: string, verdict: string, kind = "xval", created = Date.now()) {
 	mkdirSync(join(root, id), { recursive: true });
-	writeFileSync(join(root, id, "meta.json"), JSON.stringify({ id, state: "done", agent: kind, kind, task: "x".repeat(3000), cwd: "/x", argv: [], repo: repoDir, branch, head: "abc" }, null, 1));
+	writeFileSync(join(root, id, "meta.json"), JSON.stringify({ id, state: "done", agent: kind, kind, task: "x".repeat(3000), cwd: "/x", argv: [], repo: repoDir, branch, head: "abc", created }, null, 1));
 	writeFileSync(join(root, id, "result.md"), `# job ${id}\n\nfindings...\n\n${verdict}\n\n`);
 }
 
@@ -191,9 +191,10 @@ test("gate 6: xval is refused after 3 NO-GO rounds on the same branch; override 
 	const dir = wt(rp, "rv");
 	const h = headInfo(dir, runGit, 5000)!;
 	const root = tmp("gate-jobs-");
-	xvalJob(root, "20261027100000-aaaa", h.repo, "apexjob/rv", "VERDICT: NO-GO");
-	xvalJob(root, "20261027100100-bbbb", h.repo, "apexjob/rv", "NO-GO");
-	xvalJob(root, "20261027100200-cccc", h.repo, "apexjob/rv", "GO");
+	xvalJob(root, "20261027095900-zzzz", h.repo, "apexjob/rv", "NO-GO"); // before the last GO: an earlier change
+	xvalJob(root, "20261027100000-cccc", h.repo, "apexjob/rv", "GO");
+	xvalJob(root, "20261027100100-aaaa", h.repo, "apexjob/rv", "VERDICT: NO-GO");
+	xvalJob(root, "20261027100200-bbbb", h.repo, "apexjob/rv", "NO-GO");
 	xvalJob(root, "20261027100300-dddd", h.repo, "apexjob/other", "NO-GO"); // other branch
 	xvalJob(root, "20261027100400-eeee", "/other/.git", "apexjob/rv", "NO-GO"); // other repo
 	xvalJob(root, "20261027100500-ffff", h.repo, "apexjob/rv", "NO-GO", "pi"); // not an xval job
@@ -278,4 +279,20 @@ test("gate 9: a full check on a real repo takes under 1 s", () => {
 		assert.ok(Date.now() - t0 < 1000, `${agent} took ${Date.now() - t0} ms`);
 		assert.equal(r.allow, true);
 	}
+});
+
+test("gate 6: a GO starts the count again, and rounds older than 7 days do not count (main is not refused for ever)", () => {
+	const root = tmp("gate-jobs-");
+	const now = Date.now();
+	for (const [i, v] of ["NO-GO", "NO-GO", "NO-GO", "GO", "NO-GO"].entries())
+		xvalJob(root, `2026102710${String(i).padStart(2, "0")}00-r${i}`, "/r/.git", "main", v, "xval", now - 1000 * (10 - i));
+	assert.deepEqual(reviewRounds(root, "/r/.git", "main", FS_IO, now + 5000, now).nogo, ["2026102710040" + "0-r4"]);
+	const old = tmp("gate-jobs-");
+	for (let i = 0; i < 4; i++) xvalJob(old, `2026101010${i}000-o${i}`, "/r/.git", "main", "NO-GO", "xval", now - ROUND_WINDOW_MS - 1000);
+	xvalJob(old, "20261027120000-n0", "/r/.git", "main", "NO-GO", "xval", now - 1000);
+	assert.equal(reviewRounds(old, "/r/.git", "main", FS_IO, now + 5000, now).nogo.length, 1);
+	assert.equal(endsGo("GO"), true);
+	assert.equal(endsGo("**GO**"), true);
+	assert.equal(endsGo("NO-GO"), false);
+	assert.equal(endsGo("GO-WITH-CHANGES"), false);
 });

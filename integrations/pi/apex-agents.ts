@@ -21,7 +21,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, headInfo, JobManager, runGit, softCapGate, spawnGate, STALE_CODE_NOTE, withEvidence, type Meta } from "./lib/agents.ts";
+import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, JobManager, softCapGate, spawnGate, STALE_CODE_NOTE, withEvidence, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -183,14 +183,7 @@ export default function (pi: ExtensionAPI) {
 					return text(`worktree failed: ${(e as Error).message}`);
 				}
 			}
-			let place = gate.head;
-			if (kind === "xval" && p.worktree) {
-				try {
-					place = headInfo(cwd, (a, t) => runGit(a, t), 500) ?? undefined; // record the job's own worktree
-				} catch {
-					place = undefined;
-				}
-			}
+			const place = gate.head; // xval: record the branch the gate counted (also with worktree), so rounds add up
 			const budget = effectiveMaxCost(kind, p.max_cost); // M1: no silent budget on xval
 			const m = manager().spawn({
 				task: kind === "xval" ? withEvidence(p.task) : p.task, agent: def.name, kind, cwd,
