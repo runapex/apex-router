@@ -36,8 +36,14 @@ def _valid(r: object) -> bool:
             and r.get("state") in STATES)
 
 
+COMPACT_AT = 256 * 1024          # writers rewrite the file (latest row per id) above this size
+CLOSED_KEEP_S = 30 * 86400       # closed decisions older than this are dropped at a compaction
+
+
 def read_rows() -> tuple[list[dict], int]:
-    """Latest row per id (first-seen order) and the count of bad rows. Reads at most READ_CAP bytes."""
+    """Latest row per id (first-seen order) and the count of bad rows. Reads at most READ_CAP bytes.
+    Writers keep the file far below READ_CAP (compaction under the lock), so the cap is a guard only;
+    a cut file counts as one bad row, so the caller warns instead of passing in silence."""
     p = path()
     try:
         with p.open("rb") as f:
@@ -48,10 +54,11 @@ def read_rows() -> tuple[list[dict], int]:
     except FileNotFoundError:
         return [], 0
     lines = data.decode("utf-8", "replace").split("\n")
-    if start > 0:
-        lines = lines[1:]  # the first line is cut: drop it, it is not a bad row
     latest: dict[str, dict] = {}
     bad = 0
+    if start > 0:
+        lines = lines[1:]  # the first line is cut: drop it, and report the file as incomplete
+        bad += 1
     for line in lines:
         if not line.strip():
             continue
@@ -72,9 +79,37 @@ def open_rows() -> list[dict]:
     return [r for r in read_rows()[0] if r["state"] == "open"]
 
 
+class _Locked:
+    """An exclusive flock on <file>.lock for one read-modify-append (ids, compaction)."""
+    def __enter__(self):
+        import fcntl
+        p = path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(str(p) + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)          # closing the fd drops the lock
+
+
 def _append(row: dict) -> None:
+    """Append one row; the caller holds _Locked. Above COMPACT_AT the file is rewritten first with the
+    latest row per id (open rows always kept; closed rows older than CLOSED_KEEP_S dropped)."""
     p = path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        big = p.stat().st_size > COMPACT_AT
+    except FileNotFoundError:
+        big = False
+    if big:
+        rows, _bad = read_rows()
+        now = time.time()
+        keep = [r for r in rows if r["state"] == "open" or now - float(r.get("ts") or 0) < CLOSED_KEEP_S]
+        tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in keep)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, p)         # atomic: a reader sees the old or the new file, never a part
     line = (json.dumps(row, ensure_ascii=False) + "\n").encode()
     fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
@@ -93,8 +128,12 @@ def add(text: str, topic: str = "general") -> str:
         raise ValueError("text is empty")
     if not _TOPIC.fullmatch(topic):
         raise ValueError("topic must match [A-Za-z0-9._-]{1,40}")
-    did = f"D{time.strftime('%m%d')}-{secrets.token_hex(2)}"
-    _append({"id": did, "ts": round(time.time(), 3), "topic": topic, "text": t, "state": "open"})
+    with _Locked():
+        used = {r["id"] for r in read_rows()[0]}
+        did = f"D{time.strftime('%m%d')}-{secrets.token_hex(4)}"
+        while did in used:
+            did = f"D{time.strftime('%m%d')}-{secrets.token_hex(4)}"
+        _append({"id": did, "ts": round(time.time(), 3), "topic": topic, "text": t, "state": "open"})
     return did
 
 
@@ -102,13 +141,14 @@ def close(did: str) -> str:
     """Returns 'closed', 'already' or 'unknown'."""
     if not _ID.fullmatch(did):
         return "unknown"
-    cur = next((r for r in read_rows()[0] if r["id"] == did), None)
-    if cur is None:
-        return "unknown"
-    if cur["state"] == "closed":
-        return "already"
-    _append({"id": did, "ts": round(time.time(), 3), "topic": cur.get("topic", "general"),
-             "text": cur.get("text", ""), "state": "closed"})
+    with _Locked():
+        cur = next((r for r in read_rows()[0] if r["id"] == did), None)
+        if cur is None:
+            return "unknown"
+        if cur["state"] == "closed":
+            return "already"
+        _append({"id": did, "ts": round(time.time(), 3), "topic": cur.get("topic", "general"),
+                 "text": cur.get("text", ""), "state": "closed"})
     return "closed"
 
 

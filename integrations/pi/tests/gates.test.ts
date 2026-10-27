@@ -296,3 +296,28 @@ test("gate 6: a GO starts the count again, and rounds older than 7 days do not c
 	assert.equal(endsGo("NO-GO"), false);
 	assert.equal(endsGo("GO-WITH-CHANGES"), false);
 });
+
+test("gate 6: an incomplete scan never refuses (fail open), even with 3 NO-GO rounds found", () => {
+	const rp = repo();
+	const dir = wt(rp, "inc");
+	const h = headInfo(dir, runGit, 5000)!;
+	const root = tmp("gate-jobs-");
+	for (let i = 0; i < 3; i++) xvalJob(root, `2026102710${i}000-n${i}`, h.repo, "apexjob/inc", "NO-GO");
+	xvalJob(root, "20261027110000-go", h.repo, "apexjob/inc", "GO");
+	const unreadable = { ...FS_IO, read: (p: string, cap: number, tail?: boolean) => {
+		if (p.includes("20261027110000-go") && p.endsWith("result.md")) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+		return FS_IO.read(p, cap, tail);
+	} };
+	const g = spawnGate({ agent: "xval", kind: "xval", cwd: dir, decisionsPath: NO_DEC(), jobsRoot: root, io: unreadable });
+	assert.equal(g.allow, true);
+	assert.ok(g.warnings.some(w => /scan incomplete/.test(w)));
+});
+
+test("gate 3: a cut decisions file gives a warning, not a silent pass", () => {
+	const p = join(tmp("gate-dec-"), "decisions.jsonl");
+	const rows = Array.from({ length: 5 }, (_, i) => ({ id: `D${i}`, state: "open", text: "q" })).concat(
+		Array.from({ length: 3000 }, (_, i) => ({ id: `C${i}`, state: "closed", text: "x".repeat(400) })));
+	writeFileSync(p, rows.map(r => JSON.stringify(r)).join("\n") + "\n");
+	const g = spawnGate({ agent: "worker", kind: "pi", cwd: tmp("gate-norepo-"), decisionsPath: p, jobsRoot: tmp("gate-jobs-") });
+	assert.ok(g.warnings.some(w => /bad row/.test(w)), JSON.stringify(g.warnings));
+});

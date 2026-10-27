@@ -1110,14 +1110,17 @@ export function reviewRounds(root: string, repo: string, branch: string, io: Gat
 
 export type Decision = { id: string; ts?: number; topic?: string; text?: string; state: "open" | "closed" };
 /** Open decisions: the latest row per id wins. A bad row is skipped and counted. Reads at most the last
- *  DECISIONS_READ_CAP bytes (a cut first line is dropped, not counted). A missing file is 0 decisions. Throws on a read error. */
+ *  DECISIONS_READ_CAP bytes (a cut file: the first line is dropped and counted as bad, so the gate warns). A missing file is 0 decisions. Throws on a read error. */
 export function openDecisions(path: string, io: GateIO): { open: Decision[]; bad: number } {
 	const f = io.read(path, DECISIONS_READ_CAP, true);
 	if (!f) return { open: [], bad: 0 };
 	const lines = f.text.split("\n");
-	if (f.truncated) lines.shift();
 	const latest = new Map<string, Decision>();
 	let bad = 0;
+	if (f.truncated) {
+		lines.shift();
+		bad++; // a cut file is incomplete: report it (warning), never pass in silence
+	}
 	for (const l of lines) {
 		if (!l.trim()) continue;
 		let r: any;
@@ -1198,7 +1201,8 @@ export function spawnGate(inp: GateInput): GateResult {
 			if (head?.branch) {
 				const r = reviewRounds(inp.jobsRoot ?? DEFAULT_ROOT, head.repo, head.branch, io, deadline);
 				if (r.skipped || r.partial || r.capped) warnings.push(`review rounds: scan incomplete (${r.skipped} job(s) skipped${r.partial ? ", time budget used" : ""}${r.capped ? ", job list capped" : ""}).`);
-				if (r.nogo.length >= ROUND_LIMIT)
+				const complete = !(r.skipped || r.partial || r.capped);
+				if (r.nogo.length >= ROUND_LIMIT && complete) // fail open: an incomplete scan never refuses
 					reasons.push(`branch ${head.branch} has ${r.nogo.length} earlier xval rounds that ended in NO-GO (limit ${ROUND_LIMIT}): ${r.nogo.slice(0, 10).join(", ")}. Do not start round ${r.nogo.length + 1}: ${ROUND_MESSAGE}.`);
 			}
 		} catch (e) {

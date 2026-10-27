@@ -120,7 +120,7 @@ def test_read_is_capped(home, monkeypatch):
     got, bad = dec.read_rows()
     assert 0 < len(got) < 50
     assert got[-1]["id"] == "D49"
-    assert bad == 0  # the cut first line is dropped, not counted as bad
+    assert bad == 1  # the cut first line is dropped and the file reported as incomplete (xval: no silent pass)
 
 
 def test_cli_wiring(home, capsys):
@@ -129,3 +129,40 @@ def test_cli_wiring(home, capsys):
     assert cli_main(["decisions", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["id"] == did
     assert cli_main(["decisions", "close", did]) == 0
+
+
+# ---- xval P1: concurrent adds reused an id; a long history hid open decisions ---------------------
+
+def test_concurrent_adds_get_distinct_ids(monkeypatch, tmp_path):
+    import secrets as _s
+    from concurrent.futures import ThreadPoolExecutor
+    from apex_router import decisions as D
+    monkeypatch.setattr(D, "path", lambda: tmp_path / "decisions.jsonl")
+    seq = iter(["beefbeef", "beefbeef", "cafecafe"])
+    monkeypatch.setattr(D.secrets, "token_hex", lambda n: next(seq))
+    with ThreadPoolExecutor(2) as ex:
+        ids = list(ex.map(lambda t: D.add(t), ["Ship spawn gates?", "Raise quota?"]))
+    assert len(set(ids)) == 2
+    assert len(D.open_rows()) == 2
+
+
+def test_open_decisions_survive_a_long_history(monkeypatch, tmp_path):
+    from apex_router import decisions as D
+    monkeypatch.setattr(D, "path", lambda: tmp_path / "decisions.jsonl")
+    keep = [D.add(f"open question {i}") for i in range(10)]
+    for i in range(1000):
+        d = D.add("x" * 500)
+        D.close(d)
+    assert (tmp_path / "decisions.jsonl").stat().st_size < D.READ_CAP
+    assert {r["id"] for r in D.open_rows()} == set(keep)
+
+
+def test_a_cut_file_is_reported_not_passed_in_silence(monkeypatch, tmp_path):
+    import json
+    from apex_router import decisions as D
+    p = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(D, "path", lambda: p)
+    monkeypatch.setattr(D, "READ_CAP", 200)
+    p.write_text("".join(json.dumps({"id": f"D{i}", "state": "open", "text": "q" * 40}) + "\n" for i in range(10)))
+    rows, bad = D.read_rows()
+    assert bad >= 1
