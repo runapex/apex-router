@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import signal
 import time
 import traceback
 from collections.abc import Callable
@@ -91,6 +93,18 @@ def _load_policy(cfg: Config) -> PolicyVersion | None:
 
 
 LOCAL_PATHS = frozenset({"/healthz", "/status", "/stats"})
+DRAIN_MAX_S = 60.0   # a drain that nobody ends expires by itself (the studio may die mid-restart)
+
+
+def set_drain(activity: dict, on: bool) -> None:
+    """SIGUSR1 = drain (new proxied requests get 503 + Retry-After, requests in progress finish),
+    SIGUSR2 = end the drain. The flow studio drains before a restart, so no request can start
+    between its last idle check and `launchctl bootout`. Only the same user can signal."""
+    activity["drain_until"] = time.time() + DRAIN_MAX_S if on else 0.0
+
+
+def draining(activity: dict) -> bool:
+    return activity.get("drain_until", 0.0) > time.time()
 
 
 class ActivityCounter:
@@ -108,6 +122,13 @@ class ActivityCounter:
             await self.app(scope, receive, send)
             return
         a = self.activity
+        if a["drain_until"] and draining(a):
+            await send({"type": "http.response.start", "status": 503,
+                        "headers": [(b"content-type", b"application/json"), (b"retry-after", b"5"),
+                                    (b"connection", b"close")]})
+            await send({"type": "http.response.body",
+                        "body": b'{"error":"apex proxy restarts now, retry in 5 s"}'})
+            return
         a["inflight"] += 1
         a["last_start"] = time.time()
         try:
@@ -122,10 +143,14 @@ def create_app(cfg: Config | None = None) -> Starlette:
     cfg.ensure_home()
 
     state: dict = {}
-    activity = {"inflight": 0, "last_start": 0.0, "last_end": 0.0, "started": time.time()}
+    activity = {"inflight": 0, "last_start": 0.0, "last_end": 0.0, "started": time.time(), "drain_until": 0.0}
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
+        with contextlib.suppress(ValueError, RuntimeError, NotImplementedError):   # not main thread (tests)
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(signal.SIGUSR1, set_drain, activity, True)
+            loop.add_signal_handler(signal.SIGUSR2, set_drain, activity, False)
         state["upstream"] = Upstream(cfg)
         state["store"] = Store(cfg.db_path, retention_days=cfg.retention_days)
         state["telemetry"] = TelemetryWriter(cfg.telemetry_path)
@@ -179,6 +204,8 @@ def create_app(cfg: Config | None = None) -> Starlette:
                     "idle_s": 0.0 if activity["inflight"] > 0 else round(
                         time.time() - max(activity["last_start"], activity["last_end"], activity["started"]), 1),
                     "started_s_ago": round(time.time() - activity["started"], 1),
+                    "pid": os.getpid(),
+                    "draining": draining(activity),
                 },
                 "ttft_budget_ms": cfg.ttft_budget_ms,
                 "shadow": {

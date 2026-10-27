@@ -16,11 +16,14 @@ import studio_fixture as F
 class FakeProxy:
     """/stats + /healthz of one proxy. `restart()` (called by fake bootstrap) makes a new process."""
 
-    def __init__(self, inflight=0, idle_s=600.0, activity=True, comes_back=True):
+    def __init__(self, inflight=0, idle_s=600.0, activity=True, comes_back=True, drain_ok=True):
         self.inflight, self.idle_s, self.activity, self.comes_back = inflight, idle_s, activity, comes_back
+        self.drain_ok = drain_ok                  # False = an older proxy without pid/draining
         self.started = time.time() - 3600
         self.up = True
+        self.pid, self.draining = 4242, False
         self.calls = []
+        self.on_stats = None                      # hook: called before each /stats answer
 
     def fetch(self, url):
         self.calls.append(url)
@@ -28,10 +31,14 @@ class FakeProxy:
             return None
         if url.endswith("/healthz"):
             return {"ok": True}
+        if self.on_stats:
+            self.on_stats(self)
         st = {"version": "x"}
         if self.activity:
             st["activity"] = {"inflight": self.inflight, "idle_s": self.idle_s,
                               "started_s_ago": round(time.time() - self.started, 1)}
+            if self.drain_ok:
+                st["activity"].update(pid=self.pid, draining=self.draining)
         return st
 
 
@@ -44,6 +51,12 @@ class FakeRun:
         self.argv.append(list(argv))
         if argv[0].endswith("plutil"):
             return (0, "OK") if self.lint_ok else (1, "bad plist")
+        if argv[0] == "/bin/kill":
+            assert int(argv[2]) == self.proxy.pid
+            self.proxy.draining = argv[1] == "-USR1"
+            return 0, ""
+        if argv[1] == "print":
+            return (0, f"state = running\n\tpid = {self.proxy.pid}\n") if self.proxy.up else (113, "")
         if argv[1] == "bootout":
             self.proxy.up = False
             return 0, ""
@@ -51,6 +64,8 @@ class FakeRun:
             if self.bootstrap_rc == 0:
                 self.proxy.up = self.proxy.comes_back
                 self.proxy.started = time.time()
+                self.proxy.pid += 1
+                self.proxy.draining = False
             return self.bootstrap_rc, ""
         raise AssertionError(argv)
 
@@ -98,28 +113,111 @@ def test_idle_proxy_restart_writes_plist_keeps_secrets_and_reloads(home):
     env = _env(home)
     assert env["APEX_CONNECT_RETRIES"] == "3"
     assert F.FAKE_SECRET in env.values()          # the real value stays in the file (only display masks)
-    verbs = [a[1] for a in run.argv if a[0].endswith("launchctl")]
-    assert verbs[:2] == ["bootout", "bootstrap"]
+    v = _verbs(run)
+    assert v.index("print") < v.index("kill-USR1") < v.index("bootout") < v.index("bootstrap")
     m = json.loads(next(home.backups.glob("*-r/manifest.json")).read_text())
     assert m["complete"] and m["kind"] == "plist"
 
 
-def test_gate_closing_between_write_and_restart_restores_plist(home):
+def _verbs(run):
+    return [a[1] if a[0].endswith("launchctl") else a[0].rsplit("/", 1)[-1] + a[1] for a in run.argv
+            if not a[0].endswith("plutil")]
+
+
+def test_drain_comes_before_bootout_and_waits_for_a_late_request(home):
+    # a request starts after the idle gate (the race codex found): the drain waits for it to end
+    p = FakeProxy()
+    run = FakeRun(p)
+    seen = {"n": 0}
+
+    def late(px):
+        seen["n"] += 1
+        if px.draining and seen["n"] == 2:
+            px.inflight = 1                       # it started just before the drain
+        elif px.draining and seen["n"] > 3:
+            px.inflight = 0
+        assert not (px.inflight and not px.up)
+    p.on_stats = late
+    r = R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, run, p.fetch, health_timeout=2)
+    assert r["ok"]
+    v = _verbs(run)
+    assert v.index("kill-USR1") < v.index("bootout") < v.index("bootstrap")
+    assert seen["n"] >= 4                         # it polled until inflight was 0
+
+
+def test_drain_that_does_not_finish_ends_the_drain_and_restores_plist(home, monkeypatch):
+    monkeypatch.setattr(R, "DRAIN_WAIT_S", 0.05)
+    p = FakeProxy()
+    run = FakeRun(p)
+    p.on_stats = lambda px: setattr(px, "inflight", 1 if px.draining else 0)
+    before = home.plist("main").read_bytes()
+    monkeypatch.setattr(R, "_drain", lambda *a, **k: R.__dict__["_drain_orig"](*a, wait_s=0.05, **k))
+    monkeypatch.setitem(R.__dict__, "_drain_orig", _drain_orig)
+    with pytest.raises(R.RestartError, match="did not finish.*plist restored"):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, run, p.fetch)
+    assert home.plist("main").read_bytes() == before
+    assert "bootout" not in _verbs(run) and not p.draining          # USR2 ended the drain
+
+
+_drain_orig = R._drain
+
+
+def test_older_proxy_without_drain_is_not_restarted(home):
+    p = FakeProxy(drain_ok=False)
+    run = FakeRun(p)
+    before = home.plist("main").read_bytes()
+    with pytest.raises(R.RestartError, match="cannot drain"):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, run, p.fetch)
+    assert home.plist("main").read_bytes() == before and "bootout" not in _verbs(run)
+
+
+def test_port_owned_by_another_process_is_not_signalled(home):
+    p = FakeProxy()
+    run = FakeRun(p)
+    real = run.__call__
+
+    def other(argv):
+        if argv[1:2] == ["print"]:
+            return 0, "pid = 999\n"
+        return real(argv)
+    with pytest.raises(R.RestartError, match="not com.apex-router.serve"):
+        R.restart(home, "main", {}, 120, other, p.fetch)
+    assert not any(a[0] == "/bin/kill" for a in run.argv)
+
+
+def test_exception_after_bootout_restores_plist(home):
     p = FakeProxy()
     run = FakeRun(p)
     before = home.plist("main").read_bytes()
-    n = {"k": 0}
+    real = run.__call__
 
-    def fetch(url):
-        if url.endswith("/stats"):
-            n["k"] += 1
-            if n["k"] == 2:                       # a request starts right after the plist write
-                p.inflight = 1
-        return p.fetch(url)
-    with pytest.raises(R.RestartError, match="plist restored"):
-        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, run, fetch)
+    def boom(argv):
+        if argv[1:2] == ["bootstrap"]:
+            raise TimeoutError("launchctl hung")
+        return real(argv)
+    with pytest.raises(R.RestartError, match="TimeoutError.*old plist is restored"):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, boom, p.fetch)
     assert home.plist("main").read_bytes() == before
-    assert not any(a[0].endswith("launchctl") for a in run.argv)
+    m = json.loads(next(home.backups.glob("*-r/manifest.json")).read_text())
+    assert m["rolled_back"] and "TimeoutError" in m["aborted"]
+
+
+def test_rollback_drains_a_new_process_that_already_answers(home):
+    # new process answers /healthz but never proves it is new: the rollback must drain it first
+    p = FakeProxy()
+    run = FakeRun(p)
+    real = run.__call__
+
+    def keep_old_start(argv):
+        rc, out = real(argv)
+        if argv[1:2] == ["bootstrap"]:
+            p.started = time.time() - 3600          # looks like an old process: health fails
+        return rc, out
+    with pytest.raises(R.RestartError):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, keep_old_start, p.fetch, health_timeout=0.2)
+    v = _verbs(run)
+    second_bootout = [i for i, x in enumerate(v) if x == "bootout"][1]
+    assert "kill-USR1" in v[v.index("bootstrap"):second_bootout]
 
 
 def test_unhealthy_restart_restores_old_plist_and_reloads_again(home):

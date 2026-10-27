@@ -8,13 +8,13 @@ import asyncio
 import pytest
 from starlette.testclient import TestClient
 
-from apex_router.proxy_engine.proxy.app import ActivityCounter
+from apex_router.proxy_engine.proxy.app import DRAIN_MAX_S, ActivityCounter, draining, set_drain
 
 from test_m0_passthrough import app_with_mock_upstream  # noqa: F401  (fixture; rootdir-relative import)
 
 
 def _act():
-    return {"inflight": 0, "last_start": 0.0, "last_end": 0.0, "started": 0.0}
+    return {"inflight": 0, "last_start": 0.0, "last_end": 0.0, "started": 0.0, "drain_until": 0.0}
 
 
 def _run(app, path="/v1/messages", fail=False):
@@ -87,4 +87,49 @@ def test_stats_reports_activity_through_the_real_app(app_with_mock_upstream):  #
         r = client.post("/v1/messages", content=b'{"messages":[]}', headers={"anthropic-version": "2023-06-01"})
         assert r.status_code == 200
         s1 = client.get("/stats").json()["activity"]
+        assert isinstance(s1["pid"], int) and s1["draining"] is False
         assert s1["inflight"] == 0 and s1["idle_s"] < 5
+
+
+def test_drain_refuses_new_requests_but_keeps_local_paths_and_expires(monkeypatch):
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+    a = _act()
+    app = ActivityCounter(inner, a)
+    set_drain(a, True)
+    assert draining(a)
+    seen, go = _run(app)
+    asyncio.run(go())
+    assert called == [] and a["inflight"] == 0 and a["last_start"] == 0.0   # not counted, not proxied
+    seen, go = _run(app, "/stats")
+    asyncio.run(go())
+    assert called == ["/stats"]
+    set_drain(a, False)
+    seen, go = _run(app)
+    asyncio.run(go())
+    assert called == ["/stats", "/v1/messages"]
+    set_drain(a, True)                                   # a drain that nobody ends expires
+    import apex_router.proxy_engine.proxy.app as appmod
+    t = appmod.time.time()
+    monkeypatch.setattr(appmod.time, "time", lambda: t + DRAIN_MAX_S + 1)
+    assert not draining(a)
+
+
+def test_drain_answers_503_with_retry_after():
+    async def inner(scope, receive, send):
+        raise AssertionError("must not run")
+    a = _act()
+    set_drain(a, True)
+    msgs = []
+
+    async def send(m):
+        msgs.append(m)
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+    asyncio.run(ActivityCounter(inner, a)({"type": "http", "path": "/v1/messages", "headers": []}, receive, send))
+    assert msgs[0]["status"] == 503 and (b"retry-after", b"5") in msgs[0]["headers"]

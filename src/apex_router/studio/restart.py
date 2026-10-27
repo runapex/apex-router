@@ -20,9 +20,11 @@ they never call the real launchctl.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import plistlib
+import re
 import subprocess
 import tempfile
 import threading
@@ -137,10 +139,69 @@ def _healthy(paths: Paths, proxy: str, since: float, fetch, timeout: float = HEA
     return False
 
 
+DRAIN_WAIT_S = 30.0       # requests that started just before the drain get this long to finish
+
+
+def _launchd_pid(label: str, run) -> int | None:
+    rc, out = run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"])
+    m = re.search(r"^\s*pid = (\d+)\s*$", out or "", re.M) if rc == 0 else None
+    return int(m.group(1)) if m else None
+
+
+def _signal(pid: int, sig: str, run) -> bool:
+    return run(["/bin/kill", f"-{sig}", str(pid)])[0] == 0
+
+
+def _drain(paths: Paths, proxy: str, label: str, run, fetch, wait_s: float = DRAIN_WAIT_S) -> int:
+    """Make the proxy refuse new requests (503 + Retry-After) and wait until the requests in
+    progress end. -> the drained pid. Raises RestartError (and ends the drain) if it cannot."""
+    port = proxy_port(paths, proxy)
+    st = fetch(f"http://127.0.0.1:{port}/stats")
+    a = (st or {}).get("activity") if isinstance(st, dict) else None
+    pid = a.get("pid") if isinstance(a, dict) else None
+    if not isinstance(pid, int) or pid <= 1 or "draining" not in a:
+        raise RestartError("the running proxy cannot drain (older code): restart it once by hand", 409)
+    if _launchd_pid(label, run) != pid:                     # the port answers, but not from our job
+        raise RestartError(f"the process on :{port} is not {label}", 409)
+    if not _signal(pid, "USR1", run):
+        raise RestartError("could not signal the proxy", 500)
+    end = time.time() + wait_s
+    while time.time() < end:
+        st = fetch(f"http://127.0.0.1:{port}/stats")
+        a = (st or {}).get("activity") if isinstance(st, dict) else None
+        if isinstance(a, dict) and a.get("pid") == pid and a.get("draining") is True and a.get("inflight") == 0:
+            return pid
+        _pause(0.2)
+    _signal(pid, "USR2", run)
+    raise RestartError(f"not restarted: requests did not finish within {wait_s:.0f} s (drain ended)", 409)
+
+
+def _undrain(paths: Paths, proxy: str, run, fetch) -> None:
+    st = fetch(f"http://127.0.0.1:{proxy_port(paths, proxy)}/stats")
+    a = (st or {}).get("activity") if isinstance(st, dict) else None
+    if isinstance(a, dict) and isinstance(a.get("pid"), int) and a.get("draining"):
+        _signal(a["pid"], "USR2", run)
+
+
+def _swap(paths: Paths, proxy: str, label: str, plist: Path, run, fetch, health_timeout: float) -> tuple:
+    """Drain, then bootout + bootstrap. -> (healthy, t0). A drain failure raises before bootout."""
+    _drain(paths, proxy, label, run, fetch)
+    t0 = time.time()
+    rc, _ = _reload(label, plist, run)
+    return rc == 0 and _healthy(paths, proxy, t0, fetch, health_timeout), t0
+
+
+def _save(bdir: Path, manifest: dict) -> None:
+    (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    os.chmod(bdir / "manifest.json", 0o600)
+
+
 def restart(paths: Paths, proxy: str, env_changes: dict, idle_s: float = DEFAULT_IDLE_S,
             run=_run, fetch=_fetch, health_timeout: float = HEALTH_TIMEOUT_S) -> dict:
     """Write `env_changes` ({NAME: value}; may be empty = reload only) into the proxy plist and
-    restart it if the gate passes. Raises RestartError (gate closed, bad plist, ...)."""
+    restart it if the idle gate passes. Order: lock, gate, backup, write, DRAIN (new requests get
+    503; wait for inflight 0), bootout + bootstrap, health (a NEW process). Any failure after the
+    write restores the old plist; a restore that needs a reload drains first too."""
     if proxy not in PROXIES:
         raise RestartError("unknown proxy", 400)
     plist = paths.plist(proxy)
@@ -162,50 +223,64 @@ def restart(paths: Paths, proxy: str, env_changes: dict, idle_s: float = DEFAULT
         env = data.setdefault("EnvironmentVariables", {})
         for k, v in env_changes.items():
             env[str(k)] = str(v)
-        # backup set (rollback finds it; same manifest shape as live-file applies)
         stamp = time.strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}-r"
         bdir = paths.backups / stamp
         bdir.mkdir(parents=True, exist_ok=False)
         os.chmod(bdir, 0o700)
         (bdir / plist.name).write_bytes(before)
         os.chmod(bdir / plist.name, 0o600)
-        import hashlib
         after_bytes = plistlib.dumps(data)
         manifest = {"schema": 1, "created_at": time.time(), "rolled_back": False, "complete": False,
                     "kind": "plist", "proxy": proxy, "label": label,
                     "files": [{"path": str(plist), "backup": plist.name,
                                "sha_before": hashlib.sha256(before).hexdigest(),
                                "sha_after": hashlib.sha256(after_bytes).hexdigest()}]}
-        (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        os.chmod(bdir / "manifest.json", 0o600)
-        changed = bool(env_changes)
-        if changed:
-            _write_plist(plist, data, run)
-        g2 = gate(paths, proxy, idle_s, fetch)                     # close the race window
-        if not g2["ready"]:
-            if changed:
+        _save(bdir, manifest)
+        stage = "write"
+        try:
+            if env_changes:
+                _write_plist(plist, data, run)
+            stage = "drain"
+            ok, t0 = _swap(paths, proxy, label, plist, run, fetch, health_timeout)
+            stage = "swapped"
+        except RestartError as e:
+            if stage in ("write", "drain"):   # nothing restarted: the old process still runs
                 plist.write_bytes(before)
-            manifest.update(rolled_back=True, aborted="gate closed before restart")
-            (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-            raise RestartError(f"not restarted: {g2['why']} (plist restored)", 409)
-        t0 = time.time()
-        rc, out = _reload(label, plist, run)
-        ok = rc == 0 and _healthy(paths, proxy, t0, fetch, health_timeout)
+                _undrain(paths, proxy, run, fetch)
+                manifest.update(rolled_back=True, aborted=str(e))
+                _save(bdir, manifest)
+                raise RestartError(f"{e} (plist restored)", e.status) from None
+            raise
+        except BaseException as e:                     # e.g. a launchctl timeout after bootout
+            plist.write_bytes(before)
+            manifest.update(rolled_back=True, aborted=f"{type(e).__name__} at {stage}")
+            _save(bdir, manifest)
+            _undrain(paths, proxy, run, fetch)
+            raise RestartError(f"restart failed ({type(e).__name__}); the old plist is restored. Check: "
+                               f"launchctl print gui/$(id -u)/{label}", 500) from None
         if ok:
             manifest["complete"] = True
-            (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+            _save(bdir, manifest)
             return {"ok": True, "proxy": proxy, "label": label, "changed": sorted(env_changes),
                     "backup": bdir.name, "restart_s": round(time.time() - t0, 1)}
-        # 7. automatic restore
+        # automatic restore. A new process that answers is drained first (it may already serve).
         plist.write_bytes(before)
-        t1 = time.time()
-        rc2, _ = _reload(label, plist, run)
-        back = rc2 == 0 and _healthy(paths, proxy, t1, fetch, health_timeout)
         manifest.update(rolled_back=True, aborted="health check failed")
-        (bdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        _save(bdir, manifest)
+        back = False
+        try:
+            if fetch(f"http://127.0.0.1:{proxy_port(paths, proxy)}/healthz") is not None:
+                back, _ = _swap(paths, proxy, label, plist, run, fetch, health_timeout)
+            else:                                       # nothing answers: nothing to break
+                t1 = time.time()
+                rc2, _ = _reload(label, plist, run)
+                back = rc2 == 0 and _healthy(paths, proxy, t1, fetch, health_timeout)
+        except RestartError:
+            back = False
         raise RestartError(
             "the proxy did not come back healthy with the new settings; the old plist is restored and "
-            + ("the proxy runs again" if back else f"the proxy is STILL DOWN: run launchctl bootstrap gui/$(id -u) {tilde(plist)}"),
+            + ("the proxy runs again" if back else f"the proxy is NOT confirmed healthy: check launchctl print "
+               f"gui/$(id -u)/{label}, or run launchctl kickstart -k gui/$(id -u)/{label}"),
             500 if back else 503)
     finally:
         try:
