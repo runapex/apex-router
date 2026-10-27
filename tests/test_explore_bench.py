@@ -2,6 +2,7 @@
 slow/weak candidate (no hit) from a known good one (hit). Runs the real oracle commands; no model."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -211,3 +212,29 @@ def test_oracle_sandbox_blocks_write_outside_tmp_and_network(name, tmp_path):
     net_only = "import socket\nsocket.create_connection(('127.0.0.1', 8788), timeout=2)\n"
     r = t.oracle_fn()(net_only + {"binpack": BIN_FILL}.get(name, LIS_FAST if name == "speedup-lis" else PAIRSUM_FAST))
     assert not r.valid, r
+
+
+@pytest.mark.parametrize("name", ["speedup-lis", "speedup-pairsum"])
+def test_xval2_a_fast_wrong_cost_repeat_does_not_set_the_score(name, monkeypatch, capsys):
+    # xval pass 2 probe: repeats fast+wrong, slow+right, slow+right must not score 100 (it is 1x)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(f"oracle_{name.replace('-', '_')}", BENCH / name / "oracle" / "check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    real = mod.run_child
+    seq = {"cand": 0}
+
+    def fake(source, fn, calls, timeout):
+        r = real(source, fn, calls, timeout)
+        if source.startswith("# cand"):
+            seq["cand"] += 1
+            if len(calls) == 1 and seq["cand"] == 2:     # first cost repeat: 11 ms, wrong output
+                return {"ok": True, "cpu": 0.011, "out": [None]}
+        return r
+    monkeypatch.setattr(mod, "run_child", fake)
+    ref = mod.REFERENCE
+    cand = "# cand\n" + ref
+    cost_args = [list(range(50))] + ([0, 10] if name == "speedup-pairsum" else [])
+    mod.speedup_check(cand, ref, mod.hidden_cases()[:6], cost_args)
+    d = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert not d["valid"] and d["score"] == 0.0, d

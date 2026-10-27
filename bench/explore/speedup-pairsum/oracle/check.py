@@ -107,13 +107,18 @@ def _same(a, b) -> bool:
     return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
 
 
-def _cost(source: str, calls: list, timeout: float):
-    """-> (min child CPU s, raw outputs of the last run) or (None, why)."""
+def _cost(source: str, calls: list, timeout: float, expect=None):
+    """-> (min child CPU s, raw outputs) or (None, why). Every repeat must give the same output, and the
+    expected output when `expect` is set: a fast wrong repeat must not set the minimum (xval pass 2)."""
     best, out = None, None
     for _ in range(REPEATS):
         r = run_child(source, "solve", calls, timeout)
         if not r["ok"]:
             return None, r["why"]
+        if out is not None and not _same(r["out"], out):
+            return None, "outputs differ between repeats"
+        if expect is not None and not _same(r["out"], expect):
+            return None, "wrong answer"
         best = r["cpu"] if best is None else min(best, r["cpu"])
         out = r["out"]
     return best, out
@@ -142,12 +147,9 @@ def speedup_check(candidate: str, reference: str, cases: list, cost_args: list) 
     if ref_cpu is None:
         emit(False, 0.0, "reference run failed")
         return
-    cand_cpu, cand_out = _cost(candidate, [cost_args], 30.0)
+    cand_cpu, cand_out = _cost(candidate, [cost_args], 30.0, expect=ref_out)
     if cand_cpu is None:
-        emit(False, 0.0, "cost run: " + cand_out)
-        return
-    if not _same(cand_out, ref_out):
-        emit(False, 0.0, "cost input: wrong answer")
+        emit(False, 0.0, "cost input: " + cand_out)
         return
     ratio = min(SCORE_CAP, max(ref_cpu - noop, FLOOR_S) / max(cand_cpu - noop, FLOOR_S))
     emit(True, round(ratio, 3), f"correct on {len(cases)} hidden cases and the cost input; score = "
