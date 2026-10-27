@@ -99,7 +99,7 @@ def test_task_layout_and_isolation(name):
     ("speedup-lis", LIS_FAST, None),
     ("speedup-pairsum", PAIRSUM_FAST, None),
     ("binpack", BIN_FILL, BIN_FFD),
-])
+], ids=["speedup-lis", "speedup-pairsum", "binpack"])
 def test_oracle_separates_hit_from_no_hit(name, good, bad_valid):
     t = Task.load(BENCH / name)
     orc = t.oracle_fn()

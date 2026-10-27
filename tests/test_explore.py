@@ -304,3 +304,18 @@ def test_cli_run_with_cmd_backend_and_task_oracle(tmp_path, capsys):
     assert main(["explore", "table", str(out)]) == 0
     md = capsys.readouterr().out
     assert "| clitask | baseline | 2 |" in md and "HitRate_tau@B" in md
+
+
+def test_one_cmd_backend_reused_across_runs_gets_a_fresh_dir_each_time(tmp_path):
+    from apex_router.explore.backends import CmdBackend
+    task = _task(tmp_path)
+    agent = tmp_path / "agent.py"
+    agent.write_text("import sys, os\nsys.stdin.read()\nassert os.listdir('.') == ['goal.md']\n"
+                     "print('MECHANISM: m\\nCANDIDATE:\\n```\\ndef solve(x):\\n    return x * 5  # '"
+                     " + os.environ['EXPLORE_SEED'] + '\\n```')\n")
+    be = CmdBackend(f"{sys.executable} {agent}")
+    for i, arm in enumerate(("explore", "baseline", "explore")):
+        rep = run_task(task, arm, 2, be, tmp_path / f"r{i}", seed=i,
+                       oracle=lambda t: OracleResult(True, 5.0, "ok"))
+        assert rep["call_errors"] == 0 and rep["best_score"] == 5.0, (arm, rep)
+    assert be.cwd is None

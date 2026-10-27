@@ -248,10 +248,11 @@ def run_task(task: Task, arm: str, budget: int, backend: Backend, run_dir: Path,
              oracle: OracleFn | None = None, deadline: float | None = None, **kw) -> dict:
     """Run one arm on one task in a fresh generator workdir. The oracle dir must be outside it."""
     wd = prepare_workdir(task)  # raises if the oracle dir overlaps the generator dir
+    set_cwd = hasattr(backend, "cwd") and getattr(backend, "cwd") is None
     try:
         orc = oracle or task.oracle_fn()
-        if hasattr(backend, "cwd") and getattr(backend, "cwd") is None:
-            backend.cwd = str(wd)  # a cmd agent starts in the generator dir, which has goal.md only
+        if set_cwd:
+            backend.cwd = str(wd)  # a cmd agent starts in this run's generator dir (goal.md only)
         if arm == "baseline":
             rep = run_baseline(task, budget, backend, orc, run_dir, seed=seed, deadline=deadline)
         elif arm == "explore":
@@ -259,6 +260,8 @@ def run_task(task: Task, arm: str, budget: int, backend: Backend, run_dir: Path,
         else:
             raise ValueError(f"unknown arm {arm!r}")
     finally:
+        if set_cwd:
+            backend.cwd = None  # the next run gets its own fresh dir
         shutil.rmtree(wd, ignore_errors=True)
     rep["model"] = getattr(backend, "model", getattr(backend, "name", "custom"))
     return rep
