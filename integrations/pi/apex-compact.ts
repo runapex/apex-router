@@ -6,7 +6,8 @@
  *   "## Pinned (verbatim)" block from the ledger (carried in CompactionEntry.details.apexLedger). On any
  *   failure it returns nothing and pi compacts as before. Telemetry: ~/.apex-router/pi-compact/
  *   YYYY-MM-DD-<pid>.jsonl (counts and reason codes only, never text; mode 0600; 14 days).
- * before_provider_request (P3 only, APEX_COMPACT_CACHE=1): keeps a reference to the last payload.
+ * before_provider_request (P3 only, APEX_COMPACT_CACHE=1): keeps a reference to the last payload and the branch
+ *   leaf id. session_start, session_tree and model_select clear it (no replay of another branch or model).
  * tool_call (P0): blocks a call that matches an active deny rule of ~/.apex-router/pi-guardrules.json or of
  *   /guard (session). Example rules: integrations/pi/guardrules.example.json.
  *
@@ -84,6 +85,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
+		captured = undefined;
 		restoreSession(ctx);
 		if (!pruned) {
 			pruned = true;
@@ -91,7 +93,13 @@ export default function (pi: ExtensionAPI) {
 			pruneLogs(GUARD_LOG, Date.now());
 		}
 	});
-	pi.on("session_tree", async (_e, ctx) => restoreSession(ctx));
+	pi.on("session_tree", async (_e, ctx) => {
+		captured = undefined; // the capture holds the old branch
+		restoreSession(ctx);
+	});
+	pi.on("model_select", async () => {
+		captured = undefined;
+	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (process.env.APEX_GUARD === "0") return;
@@ -127,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- P3 capture -----------------------------------------------------------------------------------------
 	pi.on("before_provider_request", (event, ctx) => {
 		if (process.env.APEX_COMPACT_CACHE !== "1" || process.env.APEX_COMPACT === "0" || !ctx.model) return;
-		captured = { payload: event.payload, provider: ctx.model.provider, id: ctx.model.id, at: Date.now() };
+		captured = { payload: event.payload, provider: ctx.model.provider, id: ctx.model.id, at: Date.now(), leafId: ctx.sessionManager.getLeafId() };
 		return undefined; // never changes the request
 	});
 

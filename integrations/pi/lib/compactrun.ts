@@ -4,6 +4,9 @@
  *
  * Order of the summary text (first that works wins; each failure is a reason code in telemetry):
  *   P3 replay   — APEX_COMPACT_CACHE=1: the last captured provider payload + one instruction (cache prefix).
+ *                 Only when the capture's branch leaf id is the leaf at compaction (the last branch entry):
+ *                 a capture of another branch or an older leaf is not used (p3-branch-changed). The /compact
+ *                 custom instructions are appended to the replay instruction (as pi does: "Additional focus").
  *   P5 model    — APEX_COMPACT_MODEL=<provider/model>: pi compact() with that model.
  *   P4 budget   — pi compact() with the session model and the summary budget (APEX_COMPACT_SUMMARY_TOKENS).
  *   no budget   — pi compact() with the session model and the user's reserveTokens (a length stop at P4).
@@ -21,7 +24,9 @@ export type Usage = { input?: number; output?: number; cacheRead?: number; cache
 export type Reply = { content?: unknown; stopReason?: string; usage?: Usage; errorMessage?: string };
 export type ModelRef = { provider: string; id: string; contextWindow?: number };
 export type Summary = { text: string; usage?: Usage; details?: { readFiles?: string[]; modifiedFiles?: string[] } };
-export type Captured = { payload: unknown; provider: string; id: string; at: number };
+/** leafId: the session leaf (getLeafId) when the payload was sent. The extension clears the capture on
+ *  session_start, session_tree and model_select. */
+export type Captured = { payload: unknown; provider: string; id: string; at: number; leafId?: string | null };
 
 export type CompactEventLike = {
 	preparation: PrepLike;
@@ -116,12 +121,15 @@ export async function runCompaction(ev: CompactEventLike, deps: Deps): Promise<C
 		row.p3 = "skip";
 		const cap = deps.captured?.();
 		const maxAge = envInt(env, "APEX_COMPACT_CACHE_MAX_AGE_S", 300, 1)! * 1000;
+		const leaf = ev.branchEntries.length ? ev.branchEntries[ev.branchEntries.length - 1]!.id : null;
 		if (!deps.model || !deps.replay) fails.push("p3-no-deps");
 		else if (!cap) fails.push("p3-no-capture");
 		else if (cap.provider !== deps.model.provider || cap.id !== deps.model.id) fails.push("p3-model-changed");
+		else if (!cap.leafId || cap.leafId !== leaf) fails.push("p3-branch-changed");
 		else if (t0 - cap.at > maxAge) fails.push("p3-stale");
 		else {
-			const payload = buildReplayPayload(cap.payload, replayInstruction(budget), budget);
+			const ri = replayInstruction(budget) + (ev.customInstructions ? `\n\nAdditional focus: ${ev.customInstructions}` : "");
+			const payload = buildReplayPayload(cap.payload, ri, budget);
 			if (!payload) fails.push("p3-shape");
 			else {
 				try {

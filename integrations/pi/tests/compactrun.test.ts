@@ -16,8 +16,8 @@ function session() {
 	s.assistant("working on EYE-147593 at 3076a01");
 	s.tool("bash", { command: "pytest -q" }, "FAILED tests/test_x.py::test_y - AssertionError", true);
 	const keep = s.user("now step 2");
-	s.assistant("ok");
-	return { s, keep };
+	const leaf = s.assistant("ok");
+	return { s, keep, leaf };
 }
 
 type Call = { model: string; reserve: number; instr?: string; prev?: string };
@@ -130,10 +130,10 @@ test("P5 fallback: an error or an unknown model falls back to the session model"
 const PAYLOAD = { model: "opus", system: [{ type: "text", text: "sys" }], max_tokens: 32000, messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] };
 
 test("P3: replays the captured payload, logs cacheRead and input", async () => {
-	const { s, keep } = session();
+	const { s, keep, leaf } = session();
 	const sent: Record<string, unknown>[] = [];
 	const { d, calls } = deps({
-		captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 - 10_000 }),
+		captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 - 10_000, leafId: leaf }),
 		replay: async (_m, p) => {
 			sent.push(p);
 			return { content: [{ type: "text", text: "## Goal\nfrom cache" }], stopReason: "stop", usage: { input: 2000, cacheRead: 150_000, cacheWrite: 0, output: 900 } };
@@ -153,14 +153,14 @@ test("P3: replays the captured payload, logs cacheRead and input", async () => {
 });
 
 test("P3 fallback: error, bad reply, stale capture, model change, no capture -> default path", async () => {
-	const { s, keep } = session();
+	const { s, keep, leaf } = session();
 	const cases: [string, Partial<Deps>][] = [
-		["p3-error", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 }), replay: async () => { throw new Error("400 bad request"); } }],
-		["p3-bad-reply", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 }), replay: async () => ({ content: [{ type: "text", text: "partial" }], stopReason: "length" }) }],
-		["p3-stale", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 - 301_000 }), replay: async () => { throw new Error("not called"); } }],
-		["p3-model-changed", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "sonnet", at: 1_000_000 }), replay: async () => { throw new Error("not called"); } }],
+		["p3-error", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf }), replay: async () => { throw new Error("400 bad request"); } }],
+		["p3-bad-reply", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf }), replay: async () => ({ content: [{ type: "text", text: "partial" }], stopReason: "length" }) }],
+		["p3-stale", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000 - 301_000, leafId: leaf }), replay: async () => { throw new Error("not called"); } }],
+		["p3-model-changed", { captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "sonnet", at: 1_000_000, leafId: leaf }), replay: async () => { throw new Error("not called"); } }],
 		["p3-no-capture", { captured: () => undefined, replay: async () => { throw new Error("not called"); } }],
-		["p3-shape", { captured: () => ({ payload: { contents: [] }, provider: "anthropic", id: "opus", at: 1_000_000 }), replay: async () => { throw new Error("not called"); } }],
+		["p3-shape", { captured: () => ({ payload: { contents: [] }, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf }), replay: async () => { throw new Error("not called"); } }],
 	];
 	for (const [code, over] of cases) {
 		const { d, calls } = deps(over, { APEX_COMPACT_CACHE: "1" });
@@ -171,6 +171,37 @@ test("P3 fallback: error, bad reply, stale capture, model change, no capture -> 
 		assert.equal(calls.length, 1, code);
 		assert.ok(out.compaction!.summary.includes(RULE), code);
 	}
+});
+
+test("F3 P3: a capture of another branch leaf (or without a leaf id) is not replayed", async () => {
+	const { s, keep, leaf } = session();
+	const replay = async () => ({ content: [{ type: "text", text: "## Goal\nother branch" }], stopReason: "stop" });
+	for (const leafId of ["a999", undefined, null]) {
+		const { d, calls } = deps({ captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId }), replay }, { APEX_COMPACT_CACHE: "1" });
+		const out = await runCompaction(ev(s, keep), d);
+		assert.equal(out.row.path, "budget", String(leafId));
+		assert.deepEqual(out.row.fails, ["p3-branch-changed"], String(leafId));
+		assert.equal(calls.length, 1);
+		assert.ok(!out.compaction!.summary.includes("other branch"));
+	}
+	const ok = deps({ captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf }), replay }, { APEX_COMPACT_CACHE: "1" });
+	assert.equal((await runCompaction(ev(s, keep), ok.d)).row.path, "p3-replay", "the same leaf replays");
+});
+
+test("F8 P3: /compact custom instructions are appended to the replay instruction", async () => {
+	const { s, keep, leaf } = session();
+	const sent: Record<string, unknown>[] = [];
+	const { d } = deps({
+		captured: () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf }),
+		replay: async (_m, p) => {
+			sent.push(p);
+			return { content: [{ type: "text", text: "## Goal\nx" }], stopReason: "stop" };
+		},
+	}, { APEX_COMPACT_CACHE: "1" });
+	const out = await runCompaction(ev(s, keep, { customInstructions: "focus on the lock" }), d);
+	assert.equal(out.row.path, "p3-replay");
+	const last = (sent[0]!.messages as { content: { text: string }[] }[]).at(-1)!.content.at(-1)!.text;
+	assert.match(last, /structured summary[\s\S]*\n\nAdditional focus: focus on the lock$/);
 });
 
 test("P3 then P5 both fail: session model with budget", async () => {
