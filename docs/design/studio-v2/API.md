@@ -149,3 +149,11 @@ source gives verdict "—" and state "none". The UI draws the stations as a shor
 a train moves station to station (about 150 ms each), each station shows its verdict as it
 passes, a warn/error station turns amber/red and stays lit for the last 10 requests. Recent and
 the lit journey reuse the same list.
+
+Implementation notes (added 2026-10-27, `studio/decisions.py`): the route_log is read from a capped
+tail (2 MiB, at most 20 000 rows, regular files only), indexed per session id (ids over 200 chars
+are skipped) and rebuilt only when the file size or mtime changes. Every verdict comes from a fixed
+map in that module plus numbers; an unknown value gives a fixed word ("other work", "ended",
+"cause unknown"). Cache share uses `fresh_input` + `_cache_read` + `_cache_write` (each token once
+on both wires). The UI animates only when `prefers-reduced-motion` is off; with it on, the verdicts
+show at once and no train is drawn.
