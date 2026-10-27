@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>apex flow studio</title>
+<style nonce="__NONCE__">
+:root{
+  --bg:#0E0E0D;--panel:#181816;--card:#1F1F1C;--card2:#272724;--line:#34342F;
+  --fg:#F2F0E8;--fg2:#C9C6BB;--muted:#9C9A91;
+  --accent:#E0855F;--good:#93B866;--warn:#EE9A84;--bad:#F07462;--net:#78A6D6;--gpu:#B49AD3;
+  --lit:#F0A060;--shadow:0 6px 24px rgba(0,0,0,.45);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: light){:root{
+  --bg:#F5F4EF;--panel:#FFFFFF;--card:#FFFFFF;--card2:#F0EEE7;--line:#D8D5CB;
+  --fg:#141413;--fg2:#3D3C38;--muted:#5E5D59;
+  --accent:#A9481F;--good:#3F6B1F;--warn:#A4432F;--bad:#B5372B;--net:#2F5F92;--gpu:#6A4C93;
+  --lit:#B4561F;--shadow:0 6px 24px rgba(0,0,0,.12);
+}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 var(--sans)}
+button,input,select{font:inherit;color:inherit}
+.mono,.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid var(--lit);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* top bar */
+header{position:fixed;inset:0 0 auto 0;height:56px;display:flex;align-items:center;gap:14px;padding:0 16px;
+  background:var(--panel);border-bottom:1px solid var(--line);z-index:20}
+.brand{font-weight:650;letter-spacing:.2px;white-space:nowrap}
+.brand b{color:var(--accent)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:transparent;border:0;padding:5px 10px;cursor:pointer;color:var(--fg2)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--card2);color:var(--fg);font-weight:600}
+.lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.test{flex:1;display:flex;gap:6px;min-width:240px;max-width:620px}
+.test input{flex:1;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:0}
+.test input::placeholder{color:var(--muted)}
+.btn{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:5px 12px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#141413;font-weight:600}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.draft{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);
+  color:var(--muted);white-space:nowrap}
+.draft.has{border-color:var(--accent);color:var(--accent);font-weight:600}
+.spacer{flex:0 0 auto}
+
+/* result bar */
+#result{position:fixed;top:56px;left:0;right:0;min-height:0;z-index:15;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:8px 16px;display:none;align-items:center;gap:10px;flex-wrap:wrap}
+#result.show{display:flex}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;background:var(--card2);
+  border:1px solid var(--line);font-size:12px;white-space:nowrap}
+.chip.k{border-color:var(--lit);color:var(--lit)}
+.arrow{color:var(--muted)}
+.reason{color:var(--fg2)}
+
+/* banner */
+#banner{position:fixed;left:16px;bottom:14px;z-index:16;max-width:640px;display:none;padding:8px 12px;border-radius:8px;
+  background:var(--card);border:1px solid var(--line);color:var(--fg2);box-shadow:var(--shadow)}
+#banner.show{display:block}
+#banner.err{border-color:var(--bad);color:var(--fg)}
+
+/* canvas */
+main{position:absolute;top:56px;left:0;right:0;bottom:0;overflow:auto}
+main.withres{top:var(--restop,104px)}
+#canvas{position:relative;margin:0 auto}
+#edges{position:absolute;left:0;top:0;overflow:visible}
+.lane-h{position:absolute;top:16px;font-size:12px;font-weight:650;letter-spacing:.7px;text-transform:uppercase;color:var(--accent)}
+.lane-bg{position:absolute;border-radius:12px;background:color-mix(in srgb,var(--panel) 55%,transparent)}
+.node{position:absolute;display:grid;grid-template-columns:24px 1fr auto;grid-template-rows:auto 1fr;column-gap:8px;
+  padding:9px 10px 8px 10px;background:var(--card);border:1px solid var(--line);border-radius:10px;cursor:pointer;
+  text-align:left;box-shadow:0 1px 0 rgba(0,0,0,.25);transition:opacity .2s,border-color .2s}
+.node:hover{border-color:var(--muted)}
+.node.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.node .ic{grid-row:1/3;font-size:16px;line-height:24px;text-align:center;width:24px;height:24px;border-radius:6px;background:var(--card2);color:var(--fg2)}
+.node .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px;min-width:0}
+.node .nm span.t{overflow:hidden;text-overflow:ellipsis}
+.node .val{grid-column:2/4;align-self:end;display:flex;align-items:baseline;gap:6px;min-width:0}
+.node .val .n{font-family:var(--mono);font-size:19px;font-weight:600;letter-spacing:-.3px}
+.node .val .u{color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .side{grid-column:3;grid-row:1;display:flex;align-items:center;gap:6px}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:var(--muted)}
+.dot.ok{background:var(--good)}.dot.warn{background:var(--warn)}.dot.error{background:var(--bad)}
+.dot.idle{background:transparent;border:2px solid var(--good)}
+.dot.nodata{background:transparent;border:2px solid var(--muted)}
+.dot.locked{background:var(--muted)}
+.lock{font-size:11px;color:var(--muted)}
+.node.lane-upstreams .ic{color:var(--net)} .node#n-up\.ollama .ic{color:var(--gpu)}
+.node.lane-sinks .ic{color:var(--accent)}
+.node.dim{opacity:.32}
+.node.lit{border-color:var(--lit);box-shadow:0 0 0 2px color-mix(in srgb,var(--lit) 55%,transparent)}
+.sw{position:relative;width:30px;height:18px;border-radius:9px;border:1px solid var(--line);background:var(--card2);cursor:pointer;padding:0;flex:0 0 auto}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:left .15s}
+.sw[aria-checked="true"]{background:color-mix(in srgb,var(--good) 35%,var(--card2));border-color:var(--good)}
+.sw[aria-checked="true"]::after{left:14px;background:var(--good)}
+.sw.drafted{box-shadow:0 0 0 2px var(--accent)}
+
+/* edges */
+.e{fill:none;stroke-linecap:round}
+.e.main{stroke:color-mix(in srgb,var(--net) 70%,var(--line))}
+.e.error{stroke:var(--bad);stroke-dasharray:5 5}
+.e.fallback{stroke:var(--warn);stroke-dasharray:4 5;opacity:.85}
+.e.offload{stroke:var(--gpu);stroke-dasharray:6 5}
+.e.skip{stroke:var(--muted);stroke-dasharray:2 5;opacity:.5}
+.e.zero{opacity:.45}
+.flow{fill:none;stroke:var(--fg);stroke-opacity:.55;stroke-width:1.4;stroke-dasharray:3 13;animation:dash 1.1s linear infinite}
+.flow.err{stroke:var(--bad);stroke-opacity:.9}
+@keyframes dash{to{stroke-dashoffset:-16}}
+@media (prefers-reduced-motion: reduce){.flow{animation:none;display:none}.node{transition:none}}
+.e.lit{stroke:var(--lit);opacity:1}
+.e.dim{opacity:.12}
+.flow.dim{display:none}
+.el{font:11px var(--sans);fill:var(--fg2);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
+g.hide{display:none}
+.btn.chip[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.el.lit{fill:var(--lit)}
+
+/* inspector */
+#insp{position:fixed;top:56px;right:0;bottom:0;width:420px;max-width:100%;background:var(--panel);border-left:1px solid var(--line);
+  box-shadow:var(--shadow);z-index:18;overflow:auto;transform:translateX(105%);transition:transform .18s;padding:0 0 24px}
+#insp.open{transform:none}
+@media (prefers-reduced-motion: reduce){#insp{transition:none}}
+.ih{position:sticky;top:0;background:var(--panel);display:flex;align-items:center;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--line);z-index:1}
+.ih h2{margin:0;font-size:16px;flex:1;display:flex;align-items:center;gap:8px}
+.x{background:transparent;border:1px solid var(--line);border-radius:8px;width:30px;height:30px;cursor:pointer;color:var(--fg2)}
+.sec{padding:10px 16px 4px}
+.sec h3{margin:6px 0 8px;font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--accent)}
+.does{color:var(--fg2);margin:10px 16px 2px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--muted);font-weight:600;padding:4px 6px;border-bottom:1px solid var(--line)}
+td{padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+td.n{font-family:var(--mono);word-break:break-all}
+.sname{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.shelp{color:var(--muted);font-size:11.5px;margin-top:2px}
+.slist{display:flex;flex-direction:column;gap:8px}
+.scard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card)}
+.scard.drafted{border-color:var(--accent)}
+.srow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.scard .sname{font:600 12px var(--mono);overflow-wrap:anywhere}
+.scard .shelp{color:var(--fg2);font-size:12px;margin:3px 0 6px}
+.svals{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px;margin-bottom:6px}
+.svals .k{color:var(--muted)} .svals .v{font-family:var(--mono);overflow-wrap:anywhere}
+.scard .edit{display:flex;gap:6px} .scard .edit input,.scard .edit select{flex:1;min-width:0}
+.badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:650;border:1px solid;white-space:nowrap}
+.badge.live{color:var(--good);border-color:var(--good)}
+.badge.restart{color:var(--warn);border-color:var(--warn)}
+.badge.locked{color:var(--muted);border-color:var(--muted)}
+.badge.draft{color:var(--accent);border-color:var(--accent)}
+.edit{display:flex;gap:6px;margin-top:6px}
+.edit input,.edit select{flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:12px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;font-family:var(--mono)}
+.big{font-family:var(--mono);font-size:26px;font-weight:600}
+.spark{display:block;margin:6px 0 4px}
+.spark .a{fill:color-mix(in srgb,var(--net) 22%,transparent)}
+.spark .l{fill:none;stroke:var(--net);stroke-width:1.5}
+.spark.err .a{fill:color-mix(in srgb,var(--bad) 22%,transparent)} .spark.err .l{stroke:var(--bad)}
+ul.plain{margin:0;padding:0 0 0 16px}
+ul.plain li{margin:2px 0}
+code,.code{font-family:var(--mono);font-size:11.5px;color:var(--fg2);word-break:break-all}
+.muted{color:var(--muted)}
+.empty{color:var(--muted);font-style:italic}
+
+/* review dialog */
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:0;width:min(820px,94vw);
+  max-height:88vh;box-shadow:var(--shadow)}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+.dh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+.dh h2{margin:0;font-size:16px;flex:1}
+.db{padding:6px 18px 12px;overflow:auto;max-height:calc(88vh - 120px)}
+.df{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);flex-wrap:wrap}
+.tgt{border:1px solid var(--line);border-radius:10px;margin:12px 0;overflow:hidden}
+.tgt .th{display:flex;gap:8px;align-items:center;padding:8px 12px;background:var(--card);flex-wrap:wrap}
+.tgt .th .f{font-family:var(--mono);font-size:12px;flex:1;word-break:break-all}
+.tgt .why{padding:6px 12px;color:var(--fg2);font-size:12px}
+.tgt ul{margin:4px 0;padding:0 12px 0 28px;font-size:12px}
+pre.diff{margin:0;padding:8px 12px;font:11.5px/1.45 var(--mono);background:var(--bg);overflow:auto;border-top:1px solid var(--line);white-space:pre}
+pre.diff .p{color:var(--good)} pre.diff .m{color:var(--bad)} pre.diff .h{color:var(--muted)}
+.cmds{margin:0;padding:8px 12px;font:11.5px/1.5 var(--mono);background:var(--bg);border-top:1px solid var(--line);white-space:pre-wrap;word-break:break-all}
+.rm{background:transparent;border:0;color:var(--muted);cursor:pointer;padding:0 4px}
+.msg{padding:8px 12px;border-radius:8px;margin:8px 0;border:1px solid var(--line);background:var(--card)}
+.msg.ok{border-color:var(--good)} .msg.err{border-color:var(--bad)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">apex <b>flow studio</b></div>
+  <div class="lbl" id="lbl-proxy">Proxy</div>
+  <div class="seg" role="group" aria-labelledby="lbl-proxy" id="proxy-seg">
+    <button type="button" data-proxy="main" aria-pressed="true">:8788 main</button>
+    <button type="button" data-proxy="local" aria-pressed="false">:8789 local</button>
+  </div>
+  <div class="lbl" id="lbl-win">Window</div>
+  <div class="seg" role="group" aria-labelledby="lbl-win" id="win-seg">
+    <button type="button" data-win="15m" aria-pressed="true">15m</button>
+    <button type="button" data-win="1h" aria-pressed="false">1h</button>
+    <button type="button" data-win="24h" aria-pressed="false">24h</button>
+  </div>
+  <form class="test" id="test-form" role="search" aria-label="Test a prompt">
+    <label class="sr" for="test-in">Test a prompt (dry run, no model call)</label>
+    <input id="test-in" autocomplete="off" spellcheck="false" maxlength="20000"
+           placeholder="Test a prompt: >>auto fix the failing test   ( / )">
+    <button class="btn" type="submit">Test</button>
+  </form>
+  <button class="btn chip" type="button" id="br-btn" aria-pressed="false" title="Show fallback, retry, offload and side branches (b)">Branches</button>
+  <span class="draft" id="draft-badge" aria-live="polite">No draft</span>
+  <button class="btn primary" type="button" id="review-btn">Review</button>
+</header>
+<div id="result" role="status" aria-live="polite"></div>
+<main id="main" aria-label="Request flow canvas">
+  <div id="canvas"><svg id="edges" aria-hidden="true"></svg></div>
+</main>
+<aside id="insp" role="dialog" aria-modal="false" aria-labelledby="insp-title" aria-hidden="true"></aside>
+<div id="banner" role="status" aria-live="polite"></div>
+<dialog id="review" aria-labelledby="rv-title">
+  <div class="dh"><h2 id="rv-title">Review draft</h2><button class="x" type="button" id="rv-close" aria-label="Close review">✕</button></div>
+  <div class="db" id="rv-body"></div>
+  <div class="df">
+    <button class="btn" type="button" id="rv-discard">Discard draft</button>
+    <button class="btn" type="button" id="rv-rollback">Rollback last apply</button>
+    <button class="btn primary" type="button" id="rv-apply">Apply</button>
+  </div>
+</dialog>
+<script nonce="__NONCE__">
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const S = {flow:null, live:null, draft:null, review:null, win:"15m", proxy:"main", test:null, sel:null, focus:null, branches:false};
+// Branch edges (fallback, retry, offload, side sinks) are hidden until "Branches" is on, a touching node is
+// selected, or a test lights them: the main path stays readable (no spaghetti).
+const isBranch = e => e.kind !== "main" || /xval|escalation/.test(e.label || "");
+const L = {x0:24, laneW:212, gap:72, rowTop:136, rowH:80, rowGap:22, topBand:46};
+const laneIdx = id => S.flow.lanes.findIndex(l => l.id === id);
+const lx = i => L.x0 + i * (L.laneW + L.gap);
+const ry = r => L.rowTop + r * (L.rowH + L.rowGap);
+
+function h(tag, attrs, ...kids){
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})){
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()){ if (c === null || c === undefined || c === false) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(String(c))); }
+  return e;
+}
+const SVGNS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs){ const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) e.setAttribute(k, v); return e; }
+
+async function api(path, opts){
+  opts = opts || {};
+  const init = {method: opts.method || "GET", headers: {"X-Studio-Token": TOKEN}, cache: "no-store"};
+  if (opts.body !== undefined){ init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.body); }
+  const r = await fetch(path, init);
+  let j = null; try { j = await r.json(); } catch (e) { j = null; }
+  if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+function banner(text, err){ const b = document.getElementById("banner");
+  b.textContent = text || ""; b.className = text ? ("show" + (err ? " err" : "")) : ""; }
+
+/* ---------- canvas ---------- */
+function nodeById(id){ return S.flow.nodes.find(n => n.id === id); }
+function rect(n){ const i = laneIdx(n.lane); return {x: lx(i), y: ry(n.row), w: L.laneW, h: L.rowH, lane: i}; }
+function maxRow(laneI){ return Math.max(-1, ...S.flow.nodes.filter(n => laneIdx(n.lane) === laneI).map(n => n.row)); }
+
+function buildCanvas(){
+  const c = document.getElementById("canvas");
+  c.querySelectorAll(".node,.lane-h,.lane-bg").forEach(e => e.remove());
+  const lanes = S.flow.lanes.length;
+  const W = lx(lanes - 1) + L.laneW + L.x0;
+  const rows = Math.max(...S.flow.nodes.map(n => n.row)) + 1;
+  const H = ry(rows) + 70;
+  c.style.width = W + "px"; c.style.height = H + "px";
+  const svg = document.getElementById("edges"); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  S.flow.lanes.forEach((l, i) => {
+    const bg = h("div", {class: "lane-bg", "aria-hidden": "true"});
+    bg.style.left = (lx(i) - 10) + "px"; bg.style.top = "8px"; bg.style.width = (L.laneW + 20) + "px";
+    bg.style.height = (ry(maxRow(i) + 1) - 8) + "px";
+    c.append(bg);
+    const t = h("div", {class: "lane-h", text: l.name, "aria-hidden": "true"});
+    t.style.left = lx(i) + "px"; c.append(t);
+  });
+  for (const n of S.flow.nodes){
+    const r = rect(n);
+    const card = h("div", {class: "node lane-" + n.lane, id: "n-" + n.id, role: "button", tabindex: "-1",
+      "data-id": n.id, onclick: () => openInspector(n.id), onkeydown: onNodeKey, onfocus: () => { S.focus = n.id; }});
+    card.style.left = r.x + "px"; card.style.top = r.y + "px"; card.style.width = r.w + "px"; card.style.height = r.h + "px";
+    const side = h("div", {class: "side"});
+    if (n.locked) side.append(h("span", {class: "lock", title: "Locked: read-only", "aria-hidden": "true", text: "🔒"}));
+    if (n.switch){
+      const sw = h("button", {class: "sw", type: "button", role: "switch", "aria-checked": "false",
+        "aria-label": n.switch + " on/off (adds to draft)", "data-setting": n.switch,
+        onclick: ev => { ev.stopPropagation(); toggleSwitch(n.switch); }, onkeydown: ev => ev.stopPropagation()});
+      side.append(sw);
+    }
+    side.append(h("span", {class: "dot nodata", "aria-hidden": "true"}));
+    card.append(h("div", {class: "ic", "aria-hidden": "true", text: n.icon}),
+      h("div", {class: "nm"}, h("span", {class: "t", text: n.name})), side,
+      h("div", {class: "val"}, h("span", {class: "n", text: "—"}), h("span", {class: "u", text: n.unit || ""})));
+    c.append(card);
+  }
+  const first = document.getElementById("n-" + (S.focus || S.flow.nodes[0].id));
+  if (first) first.tabIndex = 0;
+  drawEdges();
+  paintLive(); paintSwitches(); paintTest();
+}
+
+function anchors(e){
+  const a = rect(nodeById(e.from)), b = rect(nodeById(e.to));
+  return {a, b};
+}
+function edgePath(e, slot){
+  const {a, b} = anchors(e);
+  if (e.from === e.to){                                   // self-loop (retry), left side
+    const x = a.x, y = a.y + a.h / 2;
+    return {d: `M${x} ${y - 14} C${x - 40} ${y - 30} ${x - 40} ${y + 30} ${x} ${y + 14}`, lx: x - 52, ly: y + 4, anchor: "end"};
+  }
+  if (a.lane === b.lane){                                 // same lane, vertical
+    const down = b.y > a.y;
+    if (e.kind === "main"){
+      const x = a.x + a.w / 2, y1 = down ? a.y + a.h : a.y, y2 = down ? b.y : b.y + b.h;
+      return {d: `M${x} ${y1} L${x} ${y2}`, lx: x + 6, ly: (y1 + y2) / 2 + 4};
+    }
+    const right = e.kind === "error";
+    const bulge = e.kind === "skip" ? 46 : 26;
+    const x1 = right ? a.x + a.w : a.x, x2 = right ? b.x + b.w : b.x;
+    const y1 = a.y + a.h * 0.72, y2 = b.y + b.h * 0.28, dx = right ? bulge : -bulge;
+    return {d: `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 + dx} ${y2} ${x2} ${y2}`,
+      lx: right ? x1 + bulge * 0.8 + 4 : x1 - bulge * 0.8 - 4, ly: (y1 + y2) / 2 + 4, anchor: right ? "start" : "end"};
+  }
+  const fwd = b.lane > a.lane;
+  const sx = fwd ? a.x + a.w : a.x, tx = fwd ? b.x : b.x + b.w;
+  const sy = a.y + a.h / 2, ty = b.y + b.h / 2;
+  const span = Math.abs(b.lane - a.lane);
+  if (span === 1){
+    const m = (tx - sx) / 2;
+    return {d: `M${sx} ${sy} C${sx + m} ${sy} ${tx - m} ${ty} ${tx} ${ty}`, lx: (sx + tx) / 2, ly: (sy + ty) / 2 - 6, anchor: "middle"};
+  }
+  // lane-skipping edge: run in a channel above row 0 or below the skipped lanes
+  let lo = Math.min(a.lane, b.lane) + 1, hi = Math.max(a.lane, b.lane) - 1, mr = -1;
+  for (let i = lo; i <= hi; i++) mr = Math.max(mr, maxRow(i));
+  const bottomY = Math.max(sy, ty, ry(mr + 1) - L.rowGap / 2 + 10 + slot * 8);
+  const topY = L.rowTop - 16 - slot * 11;
+  const useTop = (sy - topY) + (ty - topY) < (bottomY - sy) + (bottomY - ty);
+  const cy = useTop ? topY : bottomY;
+  const g = L.gap / 2;
+  const x1 = sx + g, x2 = tx - g;
+  const d = `M${sx} ${sy} C${sx + g * 0.9} ${sy} ${sx + g * 0.1} ${cy} ${x1} ${cy} L${x2} ${cy} ` +
+            `C${tx - g * 0.1} ${cy} ${tx - g * 0.9} ${ty} ${tx} ${ty}`;
+  // label at the start of its own run (not the middle, where vertical drops cross); slot 0 has the
+  // other top slots above it, so its label goes under the line
+  return {d, lx: Math.min(x1 + 8 + slot * 130, (x1 + x2) / 2), ly: useTop ? (slot === 0 ? cy + 13 : cy - 4) : cy + 15, anchor: "start"};
+}
+
+function edgeWidth(v){ return v ? 1.6 + Math.min(6, Math.log10(v + 1) * 1.8) : 1.4; }
+function drawEdges(){
+  const svg = document.getElementById("edges");
+  svg.replaceChildren();
+  let slot = 0;
+  for (const e of S.flow.edges){
+    const a = rect(nodeById(e.from)), b = rect(nodeById(e.to));
+    const skips = a.lane !== b.lane && Math.abs(b.lane - a.lane) > 1;
+    const p = edgePath(e, skips ? slot++ : 0);
+    const g = sv("g", {"data-edge": e.id});
+    const base = sv("path", {d: p.d, class: "e " + e.kind});
+    const t = sv("title", {}); t.textContent = `${e.from} → ${e.to}${e.label ? " (" + e.label + ")" : ""}`;
+    base.append(t); g.append(base);
+    const fl = sv("path", {d: p.d, class: "flow" + (e.kind === "error" ? " err" : "")});
+    fl.style.display = "none"; g.append(fl);
+    if (e.label){ const tx = sv("text", {x: p.lx, y: p.ly, class: "el", "text-anchor": p.anchor || "start"}); tx.textContent = e.label; g.append(tx); }
+    svg.append(g);
+  }
+  paintEdges();
+}
+function paintEdges(){
+  const ed = (S.live && S.live.edges) || {};
+  const lit = new Set((S.test && S.test.ok && S.test.edges) || []);
+  document.querySelectorAll("#edges g[data-edge]").forEach(g => {
+    const id = g.getAttribute("data-edge"); const info = ed[id] || {};
+    const base = g.querySelector("path.e"), fl = g.querySelector("path.flow"), lab = g.querySelector("text");
+    base.setAttribute("stroke-width", lit.has(id) ? 3.5 : edgeWidth(info.vol));
+    base.classList.toggle("zero", !info.active && !lit.has(id));
+    base.classList.toggle("lit", lit.has(id));
+    base.classList.toggle("dim", S.test && S.test.ok && !lit.has(id));
+    if (lab){ lab.classList.toggle("lit", lit.has(id)); }
+    fl.style.display = info.active ? "" : "none";
+    fl.classList.toggle("dim", !!(S.test && S.test.ok && !lit.has(id)));
+    const e = S.flow.edges.find(x => x.id === id);
+    const show = !e || !isBranch(e) || S.branches || lit.has(id) || (S.sel && (e.from === S.sel || e.to === S.sel));
+    g.classList.toggle("hide", !show);
+    const t = base.querySelector("title"); if (t) t.textContent = t.textContent.replace(/ · .*$/, "") +
+      (info.vol !== null && info.vol !== undefined ? ` · ${info.vol} in ${S.win}` : " · no data");
+  });
+}
+function statusWord(s){ return {ok:"healthy", warn:"warning", error:"errors", idle:"no traffic", nodata:"no data", locked:"locked"}[s] || s; }
+function paintLive(){
+  if (!S.flow) return;
+  const ln = (S.live && S.live.nodes) || {};
+  for (const n of S.flow.nodes){
+    const card = document.getElementById("n-" + n.id); if (!card) continue;
+    const v = ln[n.id] || {text: "—", unit: n.unit, status: n.locked ? "locked" : "nodata"};
+    card.querySelector(".val .n").textContent = v.text;
+    card.querySelector(".val .u").textContent = v.unit || "";
+    const dot = card.querySelector(".dot"); dot.className = "dot " + v.status;
+    card.setAttribute("aria-label", `${n.name}: ${v.text} ${v.unit || ""}, ${statusWord(v.status)}${n.locked ? ", locked" : ""}. Press Enter for details.`);
+  }
+  paintEdges();
+  if (S.live && S.live.empty) banner("No local data yet: no telemetry, route log or pressure file in this home. Numbers show —.", false);
+  else if (S.live && !S.live.sources.telemetry) banner(`No proxy telemetry for ${S.proxy} (${S.live.telemetry.file}). Proxy numbers show —.`, false);
+  else banner("");
+  if (S.sel) renderInspector();
+}
+
+/* ---------- draft + switches ---------- */
+function draftVal(id){
+  const ch = (S.draft && S.draft.changes) || {};
+  const k = Object.keys(ch).find(k => ch[k].id === id && (!ch[k].proxy || ch[k].proxy === S.proxy));
+  return k ? {key: k, value: ch[k].value} : null;
+}
+function settingOf(id){ for (const n of S.flow.nodes) for (const s of n.settings) if (s.id === id) return s; return null; }
+function effective(s){ const d = draftVal(s.id); if (d) return d.value;
+  if (s.current && s.current.value !== null && s.current.value !== undefined) return s.current.value; return s.default; }
+function paintSwitches(){
+  document.querySelectorAll(".sw[data-setting]").forEach(sw => {
+    const s = settingOf(sw.getAttribute("data-setting")); if (!s) return;
+    const on = String(effective(s)) === "1";
+    sw.setAttribute("aria-checked", on ? "true" : "false");
+    const d = draftVal(s.id); sw.classList.toggle("drafted", !!d);
+    sw.title = `${s.name} = ${on ? "1" : "0"}${d ? " (draft)" : s.current.state === "unknown" ? " (default; pi env not visible)" : ""}`;
+  });
+  const n = (S.draft && Object.keys(S.draft.changes).length) || 0;
+  const b = document.getElementById("draft-badge");
+  b.textContent = n ? `Draft · ${n} change${n === 1 ? "" : "s"}` : "No draft";
+  b.className = "draft" + (n ? " has" : "");
+}
+async function putDraft(body){
+  try { const r = await api("/api/draft", {method: "PUT", body}); S.draft = r.draft; S.review = r.review; paintSwitches();
+        if (S.sel) renderInspector(); return true; }
+  catch (e) { banner("Draft not changed: " + e.message, true); return false; }
+}
+function toggleSwitch(id){
+  const s = settingOf(id); if (!s) return;
+  const next = String(effective(s)) === "1" ? "0" : "1";
+  const d = draftVal(id);
+  const live = s.current && s.current.value !== null && s.current.value !== undefined ? s.current.value : s.default;
+  if (d && String(live) === next) putDraft({unset: [d.key]});
+  else putDraft({set: [{id, value: next, proxy: S.proxy}]});
+}
+
+/* ---------- inspector ---------- */
+function spark(series, err){
+  const w = 360, hgt = 44; const v = series || [];
+  const svg = sv("svg", {width: w, height: hgt, class: "spark" + (err ? " err" : ""), role: "img",
+    "aria-label": "sparkline of the window, " + v.length + " buckets"});
+  if (!v.length) return svg;
+  const mx = Math.max(1, ...v); const step = w / Math.max(1, v.length - 1);
+  const pts = v.map((y, i) => `${(i * step).toFixed(1)},${(hgt - 3 - (y / mx) * (hgt - 8)).toFixed(1)}`);
+  svg.append(sv("polygon", {class: "a", points: `0,${hgt} ${pts.join(" ")} ${w},${hgt}`}), sv("polyline", {class: "l", points: pts.join(" ")}));
+  return svg;
+}
+function fmtCur(s){
+  const c = s.current || {};
+  if (c.state === "secret-set") return "set";
+  if (c.state === "secret-unset") return "not set";
+  if (c.state === "unknown") return "not visible (pi env)";
+  if (c.value === null || c.value === undefined || c.value === "") return "(default)";
+  return c.value;
+}
+function editor(s){
+  if (!s.editable) return null;
+  const d = draftVal(s.id); const cur = d ? d.value : (s.current && s.current.value) || s.default || "";
+  let input;
+  const lab = `New value for ${s.name}`;
+  if (s.kind === "bool" || s.kind === "enum"){
+    const opts = s.kind === "bool" ? ["1", "0"] : s.choices;
+    input = h("select", {"aria-label": lab}, opts.map(o => h("option", {value: o, text: o, selected: String(cur) === o})));
+  } else {
+    input = h("input", {"aria-label": lab, value: cur, inputmode: (s.kind === "int" || s.kind === "float") ? "decimal" : null,
+      spellcheck: "false"});
+  }
+  const add = h("button", {class: "btn", type: "button", text: "Add to draft",
+    onclick: () => putDraft({set: [{id: s.id, value: input.value, proxy: S.proxy}]})});
+  const box = h("div", {class: "edit"}, input, add);
+  if (d) box.append(h("button", {class: "btn", type: "button", text: "Undo", "aria-label": "Remove from draft",
+    onclick: () => putDraft({unset: [d.key]})}));
+  return box;
+}
+function kv(pairs){ const dl = h("dl", {class: "kv"});
+  for (const [k, v] of pairs) dl.append(h("dt", {text: k}), h("dd", {text: v === null || v === undefined ? "—" : String(v)}));
+  return dl; }
+function liveDetails(n){
+  const L2 = S.live; if (!L2) return [h("p", {class: "empty", text: "Loading…"})];
+  const v = L2.nodes[n.id] || {}; const t = L2.telemetry || {};
+  const out = [h("div", {}, h("span", {class: "big", text: v.text || "—"}), " ", h("span", {class: "muted", text: (v.unit || "") + " · " + S.win}))];
+  if (v.series && v.series.some(x => x > 0)) out.push(spark(v.series, n.id === "upstream"));
+  else out.push(h("p", {class: "empty", text: v.value === null || v.value === undefined ? "No data for this step in this window." : "No events in this window."}));
+  const lane = n.lane;
+  if (lane === "proxy" || lane === "upstreams" || n.id === "sink.telemetry" || n.id === "src.claude" || n.id === "src.codex"){
+    if (!t.present){ out.push(h("p", {class: "empty", text: "No telemetry file: " + (t.file || "?")})); }
+    else out.push(kv([["requests", t.requests], ["errors", `${t.errors} (${t.error_pct === null ? "—" : t.error_pct + " %"})`],
+      ["retries", t.retries], ["502 unreachable", t.unreachable], ["ttft p50 / p90", `${t.ttft_p50 ?? "—"} / ${t.ttft_p90 ?? "—"} ms`],
+      ["tokens in / out", `${t.tokens_in} / ${t.tokens_out}`], ["cache read", t.cache_read],
+      ["heartbeat", t.last_hb_age_s === null ? "none in window" : `${t.last_hb_age_s} s ago (${t.alive ? "alive" : "stale"})`],
+      ["top causes", Object.entries(t.causes || {}).map(([k, c]) => `${k} ${c}`).join(", ") || "none"]]));
+  }
+  if (n.id === "cue" || n.id === "src.pi" || n.id === "sink.routelog")
+    out.push(kv([["pi turns", L2.pi.turns], ["escalated", L2.pi.escalated]]));
+  if (n.id === "sink.pressure" && L2.pressure) out.push(kv([["level", L2.pressure.level], ["age", (L2.pressure.age_s ?? "—") + " s"],
+    ["small sample", L2.pressure.insufficient ? "yes" : "no"]]));
+  if (n.id === "sink.xval" && L2.xval) out.push(kv([["categories", L2.xval.categories], ["pulls (total)", L2.xval.pulls]]));
+  if (n.id === "up.ollama") out.push(kv([["local proxy :8789", L2.local.present ? `${L2.local.requests} req` : "no telemetry"]]));
+  if (n.id === "resolve") out.push(h("p", {class: "muted", text: "The fallback count is not logged: resolve writes no source field to the conformance log."}));
+  return out;
+}
+function renderInspector(){
+  const n = nodeById(S.sel); const p = document.getElementById("insp"); if (!n) return;
+  const keepScroll = p.scrollTop;
+  const title = h("h2", {id: "insp-title"}, h("span", {"aria-hidden": "true", text: n.icon}), n.name,
+    n.locked ? h("span", {class: "badge locked", text: "🔒 locked"}) : null);
+  const kids = [h("div", {class: "ih"}, title, h("button", {class: "x", type: "button", "aria-label": "Close inspector", text: "✕", onclick: closeInspector})),
+    h("p", {class: "does", text: n.does})];
+  const sec = (name, ...body) => h("section", {class: "sec", "aria-label": name}, h("h3", {text: name}), ...body);
+  if (n.settings.length){
+    // one card per setting: a 420 px drawer has no room for a 4-column table (values wrapped per letter)
+    const list = h("div", {class: "slist"});
+    for (const s of n.settings){
+      const d = draftVal(s.id);
+      const eff = {live: "applies on /reload", restart: "needs a proxy restart", locked: "read-only"}[s.class] || s.class;
+      list.append(h("div", {class: "scard" + (d ? " drafted" : "")},
+        h("div", {class: "srow"}, h("span", {class: "sname", text: s.name}),
+          h("span", {class: "badge " + s.class, title: eff, text: s.class === "locked" ? "🔒 locked" : s.class})),
+        h("div", {class: "shelp", text: s.help}),
+        h("div", {class: "svals"},
+          h("span", {}, h("span", {class: "k", text: "now "}), h("span", {class: "v", text: String(fmtCur(s))})),
+          h("span", {}, h("span", {class: "k", text: "default "}), h("span", {class: "v", text: s.default === "" ? "—" : String(s.default)})),
+          d ? h("span", {class: "badge draft", text: "draft → " + d.value}) : null),
+        editor(s)));
+    }
+    kids.push(sec("Settings", list));
+  } else kids.push(sec("Settings", h("p", {class: "empty", text: "No settings for this step."})));
+  if (n.id === "cue" && S.flow.families){
+    const tb = h("tbody");
+    for (const [name, f] of Object.entries(S.flow.families))
+      tb.append(h("tr", {}, h("td", {class: "n", text: ">>" + name}), h("td", {text: f.provider}), h("td", {class: "n", text: f.id}),
+        h("td", {text: f.effort || "—"}), h("td", {class: "muted", text: f.source})));
+    kids.push(sec("Families", h("p", {class: "muted", text: `Edits go to ${S.flow.files.models}${S.flow.files.models_present ? "" : " (missing)"} and ${S.flow.files.pi_routes}${S.flow.files.pi_routes_present ? "" : " (missing)"}. Only families in those files are editable.`}),
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", {text: "Family"}), h("th", {text: "Provider"}), h("th", {text: "Model id"}), h("th", {text: "Effort"}), h("th", {text: "From"}))), tb)));
+  }
+  kids.push(sec("Live · " + S.win, ...liveDetails(n)));
+  if (n.branches.length) kids.push(sec("Branches", h("ul", {class: "plain"}, n.branches.map(b => h("li", {text: b})))));
+  kids.push(sec("Code", h("ul", {class: "plain"}, n.refs.map(r => h("li", {}, h("span", {class: "code", text: `${r[0]}:${r[1]}`}), h("span", {class: "muted", text: "  " + r[2]}))))));
+  kids.push(sec("Sinks it writes", n.sinks.length ? h("ul", {class: "plain"}, n.sinks.map(s => h("li", {class: "code", text: s}))) : h("p", {class: "empty", text: "None."})));
+  p.replaceChildren(...kids);
+  p.scrollTop = keepScroll;
+}
+function openInspector(id){
+  S.sel = id; document.querySelectorAll(".node.sel").forEach(e => e.classList.remove("sel"));
+  const card = document.getElementById("n-" + id); if (card) card.classList.add("sel");
+  const p = document.getElementById("insp"); renderInspector(); p.classList.add("open"); p.setAttribute("aria-hidden", "false");
+  p.scrollTop = 0; const x = p.querySelector(".x"); if (x) x.focus();
+  paintEdges();
+}
+function closeInspector(){
+  const p = document.getElementById("insp"); p.classList.remove("open"); p.setAttribute("aria-hidden", "true");
+  const id = S.sel; S.sel = null; document.querySelectorAll(".node.sel").forEach(e => e.classList.remove("sel"));
+  const card = id && document.getElementById("n-" + id); if (card) focusNode(id);
+  paintEdges();
+}
+
+/* ---------- keyboard ---------- */
+function focusNode(id){
+  document.querySelectorAll(".node").forEach(e => e.tabIndex = -1);
+  const c = document.getElementById("n-" + id); if (c){ c.tabIndex = 0; c.focus(); S.focus = id; }
+}
+function onNodeKey(ev){
+  const id = ev.currentTarget.getAttribute("data-id"); const n = nodeById(id); const li = laneIdx(n.lane);
+  const inLane = i => S.flow.nodes.filter(x => laneIdx(x.lane) === i).sort((a, b) => a.row - b.row);
+  let t = null;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp"){
+    const l = inLane(li); const k = l.findIndex(x => x.id === id);
+    t = l[k + (ev.key === "ArrowDown" ? 1 : -1)];
+  } else if (ev.key === "ArrowRight" || ev.key === "ArrowLeft"){
+    const ni = li + (ev.key === "ArrowRight" ? 1 : -1);
+    if (ni >= 0 && ni < S.flow.lanes.length){ const l = inLane(ni);
+      t = l.reduce((best, x) => !best || Math.abs(x.row - n.row) < Math.abs(best.row - n.row) ? x : best, null); }
+  } else if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); openInspector(id); return; }
+  else return;
+  ev.preventDefault(); if (t) focusNode(t.id);
+}
+document.addEventListener("keydown", ev => {
+  const tag = (ev.target && ev.target.tagName) || "";
+  if (ev.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(tag)){ ev.preventDefault(); document.getElementById("test-in").focus(); return; }
+  if (ev.key === "b" && !/INPUT|SELECT|TEXTAREA/.test(tag) && !ev.metaKey && !ev.ctrlKey){ toggleBranches(); return; }
+  if (ev.key === "Escape"){
+    if (document.getElementById("review").open) return;   // the dialog closes itself
+    if (S.sel){ ev.preventDefault(); closeInspector(); return; }
+    if (S.test){ clearTest(); }
+  }
+});
+
+/* ---------- test a prompt ---------- */
+function paintTest(){
+  const lit = new Set((S.test && S.test.ok && S.test.path) || []);
+  document.querySelectorAll(".node").forEach(c => { const id = c.getAttribute("data-id");
+    c.classList.toggle("lit", lit.has(id)); c.classList.toggle("dim", !!(S.test && S.test.ok) && !lit.has(id)); });
+  paintEdges();
+  const r = document.getElementById("result"); const m = document.getElementById("main");
+  if (!S.test){ r.className = ""; r.replaceChildren(); m.classList.remove("withres"); return; }
+  const t = S.test; const kids = [h("span", {class: "lbl", text: "Test path"})];
+  if (!t.ok){ kids.push(h("span", {class: "reason", text: t.error || "failed"})); }
+  else if (!t.family){ kids.push(h("span", {class: "chip k", text: ">>" + t.cue}), h("span", {class: "reason", text: t.reason.text + (t.families ? " · known: " + t.families.join(", ") : "")})); }
+  else {
+    const steps = [["source", "pi"], ["cue", ">>" + t.cue], ["family", ">>" + t.family], ["model", t.model + (t.effort ? " · " + t.effort : "")],
+      ["upstream", (nodeById(t.upstream) || {}).name || t.upstream]];
+    steps.forEach(([k, v], i) => { if (i) kids.push(h("span", {class: "arrow", "aria-hidden": "true", text: "→"}));
+      kids.push(h("span", {class: "chip" + (k === "family" ? " k" : ""), title: k}, h("span", {class: "muted", text: k}), " ", h("span", {class: "mono", text: v}))); });
+    const rs = t.reason || {};
+    kids.push(h("span", {class: "reason"}, " · ", h("b", {text: "why: "}), rs.source === "cue" ? rs.text :
+      `source=${rs.source}, task=${rs.task_type || "unclassified"}, confidence ${Number(rs.confidence || 0).toFixed(2)}${rs.cell ? ", cell " + rs.cell : ""}, embedding ${rs.embedding || "off"}`),
+      h("span", {class: "muted", text: " · " + t.via + " · dry run"}));
+  }
+  kids.push(h("button", {class: "btn", type: "button", text: "Clear", "aria-label": "Clear test path", onclick: clearTest}));
+  r.replaceChildren(...kids); r.className = "show";
+  m.style.setProperty("--restop", (56 + r.offsetHeight) + "px"); m.classList.add("withres");
+}
+function clearTest(){ S.test = null; paintTest(); }
+async function runTest(v){
+  try { S.test = await api("/api/test", {method: "POST", body: {prompt: v}}); } catch (e) { S.test = {ok: false, error: e.message}; }
+  paintTest(); paintEdges();
+}
+document.getElementById("test-form").addEventListener("submit", ev => {
+  ev.preventDefault(); const v = document.getElementById("test-in").value.trim(); if (v) runTest(v);
+});
+function toggleBranches(){
+  S.branches = !S.branches; document.getElementById("br-btn").setAttribute("aria-pressed", String(S.branches)); paintEdges();
+}
+document.getElementById("br-btn").addEventListener("click", toggleBranches);
+
+/* ---------- review ---------- */
+function diffPre(text){
+  const pre = h("pre", {class: "diff", tabindex: "0", "aria-label": "diff"});
+  for (const ln of (text || "").split("\n")){ if (!ln) continue;
+    const cls = ln.startsWith("+++") || ln.startsWith("---") || ln.startsWith("@@") ? "h" : ln.startsWith("+") ? "p" : ln.startsWith("-") ? "m" : "";
+    pre.append(h("span", {class: cls, text: ln + "\n"})); }
+  return pre;
+}
+function renderReview(extra){
+  const rv = S.review || {targets: [], count: 0, errors: []};
+  const body = document.getElementById("rv-body"); const kids = [];
+  if (extra) kids.push(extra);
+  kids.push(h("p", {class: "muted", text: rv.count ? `${rv.count} change(s): ${rv.live} live (Apply writes the file, with a backup), ${rv.restart} restart (Apply makes a plan only).` :
+    "The draft is empty. Use a switch on a card, or Add to draft in the inspector."}));
+  for (const e of rv.errors || []) kids.push(h("div", {class: "msg err", text: `${e.key}: ${e.error}`}));
+  for (const t of rv.targets){
+    const box = h("div", {class: "tgt"});
+    box.append(h("div", {class: "th"}, h("span", {class: "badge " + t.class, text: t.class === "live" ? "live: Apply writes" : "restart: plan only"}),
+      h("span", {class: "f", text: t.file})));
+    box.append(h("div", {class: "why", text: t.error ? "Cannot apply: " + t.error : t.why}));
+    box.append(h("ul", {}, t.changes.map(c => h("li", {}, h("span", {class: "code", text: `${c.name} = ${c.value}`}),
+      h("button", {class: "rm", type: "button", "aria-label": "Remove " + c.name + " from draft", text: "✕",
+        onclick: async () => { await putDraft({unset: [c.key]}); renderReview(); }})))));
+    if (t.diff) box.append(diffPre(t.diff));
+    if (t.commands) box.append(h("pre", {class: "cmds", tabindex: "0", "aria-label": "commands to run yourself", text: "# run these yourself when no agent is busy\n" + t.commands.join("\n")}));
+    kids.push(box);
+  }
+  const lb = rv.last_backup;
+  kids.push(h("p", {class: "muted", text: lb ? `Last backup: ${lb.id} (${lb.files.join(", ")})` : "No backup yet: Rollback has nothing to restore."}));
+  body.replaceChildren(...kids);
+  const ap = document.getElementById("rv-apply");
+  ap.textContent = rv.live ? `Apply ${rv.live} live change${rv.live === 1 ? "" : "s"}` + (rv.restart ? " + plan" : "") : (rv.restart ? "Make restart plan" : "Apply");
+  ap.disabled = !rv.count; document.getElementById("rv-rollback").disabled = !lb; document.getElementById("rv-discard").disabled = !rv.count;
+}
+async function openReview(){
+  try { const r = await api("/api/draft"); S.draft = r.draft; S.review = r.review; } catch (e) { banner("Review: " + e.message, true); }
+  paintSwitches(); renderReview(); const d = document.getElementById("review"); if (!d.open) d.showModal();
+}
+document.getElementById("review-btn").addEventListener("click", openReview);
+document.getElementById("rv-close").addEventListener("click", () => document.getElementById("review").close());
+document.getElementById("rv-discard").addEventListener("click", async () => { await putDraft({clear: true}); renderReview(); });
+document.getElementById("rv-apply").addEventListener("click", async () => {
+  let msg;
+  try { const r = await api("/api/apply", {method: "POST", body: {}});
+    msg = h("div", {class: "msg ok"}, h("b", {text: r.applied.length ? "Applied: " : "Nothing written. "}),
+      r.applied.map(a => `${a.file} (${a.keys.length})`).join(", "),
+      r.plans.length ? ` · ${r.plans.length} restart plan(s) below: run them yourself. ` : " ",
+      h("span", {class: "muted", text: r.applied.length ? "Run /reload in pi to use the new routes." : ""}));
+    const d = await api("/api/draft"); S.draft = d.draft; S.review = d.review;
+    S.flow = await api("/api/flow?proxy=" + S.proxy); buildCanvas();
+  } catch (e) { msg = h("div", {class: "msg err", text: "Apply failed: " + e.message}); }
+  renderReview(msg);
+});
+document.getElementById("rv-rollback").addEventListener("click", async () => {
+  let msg;
+  try { const r = await api("/api/rollback", {method: "POST", body: {}});
+    msg = h("div", {class: "msg ok", text: `Restored ${r.restored.join(", ")} from ${r.backup}.` + (r.warnings.length ? " " + r.warnings.join(" ") : "")});
+    const d = await api("/api/draft"); S.draft = d.draft; S.review = d.review;
+    S.flow = await api("/api/flow?proxy=" + S.proxy); buildCanvas();
+  } catch (e) { msg = h("div", {class: "msg err", text: "Rollback failed: " + e.message}); }
+  renderReview(msg);
+});
+
+/* ---------- controls + load ---------- */
+function setSeg(sel, attr, val){ document.querySelectorAll(sel + " button").forEach(b => b.setAttribute("aria-pressed", b.getAttribute(attr) === val ? "true" : "false")); }
+document.getElementById("win-seg").addEventListener("click", ev => { const b = ev.target.closest("button"); if (!b) return;
+  S.win = b.getAttribute("data-win"); setSeg("#win-seg", "data-win", S.win); loadLive(); });
+document.getElementById("proxy-seg").addEventListener("click", async ev => { const b = ev.target.closest("button"); if (!b) return;
+  S.proxy = b.getAttribute("data-proxy"); setSeg("#proxy-seg", "data-proxy", S.proxy); await loadFlow(); loadLive(); });
+async function loadFlow(){
+  try { S.flow = await api("/api/flow?proxy=" + S.proxy); buildCanvas(); }
+  catch (e) { banner("Cannot load the flow: " + e.message, true); }
+}
+async function loadLive(){
+  try { S.live = await api(`/api/live?window=${S.win}&proxy=${S.proxy}`); paintLive(); }
+  catch (e) { banner("Live numbers not available: " + e.message, true); }
+}
+(async function init(){
+  const q = new URLSearchParams(location.search);
+  if (q.get("window") && ["15m", "1h", "24h"].includes(q.get("window"))){ S.win = q.get("window"); setSeg("#win-seg", "data-win", S.win); }
+  try { const r = await api("/api/draft"); S.draft = r.draft; S.review = r.review; } catch (e) { S.draft = {changes: {}}; }
+  await loadFlow(); await loadLive();
+  setInterval(loadLive, 15000);
+  // deep links (also used for screenshots): #node=<id>  #test=<prompt>  #review  #branches
+  const hsh = new URLSearchParams(location.hash.slice(1));
+  if (hsh.has("branches")) toggleBranches();
+  if (hsh.get("test")){ document.getElementById("test-in").value = hsh.get("test"); await runTest(hsh.get("test")); }
+  if (hsh.get("node") && nodeById(hsh.get("node"))) openInspector(hsh.get("node"));
+  if (hsh.has("review")) openReview();
+})();
+</script>
+</body>
+</html>
