@@ -377,7 +377,13 @@ class Tail:
         except OSError:
             return out                       # rotated, the new file not yet written
         if (st.st_dev, st.st_ino) != self.ino:
-            out += self._drain(cap)          # the rest of the old generation
+            # leave the old generation only at its end: a capped read per poll, no row lost
+            try:
+                at_end = self.f.tell() >= os.fstat(self.f.fileno()).st_size
+            except OSError:
+                at_end = True
+            if not at_end:
+                return out
             self.close()
             self._open(at_end=False)
             if self.f is not None:

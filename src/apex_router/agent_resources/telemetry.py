@@ -34,7 +34,7 @@ def fresh_input(r: dict) -> int:
     u = r.get("usage") if isinstance(r.get("usage"), dict) else {}
     ti = _num(r.get("tokens_in")) or _num(u.get("input_tokens")) or 0
     if str(r.get("endpoint_id") or "").lower() == "openai":
-        return max(0, int(ti - (_num(r.get("cache_read_tokens")) or 0)))
+        return max(0, int(ti - _cache_read(r)))   # the same cache count the totals use
     return int(ti)
 
 

@@ -446,7 +446,10 @@ def _wait(cond, t=15.0):
 
 
 def test_stream_snapshot_at_connect_and_periodic(studio):
-    srv, *_ = studio
+    srv, _, root, _ = studio
+    # rows relative to NOW (not fixture time): `live` = a request in the last 60 s, so a slow run
+    # must not age the fixture rows out of it
+    _write(root / ".apex" / "telemetry.jsonl", _rows_one_per_agent(time.time()))
     s = SSE(srv)
     try:
         assert s.status == 200 and s.headers["content-type"].startswith("text/event-stream")
@@ -656,3 +659,30 @@ def test_no_response_contains_a_planted_secret_or_the_token(studio):
                 str(root), "please fix"):
         assert bad not in blob, bad
     assert "it-entra" not in blob                            # model ids become families
+
+
+def test_openai_usage_fallback_cache_is_not_counted_twice():
+    # xval P2: fresh_input took the cache count only from the top level, _cache_read also from usage
+    from apex_router.studio import traffic
+    row = {"endpoint_id": "openai", "tokens_in": 100, "cache_read_tokens": 0,
+           "usage": {"cache_read_tokens": 80}}
+    t = traffic.tokens_of(row)
+    assert t["in"] + t["cache_read"] == 100 and t["cache_read"] == 80
+
+
+def test_tail_rotation_keeps_every_old_row_beyond_the_read_cap(tmp_path):
+    # xval P2: after a rotation the old generation got one more capped read, then was closed
+    from apex_router.studio import traffic
+    p = tmp_path / "t.jsonl"
+    p.write_text("")
+    t = traffic.Tail(p)
+    with open(p, "a") as f:
+        for i in range(50):
+            f.write(f'{{"n": {i}}}\n')
+    p.rename(tmp_path / "t.jsonl.1")
+    p.write_text('{"n": "new"}\n')
+    got = []
+    for _ in range(100):
+        got += t.read(cap=64)              # tiny cap: many polls needed
+    nums = [ln for ln in got]
+    assert len(nums) == 51 and nums[-1] == b'{"n": "new"}'
