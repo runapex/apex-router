@@ -403,3 +403,16 @@ test("xval pass 2: a long replace retires the old rule and does not add the comm
 	assert.ok(!/^replace R1/i.test(rules[0]!.text), "the replace command itself is not a rule");
 	assert.ok(rules[0]!.text.startsWith("Always deploy to staging first and wait"));
 });
+
+test("xval pass 4: repeating a rule (even one with a done-word) keeps it active", () => {
+	const s = new FakeSession();
+	s.user("Never delete completed backups");
+	s.user("Never delete completed backups");
+	s.user("Never close resolved tickets.");
+	s.user("Never close resolved tickets.");
+	const l = updateLedger(null, s.entries);
+	const act = active(l, "rule").map(i => i.text);
+	assert.ok(act.includes("Never delete completed backups"));
+	assert.ok(act.includes("Never close resolved tickets."));
+	assert.ok(gate("## Goal\nx", l).text.includes("Never delete completed backups"), "still pinned");
+});

@@ -288,11 +288,13 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 	// 3. the exact rule text, anchored: "<verb>[:] <rule>", "<rule> - done", or the rule in quotes. Only the
 	//    leading verb or trailing done-word is cut; the rule text itself is never edited (xval pass 3).
 	const edge = (x: string): string => norm(x).replace(/^[\W_]+|[\W_]+$/g, "");
+	// a candidate exists only when the anchored verb / done-word was really there: a message that just repeats
+	// a rule (which can contain "completed") must not retire it (xval pass 4)
+	const cut = (re: RegExp): string | null => (re.test(t) ? edge(t.replace(re, "")) : null);
 	const cands = new Set<string>([
-		edge(t.replace(LEAD_RETIRE, "")),
-		edge(t.replace(TRAIL_DONE, "")),
-		...[...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => edge(m[1] ?? m[2] ?? "")),
-	]);
+		cut(LEAD_RETIRE), cut(TRAIL_DONE),
+		...(isRetire || isDone ? [...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => edge(m[1] ?? m[2] ?? "")) : []),
+	].filter((x): x is string => !!x));
 	let hit = false;
 	for (const r of rules) if (cands.has(edge(r.text))) {
 		retire(r, status, entryId);
