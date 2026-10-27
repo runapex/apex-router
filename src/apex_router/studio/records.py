@@ -266,14 +266,24 @@ def disk(paths: Paths) -> dict:
 
 # ---- launchd (injected runner; tests never call the real launchctl) ---------------------------------
 
+def _kill_group(p) -> None:
+    try:
+        os.killpg(p.pid, 9)            # the whole group: a grandchild must not keep the pipe open
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _run(argv: list, timeout: float = 5.0) -> tuple:
     """(rc, text): stdout+stderr in one pipe, at most RUN_OUT_MAX bytes kept in memory (the rest is
-    read and dropped so the child never blocks), killed after ``timeout``."""
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    keep, end = bytearray(), time.monotonic() + timeout
-    timer = threading.Timer(timeout, p.kill)
-    timer.start()
+    read and dropped so the child never blocks). The child runs in its own process group; at the
+    timeout the whole group is killed, so a grandchild that holds the pipe cannot hang the read."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
+    keep, end, timer = bytearray(), time.monotonic() + timeout, None
     try:
+        timer = threading.Timer(timeout, _kill_group, (p,))
+        timer.daemon = True
+        timer.start()
         while True:
             chunk = p.stdout.read(8192)
             if not chunk:
@@ -282,10 +292,14 @@ def _run(argv: list, timeout: float = 5.0) -> tuple:
                 keep += chunk[: RUN_OUT_MAX - len(keep)]
         rc = p.wait(timeout=max(0.1, end - time.monotonic()))
     finally:
-        timer.cancel()
-        if p.poll() is None:
-            p.kill()
-            p.wait()
+        if timer is not None:
+            timer.cancel()
+        if p.poll() is None or time.monotonic() > end:
+            _kill_group(p)
+        try:
+            p.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
         p.stdout.close()
     if time.monotonic() > end:
         raise subprocess.TimeoutExpired(argv, timeout)

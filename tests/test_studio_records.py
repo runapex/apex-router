@@ -436,3 +436,32 @@ def test_an_oversized_plist_gives_no_schedule(tmp_path):
     (la / "x.plist").write_bytes(b"<?xml version='1.0'?>" + b" " * (R.PLIST_MAX + 10))
     paths = types.SimpleNamespace(launch_agents=la)
     assert R._plist_schedule(paths, "x") is None
+
+
+def test_run_kills_a_grandchild_that_holds_the_pipe():
+    import subprocess, time as _t
+    from apex_router.studio import records as R
+    t = _t.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        R._run(["/bin/sh", "-c", "sleep 60 & wait"], timeout=0.5)
+    assert _t.monotonic() - t < 4
+
+
+def test_run_cleans_up_when_the_timer_cannot_start(monkeypatch):
+    import subprocess
+    from apex_router.studio import records as R
+    seen = []
+    real = subprocess.Popen
+
+    def popen(*a, **k):
+        seen.append(real(*a, **k))
+        return seen[-1]
+    monkeypatch.setattr(R.subprocess, "Popen", popen)
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(R.threading, "Timer", NoThread)
+    with pytest.raises(RuntimeError):
+        R._run(["/bin/sleep", "30"])
+    assert seen[0].poll() is not None and seen[0].stdout.closed
