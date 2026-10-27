@@ -165,6 +165,10 @@ def main(argv=None) -> int:
         # Routing and band-alert data from this machine (no text). Own subcommands.
         from .agent_runs import main as _agent_runs
         return _agent_runs(raw[1:])
+    if raw[:1] == ["preflight"]:
+        # Pre-analysis before a build: earlier fault types, jobs and review rounds for the files. Read only.
+        from .preflight import main as _preflight
+        return _preflight(raw[1:])
     if raw[:1] == ["review-gate"]:
         # Advisory review acceptance gate + review-loop records (no text). Own subcommands.
         from .review_gate import main as _review_gate
@@ -370,6 +374,8 @@ def main(argv=None) -> int:
                                 "ladder|frontier`", add_help=False)
     sub.add_parser("agent-runs", help="routing + band-alert data from this machine, no text; "
                                       "`agent-runs collect|report [--json]`", add_help=False)
+    sub.add_parser("preflight", help="pre-analysis before a build: earlier fault types, jobs, review rounds "
+                                     "and tests to write first for the given files (read only)", add_help=False)
     sub.add_parser("review-gate", help="advisory review gate (ACCEPT/HOLD) + review-loop records, no text; "
                                        "`review-gate record|tests|regress|post-go|check|report`", add_help=False)
     sub.add_parser("telemetry-reservoir", help="stratified sample of proxy telemetry kept before "
