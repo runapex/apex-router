@@ -12,7 +12,7 @@ import pytest
 
 from apex_router import agent_resources as ar
 from apex_router import snapshot
-from apex_router.studio import flow as flow_mod
+from apex_router.studio import traffic, flow as flow_mod
 from apex_router.studio import live
 
 import studio_fixture as F
@@ -227,13 +227,14 @@ def test_flow_block_numbers_equal_the_studio_live_numbers(home, monkeypatch):
     env = dict(F.env_for(root), APEX_STUDIO_MAIN_HOME=str(tel.parent))
     d = live.collect("15m", "main", flow_mod.resolve_paths(env), now)
     m = d["metrics"]
-    assert fb["sources"] == {"pi": m["pi.turns"], "claude": m["tel.client.claude-code"],
-                             "codex": m["tel.client.codex"]}
+    # sources by session id (the studio v2 rule), not by the client header (pi sends Claude headers)
+    by = traffic.requests_by_agent(flow_mod.resolve_paths(env), 900, now)
+    assert fb["sources"] == {"pi": by["pi"], "claude": by["claude"], "codex": by["codex"]}
     assert fb["upstreams"] == {"anthropic": m["tel.endpoint.anthropic"], "openai": m["tel.endpoint.openai"],
                                "local": m["local.requests"]}
     assert fb["error_pct"] == d["telemetry"]["error_pct"] and fb["ttft_p50_ms"] == d["telemetry"]["ttft_p50"]
     assert fb["retries"] == m["tel.retries"] and fb["unreachable"] == m["tel.unreachable"]
-    assert fb["sources"]["pi"] and fb["upstreams"]["local"] and fb["sources"]["claude"]
+    assert fb["upstreams"]["local"] and sum(v or 0 for v in fb["sources"].values()) <= m["tel.requests"]
     assert fb["draft_changes"] == 2
     assert fb["proxy"] == {"port": 8788, "up": True, "checked": True,
                            "activity": {"inflight": 2, "idle_s": 0.0}}
@@ -280,3 +281,24 @@ def test_collect_and_menu_with_flow_stay_fast_on_a_large_telemetry_file(home, tm
     assert "Flow · 15m" in text and not snap["flow"].get("error")
     assert cpu < 1.0, cpu                          # ~0.15 s on an idle Mac; CPU time ignores load
     assert wall < snapshot.HARD_LIMIT_S, wall
+
+
+
+def test_flow_sources_count_a_pi_session_as_pi_not_claude(home):
+    # owner: the menu showed "pi 1 · claude 12" while all 13 were pi (pi sends Claude-style headers)
+    root, now = home
+    tel = root / ".apex" / "telemetry.jsonl"
+    traffic._kinds.clear()
+    before = snapshot.flow_block(tel, now, {"up": False})["sources"]
+    sid = "apexjob-test-0001"
+    sess = root / ".pi" / "agent" / "sessions" / "--tmp-x--"
+    sess.mkdir(parents=True, exist_ok=True)
+    (sess / f"2026-10-27T00-00-00-000Z_{sid}.jsonl").write_text(json.dumps({"type": "session", "id": sid}) + "\n")
+    with open(tel, "a") as f:
+        for i in range(5):
+            f.write(json.dumps({"ts": now - 10 - i, "session_id": sid, "client": "claude-code",
+                                "endpoint_id": "anthropic", "model_requested": "claude-opus"}) + "\n")
+    traffic._kinds.clear()
+    after = snapshot.flow_block(tel, now, {"up": False})["sources"]
+    assert after["pi"] == (before["pi"] or 0) + 5
+    assert after["claude"] == before["claude"]

@@ -69,7 +69,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import agent_resources, pressure, quality, widget_history
+from . import agent_resources, agent_runs, pressure, quality, widget_history
 from . import agents as agents_mod
 
 SCHEMA = 1
@@ -296,7 +296,7 @@ def _default_proxy(dl):
 
 def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
             now: float | None = None, proxy_fn=None, worker_fn=None, resources_fn=None,
-            deadline=None, flow_fn=None) -> dict:
+            deadline=None, flow_fn=None, jobs_dir=None) -> dict:
     """The snapshot dict. ``home`` overrides ``~`` for agent discovery; the injectable
     ``proxy_fn``/``worker_fn``/``resources_fn``/``flow_fn`` exist for tests. Never raises; never writes.
     Every subprocess / network call (launchctl, ps, lsof, ioreg, ollama, /healthz) shares one
@@ -333,6 +333,7 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         "graph": graph,
         "proxy": px,
         "flow": fl,
+        "jobs": _safe(agent_runs.live_jobs, jobs_dir or router_home() / "pi-jobs", now),
         "quality": _safe(quality.collect, now, telemetry),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
     }
@@ -361,7 +362,7 @@ def flow_block(telemetry=None, now: float | None = None, px=None, dl=None) -> di
     numbers, read-only, bounded tail reads) — one source for the menu and the studio page."""
     if dl is not None and dl.remaining() <= 0:        # the refresh is late already: draw without it
         return {"skipped": True, "error": "skipped: deadline"}
-    from .studio import drafts, flow as flow_mod, live
+    from .studio import drafts, flow as flow_mod, live, traffic
     now = time.time() if now is None else now
     env = dict(os.environ)
     tel = Path(telemetry) if telemetry else pressure.default_telemetry_path()
@@ -375,10 +376,14 @@ def flow_block(telemetry=None, now: float | None = None, px=None, dl=None) -> di
         n_draft = len(drafts.load_draft(paths).get("changes") or {})
     except Exception:  # noqa: BLE001
         n_draft = 0
+    try:            # by session id: pi sends Claude-style headers, so the client field miscounts it
+        by_agent = traffic.requests_by_agent(paths, 900, now) if present else {}
+    except Exception:  # noqa: BLE001
+        by_agent = {}
     return {
         "window_min": 15,
-        "sources": {"pi": m.get("pi.turns"), "claude": m.get("tel.client.claude-code"),
-                    "codex": m.get("tel.client.codex")},
+        "sources": {"pi": by_agent.get("pi"), "claude": by_agent.get("claude"),
+                    "codex": by_agent.get("codex")},
         "upstreams": {"anthropic": m.get("tel.endpoint.anthropic"), "openai": m.get("tel.endpoint.openai"),
                       "local": m.get("local.requests")},
         "requests": m.get("tel.requests"),
@@ -1258,7 +1263,8 @@ def _flow_lines(fl: dict, bin_path=None) -> list:
     up = fl.get("upstreams") or {}
     px = fl.get("proxy") or {}
     out = [row(f"sources: pi {_n(src.get('pi'))} · claude {_n(src.get('claude'))} · codex {_n(src.get('codex'))}",
-               "blue", "node:src.pi", "requests per source, last 15 min · pi = pi turns in route_log.jsonl")]
+               "blue", "node:src.pi", "requests per agent, last 15 min, by session id (pi sends Claude-style "
+               "headers, so the client field is not used)")]
     port = px.get("port") if isinstance(px.get("port"), int) else "?"
     act = px.get("activity") if isinstance(px.get("activity"), dict) else {}
     state = "up" if px.get("up") else "not checked" if px.get("checked") is False else "down"
@@ -1286,6 +1292,29 @@ def _flow_lines(fl: dict, bin_path=None) -> list:
     if isinstance(nd, int) and not isinstance(nd, bool) and nd > 0:
         out.append(row(f"draft: {nd} change{'s' if nd != 1 else ''}", "amber", "review",
                        "a studio draft waits for review and apply"))
+    return out
+
+
+JOBS_ROWS_MAX = 5
+
+
+def _jobs_lines(j: dict) -> list:
+    """Sub-agent jobs that run now (``agent_runs.live_jobs``): one row each, newest first."""
+    if not isinstance(j, dict) or j.get("error"):
+        return [_u(f"jobs unavailable · {esc((j or {}).get('error', 'missing'))}") + f" color={INK['muted']}"]
+    out = []
+    for it in (j.get("items") or [])[:JOBS_ROWS_MAX]:
+        if not isinstance(it, dict):
+            continue
+        quiet = it.get("quiet_s")
+        stuck = isinstance(quiet, (int, float)) and quiet > 300
+        tail = f" · quiet {fmt_age(quiet)}" if stuck else ""
+        out.append(_u(f"{esc(it.get('role', '?'))} {esc(str(it.get('id', '?'))[-4:])} · "
+                      f"{esc(it.get('state', '?'))} {fmt_age(it.get('age_s'))}{tail}")
+                   + f" color={INK['amber' if stuck else 'green']}")
+    more = len(j.get("items") or []) - JOBS_ROWS_MAX
+    if more > 0:
+        out.append(f"+{more} more | color={INK['muted']}")
     return out
 
 
@@ -1320,6 +1349,10 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
     if isinstance(snap.get("flow"), dict):
         flow_at = len(sections)
         section("Flow · 15m", _flow_lines(snap["flow"], bin_path))
+    jb = snap.get("jobs")
+    if isinstance(jb, dict) and (jb.get("running") or jb.get("queued") or jb.get("error")):
+        title = f"Jobs · {jb.get('running', 0)} running" + (f" · {jb['queued']} queued" if jb.get("queued") else "")
+        section(title, _jobs_lines(jb))
     m = snap.get("measure") if isinstance(snap.get("measure"), dict) else {"error": "missing"}
     if m.get("limit_pct") is not None or m.get("error"):   # an age with no meter says nothing
         section("Limit", [_u(_measure_line(m))])

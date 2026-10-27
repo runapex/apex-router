@@ -903,9 +903,9 @@
     "requests": 22,
     "retries": 0,
     "sources": {
-      "claude": 22,
+      "claude": 20,
       "codex": 0,
-      "pi": null
+      "pi": 1
     },
     "ttft_p50_ms": 1500,
     "unreachable": 0,
@@ -1381,6 +1381,11 @@
         "requests": 4
       }
     ]
+  },
+  "jobs": {
+    "items": [],
+    "queued": 0,
+    "running": 0
   },
   "measure": {
     "age_s": 120.0,
