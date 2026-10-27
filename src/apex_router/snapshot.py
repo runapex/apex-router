@@ -376,10 +376,12 @@ def flow_block(telemetry=None, now: float | None = None, px=None, dl=None) -> di
         n_draft = len(drafts.load_draft(paths).get("changes") or {})
     except Exception:  # noqa: BLE001
         n_draft = 0
-    try:            # by session id: pi sends Claude-style headers, so the client field miscounts it
-        by_agent = traffic.requests_by_agent(paths, 900, now) if present else {}
-    except Exception:  # noqa: BLE001
-        by_agent = {}
+    by_agent = {}   # by session id: pi sends Claude-style headers, so the client field miscounts it
+    if present and (dl is None or dl.remaining() > 0):      # late refresh: "—", never a wrong count
+        try:
+            by_agent = traffic.requests_by_agent(paths, 900, now)
+        except Exception:  # noqa: BLE001
+            by_agent = {}
     return {
         "window_min": 15,
         "sources": {"pi": by_agent.get("pi"), "claude": by_agent.get("claude"),

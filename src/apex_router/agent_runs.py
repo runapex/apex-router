@@ -494,6 +494,8 @@ if __name__ == "__main__":
 
 LIVE_STATES = ("running", "queued")
 JOBS_SCAN_MAX = 60          # newest job dirs looked at (ids sort by start time)
+JOBS_LIST_MAX = 5000        # names listed at most (no stat per entry)
+META_MAX = 256 * 1024       # bytes read per meta.json
 
 
 def _pid_alive(pid) -> bool:
@@ -515,14 +517,26 @@ def live_jobs(jobs_dir: Path | None = None, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     d = Path(jobs_dir) if jobs_dir else Path(os.environ.get("APEX_HOME", Path.home() / ".apex-router")) / "pi-jobs"
     out = {"running": 0, "queued": 0, "items": []}
+    names = []
     try:
-        dirs = sorted((x for x in d.iterdir() if x.is_dir()), key=lambda x: x.name, reverse=True)[:JOBS_SCAN_MAX]
+        with os.scandir(d) as it:                     # names only: no stat, no is_dir per entry
+            for i, e in enumerate(it):
+                if i >= JOBS_LIST_MAX:
+                    break
+                names.append(e.name)
     except OSError:
         return out
-    for jd in dirs:
+    for name in sorted(names, reverse=True)[:JOBS_SCAN_MAX]:
+        jd = d / name
         try:
-            m = json.loads((jd / "meta.json").read_text())
+            with open(jd / "meta.json", "rb") as f:
+                raw = f.read(META_MAX + 1)
+            if len(raw) > META_MAX:
+                continue                              # oversized: skip, never parse
+            m = json.loads(raw)
         except (OSError, ValueError):
+            continue
+        if not isinstance(m, dict):
             continue
         st = m.get("state")
         if st not in LIVE_STATES or (st == "running" and not _pid_alive(m.get("pid"))):

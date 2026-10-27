@@ -64,3 +64,32 @@ def test_menu_shows_a_jobs_section_only_while_jobs_run():
     assert m[i + 1] == "worker 0000 · running 1m · quiet 6m"                     # quiet > 5 min: shown
     assert m[i + 2] == "worker 0001 · running 2m"
     assert m[i + 6] == "+2 more"
+
+
+def test_live_jobs_skips_an_oversized_meta_and_a_non_dict(tmp_path):
+    now = time.time()
+    _job(tmp_path, "20261027000001-aaaa", "running", os.getpid(), int(now * 1000), int(now * 1000))
+    big = tmp_path / "20261027000002-bbbb"
+    big.mkdir()
+    (big / "meta.json").write_text('{"state": "running", "pid": %d, "x": "%s"}' % (os.getpid(), "a" * 300_000))
+    lst = tmp_path / "20261027000003-cccc"
+    lst.mkdir()
+    (lst / "meta.json").write_text("[1, 2]")
+    j = agent_runs.live_jobs(tmp_path, now)
+    assert [i["id"] for i in j["items"]] == ["20261027000001-aaaa"]
+
+
+def test_flow_attribution_is_skipped_after_the_deadline(monkeypatch):
+    from apex_router.studio import traffic
+    called = []
+    monkeypatch.setattr(traffic, "requests_by_agent", lambda *a, **k: called.append(1) or {"pi": 9})
+
+    class Late:
+        def __init__(self):
+            self.n = 0
+
+        def remaining(self):
+            self.n += 1
+            return 1.0 if self.n == 1 else 0.0           # time is left at the start, not later
+    fb = snapshot.flow_block(None, time.time(), {"up": False}, Late())
+    assert called == [] and fb["sources"]["pi"] is None
