@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import csv
 import datetime as _dt
+import fcntl
 import io
 import json
 import os
@@ -52,16 +53,32 @@ def ml_root(paths: Paths) -> Path:
 _ROOTS: contextvars.ContextVar = contextvars.ContextVar("experiment_roots", default=())
 
 
-def _inside_roots(path: Path) -> bool:
-    """The REAL path (every link in every component resolved) is under one of the roots."""
+def _under_roots(real: str) -> bool:
     roots = _ROOTS.get()
     if not roots:
         return False                                     # fail closed: no roots set, no read
+    return any(real == r or real.startswith(r + os.sep) for r in roots)
+
+
+def _inside_roots(path: Path) -> bool:
+    """Early check by name (every link resolved). The binding check is _fd_inside_roots."""
     try:
-        real = os.path.realpath(path)
+        return _under_roots(os.path.realpath(path))
     except OSError:
         return False
-    return any(real == r or real.startswith(r + os.sep) for r in roots)
+
+
+def _fd_inside_roots(fd: int) -> bool:
+    """The path of the file we HAVE OPEN (F_GETPATH): a swap of a parent directory after the
+    name check cannot move the read outside. Without F_GETPATH: fail closed."""
+    getpath = getattr(fcntl, "F_GETPATH", None)
+    if getpath is None:
+        return False
+    try:
+        real = fcntl.fcntl(fd, getpath, b"\0" * 1024).split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
+        return _under_roots(os.path.realpath(real))
+    except OSError:
+        return False
 
 
 def _read(path: Path, cap: int = CAP, tail: bool = False, whole: bool = False) -> bytes:
@@ -75,6 +92,9 @@ def _read(path: Path, cap: int = CAP, tail: bool = False, whole: bool = False) -
         raise ReadError("missing") from None
     except OSError:
         raise ReadError("unreadable") from None
+    if not _fd_inside_roots(fd):                         # check the open file, not the name
+        os.close(fd)
+        raise ReadError("outside its root")
     try:
         with os.fdopen(fd, "rb") as f:
             size = os.fstat(f.fileno()).st_size

@@ -757,3 +757,29 @@ def test_tail_truncate_with_small_cap_sends_no_stale_row(tmp_path):
     for _ in range(20):
         got += t.read(cap=10)
     assert got == [b'{"ts": 1}', b'{"ts": 3}', b'{"ts": 4}', b'{"ts": 5}']
+
+
+def test_experiment_read_checks_the_open_file_not_only_the_name(tmp_path, monkeypatch):
+    # xval pass 3: a parent dir swapped for a link after the name check led outside the root
+    from apex_router.studio import experiments as E
+    root = tmp_path / "root"
+    (root / "d").mkdir(parents=True)
+    (root / "d" / "a.json").write_text("{}")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.json").write_text('{"secret": 1}')
+    real_open = E.os.open
+
+    def swap_then_open(path, flags, *a, **kw):
+        # the race: after the name check passed, the parent becomes a link to outside
+        (root / "d" / "a.json").unlink()
+        (root / "d").rmdir()
+        (root / "d").symlink_to(outside)
+        return real_open(path, flags, *a, **kw)
+    tok = E._ROOTS.set((str(root.resolve()),))
+    try:
+        monkeypatch.setattr(E.os, "open", swap_then_open)
+        with pytest.raises(E.ReadError, match="outside"):
+            E._read(root / "d" / "a.json")
+    finally:
+        E._ROOTS.reset(tok)
