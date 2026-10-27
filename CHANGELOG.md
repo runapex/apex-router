@@ -6,6 +6,15 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+- **studio v2 "Metro"** (`apex-router studio`): the page is a metro map. One line per agent
+  (pi, Claude Code, Codex) runs through the apex interchange to its provider. Line width = requests
+  a minute; a train = one real request (SSE `/api/stream`); amber = slow, red = disruption with a
+  plain cause. Panels: Recent (a picked request lights its journey), Tokens (cache split per agent),
+  Experiments (JEPA, gold labels, explore, xval bandit, panel, RSI outside, logmine, sec swarm,
+  compaction; stale > 7 d), Changes (draft, apply, restart when idle). Agent attribution by session
+  id (pi traffic sent Claude-style headers and was counted as Claude). Contract:
+  `docs/design/studio-v2/API.md`; research and concepts in `docs/design/studio-v2/`.
+
 ### Added
 - `apex-router studio` (apex flow studio): a local web canvas of the request flow, source → client
   steps → proxy → upstreams → sinks, with live numbers per window, an inspector per step, a dry-run
