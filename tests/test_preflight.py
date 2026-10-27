@@ -59,7 +59,7 @@ def test_brief_block_has_no_finding_text(tmp_path):
          result="- **P1: secret leak.** [k.py](/w/src/apex_router/k.py:1) prints sk-ABCDEFGH12345678 to the log\n")
     out = P.brief_block(P.analyse(["src/apex_router/k.py"], jobs=P.scan_jobs(tmp_path)))
     assert "sk-ABCD" not in out and "prints" not in out
-    assert "raw text or secret in output (1)" in out and "THREAT SCOPE" in out
+    assert "raw text or secret in output (1 / 1)" in out and "THREAT SCOPE" in out
 
 
 def test_scan_is_bounded_and_fails_open(tmp_path, monkeypatch):

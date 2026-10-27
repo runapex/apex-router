@@ -196,8 +196,7 @@ def analyse(targets: list[str], jobs: list[dict] | None = None, repo: Path | Non
 
 def brief_block(a: dict) -> str:
     """The text to paste into a brief (STE)."""
-    src = a["faults_here"] or a["faults_all"]
-    scope = "these files" if a["faults_here"] else "all files (none recorded for these files)"
+    here, allf = a["faults_here"], a["faults_all"]
     lines = ["SUCCESS (write before the build; the owner checks these):",
              "1. <what the user sees, in plain words>",
              "2. <invariants that must stay true>",
@@ -205,9 +204,9 @@ def brief_block(a: dict) -> str:
              "THREAT SCOPE (set now; fixed for every review round):",
              "- In scope: <...>",
              "- Out of scope: <...>",
-             f"KNOWN FAULT TYPES (earlier review findings on {scope}; check each before you commit):"]
+             "KNOWN FAULT TYPES (earlier review findings: in these files / in all files; check each before you commit):"]
     for n in a["top"]:
-        lines.append(f"- {n} ({src.get(n, 0)})")
+        lines.append(f"- {n} ({here.get(n, 0)} / {allf.get(n, 0)})")
     lines.append("TESTS TO WRITE FIRST (each must fail on the old code):")
     for i, n in enumerate(a["top"], 1):
         lines.append(f"{i}. {a['tests_first'][n]}.")
