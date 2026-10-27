@@ -80,17 +80,18 @@ STALE_S = 24 * 3600
 
 # The bar dot keeps the system status colours (readable on any menu bar).
 COLORS = {"green": "#34C759", "orange": "#FF9500", "red": "#FF3B30", "gray": "#8E8E93"}
-# Menu text: Anthropic's palette as SwiftBar ``light,dark`` pairs. A line with neither an action nor
-# a colour is a DISABLED NSMenuItem, which AppKit draws grey — so every line gets one (``_ink``).
+# Menu text as SwiftBar ``light,dark`` pairs: light = Anthropic's palette (dark ink on a light
+# menu), dark = Tokyo Night. A line with neither an action nor a colour is a DISABLED NSMenuItem,
+# which AppKit draws grey — so every line gets one (``_ink``).
 INK = {
-    "text": "#141413,#FAF9F5",      # slate dark / ivory
-    "muted": "#5E5D59,#B0AEA5",     # body muted / cloud
-    "accent": "#C15F3C,#D97757",    # crail / clay: section headers
-    "blue": "#3A6A9E,#6A9BCC",      # sky: network, sparklines
-    "green": "#5A7A3C,#8FB05F",     # cactus: healthy
-    "amber": "#A86A1E,#D4A27F",     # kraft: warn / not checked
-    "red": "#B5372B,#E06C5C",       # error / down
-    "violet": "#7A5C9E,#A88CC9",    # heather: GPU, models
+    "text": "#141413,#c0caf5",      # slate dark / TN foreground
+    "muted": "#5E5D59,#737aa2",     # body muted / TN comment
+    "accent": "#C15F3C,#7aa2f7",    # crail / TN blue: section headers
+    "blue": "#3A6A9E,#7dcfff",      # sky / TN cyan: network, sparklines, Flow sources
+    "green": "#5A7A3C,#9ece6a",     # cactus / TN green: healthy
+    "amber": "#A86A1E,#e0af68",     # kraft / TN yellow: warn / not checked
+    "red": "#B5372B,#f7768e",       # error / down
+    "violet": "#7A5C9E,#bb9af7",    # heather / TN purple: GPU, models, upstreams
 }
 _LEVEL_INK = {"GREEN": "green", "AMBER": "amber", "RED": "red"}
 _PLUGIN_LEVELS = ("GREEN", "AMBER", "RED")
