@@ -34,7 +34,8 @@
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
 #         --agent-route-log-hook  DEPRECATED (retired in 0.4.2): the datapce plugin logs every Agent and Workflow dispatch
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`),
-#                       plus apex-ste (STE format), apex-hangguard (bash hang guard), apex-agents (sub-agents)
+#                       plus apex-ste (STE format), apex-hangguard (bash hang guard), apex-compact (compaction
+#                       ledger + guard rules), apex-agents (sub-agents)
 #         --no-ste      do not add the ASD-STE100 format block to ~/.claude/CLAUDE.md
 #         --books-index  install the local booksearch tool ([books] extra + wrapper + pi/claude commands)
 #         --proxy-config F  wire Claude Code through a proxy via ~/.claude/settings.json
@@ -700,7 +701,7 @@ install_pi() {
   # STE default format, hang guard, sub-agents (docs/DESIGN-pi-subagents.md). Each one is opt-out by env:
   # APEX_STE=0, APEX_HANGGUARD=0; apex-agents adds tools only.
   local ext
-  for ext in apex-ste apex-hangguard apex-agents; do
+  for ext in apex-ste apex-hangguard apex-compact apex-agents; do
     if pi install "$src/$ext.ts" >/dev/null 2>&1; then ok "$ext extension installed"
     else warn "pi install failed — add it manually: pi install $src/$ext.ts"; fi
   done
