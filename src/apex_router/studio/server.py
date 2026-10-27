@@ -12,6 +12,12 @@ Safety:
 
 API: GET /api/flow?proxy=  GET /api/live?window=&proxy=  POST /api/test  GET|PUT /api/draft
      POST /api/apply  POST /api/rollback  GET /api/ping (token check + pid, for single instance)
+     v2 (docs/design/studio-v2/API.md; token in the header only, never in the URL):
+     GET /api/recent?n=  GET /api/tokens?window=  GET /api/experiments  GET /api/stream (SSE)
+
+Streams: one handler thread per stream, at most ``stream_max`` (4) open; the 5th gets 429. A stream
+ends when the client goes away (a write error) or the server shuts down. ``last_request`` is set
+once per API call, so an open stream does not keep the studio alive past ``--idle-exit``.
 
 Single instance: a started studio writes ``<router home>/studio/instance.json`` ``{pid, port,
 token}`` (mode 0600, atomic) and deletes it on a clean exit. ``apex-router studio --open <target>``
@@ -37,7 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import restart as restart_mod
-from . import drafts, flow, live
+from . import drafts, experiments, flow, live, traffic
 
 try:
     import fcntl
@@ -47,6 +53,9 @@ except ImportError:  # pragma: no cover — not POSIX: no lock, the check still 
 MAX_BODY = 64 * 1024
 PING_TIMEOUT_S = 1.0
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments", "/api/stream"})
+STREAM_MAX = 4
+STREAM_WRITE_TIMEOUT_S = 10.0
 UI_PATH = Path(__file__).with_name("ui.html")
 
 
@@ -71,6 +80,32 @@ class StudioServer(ThreadingHTTPServer):
         self.waiter = restart_mod.Waiter()
         self.restart_run = restart_mod._run      # tests replace these (never the real launchctl)
         self.restart_fetch = restart_mod._fetch
+        self.stats_fetch = restart_mod._fetch    # the stream snapshot's proxy state (tests replace it)
+        self.closing = threading.Event()         # set at shutdown: open streams end
+        self.stream_max = STREAM_MAX
+        self.streams_open = 0
+        self.stream_poll_s, self.stream_snap_s, self.stream_hb_s = 0.5, 2.0, 15.0
+        self._snap_lock = threading.Lock()
+        self._snap = (0.0, None)
+
+    def shutdown(self):
+        self.closing.set()
+        super().shutdown()
+
+    def server_close(self):
+        self.closing.set()
+        super().server_close()
+
+    def stream_snapshot(self) -> dict:
+        """One snapshot per SNAPSHOT_TTL_S, shared by every open stream (one /stats call, one read)."""
+        with self._snap_lock:
+            t, d = self._snap
+            now = time.time()
+            if d is None or now - t >= traffic.SNAPSHOT_TTL_S:
+                p = self.get_paths()
+                d = traffic.snapshot(p, self.stats_fetch, restart_mod.proxy_port(p, "main"), now)
+                self._snap = (now, d)
+            return d
 
     @property
     def port(self) -> int:
@@ -116,9 +151,9 @@ class Handler(BaseHTTPRequestHandler):
         port = self.server.port
         return host in (f"127.0.0.1:{port}", f"localhost:{port}")
 
-    def _token_ok(self, query: dict) -> bool:
+    def _token_ok(self, query: dict, path: str = "") -> bool:
         got = self.headers.get("X-Studio-Token") or ""
-        if not got and self.command == "GET":
+        if not got and self.command in ("GET", "HEAD") and path not in HEADER_TOKEN_ONLY:
             got = (query.get("token") or [""])[0]
         return bool(got) and hmac.compare_digest(got.encode(), self.server.token.encode())
 
@@ -170,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
         path = u.path
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
-        if not self._token_ok(q):
+        if not self._token_ok(q, path):
             return self._err(403, "missing or bad token")
         if method in ("POST", "PUT", "DELETE") and not self._origin_ok():
             return self._err(403, "bad Origin")
@@ -286,6 +321,55 @@ class Handler(BaseHTTPRequestHandler):
         proxy = self._proxy_q(q)
         self._json(200, {"ok": True, "job": self.server.waiter.cancel(proxy)})
 
+    # ---- v2 (Metro): requests, tokens, experiments, stream ----
+    def api_recent(self, q):
+        raw = (q.get("n") or ["50"])[0]
+        if not re.fullmatch(r"[0-9]{1,3}", raw) or not 1 <= int(raw) <= traffic.RECENT_MAX:
+            return self._err(400, f"n must be 1..{traffic.RECENT_MAX}")
+        self._json(200, traffic.recent(self.server.get_paths(), int(raw)))
+
+    def api_tokens(self, q):
+        window = (q.get("window") or ["15m"])[0]
+        if window not in traffic.TOKEN_WINDOWS:
+            return self._err(400, "window must be 15m, 1h or 24h")
+        self._json(200, traffic.tokens_cached(self.server.get_paths(), window))
+
+    def api_experiments(self, q):
+        self._json(200, experiments.collect(self.server.get_paths()))
+
+    def api_stream(self, q):
+        srv = self.server
+        with srv.lock:
+            if srv.streams_open >= srv.stream_max:
+                return self._err(429, f"at most {srv.stream_max} open streams")
+            srv.streams_open += 1
+        try:
+            self.close_connection = True
+            self.send_response(200)
+            for k, v in (("Content-Type", "text/event-stream; charset=utf-8"), ("Cache-Control", "no-store"),
+                         ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
+                         ("X-Accel-Buffering", "no"), ("Connection", "close")):
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command == "HEAD":
+                return None
+            self.connection.settimeout(STREAM_WRITE_TIMEOUT_S)    # a client that stops reading ends it
+
+            def write(b: bytes):
+                self.wfile.write(b)
+                self.wfile.flush()
+            try:
+                traffic.stream(write, srv.get_paths(), srv.closing, srv.stream_snapshot,
+                               srv.stream_poll_s, srv.stream_snap_s, srv.stream_hb_s)
+            except OSError:
+                pass                                              # the client went away
+            except Exception:  # noqa: BLE001 — headers are sent: end the stream, the client reconnects
+                pass
+        finally:
+            with srv.lock:
+                srv.streams_open -= 1
+        return None
+
 
 ROUTES = {
     ("GET", "/api/ping"): Handler.api_ping,
@@ -299,6 +383,10 @@ ROUTES = {
     ("PUT", "/api/draft"): Handler.api_draft_put,
     ("POST", "/api/apply"): Handler.api_apply,
     ("POST", "/api/rollback"): Handler.api_rollback,
+    ("GET", "/api/recent"): Handler.api_recent,
+    ("GET", "/api/tokens"): Handler.api_tokens,
+    ("GET", "/api/experiments"): Handler.api_experiments,
+    ("GET", "/api/stream"): Handler.api_stream,
 }
 
 
