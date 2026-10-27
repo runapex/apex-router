@@ -20,7 +20,7 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, opendirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -42,6 +42,11 @@ export type Spec = {
 	idle_s?: number;
 	max_cost?: number;
 	parentSession?: string;
+	/** Spawn gates: the override reason that passed a refusal, and the git place of the cwd (xval review rounds). */
+	gate_override?: string;
+	repo?: string;
+	branch?: string;
+	head?: string;
 };
 
 export type Usage = { turns: number; input: number; output: number; cost: number };
@@ -97,6 +102,12 @@ export type Meta = {
 	final_turn_at?: number;
 	/** true on a "done" job that ended after the soft-cap message (the final report is a salvage report). */
 	capped?: boolean;
+	/** Spawn gates (owner order 2026-10-27): the override reason, if a refusal was passed. */
+	gate_override?: string;
+	/** git common dir, branch and HEAD of the cwd at spawn (recorded for xval jobs: review rounds). */
+	repo?: string;
+	branch?: string;
+	head?: string;
 };
 
 /** Fraction of max_cost that sends the "write the final report now" message. */
@@ -472,6 +483,10 @@ export class JobManager {
 			timeout_s: spec.timeout_s ?? this.o.defaultTimeoutS, idle_s: spec.idle_s ?? this.o.defaultIdleS,
 			max_cost: spec.max_cost, max_depth: spec.maxDepth, session_id: `apexjob-${id}`, usage: { turns: 0, input: 0, output: 0, cost: 0 },
 			parentSession: spec.parentSession, parent_pid: process.pid, owner: this.self,
+			...(spec.gate_override !== undefined ? { gate_override: spec.gate_override } : {}),
+			...(spec.repo !== undefined ? { repo: spec.repo } : {}),
+			...(spec.branch !== undefined ? { branch: spec.branch } : {}),
+			...(spec.head !== undefined ? { head: spec.head } : {}),
 		};
 		m.argv = this.o.argv(spec, m, dir);
 		if (m.kind === "pi") m.resume = `cd ${JSON.stringify(m.cwd)} && pi --session-id ${m.session_id}`;
@@ -898,4 +913,300 @@ export function costAdviceLine(maxCost: number | undefined, agent: string, model
 	} catch {
 		return "";
 	}
+}
+
+// ------------------------------------------------------------------ spawn gates (owner order 2026-10-27)
+/** Backpressure: a worker or coordinator does not start when GATE_PENDING_LIMIT branches wait for review or merge
+ *  in the target repo, or GATE_DECISION_LIMIT owner decisions are open. Review rounds: a new xval on a branch with
+ *  ROUND_LIMIT earlier xval NO-GO results is refused. An override reason (>= OVERRIDE_MIN chars) passes one spawn.
+ *  Fail open: a check that fails (git error, timeout, bad file) allows the spawn and adds one warning line.
+ *  Bounded: every git call has a timeout from one budget (GATE_BUDGET_MS); reads are capped; the job scan reads
+ *  the newest JOB_SCAN_CAP names. Pure: git and file access are injected, so tests drive them. */
+export const GATED_AGENTS: ReadonlySet<string> = new Set(["worker", "coordinator"]);
+export const GATE_PENDING_LIMIT = 3;
+export const GATE_DECISION_LIMIT = 5;
+export const ROUND_LIMIT = 3;
+export const PENDING_MAX_AGE_MS = 7 * 86_400_000;
+export const OVERRIDE_MIN = 10;
+export const OVERRIDE_CAP = 300;
+export const GATE_BUDGET_MS = 800;
+export const JOB_SCAN_CAP = 2000;
+/** Hard ceiling of directory entries read before the sort (a huge folder never reads without end). */
+export const JOB_LIST_CEILING = 20_000;
+export const META_READ_CAP = 256 * 1024;
+export const RESULT_TAIL_CAP = 4096;
+export const DECISIONS_READ_CAP = 1 << 20;
+export const DECISIONS_PATH = join(homedir(), ".apex-router", "decisions.jsonl");
+export const ROUND_MESSAGE = "send the open finding to the owner as one question";
+export const EVIDENCE_LINE = "A P1 counts only with evidence: a line number and a concrete input or a failing test. A GO lists the claims you checked.";
+
+/** Append the fixed evidence line to an xval task (once). */
+export function withEvidence(task: string): string {
+	return task.includes(EVIDENCE_LINE) ? task : `${task.trimEnd()}\n\n${EVIDENCE_LINE}`;
+}
+
+/** Runs git with these args; throws on a non-zero exit or at the timeout. Returns stdout. */
+export type GitRun = (args: string[], timeoutMs: number) => string;
+export const runGit = (args: string[], timeoutMs: number, bin = "git"): string =>
+	execFileSync(bin, args, {
+		encoding: "utf8", timeout: Math.max(1, Math.floor(timeoutMs)), killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 << 20,
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+	});
+
+export type GateIO = {
+	exists: (p: string) => boolean;
+	/** At most `cap` bytes from the start (or the end with `tail`). null when the file does not exist. */
+	read: (p: string, cap: number, tail?: boolean) => { text: string; truncated: boolean } | null;
+	/** Names in a folder, at most `ceiling`. null when the folder does not exist. */
+	list: (dir: string, ceiling: number) => { names: string[]; capped: boolean } | null;
+};
+
+export const FS_IO: GateIO = {
+	exists: p => existsSync(p),
+	read: (p, cap, tail = false) => {
+		let fd: number;
+		try {
+			fd = openSync(p, "r");
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw e;
+		}
+		try {
+			const st = fstatSync(fd);
+			if (!st.isFile()) throw new Error(`not a file: ${p}`);
+			const n = Math.min(st.size, cap);
+			const buf = Buffer.alloc(n);
+			const got = readSync(fd, buf, 0, n, tail ? st.size - n : 0);
+			return { text: buf.toString("utf8", 0, got), truncated: st.size > cap };
+		} finally {
+			closeSync(fd);
+		}
+	},
+	list: (dir, ceiling) => {
+		let d;
+		try {
+			d = opendirSync(dir);
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw e;
+		}
+		const names: string[] = [];
+		try {
+			for (let e = d.readSync(); e !== null; e = d.readSync()) {
+				if (names.length >= ceiling) return { names, capped: true };
+				names.push(e.name);
+			}
+		} finally {
+			d.closeSync();
+		}
+		return { names, capped: false };
+	},
+};
+
+const notRepo = (e: unknown): boolean => /not a git repository/i.test(`${(e as { stderr?: unknown }).stderr ?? ""} ${(e as Error)?.message ?? ""}`);
+const left = (deadline: number): number => {
+	const ms = deadline - Date.now();
+	if (ms <= 0) throw new Error("time budget used");
+	return ms;
+};
+
+/** Pending branches of the repo of `cwd`: apexjob/* with a live worktree, at least 1 commit not in the base branch
+ *  (main, else master) and a last commit under 7 days old. null when cwd is not in a git repo. Throws on other errors. */
+export function pendingBranches(cwd: string, git: GitRun, exists: (p: string) => boolean, now: number, deadline: number): string[] | null {
+	let wl: string;
+	try {
+		wl = git(["-C", cwd, "worktree", "list", "--porcelain"], left(deadline));
+	} catch (e) {
+		if (notRepo(e)) return null;
+		throw e;
+	}
+	const live = new Set<string>();
+	for (const block of wl.split(/\n\s*\n/)) {
+		const path = /^worktree (.+)$/m.exec(block)?.[1];
+		const ref = /^branch refs\/heads\/(apexjob\/.+)$/m.exec(block)?.[1];
+		if (path && ref && !/^prunable\b/m.test(block) && exists(path)) live.add(ref);
+	}
+	if (live.size === 0) return [];
+	const base = git(["-C", cwd, "for-each-ref", "--format=%(refname)", "refs/heads/main", "refs/heads/master"], left(deadline))
+		.split("\n").map(s => s.trim()).filter(Boolean).sort()[0]; // "refs/heads/main" sorts before ".../master"
+	if (!base) throw new Error("no base branch (main or master)");
+	const out = git(["-C", cwd, "for-each-ref", `--no-merged=${base}`, "--format=%(refname) %(committerdate:unix)", "refs/heads/apexjob/"], left(deadline));
+	const pending: string[] = [];
+	for (const l of out.split("\n")) {
+		const m = /^refs\/heads\/(\S+) (\d+)$/.exec(l.trim());
+		if (m && live.has(m[1]!) && now - Number(m[2]) * 1000 < PENDING_MAX_AGE_MS) pending.push(m[1]!);
+	}
+	return pending.sort();
+}
+
+/** git common dir (one value for every worktree of a repo), branch (undefined when detached) and HEAD of cwd.
+ *  null when cwd is not in a git repo. */
+export function headInfo(cwd: string, git: GitRun, timeoutMs: number): { repo: string; branch?: string; head: string } | null {
+	let out: string;
+	try {
+		out = git(["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD"], timeoutMs);
+	} catch (e) {
+		if (notRepo(e)) return null;
+		throw e;
+	}
+	const [repo, head, ref] = out.split("\n").map(s => s.trim());
+	if (!repo || !head || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("git rev-parse: unexpected output");
+	return { repo, head, ...(ref && ref !== "HEAD" ? { branch: ref } : {}) };
+}
+
+/** true when the last non-empty line (markdown marks removed) ends in NO-GO. */
+export function endsNoGo(text: string): boolean {
+	const last = text.split("\n").map(l => l.replace(/[*_`#>|]/g, "").trim()).filter(Boolean).pop() ?? "";
+	return /\bNO-GO[.!]?$/i.test(last);
+}
+
+const JOB_ID = /^\d{14}-[A-Za-z0-9]+$/;
+/** Earlier xval jobs on (repo, branch) whose result.md ends in NO-GO. Reads the newest JOB_SCAN_CAP job names only.
+ *  skipped: unreadable or too large meta.json. partial: the time budget ended before the scan did. */
+export function reviewRounds(root: string, repo: string, branch: string, io: GateIO, deadline: number): { nogo: string[]; skipped: number; partial: boolean; capped: boolean } {
+	const r = { nogo: [] as string[], skipped: 0, partial: false, capped: false };
+	const ls = io.list(root, JOB_LIST_CEILING);
+	if (!ls) return r;
+	r.capped = ls.capped;
+	const ids = ls.names.filter(n => JOB_ID.test(n)).sort().slice(-JOB_SCAN_CAP).reverse();
+	for (const id of ids) {
+		if (Date.now() >= deadline) {
+			r.partial = true;
+			break;
+		}
+		let m: { kind?: unknown; repo?: unknown; branch?: unknown };
+		try {
+			const f = io.read(join(root, id, "meta.json"), META_READ_CAP);
+			if (!f) continue; // a folder without meta.json is not a job
+			if (f.truncated) {
+				r.skipped++;
+				continue;
+			}
+			m = JSON.parse(f.text);
+		} catch {
+			r.skipped++;
+			continue;
+		}
+		if (m?.kind !== "xval" || m.repo !== repo || m.branch !== branch) continue;
+		try {
+			const res = io.read(join(root, id, "result.md"), RESULT_TAIL_CAP, true);
+			if (res && endsNoGo(res.text)) r.nogo.push(id);
+		} catch {
+			r.skipped++;
+		}
+	}
+	return r;
+}
+
+export type Decision = { id: string; ts?: number; topic?: string; text?: string; state: "open" | "closed" };
+/** Open decisions: the latest row per id wins. A bad row is skipped and counted. Reads at most the last
+ *  DECISIONS_READ_CAP bytes (a cut first line is dropped, not counted). A missing file is 0 decisions. Throws on a read error. */
+export function openDecisions(path: string, io: GateIO): { open: Decision[]; bad: number } {
+	const f = io.read(path, DECISIONS_READ_CAP, true);
+	if (!f) return { open: [], bad: 0 };
+	const lines = f.text.split("\n");
+	if (f.truncated) lines.shift();
+	const latest = new Map<string, Decision>();
+	let bad = 0;
+	for (const l of lines) {
+		if (!l.trim()) continue;
+		let r: any;
+		try {
+			r = JSON.parse(l);
+		} catch {
+			bad++;
+			continue;
+		}
+		if (!r || typeof r !== "object" || typeof r.id !== "string" || !r.id || (r.state !== "open" && r.state !== "closed")) {
+			bad++;
+			continue;
+		}
+		latest.delete(r.id);
+		latest.set(r.id, r);
+	}
+	return { open: [...latest.values()].filter(d => d.state === "open"), bad };
+}
+
+export type GateInput = {
+	agent: string;
+	kind: string;
+	cwd: string;
+	override?: string;
+	decisionsPath?: string;
+	jobsRoot?: string;
+	git?: GitRun;
+	io?: GateIO;
+	now?: number;
+	budgetMs?: number;
+};
+export type GateResult = {
+	allow: boolean;
+	/** The refusal text (empty when allowed). Names the branches, decisions or review rounds. */
+	message: string;
+	/** One line per failed check (fail open) or note. */
+	warnings: string[];
+	/** The override reason, only when it passed a refusal (goes into meta.json as gate_override). */
+	override?: string;
+	/** git place of cwd (xval only). */
+	head?: { repo: string; branch?: string; head: string };
+};
+
+const short = (s: unknown, n: number) => String(s ?? "").replace(/\s+/g, " ").slice(0, n);
+
+/** All spawn gates for one agent_spawn. Never throws. */
+export function spawnGate(inp: GateInput): GateResult {
+	const git = inp.git ?? ((a, t) => runGit(a, t));
+	const io = inp.io ?? FS_IO;
+	const now = inp.now ?? Date.now();
+	const deadline = Date.now() + (inp.budgetMs ?? GATE_BUDGET_MS);
+	const warnings: string[] = [];
+	const reasons: string[] = [];
+	const fail = (what: string, e: unknown) => warnings.push(`spawn gate check failed (${what}: ${short((e as Error)?.message ?? e, 120)}); the spawn is allowed.`);
+	let head: GateResult["head"];
+
+	if (GATED_AGENTS.has(inp.agent)) {
+		try {
+			const p = pendingBranches(inp.cwd, git, io.exists, now, deadline);
+			if (p && p.length >= GATE_PENDING_LIMIT)
+				reasons.push(`${p.length} branches wait for review or merge (limit ${GATE_PENDING_LIMIT}): ${p.join(", ")}. Review, merge or remove them first.`);
+		} catch (e) {
+			fail("pending branches", e);
+		}
+		try {
+			const d = openDecisions(inp.decisionsPath ?? DECISIONS_PATH, io);
+			if (d.bad > 0) warnings.push(`decisions: ${d.bad} bad row(s) skipped.`);
+			if (d.open.length >= GATE_DECISION_LIMIT)
+				reasons.push(`${d.open.length} owner decisions are open (limit ${GATE_DECISION_LIMIT}): ${d.open.map(x => `${x.id} [${short(x.topic, 40)}] ${short(x.text, 60)}`).join("; ")}. Close them first: apex-router decisions close ID.`);
+		} catch (e) {
+			fail("decisions", e);
+		}
+	}
+
+	if (inp.kind === "xval") {
+		try {
+			head = headInfo(inp.cwd, git, left(deadline)) ?? undefined;
+			if (head?.branch) {
+				const r = reviewRounds(inp.jobsRoot ?? DEFAULT_ROOT, head.repo, head.branch, io, deadline);
+				if (r.skipped || r.partial || r.capped) warnings.push(`review rounds: scan incomplete (${r.skipped} job(s) skipped${r.partial ? ", time budget used" : ""}${r.capped ? ", job list capped" : ""}).`);
+				if (r.nogo.length >= ROUND_LIMIT)
+					reasons.push(`branch ${head.branch} has ${r.nogo.length} earlier xval rounds that ended in NO-GO (limit ${ROUND_LIMIT}): ${r.nogo.slice(0, 10).join(", ")}. Do not start round ${r.nogo.length + 1}: ${ROUND_MESSAGE}.`);
+			}
+		} catch (e) {
+			fail("review rounds", e);
+		}
+	}
+
+	if (reasons.length === 0) return { allow: true, message: "", warnings, ...(head ? { head } : {}) };
+	const why = (inp.override ?? "").trim();
+	if (why.length >= OVERRIDE_MIN) {
+		const reason = why.slice(0, OVERRIDE_CAP);
+		warnings.push(`spawn gate override: ${reasons.length} refusal(s) passed; reason recorded in meta.json as gate_override.`);
+		return { allow: true, message: "", warnings, override: reason, ...(head ? { head } : {}) };
+	}
+	return {
+		allow: false,
+		message: `agent_spawn refused (owner order 2026-10-27):\n- ${reasons.join("\n- ")}\nTo pass this one spawn, give override with a reason of ${OVERRIDE_MIN} characters or more.`,
+		warnings,
+		...(head ? { head } : {}),
+	};
 }
