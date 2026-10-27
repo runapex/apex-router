@@ -18,6 +18,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -242,6 +243,10 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
         return 1
     url = url_of(srv)
     emit(url)
+    try:
+        sys.stdout.flush()   # a pipe or file buffers stdout: the URL must show before serve_forever
+    except Exception:  # noqa: BLE001
+        pass
     if idle_exit_s and idle_exit_s > 0:
         def watch():
             while True:
