@@ -27,6 +27,8 @@ No prompt text, header, key or token value ever appears in any response.
 }]}
 ```
 Newest first. `cause` is a plain sentence from a fixed map of error causes (no raw exception text).
+`ms_total` = telemetry `total_ms` (v13: request arrival to the last byte or the error); null on rows
+written before telemetry v13.
 
 ## GET /api/tokens?window=15m|1h|24h
 
@@ -72,3 +74,45 @@ The UI reads it with `fetch()` + a stream reader (so the token stays in the head
 Limits: at most 4 open streams (5th gets 429). A stream ends when the client goes away. Open streams
 do not keep the studio alive past `--idle-exit`. The tail follows the telemetry file by offset and
 handles rotation.
+
+## GET /api/records
+
+Added after the v2 build (owner request: throughput, latency, disk, archives, pipelines). Read-only.
+Header token only. No path, file name, row text or secret in the response; labels are fixed in code.
+
+```json
+{"generated_at": 1793131884.5, "telemetry_present": true, "complete": true,
+ "throughput": {"1m":  {"up_bps": 15673.6, "down_bps": 1349.7, "up_bytes": 940417, "down_bytes": 80979, "requests": 2},
+                "15m": {"up_bps": 137155.3, "down_bps": 3586.8, "up_bytes": 123439790, "down_bytes": 3228105, "requests": 113}},
+ "latency": {"15m": {"first_word": {"p50": 1272, "p95": 5574, "n": 113},
+                     "whole_answer": {"p50": 5400, "p95": 21000, "n": 113}, "requests": 113},
+             "1h":  {"first_word": {"p50": 1974, "p95": 7489, "n": 303},
+                     "whole_answer": {"p50": null, "p95": null, "n": 0}, "requests": 303}},
+ "disk": {"active_bytes": 78291292, "archived_bytes": 134222519, "archived_files": 2, "keep_files": 20,
+          "other": [{"label": "Request index", "bytes": 17027072, "present": true}]},
+ "pipelines": [{
+   "id": "daily", "name": "Daily report", "source": "proxy telemetry",
+   "makes": "the daily digest: retry test, refusals, route labels, cache hand-off threshold",
+   "schedule": {"kind": "launchd | interval | event | demand", "text": "daily at 09:00", "every_s": 86400},
+   "launchd": {"installed": true, "loaded": true, "state": "not running", "runs": 22, "last_exit": 0},
+   "last_run_ts": 1793121332.3, "read_to_ts": 1793121332.3, "behind_s": 10552.3, "late": false,
+   "reads": {"kind": "window | files | cursor", "window_s": null, "rows": null, "bytes": 125730982,
+             "files": 2, "files_waiting": null},
+   "state": "ok | late | failed | never ran | not installed | unknown", "error": null}]}
+```
+
+- `throughput`: telemetry `bytes_up` (sent to providers) and `bytes_down` (received), both proxies,
+  per second of the window. A row counts when it ENDED in the window (`ts` + `total_ms`; `ts` on rows
+  before telemetry v13).
+- `latency`: successful rows only. `first_word` = `ttft_ms`, `whole_answer` = `total_ms` (v13; rows
+  written before v13 have none, so `n` can be 0 until the proxies restart on v13 code).
+- `disk`: `active` = the live telemetry files; `archived` = the rotated generations
+  `telemetry.jsonl.<N>` (the proxy keeps `keep_files`); `other` = a fixed list of stores (size only).
+- `pipelines`: a fixed list in `studio/records.py` of every job that reads telemetry. `reads.kind`:
+  `window` = the rows of the last `window_s` before each run (`rows` = that count at the last run,
+  null when the run is older than the 2 h read); `files` = it reads whole files (`bytes`, `files`);
+  `cursor` = it records what it read (`rows`, `files`; `files_waiting` = rotated files not read yet).
+  `last_run_ts` comes from launchd and output file times. `behind_s` = now - `read_to_ts`.
+  Each entry fails open: an error sets `error` ("cannot read: <kind>") and `state: "unknown"`.
+- Bounds: at most 16 MiB read from the end of each telemetry file; `complete: false` when that cut the
+  2 h window. `launchctl print` per installed job, cached 60 s. The response is cached 8 s.

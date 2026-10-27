@@ -14,6 +14,7 @@ API: GET /api/flow?proxy=  GET /api/live?window=&proxy=  POST /api/test  GET|PUT
      POST /api/apply  POST /api/rollback  GET /api/ping (token check + pid, for single instance)
      v2 (docs/design/studio-v2/API.md; token in the header only, never in the URL):
      GET /api/recent?n=  GET /api/tokens?window=  GET /api/experiments  GET /api/stream (SSE)
+     GET /api/records (throughput, latency, disk, pipelines; launchd via an injectable runner)
 
 Streams: one handler thread per stream, at most ``stream_max`` (4) open; the 5th gets 429. A stream
 ends when the client goes away (a write error) or the server shuts down. ``last_request`` is set
@@ -43,7 +44,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import restart as restart_mod
-from . import drafts, experiments, flow, live, traffic
+from . import drafts, experiments, flow, live, records, traffic
 
 try:
     import fcntl
@@ -53,7 +54,7 @@ except ImportError:  # pragma: no cover — not POSIX: no lock, the check still 
 MAX_BODY = 64 * 1024
 PING_TIMEOUT_S = 1.0
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
-HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments", "/api/stream"})
+HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments", "/api/stream", "/api/records"})
 STREAM_MAX = 4
 STREAM_WRITE_TIMEOUT_S = 10.0
 UI_PATH = Path(__file__).with_name("ui.html")
@@ -81,6 +82,7 @@ class StudioServer(ThreadingHTTPServer):
         self.restart_run = restart_mod._run      # tests replace these (never the real launchctl)
         self.restart_fetch = restart_mod._fetch
         self.stats_fetch = restart_mod._fetch    # the stream snapshot's proxy state (tests replace it)
+        self.records_run = records._run          # `launchctl print` for /api/records (tests replace it)
         self.closing = threading.Event()         # set at shutdown: open streams end
         self.stream_max = STREAM_MAX
         self.streams_open = 0
@@ -337,6 +339,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_experiments(self, q):
         self._json(200, experiments.collect(self.server.get_paths()))
 
+    def api_records(self, q):
+        self._json(200, records.collect_cached(self.server.get_paths(), self.server.records_run))
+
     def api_stream(self, q):
         srv = self.server
         with srv.lock:
@@ -386,6 +391,7 @@ ROUTES = {
     ("GET", "/api/recent"): Handler.api_recent,
     ("GET", "/api/tokens"): Handler.api_tokens,
     ("GET", "/api/experiments"): Handler.api_experiments,
+    ("GET", "/api/records"): Handler.api_records,
     ("GET", "/api/stream"): Handler.api_stream,
 }
 

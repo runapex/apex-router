@@ -200,14 +200,16 @@ def _num_ms(v):
 
 
 def item(row: dict, raw: bytes, kinds, proxy: str = "main") -> dict:
-    """One request in the contract shape. ``ms_total`` is null: telemetry has no end time."""
+    """One request in the contract shape. ``ms_total`` = telemetry ``total_ms`` (v13: arrival -> last
+    byte or error); null on rows written before v13 (no end time) and on a bad value."""
     ts = row["_ts"]
     st = status_of(row)
     return {"id": row_id(ts, raw), "ts": round(ts, 3), "agent": agent_of(row, kinds),
             "provider": provider_of(row, proxy), "model_family": model_family(row.get("model_requested")),
             "status": st,
             "cause": None if st == "ok" else (CAUSE_RETRIED if st == "retried" else cause_of(row)),
-            "ms_total": None, "ttft_ms": _num_ms(row.get("ttft_ms")), "tokens": tokens_of(row)}
+            "ms_total": _num_ms(row.get("total_ms")), "ttft_ms": _num_ms(row.get("ttft_ms")),
+            "tokens": tokens_of(row)}
 
 
 def is_request(row) -> bool:
