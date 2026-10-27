@@ -233,7 +233,7 @@ const S = {flow:null, live:null, draft:null, review:null, win:"15m", proxy:"main
 // Branch edges (fallback, retry, offload, side sinks) are hidden until "Branches" is on, a touching node is
 // selected, or a test lights them: the main path stays readable (no spaghetti).
 const isBranch = e => e.kind !== "main" || /xval|escalation/.test(e.label || "");
-const L = {x0:24, laneW:212, gap:72, rowTop:96, rowH:80, rowGap:22, topBand:46};
+const L = {x0:24, laneW:212, gap:72, rowTop:136, rowH:80, rowGap:22, topBand:46};
 const laneIdx = id => S.flow.lanes.findIndex(l => l.id === id);
 const lx = i => L.x0 + i * (L.laneW + L.gap);
 const ry = r => L.rowTop + r * (L.rowH + L.rowGap);
@@ -356,7 +356,9 @@ function edgePath(e, slot){
   const x1 = sx + g, x2 = tx - g;
   const d = `M${sx} ${sy} C${sx + g * 0.9} ${sy} ${sx + g * 0.1} ${cy} ${x1} ${cy} L${x2} ${cy} ` +
             `C${tx - g * 0.1} ${cy} ${tx - g * 0.9} ${ty} ${tx} ${ty}`;
-  return {d, lx: (x1 + x2) / 2, ly: useTop ? cy - 9 - 11 : cy + 15, anchor: "middle"};   // clear of the other channel slots
+  // label at the start of its own run (not the middle, where vertical drops cross); slot 0 has the
+  // other top slots above it, so its label goes under the line
+  return {d, lx: Math.min(x1 + 8 + slot * 130, (x1 + x2) / 2), ly: useTop ? (slot === 0 ? cy + 13 : cy - 4) : cy + 15, anchor: "start"};
 }
 
 function edgeWidth(v){ return v ? 1.6 + Math.min(6, Math.log10(v + 1) * 1.8) : 1.4; }

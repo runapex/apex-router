@@ -322,7 +322,7 @@ EDGES = [
     _e("src.pi", "cue", "pi.turns"),
     _e("cue", "resolve", "conf.resolve", label=">>auto"),
     _e("resolve", "ste", "pi.turns"),
-    _e("cue", "ste", None, kind="skip", label="explicit >>family"),
+    _e("cue", "ste", None, kind="skip"),   # explicit >>family skips resolve (the title says it)
     _e("ste", "guards", "pi.turns"),
     _e("guards", "compact", "pi.turns"),
     _e("compact", "agents", "pi.turns"),
