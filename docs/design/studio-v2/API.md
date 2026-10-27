@@ -72,3 +72,36 @@ The UI reads it with `fetch()` + a stream reader (so the token stays in the head
 Limits: at most 4 open streams (5th gets 429). A stream ends when the client goes away. Open streams
 do not keep the studio alive past `--idle-exit`. The tail follows the telemetry file by offset and
 handles rotation.
+
+## Decision flow (owner order 2026-10-27: "a dynamic flow with decisions in real time"; no "Try a prompt")
+
+The apex panel shows no static on/off list and no prompt box. It shows each live request moving
+through its decision stations, with the decision made at each one.
+
+`request` events (SSE) and `/api/recent` items get one more field, `decisions`: an ordered list.
+
+```json
+"decisions": [
+  {"step": "task",   "label": "Task",          "verdict": "debug",                 "state": "ok"},
+  {"step": "model",  "label": "Model choice",  "verdict": "deep → Claude Opus",    "state": "ok"},
+  {"step": "guard",  "label": "Safety blocks", "verdict": "passed",                "state": "ok"},
+  {"step": "cache",  "label": "Cache",         "verdict": "93 % from cache",       "state": "ok"},
+  {"step": "send",   "label": "Send",          "verdict": "1 retry, then sent",    "state": "warn"},
+  {"step": "answer", "label": "Answer",        "verdict": "ended normally · 4.1 s","state": "ok"}
+]
+```
+
+| step | source | verdict examples | state rule |
+|---|---|---|---|
+| task | route_log row of the same session, nearest earlier ts (<= 120 s) | debug / generate / review / — | ok; "—" when no row |
+| model | route_log family + telemetry model_requested -> model_resolved | "deep → Claude Opus", "escalated → Opus" | warn when escalated or requested != resolved |
+| guard | telemetry guard_fired, guard_action | passed / blocked: <plain action> | error when blocked |
+| cache | cache_read / (in + cache_read + cache_write); bust, bust_cause; cache_key_rewrite | "93 % from cache", "cache missed: <plain cause>" | warn when bust |
+| send | connect_retries, upstream_rejected, error_cause, provider | "sent", "2 retries, then sent", "not reached" | warn on retry, error on failure |
+| answer | stop_reason, refusal, ttft_ms, total time | "ended normally · 4.1 s", "stopped: length", "refused" | warn on length/refusal |
+
+Rules: verdict strings come from fixed maps (no raw text from rows); at most 6 steps; a missing
+source gives verdict "—" and state "none". The UI draws the stations as a short line inside apex:
+a train moves station to station (about 150 ms each), each station shows its verdict as it
+passes, a warn/error station turns amber/red and stays lit for the last 10 requests. Recent and
+the lit journey reuse the same list.
