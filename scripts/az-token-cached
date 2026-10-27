@@ -11,13 +11,20 @@
 # Lock: flock(2) held only by the perl process that supervises az (not inherited by az). The kernel
 # drops it when that process ends, so there is no stale lock to detect or remove. az runs in its own process group with stdout to a file
 # (not a pipe), and the group is killed at the deadline and after az ends (no orphan keeps the call open).
+# Refresh window (2026-10-26, incident at 15:44): az (MSAL) gets a new token only when the cached one has
+# less than 300 s left (msal/application.py: expires_in < 5*60). A refresh with more left returns the SAME
+# token, so REFRESH_S must stay under 300. With 900 s, 17 background refreshes got the old token, and
+# after an idle gap the next caller ran the slow network refresh inside its deadline and failed.
+# Keep-warm: scripts/az-token-keepwarm.sh runs this every 60 s with AZ_TOKEN_MIN_S=240, so the slow
+# network refresh runs there (rule 3, long deadline) and not in a pi request.
 # Usage: az-token-cached [resource]
 RES="${1:-https://cognitiveservices.azure.com}"
 DIR="${XDG_CACHE_HOME:-$HOME/.cache}/az-token"
 KEY=$(printf %s "$RES" | shasum | cut -c1-16)
 TOK="$DIR/$KEY.token"; EXP="$DIR/$KEY.exp"; LOCK="$DIR/$KEY.flock"
-REFRESH_S=${AZ_TOKEN_REFRESH_S:-900}   # refresh in the background when less than this is left
-MIN_S=60                               # a token with less than this left is not used
+REFRESH_S=${AZ_TOKEN_REFRESH_S:-240}   # refresh in the background when less than this is left (< 300: MSAL)
+MIN_S=${AZ_TOKEN_MIN_S:-60}            # a token with less than this left is not used (keep-warm: 240)
+[ "$REFRESH_S" -ge "$MIN_S" ] 2>/dev/null || REFRESH_S=$MIN_S   # rule 1 must never serve below MIN_S
 DEADLINE_S=${AZ_TOKEN_DEADLINE_S:-8}   # hard limit for one call (pi's limit is 10 s)
 AZ="${AZ_BIN:-az}"
 umask 077
@@ -61,7 +68,8 @@ refresh() {
     exit 1 unless defined $t && length $t && defined $e && $e =~ /^\d+$/;
     for ([$tok, $t], [$exp, $e]) { my ($f, $v) = @$_; open(my $o, ">", "$f.tmp.$$") or exit 1; print $o $v;
                                    close $o or exit 1; rename("$f.tmp.$$", $f) or exit 1 }
-    exit 0' "$LOCK" "$TOK" "$EXP" "$1" "$2" "$AZ" account get-access-token --resource "$RES" -o json
+    exit($e - time > $need ? 0 : 1)  # stored, but az returned a token with too little life (MSAL < 300 s rule)
+  ' "$LOCK" "$TOK" "$EXP" "$1" "$2" "$AZ" account get-access-token --resource "$RES" -o json
 }
 
 # 1. fresh
