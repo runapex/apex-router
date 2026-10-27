@@ -123,7 +123,7 @@ def test_stop_reason_is_bounded_and_scalar():
 def test_event_carries_v12_fields():
     from apex_router.proxy_engine.readout.doctor import SUPPORTED_SCHEMA
     from apex_router.proxy_engine.telemetry.events import TELEMETRY_SCHEMA_VERSION, TelemetryEvent
-    assert TELEMETRY_SCHEMA_VERSION == 12 and 12 in SUPPORTED_SCHEMA
+    assert TELEMETRY_SCHEMA_VERSION == 13 and 12 in SUPPORTED_SCHEMA and 13 in SUPPORTED_SCHEMA  # v13 = v12 + total_ms
     fields = TelemetryEvent.__dataclass_fields__
     assert "stop_reason" in fields and "refusal" in fields
 

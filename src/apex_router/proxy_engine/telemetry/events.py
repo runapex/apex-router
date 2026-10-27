@@ -105,7 +105,12 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # bool that is True when the provider refused (Anthropic `refusal`, chat `content_filter` or a refusal
 # field, a Responses refusal part / content_filter). A refusal arrives as HTTP 200, so before v12 it was
 # indistinguishable from a success. Usage is now also captured from non-SSE JSON bodies (ollama).
-TELEMETRY_SCHEMA_VERSION = 12
+# v13: added `total_ms` — the END time of the request: request arrival -> the last byte streamed to the
+# client, or -> the error (upstream raise, mid-stream break, client disconnect). Before v13 a row had a
+# start (`ts`) and a first byte (`ttft_ms`) but no end, so the whole time of a request was not known
+# (the studio's ms_total was always null). Set on every emit path of both handlers; None on rows
+# written before v13 (the key is absent there), never 0 on a v13 row.
+TELEMETRY_SCHEMA_VERSION = 13
 
 # Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
 # (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
@@ -236,6 +241,8 @@ class TelemetryEvent:
     retry_propensity: float | None = None  # v11: P(retry_arm) at assignment
     stop_reason: str | None = None  # v12: provider terminal reason, as received (bounded)
     refusal: bool = False           # v12: the provider refused (HTTP 200, so not an error)
+    # v13: request arrival -> last byte to the client, or -> the error (same clock as ttft_ms)
+    total_ms: float | None = None
 
     @classmethod
     def start(cls, *, apex_version: str, client: str) -> TelemetryEvent:

@@ -129,6 +129,7 @@ async def handle(
         event.connect_retries = send_stats.get("connect_retries", 0)  # v6
         event.record_retry_arm(send_stats)  # v11: retry-action A/B arm, if it retried
         event.connect_backoff_ms = backoff_ms
+        event.total_ms = (time.perf_counter() - t0) * 1000.0  # v13: arrival -> the raise
         telemetry.emit(event)
         return Response(b'{"error":"apex upstream unreachable"}', status_code=502,
                         media_type="application/json")
@@ -177,6 +178,9 @@ async def handle(
             midstream = type(exc).__name__  # labeled in finally, AFTER any http_<status>
             raise
         finally:
+            # v13 end time: arrival -> last byte to the client, or -> the mid-stream error / client
+            # disconnect. Taken FIRST, so the usage parse and aclose below are not in it.
+            event.total_ms = (time.perf_counter() - t0) * 1000.0
             # apex's own request-path cost = pre-forward compute + any connect-retry backoff slept
             event.apex_added_ms = pre_forward_ms + send_stats.get("connect_backoff_s", 0.0) * 1000.0
             event.connect_retries = send_stats.get("connect_retries", 0)  # v6
