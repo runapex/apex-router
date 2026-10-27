@@ -113,6 +113,28 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 .headline{font-size:19px;margin:14px 0 14px}
 .headline b{white-space:nowrap;font-variant-numeric:tabular-nums}
 
+/* records: speed, wait, disk, and the pipelines branch */
+.rate{font-size:19px;margin:12px 0 2px}
+.rate b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.rate2{color:var(--soft);font-size:13.5px;margin:0 0 12px}
+.dbar{display:flex;height:22px;border-radius:6px;overflow:hidden;background:var(--bg-dark);margin:10px 0 6px}
+.dbar .a{height:100%;background:var(--fg2)} .dbar .z{height:100%;background:var(--neutral)}
+.dkey{display:flex;gap:18px;color:var(--fg2);font-size:13.5px;margin:0 0 6px;flex-wrap:wrap}
+.dkey i{display:inline-block;width:14px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:6px}
+.dkey i.a{background:var(--fg2)} .dkey i.z{background:var(--neutral)}
+.branch{list-style:none;margin:6px 0 10px;padding:0 0 0 4px;position:relative}
+.branch::before{content:"";position:absolute;left:13px;top:12px;bottom:18px;width:5px;border-radius:2px;
+  background:repeating-linear-gradient(var(--neutral) 0 3px,transparent 3px 9px)}
+.branch li{position:relative;padding:5px 0 9px 34px}
+.branch .stop{position:absolute;left:5px;top:8px;width:16px;height:16px;border-radius:50%;background:var(--card);border:3px solid var(--fg2)}
+.branch li.root .stop{border-radius:5px;border-color:var(--neutral)}
+.branch li.late .stop{border-color:var(--amber)} .branch li.bad .stop{border-color:var(--red)}
+.branch li.off .stop{border-color:var(--neutral);border-style:dashed}
+.branch .pn{color:var(--fg);font-weight:600}
+.branch .ps{color:var(--fg2);font-size:13.5px}
+.branch li.late .ps{color:var(--amber)} .branch li.bad .ps{color:var(--red)}
+.branch .pm{color:var(--soft);font-size:13px}
+
 /* experiments board */
 .board{list-style:none;padding:0;margin:0}
 .board li{padding:12px 0;border-bottom:1px solid var(--rule)}
@@ -309,7 +331,7 @@ const WHEN_CLS = {live: "now", restart: "restart", locked: "fixed"};
 /* ---------- state ---------- */
 const S = {snap: null, lastSnap: 0, stale: "", recent: [], seen: new Set(), flow: null, live: null,
   draft: null, review: null, proxy: "main", panel: null, arg: null, focus: null, selReq: null, test: null,
-  testRes: null, testing: false, tok: null, tokWin: "15m", exps: null, geo: null, sig: "", trains: [], raf: 0,
+  testRes: null, testing: false, tok: null, tokWin: "15m", exps: null, recs: null, geo: null, sig: "", trains: [], raf: 0,
   pollMode: false};
 
 /* ---------- helpers (text only: textContent, never HTML) ---------- */
@@ -537,7 +559,7 @@ function renderMap(force){
   applyFocus();
 }
 const TIPS = {apex: () => ["Open apex: 12 inner steps.", "The relay on this Mac. It passes and counts each request."],
-  records: () => ["What apex writes down on this Mac.", "Counts, health and history. No prompt text."]};
+  records: () => ["Records: speed, wait, disk and the jobs that read them.", "What apex writes down on this Mac. No prompt text."]};
 function station(parent, key, label, cls, keys){
   const g = sv("g", {class: "station" + cls, tabindex: 0, role: "button", "aria-label": label, "data-node": key,
     "data-keys": keys.join(" ")}, parent);
@@ -602,7 +624,7 @@ function drawHops(){
   const mx = 840 + (l.x2 - 840) / 2, my = (l.y + l.py) / 2, up = l.py < l.y;
   sv("text", {x: mx + (up ? -14 : 14), y: my + (up ? -6 : 0), class: "hop" + (r.status === "error" ? " bad" : ""), "text-anchor": up ? "end" : "start",
     text: r.status === "error" ? "Stopped: " + (r.cause || "failed") : "first word " + secs(r.ttft)}, g);
-  if (r.status !== "error") sv("text", {x: P.x + 32, y: P.y + 32, class: "hop", text: "done in " + secs(r.ms) + ", " + big(r.tout) + " out"}, g);
+  if (r.status !== "error") sv("text", {x: P.x + 32, y: P.y + 32, class: "hop", text: (r.ms ? "done in " + secs(r.ms) + ", " : "") + big(r.tout) + " out"}, g);
 }
 
 /* ---------- trains: one per real request event ---------- */
@@ -774,7 +796,8 @@ function hopList(r){
     h("li", {text: `${agentOf(r.a).name} → apex → ${p ? p.name : "provider"}` + (r.family ? ` (${r.family})` : "")}),
     r.status === "error" ? h("li", {class: "fail", text: "Stopped: " + (r.cause || "the request failed") + "."}) : null,
     r.status === "retried" ? h("li", {text: "apex tried again once. Then it went through."}) : null,
-    r.status !== "error" ? h("li", {text: "First word after " + secs(r.ttft) + ". Whole answer in " + secs(r.ms) + "."}) : null,
+    r.status !== "error" ? h("li", {text: "First word after " + secs(r.ttft) + "." + (r.ms ? " Whole answer in " + secs(r.ms) + "." : "")}) : null,
+    r.status === "error" && r.ms ? h("li", {text: "It stopped after " + secs(r.ms) + "."}) : null,
     h("li", {text: `Input ${big(inp)} tokens` + (inp ? `: ${big(r.cr)} from cache, ${big(r.tin + r.cw)} sent new.` : ".")}),
     h("li", {text: `Output ${big(r.tout)} tokens.`}));
 }
@@ -793,7 +816,9 @@ VIEWS.recent = () => {
   for (const r of list){
     const sel = S.selReq === r.id, p = provOf(r.p);
     const right = r.status === "error" ? h("span", {class: "fail", text: "failed"}) :
-      (r.ttft && r.ttft >= SLOW_MS) ? h("span", {class: "chip slowc", text: "slow"}) : h("span", {class: "muted num", text: ago(r.ts)});
+      (r.ttft && r.ttft >= SLOW_MS) ? h("span", {class: "chip slowc", text: "slow"}) :
+      h("span", {class: "muted num", text: (r.ms ? secs(r.ms) + " · " : "") + ago(r.ts),
+        title: r.ms ? "Whole answer in " + secs(r.ms) + ". Sent " + ago(r.ts) + " ago." : null});
     ul.append(h("li", {}, h("button", {type: "button", class: "req", "aria-pressed": String(sel), "data-k": "r" + r.id,
       onclick: () => selectReq(r)}, swatch(r.a), h("span", {class: "way", text: `${agentOf(r.a).name} → ${p ? p.name : "?"}`}), right),
       sel ? hopList(r) : null));
@@ -1149,28 +1174,100 @@ VIEWS.provider = k => {
   body.push(h("button", {class: "btn main", type: "button", text: "Try a prompt", onclick: () => focusTry()}));
   return {title: p.name, sub: "AI provider. The end of the line.", body};
 };
+function rate(bps){ bps = +bps || 0;
+  if (bps >= 1e6) return (bps / 1e6).toFixed(bps >= 1e7 ? 0 : 1) + " MB/s";
+  if (bps >= 1e3) return (bps / 1e3).toFixed(bps >= 1e4 ? 0 : 1) + " KB/s"; return Math.round(bps) + " B/s"; }
+function bytes(n){ n = +n || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB"; if (n >= 1e6) return Math.round(n / 1e6) + " MB";
+  if (n >= 1e3) return Math.round(n / 1e3) + " KB"; return n + " B"; }
+function dur(s){ s = Math.max(0, Math.round(+s || 0));
+  if (s < 90) return s + " s"; if (s < 5400) return Math.round(s / 60) + " min";
+  if (s < 172800) return Math.round(s / 3600) + " h"; return Math.round(s / 86400) + " days"; }
+function lat(L){ // the 15 min window; the 1 hour window when 15 min has too few answers
+  const a = L && L["15m"], b = L && L["1h"], pick = k => (a && a[k] && a[k].n >= 3) ? [a[k], "15 min"] : (b && b[k] && b[k].n ? [b[k], "1 hour"] : [null, ""]);
+  return {fw: pick("first_word"), wa: pick("whole_answer")};
+}
+function pipeRead(p){
+  const r = p.reads || {};
+  if (r.kind === "cursor") return r.rows ? `kept ${big(r.rows)} requests from ${r.files} old ${r.files === 1 ? "file" : "files"}` : "nothing archived yet";
+  if (r.kind === "files") return r.bytes ? `reads ${bytes(r.bytes)} each run` : "nothing to read";
+  return r.rows !== null && r.rows !== undefined ? `read ${big(r.rows)} requests (last ${dur(r.window_s)})` : `reads the last ${dur(r.window_s)}`;
+}
+function pipeStatus(p){
+  if (p.error) return "Cannot read it.";
+  if (p.state === "not installed") return "Not installed.";
+  if (p.state === "never ran") return "Never ran.";
+  const ran = p.last_run_ts ? "last ran " + ago(p.last_run_ts) + " ago" : "";
+  if (p.state === "failed") return ran + " · it failed";
+  const r = p.reads || {};
+  if (r.kind === "cursor") return ran + " · " + (r.files_waiting ? `${r.files_waiting} old ${r.files_waiting === 1 ? "file waits" : "files wait"}` : "all old files read");
+  // "read to now" only when it is near; "N h behind" only when a scheduled job is late; else where it read to
+  const b = p.behind_s;
+  const behind = b === null || b === undefined ? "" : b < 120 ? "read to now" : p.late ? dur(b) + " behind" : "read to " + dur(b) + " ago";
+  return [ran, behind].filter(Boolean).join(" · ");
+}
 VIEWS.records = () => {
-  if (!S.live){ api("/api/live?window=15m&proxy=" + S.proxy).then(r => { S.live = r; }, e => { S.live = {error: e.message}; })
+  if (!S.recs){ api("/api/records").then(r => { S.recs = r || {}; }, e => { S.recs = {error: e.message}; })
     .then(() => { if (S.panel === "records") renderPanel(); }); return {title: "Records", sub: "Loading…"}; }
-  const L = S.live, t = L.telemetry || {};
-  if (L.error) return {title: "Records", sub: "Not available: " + L.error};
-  const load = L.pressure ? ({GREEN: "OK", AMBER: "Busy", RED: "Overloaded"}[L.pressure.level] || "unknown") : "no data";
-  return {title: "Records", sub: "What apex writes down on this Mac. Counts, health and history only. No prompt text, no keys.", body: [
-    facts([
-      h("span", {}, h("b", {text: "Request log"}), t.present ? `: ${t.requests} requests in 15 min.` : ": no file yet."),
-      h("span", {}, h("b", {text: "Model-choice log"}), L.pi && L.pi.turns !== null ? `: ${L.pi.turns} pi turns in 15 min.` : ": no data."),
-      h("span", {}, h("b", {text: "Provider load"}), ": " + load + "."),
-      h("span", {}, h("b", {text: "Second-opinion scores"}), L.xval ? `: ${L.xval.categories} kinds of task.` : ": no data."),
-      h("span", {}, h("b", {text: "Menu-bar history"}), L.sources && L.sources.history ? ": written." : ": no data."),
-      t.last_hb_age_s !== null && t.last_hb_age_s !== undefined ? `Last health signal ${t.last_hb_age_s} s ago.` : null]),
-    t.file ? h("p", {class: "code", text: t.file}) : null,
-    h("button", {class: "btn", type: "button", text: "Refresh", onclick: () => { S.live = null; renderPanel(); }})]};
+  const R = S.recs;
+  if (R.error) return {title: "Records", sub: "Not available: " + R.error,
+    body: [h("button", {class: "btn", type: "button", text: "Try again", onclick: () => { S.recs = null; renderPanel(); }})]};
+  const T = R.throughput || {}, t1 = T["1m"] || {}, t15 = T["15m"] || {};
+  const body = [];
+  // 1. speed (small picture first)
+  body.push(h("p", {class: "rate", title: "In = answers from providers. Out = requests to providers. Wire bytes, both proxies."},
+    "in ", h("b", {text: rate(t1.down_bps)}), " · out ", h("b", {text: rate(t1.up_bps)})));
+  body.push(h("p", {class: "rate2", text: `Last minute. Last 15 min: in ${rate(t15.down_bps)} · out ${rate(t15.up_bps)}.`}));
+  // 2. wait
+  const W = lat(R.latency), fw = W.fw[0], wa = W.wa[0];
+  const tip = (x, w) => x ? `Median ${secs(x.p50)}, slowest 5 %: ${secs(x.p95)} (${x.n} answers, last ${w}).` : null;
+  body.push(h("p", {class: "rate"},
+    h("span", {title: tip(fw, W.fw[1])}, "first word ", h("b", {text: fw ? secs(fw.p50) : "—"})), " · ",
+    h("span", {title: tip(wa, W.wa[1])}, "whole answer ", h("b", {text: wa ? secs(wa.p50) : "—"}))));
+  body.push(h("p", {class: "rate2", text: wa ? "Typical wait. Point at a number for the slowest answers." :
+    "The whole-answer time is recorded from the next proxy restart on."}));
+  // 3. disk
+  const D = R.disk || {};
+  if (D.error) body.push(h("p", {class: "muted", text: "Disk: not available."}));
+  else {
+    const act = +D.active_bytes || 0, arc = +D.archived_bytes || 0, tot = Math.max(1, act + arc);
+    const bar = h("div", {class: "dbar", role: "img", "aria-label": `Request log on disk: active ${bytes(act)}, archived ${bytes(arc)}`});
+    const a = h("div", {class: "a"}); a.style.width = (100 * act / tot) + "%";
+    const z = h("div", {class: "z"}); z.style.width = (100 * arc / tot) + "%";
+    bar.append(a, z);
+    body.push(h("h3", {text: "Request log on disk"}), bar,
+      h("div", {class: "dkey"}, h("span", {}, h("i", {class: "a", "aria-hidden": "true"}), "active " + bytes(act)),
+        h("span", {title: `apex keeps the newest ${D.keep_files} old files.`}, h("i", {class: "z", "aria-hidden": "true"}),
+          `archived ${bytes(arc)} (${D.archived_files} old ${D.archived_files === 1 ? "file" : "files"})`)));
+    const other = (Array.isArray(D.other) ? D.other : []).filter(o => o.present);
+    if (other.length){
+      const sum = other.reduce((s, o) => s + (+o.bytes || 0), 0);
+      body.push(h("details", {}, h("summary", {text: `Other records: ${bytes(sum)}`}),
+        facts(other.map(o => h("span", {}, h("b", {text: String(o.label)}), " " + bytes(o.bytes))))));
+    }
+  }
+  // 4. the pipelines: a short branch from Records, one station per job
+  const P = Array.isArray(R.pipelines) ? R.pipelines : [];
+  body.push(h("h3", {text: "Jobs that read the records"}));
+  const ul = h("ul", {class: "branch"}, h("li", {class: "root"}, h("span", {class: "stop", "aria-hidden": "true"}),
+    h("div", {class: "pn", text: "Records"})));
+  for (const p of P){
+    const cls = p.error || p.state === "failed" ? "bad" : p.state === "late" ? "late" : (p.state === "ok" ? "" : "off");
+    ul.append(h("li", {class: cls, title: `Makes ${p.makes}. Runs ${p.schedule ? p.schedule.text : "?"}. Reads ${p.source}.`},
+      h("span", {class: "stop", "aria-hidden": "true"}), h("div", {class: "pn", text: String(p.name || p.id)}),
+      h("div", {class: "ps", text: pipeStatus(p)}), h("div", {class: "pm", text: pipeRead(p)})));
+  }
+  if (!P.length) ul.append(h("li", {class: "off"}, h("span", {class: "stop", "aria-hidden": "true"}), h("div", {class: "ps", text: "No jobs found."})));
+  body.push(ul);
+  if (R.complete === false) body.push(h("p", {class: "muted small", text: "Very busy: only the newest part of the log was read."}));
+  body.push(h("button", {class: "btn", type: "button", text: "Refresh", onclick: () => { S.recs = null; renderPanel(); }}));
+  return {title: "Records", sub: "Speed, wait and disk of the request log. No prompt text, no keys.", body};
 };
 
 /* ---------- open a node (map click or #node=<id>) ---------- */
 function openNode(key){
   if (key === "apex") return openPanel("apex");
-  if (key === "records") return openPanel("records");
+  if (key === "records"){ S.recs = null; return openPanel("records"); }
   if (key.startsWith("a:")) return openPanel("agent", key.slice(2));
   if (key.startsWith("p:")) return openPanel("provider", key.slice(2));
 }
