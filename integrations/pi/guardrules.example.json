@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to ~/.apex-router/pi-guardrules.json and edit. No file = no rules. tool: bash (default), write, edit, or * for all tools. match: JavaScript regex on the bash command or on the JSON of the tool input. expires: ISO date; after it the rule is off.",
+  "rules": [
+    {
+      "id": "no-devtest66",
+      "match": "\\bdevtest66\\b",
+      "reason": "devtest66 is a shared box: do not touch it",
+      "owner": "juri"
+    },
+    {
+      "id": "no-git-push",
+      "match": "\\bgit\\b[^\\n;|&]*\\bpush\\b",
+      "reason": "push only after the user OK and an independent review GO",
+      "owner": "juri",
+      "enabled": false
+    },
+    {
+      "id": "no-public-post",
+      "tool": "*",
+      "match": "medium\\.com/(p/[^/]+/)?(edit|responses)|chat\\.postMessage|/rest/api/2/issue/[^\"]*/comment",
+      "reason": "do not post to Medium, Slack or Jira without the user OK",
+      "owner": "juri",
+      "expires": "2027-01-01"
+    }
+  ]
+}
