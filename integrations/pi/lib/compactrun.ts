@@ -125,7 +125,11 @@ export async function runCompaction(ev: CompactEventLike, deps: Deps): Promise<C
 		// a new user message, or a leaf of another branch, means the payload does not cover the context.
 		const at = cap?.leafId ? ev.branchEntries.findIndex(e => e.id === cap.leafId) : -1;
 		const after = at >= 0 ? ev.branchEntries.slice(at + 1) : [];
-		const onBranch = at >= 0 && !after.some(e => (e as { message?: { role?: string } }).message?.role === "user");
+		const replyOnly = (e: EntryLike): boolean => {
+			const m = (e as { type?: string; message?: { role?: string } });
+			return m.type === "message" && (m.message?.role === "assistant" || m.message?.role === "toolResult");
+		};
+		const onBranch = at >= 0 && after.every(replyOnly);   // custom_message, bashExecution, user: not covered
 		if (!deps.model || !deps.replay) fails.push("p3-no-deps");
 		else if (!cap) fails.push("p3-no-capture");
 		else if (cap.provider !== deps.model.provider || cap.id !== deps.model.id) fails.push("p3-model-changed");

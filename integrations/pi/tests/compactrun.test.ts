@@ -269,3 +269,18 @@ test("telemetry row: counts and codes only — no rule text, no id, no command, 
 	assert.deepEqual(out.row.items, { rule: 1, id: 2, nogo: 0, error: 1 });
 	assert.equal(typeof (out.row.missed as { id: number }).id, "number");
 });
+
+test("xval pass 2 P3: a custom_message or bashExecution after the capture is not covered by the payload", async () => {
+	const { s, keep, leaf } = session();
+	const replay = async () => ({ content: [{ type: "text", text: "## Goal\nreplayed" }], stopReason: "stop" });
+	const cap = () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf });
+	const e1 = ev(s, keep);
+	for (const extra of [
+		{ type: "custom_message", id: "c1", parentId: leaf, customType: "note", content: "context" },
+		{ type: "message", id: "b1", parentId: leaf, message: { role: "bashExecution", command: "ls", output: "x" } },
+	]) {
+		const d = deps({ captured: cap, replay }, { APEX_COMPACT_CACHE: "1" });
+		const out = await runCompaction({ ...e1, branchEntries: [...e1.branchEntries, extra] as never }, d.d);
+		assert.deepEqual(out.row.fails, ["p3-branch-changed"], extra.type);
+	}
+});
