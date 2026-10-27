@@ -242,3 +242,31 @@ def test_stop_during_a_slow_browser_start_clears_the_file(paths):
     bg.stop()                                  # the opener is still blocked
     assert not ipath.exists()
     hold.set()
+
+
+def test_sigterm_while_the_url_print_blocks_clears_the_file(paths, tmp_path):
+    # xval P1 (pass 3): SIGTERM before the handler was set (during emit / flush) killed the
+    # process with the file left behind. The handler is now set before anything is written.
+    import signal as _signal
+    import sys as _sys
+    script = tmp_path / "run.py"
+    script.write_text(
+        "import sys, time\n"
+        "from apex_router.studio import server\n"
+        "def emit(s):\n"
+        "    time.sleep(60)\n"                       # the URL print hangs (a full pipe)
+        "server.serve(open_browser=False, emit=emit)\n")
+    import apex_router
+    from pathlib import Path as _P
+    env = dict(os.environ)                     # the fixture home env + this checkout's src
+    env["PYTHONPATH"] = str(_P(apex_router.__file__).parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.Popen([_sys.executable, str(script)], env=env)
+    ipath = server.instance_path(paths)
+    try:
+        assert _wait(ipath.exists, 15), "studio did not start"
+        proc.send_signal(_signal.SIGTERM)
+        proc.wait(15)
+        assert not ipath.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()

@@ -467,31 +467,41 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
         emit("apex-router studio: bad --open target (use node:<id>, review or branches)")
         return 2
     ipath = instance_path(paths)
-    with _instance_lock(ipath):
-        inst = live_instance(ipath) if open_target is not None else None
-        if inst:
-            url = f"http://127.0.0.1:{inst['port']}/?token={inst['token']}"
-            emit(url + h)
-            _flush()
-            if open_browser:
-                _open_url(url + h, opener)
-            return 0
-        try:
-            srv = make_server(port, paths=paths)
-        except OSError as e:
-            emit(f"apex-router studio: cannot bind 127.0.0.1:{port} ({e.strerror or e})")
-            return 1
-        # serve BEFORE the file names this studio and before the lock goes: a second start that
-        # finds the file must get its /api/ping answer at once, or it calls this studio stale
-        loop = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5},
-                                name="studio-serve", daemon=True)
-        loop.start()
-        try:
-            write_instance(ipath, srv)       # replaces a stale file (dead pid or no answer)
-        except OSError:
-            pass                              # read-only home: the studio still runs, no reuse
+    # SIGTERM (launchd, kill) = a clean exit, from the first line on: the finally below clears the
+    # instance file on every path after it is written
     prev_term = None
-    try:                                      # from here on, every exit path clears the file
+    if threading.current_thread() is threading.main_thread():
+        def on_term(signum, frame):
+            raise KeyboardInterrupt
+        try:
+            prev_term = signal.signal(signal.SIGTERM, on_term)
+        except (ValueError, OSError):
+            prev_term = None
+    srv = loop = None
+    try:
+        with _instance_lock(ipath):
+            inst = live_instance(ipath) if open_target is not None else None
+            if inst:
+                url = f"http://127.0.0.1:{inst['port']}/?token={inst['token']}"
+                emit(url + h)
+                _flush()
+                if open_browser:
+                    _open_url(url + h, opener)
+                return 0
+            try:
+                srv = make_server(port, paths=paths)
+            except OSError as e:
+                emit(f"apex-router studio: cannot bind 127.0.0.1:{port} ({e.strerror or e})")
+                return 1
+            # serve BEFORE the file names this studio and before the lock goes: a second start
+            # that finds the file must get its /api/ping answer at once, or it calls this stale
+            loop = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5},
+                                    name="studio-serve", daemon=True)
+            loop.start()
+            try:
+                write_instance(ipath, srv)   # replaces a stale file (dead pid or no answer)
+            except OSError:
+                pass                          # read-only home: the studio still runs, no reuse
         url = url_of(srv)
         if on_start:
             on_start(srv)
@@ -505,13 +515,6 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
                         srv.shutdown()
                         return
             threading.Thread(target=watch, daemon=True).start()
-        if threading.current_thread() is threading.main_thread():
-            def on_term(signum, frame):
-                raise KeyboardInterrupt     # a launchd / kill stop is a clean exit: the file goes
-            try:
-                prev_term = signal.signal(signal.SIGTERM, on_term)
-            except (ValueError, OSError):
-                prev_term = None
         if open_browser:
             # in a thread: a slow browser start must not hold up Ctrl-C / SIGTERM or the cleanup
             threading.Thread(target=_open_url, args=(url + h, opener), name="studio-open", daemon=True).start()
@@ -520,12 +523,13 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
     except KeyboardInterrupt:
         pass
     finally:
-        if loop.is_alive():                   # shutdown() waits for serve_forever: never call it on a dead loop
-            stopper = threading.Thread(target=srv.shutdown, daemon=True)
-            stopper.start()
-            stopper.join(5)
-        clear_instance(ipath, srv)
-        srv.server_close()
+        if srv is not None:
+            if loop is not None and loop.is_alive():   # shutdown() waits for serve_forever
+                stopper = threading.Thread(target=srv.shutdown, daemon=True)
+                stopper.start()
+                stopper.join(5)
+            clear_instance(ipath, srv)       # removes the file only if it names this studio
+            srv.server_close()
         if prev_term is not None:
             try:
                 signal.signal(signal.SIGTERM, prev_term)
