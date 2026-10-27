@@ -2,7 +2,7 @@
 
 Status: proposal, not built. Owner goal: "move to an Electron app, and ship apex-router as a
 standalone app, with installer, debugger, updater, uninstaller".
-Scope: macOS only. Linux keeps `install.sh`. All data stays on the Mac.
+Scope: macOS (Apple Silicon) and Linux (D13). All data stays on the machine, except an opt-in crash upload (D14, D17).
 Marks: **[check before build]** = a version, policy or API claim from memory. Confirm it before Phase 1.
 
 ## 1. Today: what an install creates and changes
@@ -278,19 +278,45 @@ Start: hold Option at app start, or `--safe-mode`.
 | Download size ~300 MB | slow first install | optional extras as later downloads |
 | Owner dev setup has 3 Python homes | migration breaks jobs | "leave" option; dev mode |
 
-## 10. Open owner decisions
+## 10. Owner decisions (answered 2026-10-27)
 
-1. D1: Confirm architecture (a). Option (c) is smaller but has no Electron.
-2. D2: DMG only, or also a PKG for MDM?
-3. D3: Which Apple Developer ID team signs and notarizes?
-4. D4: Update feed: public GitHub Releases, private repo, or internal static host?
-5. D5: Extras in the default runtime: `proxy,tuner` only? `worldmodel`, `books` as later downloads?
-6. D6: Keep `install.sh` as a supported path (Linux, power users), or freeze it?
-7. D7: Owner Mac: full adopt, or dev mode with `current` -> dev checkout?
-8. D8: Uninstall default for user data: keep, or ask with no default?
-9. D9: Mesh: hide from the wizard, or show as an advanced option?
-10. D10: SwiftBar: retire at P2, or keep both for one release?
-11. D11: Safe mode: may it apply a proxy bypass to pi/claude settings, or only show it?
-12. D12: Updates: auto-apply when idle, or always ask?
-13. D13: arm64 only, or also Intel (universal build, double runtime size)?
-14. D14: Crash reports: none (local only), or opt-in upload?
+| ID | Question | Answer |
+|---|---|---|
+| D1 | Architecture | **(a)** Electron + bundled Python runtime |
+| D2 | Package | **DMG only** |
+| D3 | Signing | **Not signed; beta only** |
+| D4 | Update feed | **Public GitHub Releases** |
+| D5 | Default runtime extras | **`proxy,tuner,worldmodel`**; `books` as a later download |
+| D6 | `install.sh` | **Keep supported for one release, then freeze** (suggested answer) |
+| D7 | Owner Mac | **Dev mode**: `runtime/current` -> the dev checkout |
+| D8 | Uninstall, user data | **Ask, with no default** |
+| D9 | Mesh in the wizard | **Advanced option** |
+| D10 | SwiftBar | **Remove at P2** |
+| D11 | Safe mode, proxy bypass | **Only show the change** |
+| D12 | Updates | **Always ask** |
+| D13 | Platforms | **Apple Silicon + Linux** |
+| D14 | Crash reports | **Opt-in upload** |
+
+### Effects on this note
+
+1. D3 "not signed": remove sign and notarize from P0 and section 4. The P0 exit is "the DMG opens on a clean
+   Mac after the user allows it in System Settings > Privacy & Security". Gatekeeper shows a warning on
+   first open of a download.
+2. D3 + D12: Squirrel.Mac needs a signed app, so electron-updater cannot install updates by itself on an
+   unsigned Mac app. The updater checks the feed, makes sure the ed25519 signature of the runtime payload is correct,
+   and asks the user (D12). The `.app` shell itself updates by a new DMG download (see D15).
+3. D4 public feed: release notes and payloads are public. Do not put internal hostnames, model ids or
+   telemetry samples in a release. Add a release check for this to P4.
+4. D5: the runtime is bigger (`worldmodel` adds the torch-free parts only; **[check before build]** size).
+5. D13 Linux: the scope line "macOS only" no longer holds. Linux needs systemd user units in place of
+   launchd, its own package and its own tray (see D16). The phase plan grows.
+6. D10: SwiftBar goes at P2, so the app menu bar must reach parity with `snapshot --menubar` in P2.
+7. D14 opt-in upload needs a destination (see D17).
+
+### New open decisions (from the answers above)
+
+15. D15: Unsigned Mac app shell update: (a) a new DMG download when the shell changes (runtime updates
+    stay in-app), or (b) sign the app later so Squirrel can update it?
+16. D16: Linux package and scope: AppImage, .deb, or both? Same phases, or Linux after the Mac beta?
+17. D17: Crash upload destination: GitHub issue on the public repo (scrubbed), a private endpoint, or
+    a local zip the user sends by hand?
