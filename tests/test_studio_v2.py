@@ -721,9 +721,39 @@ def test_experiment_items_are_short_masked_and_never_follow_links(tmp_path):
     assert len(it["headline"]) <= E.HEADLINE_MAX and "sk-abc" not in it["headline"]
     assert "[hidden]" in it["headline"]
     assert it["metric"]["value"] is None and it["gate"]["passed"] is None and it["n"] is None
-    outside = tmp_path / "outside.json"
-    outside.write_text('{"secret": 1}')
-    link = tmp_path / "link.json"
-    link.symlink_to(outside)
-    with pytest.raises(E.ReadError):
-        E._read(link)
+    root = tmp_path / "root"
+    (root / "ok").mkdir(parents=True)
+    (root / "ok" / "a.json").write_text("{}")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "results.jsonl").write_text('{"secret": 1}\n')
+    (root / "explore").symlink_to(outside)              # a linked DIRECTORY (xval pass 2)
+    (root / "link.json").symlink_to(outside / "results.jsonl")
+    tok = E._ROOTS.set((str(root.resolve()),))
+    try:
+        assert E._read(root / "ok" / "a.json") == b"{}"
+        for bad in (root / "explore" / "results.jsonl", root / "link.json"):
+            with pytest.raises(E.ReadError):
+                E._read(bad)
+    finally:
+        E._ROOTS.reset(tok)
+    with pytest.raises(E.ReadError):                   # no roots set: fail closed
+        E._read(root / "ok" / "a.json")
+
+
+
+def test_tail_truncate_with_small_cap_sends_no_stale_row(tmp_path):
+    # xval pass 2: buffered prefetch reused stale bytes after seek(0)
+    from apex_router.studio import traffic
+    p = tmp_path / "t.jsonl"
+    p.write_text("")
+    t = traffic.Tail(p)
+    with open(p, "a") as f:
+        f.write('{"ts": 1}\n{"ts": 2}\n')
+    first = t.read(cap=10)                       # reads part of the file only
+    with open(p, "w") as f:
+        f.write('{"ts": 3}\n{"ts": 4}\n{"ts": 5}\n')
+    got = list(first)
+    for _ in range(20):
+        got += t.read(cap=10)
+    assert got == [b'{"ts": 1}', b'{"ts": 3}', b'{"ts": 4}', b'{"ts": 5}']

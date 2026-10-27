@@ -347,7 +347,7 @@ class Tail:
 
     def _open(self, at_end: bool):
         try:
-            f = open(self.path, "rb")
+            f = open(self.path, "rb", buffering=0)   # unbuffered: seek(0) after a truncate reads fresh bytes
         except OSError:
             self.f = self.ino = None
             return

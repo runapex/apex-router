@@ -13,6 +13,7 @@ Roots (overridable, so tests use a fixture home):
 """
 from __future__ import annotations
 
+import contextvars
 import csv
 import datetime as _dt
 import io
@@ -48,8 +49,26 @@ def ml_root(paths: Paths) -> Path:
     return Path(v).expanduser() if v else Path(paths.env.get("HOME") or Path.home()) / "dev" / "ml"
 
 
+_ROOTS: contextvars.ContextVar = contextvars.ContextVar("experiment_roots", default=())
+
+
+def _inside_roots(path: Path) -> bool:
+    """The REAL path (every link in every component resolved) is under one of the roots."""
+    roots = _ROOTS.get()
+    if not roots:
+        return False                                     # fail closed: no roots set, no read
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    return any(real == r or real.startswith(r + os.sep) for r in roots)
+
+
 def _read(path: Path, cap: int = CAP, tail: bool = False, whole: bool = False) -> bytes:
-    """At most ``cap`` bytes (head, or tail). ``whole``: a file larger than cap is an error."""
+    """At most ``cap`` bytes (head, or tail). ``whole``: a file larger than cap is an error.
+    Only files whose real path is under the collect roots (a linked directory cannot lead out)."""
+    if not _inside_roots(path):
+        raise ReadError("outside its root" if os.path.lexists(path) else "missing")
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)   # a link can point outside the root: refuse
     except FileNotFoundError:
@@ -496,8 +515,27 @@ _SOURCES = {"jepa": lambda p: repo_root(p) / JEPA_DOC,
             "compaction": lambda p: p.router_home / "pi-compact"}
 
 
+def roots(paths: Paths) -> tuple:
+    """The real paths of the 3 roots, resolved once (the roots themselves may be links)."""
+    out = []
+    for r in (repo_root(paths), ml_root(paths), paths.router_home):
+        try:
+            out.append(os.path.realpath(r))
+        except OSError:
+            pass
+    return tuple(out)
+
+
 def collect(paths: Paths, now: float | None = None) -> dict:
     now = time.time() if now is None else now
+    token = _ROOTS.set(roots(paths))
+    try:
+        return _collect(paths, now)
+    finally:
+        _ROOTS.reset(token)
+
+
+def _collect(paths: Paths, now: float) -> dict:
     items = []
     for id_, name, fn in READERS:
         try:
