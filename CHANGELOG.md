@@ -6,6 +6,17 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+### Added
+- `apex-router explore run|table`: a discovery harness (diverge → cheap check → archive → oracle →
+  evidence → evolve). 6 isolated operator islands; a MAP-Elites archive (niche = operator + mechanism
+  tags, one champion per niche, immutable candidates with lineage); an append-only evidence store
+  (rejections feed later prompts); hard oracle gate, then a Pareto front (impact, novelty, evidence),
+  so no vote removes a minority candidate; exploration floor 0.3; `HitRate_tau@B` with a Wilson CI.
+  A `baseline` arm uses the same call budget. Backends: local `ollama` (free) and `cmd`. The harness
+  only reports; it never adopts a candidate. Bench: `bench/explore/` (3 tasks with hidden, sandboxed
+  oracles), `scripts/explore_pilot.py`. Basis: `docs/research/2026-10-27-p99-discovery-harness.md`
+  (on our panel data, one peer-exchange round removed a right minority answer in 11 of 32 items).
+
 ### Fixed
 - proxy state store (A5): `Store.gc()` also runs about once per hour from the heartbeat loop, in a
   worker thread. Before: gc ran only at startup, so a proxy that ran for days kept stale sessions
