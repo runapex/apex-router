@@ -348,3 +348,31 @@ def test_rollback_with_unreachable_new_process_does_not_reload_without_drain(hom
         R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, boot, p.fetch, health_timeout=0.2)
     v = _verbs(run)
     assert v.count("bootout") == 1                      # only the first, drained one
+
+
+@pytest.mark.parametrize("fail", ["rc", "raise"])
+def test_rollback_with_unknown_launchctl_state_does_not_reload(home, fail):
+    p = FakeProxy()
+    run = FakeRun(p)
+    real = run.__call__
+    state = {"booted": False}
+
+    def boot(argv):
+        if argv[1:2] == ["print"] and state["booted"]:
+            if fail == "raise":
+                raise TimeoutError("launchctl hung")
+            return 5, "Input/output error"
+        rc, out = real(argv)
+        if argv[1:2] == ["bootstrap"]:
+            state["booted"] = True
+            p.started = time.time() - 3600          # never proves it is new: health fails
+        return rc, out
+    with pytest.raises(R.RestartError, match="NOT confirmed healthy"):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, boot, p.fetch, health_timeout=0.2)
+    assert _verbs(run).count("bootout") == 1
+
+
+def test_launchd_pid_states():
+    assert R._launchd_pid("l", lambda a: (113, "Could not find service")) is None
+    assert R._launchd_pid("l", lambda a: (0, "state = waiting\n")) is None
+    assert R._launchd_pid("l", lambda a: (5, "")) == R.UNKNOWN

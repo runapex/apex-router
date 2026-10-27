@@ -142,9 +142,21 @@ def _healthy(paths: Paths, proxy: str, since: float, fetch, timeout: float = HEA
 DRAIN_WAIT_S = 30.0       # requests that started just before the drain get this long to finish
 
 
+NOT_LOADED_RC = 113        # launchctl print: "Could not find service"
+UNKNOWN = -1               # launchctl failed for another reason: the state is not known
+
+
 def _launchd_pid(label: str, run) -> int | None:
-    rc, out = run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"])
-    m = re.search(r"^\s*pid = (\d+)\s*$", out or "", re.M) if rc == 0 else None
+    """-> pid; None = loaded with no process, or not loaded; UNKNOWN = launchctl failed."""
+    try:
+        rc, out = run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"])
+    except Exception:  # noqa: BLE001 - a hung or missing launchctl: state unknown
+        return UNKNOWN
+    if rc == NOT_LOADED_RC:
+        return None
+    if rc != 0:
+        return UNKNOWN
+    m = re.search(r"^\s*pid = (\d+)\s*$", out or "", re.M)
     return int(m.group(1)) if m else None
 
 
@@ -272,7 +284,10 @@ def restart(paths: Paths, proxy: str, env_changes: dict, idle_s: float = DEFAULT
         _save(bdir, manifest)
         back = False
         try:
-            if _launchd_pid(label, run) is not None:    # a new process runs: it may serve, drain it first
+            pid_now = _launchd_pid(label, run)
+            if pid_now == UNKNOWN:                      # fail closed: never bootout what we cannot see
+                raise RestartError("launchctl state unknown", 500)
+            if pid_now is not None:                     # a new process runs: it may serve, drain it first
                 back, _ = _swap(paths, proxy, label, plist, run, fetch, health_timeout)
             else:                                       # no process (crash loop or not loaded): nothing to break
                 t1 = time.time()
