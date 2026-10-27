@@ -29,6 +29,7 @@ from pathlib import Path
 
 from .. import agents as agents_mod
 from ..agent_resources.telemetry import _cache_read, _cache_write, fresh_input
+from . import decisions as decisions_mod
 from . import live
 from .flow import Paths
 
@@ -199,9 +200,15 @@ def _num_ms(v):
     return None
 
 
-def item(row: dict, raw: bytes, kinds, proxy: str = "main") -> dict:
+def routes_for(paths: Paths):
+    """The route_log index (capped tail, cached per file) for the ``decisions`` task/model stations."""
+    return decisions_mod.route_index_cached(paths.router_home / "route_log.jsonl")
+
+
+def item(row: dict, raw: bytes, kinds, proxy: str = "main", routes=None) -> dict:
     """One request in the contract shape. ``ms_total`` = telemetry ``total_ms`` (v13: arrival -> last
-    byte or error); null on rows written before v13 (no end time) and on a bad value."""
+    byte or error); null on rows written before v13 (no end time) and on a bad value. ``decisions``
+    = the six decision stations (``studio/decisions.py``; fixed-map verdicts only)."""
     ts = row["_ts"]
     st = status_of(row)
     return {"id": row_id(ts, raw), "ts": round(ts, 3), "agent": agent_of(row, kinds),
@@ -209,7 +216,7 @@ def item(row: dict, raw: bytes, kinds, proxy: str = "main") -> dict:
             "status": st,
             "cause": None if st == "ok" else (CAUSE_RETRIED if st == "retried" else cause_of(row)),
             "ms_total": _num_ms(row.get("total_ms")), "ttft_ms": _num_ms(row.get("ttft_ms")),
-            "tokens": tokens_of(row)}
+            "tokens": tokens_of(row), "decisions": decisions_mod.decisions(row, routes)}
 
 
 def is_request(row) -> bool:
@@ -276,7 +283,8 @@ def recent(paths: Paths, n: int = 50) -> dict:
                 rows += _last_requests(g, n - len(rows))
         got += [(r, raw, proxy) for r, raw in rows]
     got.sort(key=lambda t: t[0]["_ts"], reverse=True)
-    return {"requests": [item(r, raw, kinds, proxy) for r, raw, proxy in got[:n]]}
+    routes = routes_for(paths)
+    return {"requests": [item(r, raw, kinds, proxy, routes) for r, raw, proxy in got[:n]]}
 
 
 # ---- /api/tokens -----------------------------------------------------------------------------
@@ -520,11 +528,13 @@ def stream(write, paths: Paths, closing: threading.Event, snap_fn, poll_s: float
         write(sse("snapshot", snap_fn()))
         last_snap = last_hb = time.monotonic()
         while not closing.wait(poll_s):
+            routes = None
             for proxy, t in tails.items():
                 for raw in t.read():
                     row = parse_line(raw)
                     if row is not None:
-                        write(sse("request", item(row, raw, kinds, proxy)))
+                        routes = routes or routes_for(paths)    # one capped, cached read per poll
+                        write(sse("request", item(row, raw, kinds, proxy, routes)))
             m = time.monotonic()
             if m - last_snap >= snap_s:
                 write(sse("snapshot", snap_fn()))

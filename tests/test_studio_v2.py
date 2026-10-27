@@ -156,7 +156,7 @@ def test_recent_shape_newest_first_and_n(studio):
     assert ts == sorted(ts, reverse=True)
     r = d["requests"][0]
     assert set(r) == {"id", "ts", "agent", "provider", "model_family", "status", "cause", "ms_total",
-                      "ttft_ms", "tokens"}
+                      "ttft_ms", "tokens", "decisions"}
     assert set(r["tokens"]) == {"in", "out", "cache_read", "cache_write"}
     claude = next(x for x in get(srv, "/api/recent?n=6")[1]["requests"] if x["agent"] == "claude")
     assert claude["provider"] == "anthropic" and claude["model_family"] == "Claude Opus"
