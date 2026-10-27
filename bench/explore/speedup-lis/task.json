@@ -1,0 +1,10 @@
+{
+  "name": "speedup-lis",
+  "entry": "solve",
+  "lang": "python",
+  "tau": 20.0,
+  "tau_note": "score = traced line events reference / candidate on a hidden n=600 list; tau fixed before the pilot",
+  "constraints": ["Python 3 standard library only", "define solve(a) at module level", "same result as the reference on every input"],
+  "facts": ["Strictly increasing: equal values do not extend a subsequence."],
+  "oracle": {"dir": "oracle", "cmd": ["{python}", "check.py"], "timeout": 180}
+}

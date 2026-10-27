@@ -1,0 +1,136 @@
+"""Hidden oracle for bench/explore/speedup-pairsum. Reads the candidate on stdin; prints one JSON line.
+The generator must never see this directory."""
+# --- shared runner (copied into each oracle dir; each oracle dir is self-contained) -------------
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+
+def run_child(candidate: str, child_code: str, payload: dict, timeout: float) -> dict:
+    """Run the candidate in a separate `python -I` process in an empty temp dir.
+    The child gets the candidate path and the payload on stdin. It does not get the oracle path."""
+    with tempfile.TemporaryDirectory(prefix="explore-cand-") as d:
+        path = os.path.join(d, "candidate.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(candidate)
+        payload = dict(payload, candidate_path=path)
+        try:
+            p = subprocess.run([sys.executable, "-I", "-c", child_code], input=json.dumps(payload),
+                               capture_output=True, text=True, timeout=timeout, cwd=d,
+                               env={"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"})
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "why": f"timeout after {timeout:g} s"}
+        lines = [x for x in p.stdout.splitlines() if x.startswith("@@RESULT ")]
+        if not lines:
+            err = (p.stderr.strip().splitlines() or ["no output"])[-1][:160]
+            return {"ok": False, "why": f"candidate crashed: {err}"}
+        return json.loads(lines[-1][len("@@RESULT "):])
+
+
+def emit(valid: bool, score: float, detail: str) -> None:
+    print(json.dumps({"valid": bool(valid), "score": float(score), "detail": detail[:300]}))
+# ------------------------------------------------------------------------------------------------
+SPEEDUP_CHILD = r'''
+import importlib.util, json, sys
+P = json.loads(sys.stdin.read())
+nonce = P["nonce"]
+real_out = sys.stdout
+sys.stdout = sys.stderr  # candidate prints go to stderr
+
+def result(d):
+    real_out.write("@@RESULT " + json.dumps(dict(d, nonce=nonce)) + "\n"); real_out.flush()
+    raise SystemExit(0)
+
+try:
+    spec = importlib.util.spec_from_file_location("candidate", P["candidate_path"])
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    solve = getattr(mod, "solve")
+except BaseException as e:
+    result({"ok": False, "why": "load failed: " + type(e).__name__})
+ref_ns = {}
+exec(P["reference"], ref_ns)
+ref = ref_ns["solve"]
+for i, (args, want) in enumerate(P["cases"]):
+    try:
+        got = solve(*[list(a) if isinstance(a, list) else a for a in args])
+    except BaseException as e:
+        result({"ok": False, "why": f"hidden case {i}: raised {type(e).__name__}"})
+    if got != want:
+        result({"ok": False, "why": f"hidden case {i}: wrong answer (n={len(args[0])})"})
+
+def cost(fn, args):
+    n = [0]
+    def tr(frame, event, arg):
+        if event in ("call", "line"):
+            n[0] += 1
+        return tr
+    sys.settrace(tr)
+    try:
+        fn(*[list(a) for a in args[:1]], *args[1:])
+        still = sys.gettrace() is tr
+    finally:
+        sys.settrace(None)
+    return n[0], still
+
+try:
+    c_ref, _ = cost(ref, P["cost_args"])
+    c_cand, still = cost(solve, P["cost_args"])
+except BaseException as e:
+    result({"ok": False, "why": "cost run raised " + type(e).__name__})
+if not still:
+    result({"ok": False, "why": "candidate changed the tracer"})
+result({"ok": True, "ref": c_ref, "cand": max(1, c_cand)})
+'''
+
+
+def speedup_check(candidate: str, reference: str, cases: list, cost_args: list, timeout: float = 120.0) -> None:
+    """valid = right on every hidden case; score = traced line events of reference / candidate (cap 1e4)."""
+    import secrets
+    nonce = secrets.token_hex(8)
+    ref_ns: dict = {}
+    exec(reference, ref_ns)
+    cases = [(args, ref_ns["solve"](*[list(a) if isinstance(a, list) else a for a in args])) for args in cases]
+    r = run_child(candidate, SPEEDUP_CHILD, {"nonce": nonce, "reference": reference, "cases": cases,
+                                             "cost_args": cost_args}, timeout)
+    if r.get("nonce", nonce) != nonce or not r.get("ok"):
+        emit(False, 0.0, r.get("why", "bad child result"))
+        return
+    ratio = min(1e4, r["ref"] / r["cand"])
+    emit(True, round(ratio, 3), f"correct on {len(cases)} hidden cases; traced line events "
+                                f"reference {r['ref']} vs candidate {r['cand']} (ratio {ratio:.1f}x)")
+
+import random
+
+SEED = 20261028
+REFERENCE = '''
+def solve(a, lo, hi):
+    count = 0
+    n = len(a)
+    for i in range(n):
+        for j in range(i + 1, n):
+            s = a[i] + a[j]
+            if lo <= s <= hi:
+                count += 1
+    return count
+'''
+
+
+def hidden_cases():
+    rng = random.Random(SEED)
+    cases = [[[], 0, 10], [[1], 0, 10], [[1, 1], 2, 2], [[5, -5, 0], 0, 0], [[3, 3, 3], 7, 1]]
+    for _ in range(35):
+        n = rng.randint(2, 300)
+        r = rng.choice([5, 100, 10**6])
+        a = [rng.randint(-r, r) for _ in range(n)]
+        lo = rng.randint(-2 * r, 2 * r)
+        cases.append([a, lo, lo + rng.randint(0, r)])
+    return cases
+
+
+if __name__ == "__main__":
+    cand = sys.stdin.read()
+    rng = random.Random(SEED + 1)
+    a = [rng.randint(-10**6, 10**6) for _ in range(800)]
+    speedup_check(cand, REFERENCE, hidden_cases(), [a, -300000, 400000])

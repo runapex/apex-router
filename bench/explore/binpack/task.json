@@ -1,0 +1,10 @@
+{
+  "name": "binpack",
+  "entry": "pack",
+  "lang": "python",
+  "tau": 0.985,
+  "tau_note": "score = mean lower_bound/bins on 12 hidden instances; first-fit decreasing scores 0.9709 (no hit); a pair-fill heuristic scores 0.9925 (hit); tau fixed before the pilot",
+  "constraints": ["Python 3 standard library only", "define pack(items, capacity) at module level", "return bins of item indexes", "finish all instances within a few seconds"],
+  "facts": ["ceil(sum(items)/capacity) is a lower bound on the bin count."],
+  "oracle": {"dir": "oracle", "cmd": ["{python}", "check.py"], "timeout": 120}
+}
