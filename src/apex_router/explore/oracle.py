@@ -2,7 +2,8 @@
 
 The oracle is a command. It gets the candidate on stdin and prints one JSON line on stdout:
 {"valid": bool, "score": float, "detail": str}. Only the oracle sets `valid` and `score`.
-An oracle that fails, times out or prints bad JSON gives valid=False, score=0 (fail closed).
+An oracle that fails, times out, exits non-zero or prints bad JSON gives valid=False, score=0 (fail closed).
+A non-zero exit wins over any JSON the oracle printed before it.
 """
 from __future__ import annotations
 
@@ -27,6 +28,8 @@ def run_oracle(cmd: Sequence[str], candidate: str, cwd: str | os.PathLike | None
         return OracleResult(False, 0.0, "oracle timeout")
     except OSError as e:
         return OracleResult(False, 0.0, f"oracle not runnable: {type(e).__name__}")
+    if p.returncode != 0:
+        return OracleResult(False, 0.0, f"oracle exit {p.returncode}")
     lines = [x for x in p.stdout.splitlines() if x.strip()]
     if not lines:
         return OracleResult(False, 0.0, f"oracle printed nothing (exit {p.returncode})")

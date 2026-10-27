@@ -125,6 +125,18 @@ def test_evidence_append_only_and_negative_without_text(tmp_path):
     assert len(EvidenceStore(tmp_path / "ev.jsonl").rows()) == 3
 
 
+def test_f2_negative_evidence_is_tags_plus_a_short_reason_only(tmp_path):
+    # an oracle detail (or tag line) that holds candidate output must not reach a diverge prompt as code
+    ev = EvidenceStore(tmp_path / "ev.jsonl")
+    leak = "candidate crashed: ```python\ndef solve(a):\n    return SECRET_BODY\n```" + " x" * 200
+    ev.append("oracle_reject", id="c1", tags=["Hash `Map`", "def solve(a): return 1"], fingerprint="h",
+              detail=leak)
+    (line,) = ev.negative()
+    reason = line.split("): ", 1)[1]
+    assert "\n" not in line and "```" not in line and "`" not in line
+    assert len(reason) <= 120 and line.startswith("[oracle_reject] mechanism (def-solve-a-return-1, hash-map): ")
+
+
 # --------------------------------------------------------------------------- operators
 def test_six_operators_and_diverge_has_no_candidate_parameter():
     assert list(ops.OPERATORS) == ["first-principles", "inversion", "cross-domain",
@@ -235,6 +247,14 @@ def test_oracle_fails_closed(tmp_path):
         r = run_oracle([sys.executable, "-c", code], "x")
         assert r.valid is False and r.score == 0.0
     assert run_oracle([str(tmp_path / "missing")], "x").valid is False
+
+
+def test_f4_oracle_non_zero_exit_is_invalid_whatever_it_printed():
+    for rc in (1, 2, -9):
+        code = ("import json, os, sys; sys.stdin.read(); print(json.dumps({'valid': True, 'score': 9.0}), flush=True); "
+                + (f"sys.exit({rc})" if rc > 0 else "os.kill(os.getpid(), 9)"))
+        r = run_oracle([sys.executable, "-c", code], "x")
+        assert r.valid is False and r.score == 0.0, (rc, r)
 
 
 def test_oracle_dir_must_be_outside_generator_dir(tmp_path):

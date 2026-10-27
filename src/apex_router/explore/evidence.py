@@ -3,8 +3,9 @@
 One JSON object per line. The store never rewrites or truncates the file. It keeps rejections (cheap check
 and oracle) and counterexamples, so a disproven mechanism goes into later prompts as negative evidence.
 
-Negative evidence holds mechanism tags, operator and the oracle/check detail. It never holds candidate text:
-a diverge prompt must not see another candidate.
+Negative evidence holds mechanism tags and a short reason (one line, no code fence, at most 120 chars). It never
+holds candidate text: a diverge prompt must not see another candidate. The bench oracles give fixed reason
+strings only; this cut also guards against an oracle that copies candidate output into its detail.
 """
 from __future__ import annotations
 
@@ -13,8 +14,16 @@ import os
 import time
 from pathlib import Path
 
+from .archive import normalize_tags
+
 NEGATIVE_KINDS = ("check_reject", "oracle_reject", "counterexample")
-DETAIL_MAX = 200
+REASON_MAX = 120
+
+
+def reason(detail) -> str:
+    """A prompt-safe reason: one line, no code fence or backtick, at most REASON_MAX chars."""
+    s = str(detail or "").replace("`", "'")
+    return " ".join(s.split())[:REASON_MAX]
 
 
 class EvidenceStore:
@@ -60,9 +69,8 @@ class EvidenceStore:
         for r in reversed(self.rows()):
             if r.get("kind") not in NEGATIVE_KINDS:
                 continue
-            tags = ", ".join(r.get("tags") or []) or "untagged"
-            detail = str(r.get("detail", "")).replace("\n", " ")[:DETAIL_MAX]
-            line = f"[{r['kind']}] mechanism ({tags}): {detail}"
+            tags = ", ".join(normalize_tags(r.get("tags") or [])) or "untagged"
+            line = f"[{r['kind']}] mechanism ({tags}): {reason(r.get('detail', ''))}"
             if line not in lines:
                 lines.append(line)
             if len(lines) >= limit:
