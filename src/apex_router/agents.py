@@ -201,6 +201,12 @@ def _first_line_cwd(path: Path, max_bytes: int = FIRST_LINE_MAX):
     return cwd if isinstance(cwd, str) and cwd else None
 
 
+def pi_session_id(path: Path) -> str:
+    """The session id of a pi log ``<iso>_<id>.jsonl``: the part after the last ``_``. pi sends it
+    as the ``x-claude-code-session-id`` header, so it is the telemetry ``session_id``."""
+    return path.stem.rpartition("_")[2] or path.stem
+
+
 def pi_agents(home=None, now: float | None = None) -> list:
     now = time.time() if now is None else now
     root = _home(home) / ".pi" / "agent" / "sessions"
@@ -215,14 +221,20 @@ def pi_agents(home=None, now: float | None = None) -> list:
             continue
         cwd = _first_line_cwd(f)
         repo = Path(cwd).name if cwd else None
-        session = f.stem.rpartition("_")[2] or f.stem
-        a = _agent("pi", repo, session, m, now, cwd=cwd)
+        a = _agent("pi", repo, pi_session_id(f), m, now, cwd=cwd)
         if a:
             out.append(a)
     return out
 
 
 # ---- Codex ----------------------------------------------------------------------------------
+
+def codex_session_id(path: Path) -> str:
+    """The thread uuid of a Codex rollout ``rollout-<iso>-<uuid>.jsonl`` (Codex sends it as the
+    ``session-id`` header, so it is the telemetry ``session_id``); else the file stem."""
+    parts = path.stem.rsplit("-", 5)
+    return "-".join(parts[-5:]) if len(parts) == 6 else path.stem
+
 
 def codex_agents(home=None, now: float | None = None) -> list:
     now = time.time() if now is None else now
@@ -241,12 +253,38 @@ def codex_agents(home=None, now: float | None = None) -> list:
             m = _mtime(f)
             if m is None:
                 continue
-            session = f.stem.rsplit("-", 5)
-            sid = "-".join(session[-5:]) if len(session) == 6 else f.stem
             cwd = _first_line_cwd(f, CODEX_FIRST_LINE_MAX)
-            a = _agent("codex", Path(cwd).name if cwd else None, sid, m, now, cwd=cwd)
+            a = _agent("codex", Path(cwd).name if cwd else None, codex_session_id(f), m, now, cwd=cwd)
             if a:
                 out.append(a)
+    return out
+
+
+SESSION_INDEX_MAX = 100_000
+
+
+def session_kinds(home=None, cap: int = SESSION_INDEX_MAX) -> dict:
+    """session_id -> ``pi`` | ``claude`` | ``codex`` from the session FILE NAMES only (no file
+    is opened, no age filter): the same id rules as ``pi_agents`` / ``claude_agents`` /
+    ``codex_agents``, so a telemetry row joins the kind the menu shows. pi sends Claude-style
+    headers, so the telemetry ``client`` field alone cannot tell pi from Claude Code. At most
+    ``cap`` names per kind. Fails open: an unreadable tree adds nothing."""
+    h = _home(home)
+    out: dict = {}
+
+    def scan(kind, it, sid_of):
+        n = 0
+        try:
+            for f in it:
+                if n >= cap:
+                    break
+                n += 1
+                out.setdefault(sid_of(f), kind)
+        except OSError:
+            pass
+    scan("claude", (h / ".claude" / "projects").glob("*/*.jsonl"), lambda f: f.stem)
+    scan("pi", (h / ".pi" / "agent" / "sessions").rglob("*.jsonl"), pi_session_id)
+    scan("codex", (h / ".codex" / "sessions").glob("*/*/*/*.jsonl"), codex_session_id)
     return out
 
 
