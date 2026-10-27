@@ -163,6 +163,22 @@ def _dump(obj) -> str:
     return json.dumps(obj, indent=2) + "\n"
 
 
+SECRET_VALUE_RE = __import__("re").compile(r"^(?:sk-|xox[abp]-|ghp_|eyJ)[A-Za-z0-9._-]{8,}|^[A-Za-z0-9+/_=-]{40,}$")
+
+
+def _mask_json(obj, parent_key: str = ""):
+    """A copy for display: the value of a secret-named key, or a string that looks like a token, is
+    replaced by "<set>". Diffs and API output use this; the written file keeps the real values."""
+    if isinstance(obj, dict):
+        return {k: ("<set>" if (is_secret(str(k)) and v not in (None, "")) else _mask_json(v, str(k)))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask_json(v, parent_key) for v in obj]
+    if isinstance(obj, str) and SECRET_VALUE_RE.search(obj):
+        return "<set>"
+    return obj
+
+
 def _udiff(a: str, b: str, name: str) -> str:
     return "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True),
                                         fromfile=f"a/{name}", tofile=f"b/{name}", n=2))
@@ -286,7 +302,7 @@ def review(paths: Paths, draft: dict | None = None) -> dict:
             try:
                 new = _apply_file_changes(raw, fname, pairs)
                 _validate_file(fname, new)
-                diff = _udiff(_dump(raw), _dump(new), fname)
+                diff = _udiff(_dump(_mask_json(raw)), _dump(_mask_json(new)), fname)   # xval F3: no secret value
                 err = None
             except DraftError as e:
                 diff, err = "", str(e)
@@ -352,37 +368,57 @@ def apply(paths: Paths) -> dict:
         bdir = paths.backups / stamp
         bdir.mkdir(parents=True, exist_ok=False)
         os.chmod(bdir, 0o700)
-        manifest = {"schema": 1, "created_at": time.time(), "files": [], "rolled_back": False}
+        manifest = {"schema": 1, "created_at": time.time(), "files": [], "rolled_back": False, "complete": False}
         groups: dict = {}
         for key, c in draft["changes"].items():
             s = settings[c["id"]]
             if s["class"] == "live":
                 groups.setdefault(s["file"], []).append((s, validate_value(s, c["value"]), key))
-        done = []
+        # 1. plan every file and write every backup + the manifest BEFORE the first target write, so a
+        #    crash at any later point leaves a backup set that rollback finds (xval F2)
+        plan = []
+        for fname, items in sorted(groups.items()):
+            fp = _file_target(paths, fname)
+            before = fp.read_bytes()
+            new = _apply_file_changes(json.loads(before), fname, [(s, v) for s, v, _ in items])
+            _validate_file(fname, new)
+            text = _dump(new)
+            bfile = bdir / fname
+            bfile.write_bytes(before)
+            os.chmod(bfile, 0o600)
+            manifest["files"].append({"path": str(fp), "backup": fname, "sha_before": _sha(before),
+                                      "sha_after": _sha(text.encode())})
+            plan.append((fp, before, text, items))
+        _atomic_write(bdir / "manifest.json", json.dumps(manifest, indent=2) + "\n", 0o600)
+        # 2. write; a file counts as touched before its write, so any failure restores it too
+        touched = []
         try:
-            for fname, items in sorted(groups.items()):
-                fp = _file_target(paths, fname)
-                before = fp.read_bytes()
-                raw = json.loads(before)
-                new = _apply_file_changes(raw, fname, [(s, v) for s, v, _ in items])
-                _validate_file(fname, new)
-                text = _dump(new)
-                bfile = bdir / fname
-                bfile.write_bytes(before)
-                os.chmod(bfile, 0o600)
-                mode = fp.stat().st_mode & 0o777
-                _atomic_write(fp, text, mode)
-                json.loads(fp.read_text())                       # the written file parses back
-                done.append((fp, before))
-                manifest["files"].append({"path": str(fp), "backup": fname, "sha_before": _sha(before),
-                                          "sha_after": _sha(text.encode())})
+            for fp, before, text, items in plan:
+                touched.append((fp, before))
+                _atomic_write(fp, text, fp.stat().st_mode & 0o777)
+                if fp.read_bytes() != text.encode():
+                    raise OSError(f"{fp.name}: read-back differs")
+                json.loads(fp.read_text())
                 written.append({"file": tilde(fp), "keys": [k for _, _, k in items]})
         except Exception as e:
-            for fp, before in reversed(done):                   # all or nothing
-                _atomic_write(fp, before.decode("utf-8"), fp.stat().st_mode & 0o777)
-            (bdir / "manifest.json").write_text(json.dumps({**manifest, "rolled_back": True,
-                                                            "aborted": type(e).__name__}))
-            raise DraftError(f"apply failed, nothing changed: {e}", 500) from None
+            failed = []
+            for fp, before in reversed(touched):
+                try:
+                    if not fp.exists() or fp.read_bytes() != before:
+                        _atomic_write(fp, before.decode("utf-8"), fp.stat().st_mode & 0o777 if fp.exists() else 0o644)
+                except Exception:
+                    failed.append(tilde(fp))
+            if failed:   # never claim "nothing changed" when a restore failed; rollback has the set
+                raise DraftError(f"apply failed ({type(e).__name__}) and {', '.join(failed)} could not be "
+                                 f"restored: use Rollback (backup {bdir.name})", 500) from None
+            manifest["rolled_back"] = True
+            manifest["aborted"] = type(e).__name__
+            try:
+                _atomic_write(bdir / "manifest.json", json.dumps(manifest, indent=2) + "\n", 0o600)
+            except Exception:
+                pass
+            raise DraftError(f"apply failed, nothing changed: {type(e).__name__}", 500) from None
+        manifest["complete"] = True
         _atomic_write(bdir / "manifest.json", json.dumps(manifest, indent=2) + "\n", 0o600)
         for w in written:
             for k in w["keys"]:
@@ -399,6 +435,8 @@ def rollback(paths: Paths) -> dict:
         raise DraftError("no backup to restore", 404)
     d, m = sets[-1]
     restored, warnings = [], []
+    # 1. check every backup before the first write (no half rollback on a bad backup)
+    todo = []
     for f in m["files"]:
         fp = Path(f["path"])
         src = d / f["backup"]
@@ -407,14 +445,22 @@ def rollback(paths: Paths) -> dict:
         data = src.read_bytes()
         if _sha(data) != f.get("sha_before"):
             raise DraftError(f"backup {f['backup']} does not match its digest", 500)
+        todo.append((f, fp, data))
+    # 2. restore; keep any later hand edit in a NEW file (a retry never overwrites an earlier copy)
+    for f, fp, data in todo:
         try:
             cur = fp.read_bytes()
         except OSError:
             cur = None
+        if cur is not None and _sha(cur) == f.get("sha_before"):
+            restored.append(tilde(fp))   # already restored (an earlier, interrupted rollback)
+            continue
         if cur is not None and _sha(cur) != f.get("sha_after"):
-            warnings.append(f"{tilde(fp)} changed after the apply; the current content is kept in "
-                            f"{tilde(d / (f['backup'] + '.pre-rollback'))}")
-            (d / (f["backup"] + ".pre-rollback")).write_bytes(cur)
+            keep = d / f"{f['backup']}.pre-rollback.{time.strftime('%Y%m%dT%H%M%S')}.{_sha(cur)[:8]}"
+            if not keep.exists():
+                keep.write_bytes(cur)
+                os.chmod(keep, 0o600)
+            warnings.append(f"{tilde(fp)} changed after the apply; the current content is kept in {tilde(keep)}")
         mode = fp.stat().st_mode & 0o777 if fp.exists() else 0o644
         _atomic_write(fp, data.decode("utf-8"), mode)
         restored.append(tilde(fp))

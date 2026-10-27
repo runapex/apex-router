@@ -466,6 +466,8 @@ def current_value(setting: dict, paths: Paths, proxy: str = "main") -> dict:
             v = (r.get(setting["family"]) or {}).get(field)
         else:
             v = f.get(field)
+        if is_secret(field) or is_secret(setting.get("name", "")):
+            return {"value": None, "state": "secret-set" if v else "secret-unset"}
         return {"value": v if isinstance(v, str) else None, "state": "set" if v else "default"}
     return {"value": None, "state": "unknown"}
 

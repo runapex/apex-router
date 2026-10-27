@@ -240,3 +240,106 @@ def test_explicit_cue_skips_resolve(studio):
     st, d, _ = call(srv, "POST", "/api/test", body={"prompt": ">>local summarize this"})
     assert st == 200
     assert "resolve" not in d.get("path", [])
+
+
+# ---- xval pass 1 regressions -----------------------------------------------------------------------
+
+def test_xval1_f3_review_diff_masks_secret_values_in_live_files(studio):
+    srv, paths, _ = studio
+    m = json.loads(paths.models.read_text())
+    m["pi_families"]["deep"]["API_TOKEN"] = F.FAKE_SECRET
+    m["pi_families"]["deep"]["note"] = "sk-live-" + "a" * 30
+    paths.models.write_text(json.dumps(m, indent=2))
+    call(srv, "PUT", "/api/draft", body={"set": [{"id": "family.deep.effort", "value": "low"}]})
+    st, d, _ = call(srv, "GET", "/api/draft")
+    blob = json.dumps(d)
+    assert st == 200 and '"effort": "low"' in blob.replace('\\"', '"')
+    assert F.FAKE_SECRET not in blob and "sk-live-" not in blob
+    st, d, _ = call(srv, "GET", "/api/flow")
+    assert F.FAKE_SECRET not in json.dumps(d)
+
+
+def _two_file_draft(srv):
+    st, _, _ = call(srv, "PUT", "/api/draft", body={"set": [
+        {"id": "family.deep.effort", "value": "low"},
+        {"id": "route.review.provider", "value": "openai"}]})
+    assert st == 200
+
+
+def test_xval1_f2_failed_apply_restores_every_touched_file(studio, monkeypatch):
+    srv, paths, _ = studio
+    _two_file_draft(srv)
+    before = {p: p.read_bytes() for p in (paths.models, paths.pi_routes)}
+    real = drafts._atomic_write
+    n = {"target": 0}
+
+    def flaky(path, text, mode=None):
+        if Path(path) in before:
+            n["target"] += 1
+            if n["target"] == 2:          # first file written, second write fails
+                raise OSError("disk full")
+        return real(path, text, mode)
+    monkeypatch.setattr(drafts, "_atomic_write", flaky)
+    st, d, _ = call(srv, "POST", "/api/apply", body={})
+    assert st == 500 and "nothing changed" in d["error"]
+    for p, b in before.items():
+        assert p.read_bytes() == b, p
+
+
+def test_xval1_f2_readback_failure_restores_that_file(studio, monkeypatch):
+    srv, paths, _ = studio
+    call(srv, "PUT", "/api/draft", body={"set": [{"id": "family.deep.effort", "value": "low"}]})
+    before = paths.models.read_bytes()
+    real = drafts._atomic_write
+
+    def corrupt(path, text, mode=None):
+        if Path(path) == paths.models and '"low"' in text:
+            return real(path, text[:-5], mode)    # a short write: read-back differs
+        return real(path, text, mode)
+    monkeypatch.setattr(drafts, "_atomic_write", corrupt)
+    st, _, _ = call(srv, "POST", "/api/apply", body={})
+    assert st == 500
+    assert paths.models.read_bytes() == before
+
+
+def test_xval1_f2_backup_set_is_findable_before_the_first_write(studio, monkeypatch):
+    srv, paths, _ = studio
+    call(srv, "PUT", "/api/draft", body={"set": [{"id": "family.deep.effort", "value": "low"}]})
+    seen = {}
+    real = drafts._atomic_write
+
+    def spy(path, text, mode=None):
+        if Path(path) == paths.models and "sets" not in seen:
+            seen["sets"] = drafts._backup_sets(paths)
+        return real(path, text, mode)
+    monkeypatch.setattr(drafts, "_atomic_write", spy)
+    st, _, _ = call(srv, "POST", "/api/apply", body={})
+    assert st == 200
+    assert seen["sets"], "the manifest must exist before the target file is written"
+
+
+def test_xval1_f1_rollback_retry_keeps_every_hand_edit(studio, monkeypatch):
+    srv, paths, _ = studio
+    _two_file_draft(srv)
+    assert call(srv, "POST", "/api/apply", body={})[0] == 200
+    edit_a = paths.models.read_text().replace('"low"', '"medium"')
+    paths.models.write_text(edit_a)
+    edit_b = paths.pi_routes.read_text() + "\n"
+    paths.pi_routes.write_text(edit_b)
+    real = drafts._atomic_write
+    n = {"k": 0}
+
+    def flaky(path, text, mode=None):
+        if Path(path) in (paths.models, paths.pi_routes):
+            n["k"] += 1
+            if n["k"] == 2:
+                raise OSError("interrupted")
+        return real(path, text, mode)
+    monkeypatch.setattr(drafts, "_atomic_write", flaky)
+    with pytest.raises(OSError):
+        drafts.rollback(paths)
+    monkeypatch.setattr(drafts, "_atomic_write", real)
+    drafts.rollback(paths)                          # the retry
+    kept = sorted(paths.backups.rglob("*.pre-rollback.*"))
+    texts = {k.read_text() for k in kept}
+    assert edit_a in texts and edit_b in texts, [k.name for k in kept]
