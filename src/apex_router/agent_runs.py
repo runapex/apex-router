@@ -488,3 +488,68 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---- live jobs (menu bar, studio) -----------------------------------------------------------
+
+LIVE_STATES = ("running", "queued")
+JOBS_SCAN_MAX = 60          # newest job dirs looked at (ids sort by start time)
+JOBS_LIST_MAX = 5000        # names listed at most (no stat per entry)
+META_MAX = 256 * 1024       # bytes read per meta.json
+
+
+def _pid_alive(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def live_jobs(jobs_dir: Path | None = None, now: float | None = None) -> dict:
+    """Sub-agent jobs that run or wait now: ``{"running": N, "queued": N, "items": [...]}``, newest
+    first. A "running" job whose pid is gone counts as ended (a crash leaves the state behind).
+    Reads only the newest ``JOBS_SCAN_MAX`` meta.json files; never raises (fails open: empty)."""
+    now = time.time() if now is None else now
+    d = Path(jobs_dir) if jobs_dir else Path(os.environ.get("APEX_HOME", Path.home() / ".apex-router")) / "pi-jobs"
+    out = {"running": 0, "queued": 0, "items": []}
+    names = []
+    try:
+        with os.scandir(d) as it:                     # names only: no stat, no is_dir per entry
+            for i, e in enumerate(it):
+                if i >= JOBS_LIST_MAX:
+                    break
+                names.append(e.name)
+    except OSError:
+        return out
+    for name in sorted(names, reverse=True)[:JOBS_SCAN_MAX]:
+        jd = d / name
+        try:
+            with open(jd / "meta.json", "rb") as f:
+                raw = f.read(META_MAX + 1)
+            if len(raw) > META_MAX:
+                continue                              # oversized: skip, never parse
+            m = json.loads(raw)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(m, dict):
+            continue
+        st = m.get("state")
+        if st not in LIVE_STATES or (st == "running" and not _pid_alive(m.get("pid"))):
+            continue
+        out[st] += 1
+        started = m.get("started") or m.get("created")
+        started = started / 1000.0 if isinstance(started, (int, float)) and started > 1e11 else started
+        last = m.get("last_event")
+        last = last / 1000.0 if isinstance(last, (int, float)) and last > 1e11 else last
+        out["items"].append({
+            "id": str(m.get("id") or jd.name), "agent": str(m.get("agent") or "?"), "role": _role(m),
+            "state": st, "session_id": m.get("session_id"),
+            "age_s": round(now - started) if isinstance(started, (int, float)) else None,
+            "quiet_s": round(now - last) if isinstance(last, (int, float)) else None,
+        })
+    return out

@@ -535,3 +535,20 @@ def stream(write, paths: Paths, closing: threading.Event, snap_fn, poll_s: float
     finally:
         for t in tails.values():
             t.close()
+
+
+BY_AGENT_TAIL = 8 * 1024 * 1024    # bytes from the end; on the owner's Mac 4 MB held over 10 h of rows
+
+
+def requests_by_agent(paths: Paths, span: float, now: float | None = None, proxy: str = "main") -> dict:
+    """Requests per agent kind (pi / claude / codex / other) in the last ``span`` seconds, by
+    session id: the same rule as /api/recent. The menu uses it too (pi sends Claude-style headers)."""
+    now = time.time() if now is None else now
+    kinds = kinds_for(paths)
+    out = {"pi": 0, "claude": 0, "codex": 0, "other": 0}
+    rows, _ = live.rows_in_window(paths.telemetry(proxy), now - span, cap=BY_AGENT_TAIL, rotated=True)
+    for r in rows:
+        if is_request(r):
+            k = agent_of(r, kinds)
+            out[k if k in out else "other"] += 1
+    return out
