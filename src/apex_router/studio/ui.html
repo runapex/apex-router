@@ -163,10 +163,26 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 .vals{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13.5px;color:var(--fg2);margin:4px 0}
 .vals .v{font-family:var(--mono);color:var(--fg);overflow-wrap:anywhere}
 .edit{display:flex;gap:6px;margin-top:8px}
-.edit input,.edit select,.try input,.rs input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:6px 9px}
-.try{display:flex;gap:6px;margin:4px 0 8px}
-.result{border-left:3px solid var(--focus);padding:4px 0 4px 12px;margin:8px 0 6px}
-.result p{margin:3px 0}
+.edit input,.edit select,.rs input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:6px 9px}
+/* apex: the live decision line (one station per decision; a train moves station to station) */
+.dline{list-style:none;margin:6px 0 4px;padding:0 0 0 4px;position:relative}
+.dline::before{content:"";position:absolute;left:13px;top:12px;bottom:16px;width:4px;border-radius:2px;background:var(--rule)}
+.dline li{position:relative;padding:4px 0 8px 34px;min-height:22px}
+.dline .stop{position:absolute;left:6px;top:7px;width:14px;height:14px;border-radius:50%;background:var(--card);border:3px solid var(--fg2)}
+.dline .dn{color:var(--fg);font-weight:600;margin-right:8px}
+.dline .dv{color:var(--fg2)}
+.dline .dw{display:block;font-size:13px}
+.dline li.none .stop{border-color:var(--neutral)} .dline li.none .dv{color:var(--soft)}
+.dline li.wait .stop{border-color:var(--neutral)} .dline li.wait .dv{visibility:hidden}
+.dline li.warn .stop{border-color:var(--amber)} .dline li.warn .dv,.dline li.warn .dw{color:var(--amber)}
+.dline li.error .stop{border-color:var(--red)} .dline li.error .dv,.dline li.error .dw{color:var(--red)}
+.dline li.here .stop{background:var(--focus);border-color:var(--focus);box-shadow:0 0 10px rgba(255,255,255,.7)}
+.dline .train{position:absolute;left:8px;top:9px;width:10px;height:10px;border-radius:50%;background:var(--focus);
+  transition:transform .15s linear;pointer-events:none}
+.dline.small li{padding:2px 0 4px 34px;min-height:18px}
+.dline.small .stop{top:5px;width:12px;height:12px}
+.dline.small::before{top:10px}
+.dhead{color:var(--soft);font-size:13px;margin:0 0 2px}
 .rs{margin-top:10px;padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--card)}
 .rs input[type=number]{flex:0 0 80px;width:80px}
 .tgt{border:1px solid var(--rule);border-radius:11px;margin:12px 0;padding:10px 12px;background:var(--card2)}
@@ -229,6 +245,7 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 
 @media (prefers-reduced-motion: reduce){
   #g-trains{display:none}
+  .dline .train{display:none}
   *{transition:none !important}
 }
 </style>
@@ -308,6 +325,9 @@ const STEP = {
   "sink.history": ["Menu-bar history", ""], "sink.xval": ["Second-opinion scores", ""],
 };
 const CLIENT_STEPS = ["cue", "resolve", "ste", "guards", "compact", "agents"];
+const STATIONS = [["task", "Task"], ["model", "Model"], ["guard", "Safety"], ["cache", "Cache"], ["send", "Send"], ["answer", "Answer"]];
+const STATION_OF = Object.fromEntries(STATIONS);
+const STATION_MS = 150, LIT_MAX = 10;
 const PROXY_STEPS = ["detect", "shadow", "cachekey", "auth", "upstream", "response"];
 const SETTING_TITLE = {
   APEX_ROUTE_TABLE: "Model-choice table file", min_confidence: "Least confidence for an automatic choice",
@@ -330,8 +350,8 @@ const WHEN_CLS = {live: "now", restart: "restart", locked: "fixed"};
 
 /* ---------- state ---------- */
 const S = {snap: null, lastSnap: 0, stale: "", recent: [], seen: new Set(), flow: null, live: null,
-  draft: null, review: null, proxy: "main", panel: null, arg: null, focus: null, selReq: null, test: null,
-  testRes: null, testing: false, tok: null, tokWin: "15m", exps: null, recs: null, geo: null, sig: "", trains: [], raf: 0,
+  draft: null, review: null, proxy: "main", panel: null, arg: null, focus: null, selReq: null,
+  flowQ: [], flowRun: null, flowT: 0, fl: null, stepsOpen: false, tok: null, tokWin: "15m", exps: null, recs: null, geo: null, sig: "", trains: [], raf: 0,
   pollMode: false};
 
 /* ---------- helpers (text only: textContent, never HTML) ---------- */
@@ -396,18 +416,28 @@ function norm(r){
   return {id: String(r.id || (r.ts + ":" + r.agent)), ts: +r.ts || nowS(), a, p, key: a + "|" + p,
     family: typeof r.model_family === "string" ? r.model_family : "", status: r.status === "error" || r.status === "retried" ? r.status : "ok",
     cause: typeof r.cause === "string" ? r.cause : "", ms: +r.ms_total || null, ttft: +r.ttft_ms || null,
-    tin: +t.in || 0, tout: +t.out || 0, cr: +t.cache_read || 0, cw: +t.cache_write || 0};
+    tin: +t.in || 0, tout: +t.out || 0, cr: +t.cache_read || 0, cw: +t.cache_write || 0, dec: normDec(r.decisions)};
+}
+function normDec(ds){
+  const by = {};
+  for (const d of Array.isArray(ds) ? ds.slice(0, 6) : []){
+    if (!d || typeof d !== "object" || !STATION_OF[d.step]) continue;
+    by[d.step] = {verdict: typeof d.verdict === "string" ? d.verdict.slice(0, 80) : "—",
+      state: ["ok", "warn", "error", "none"].includes(d.state) ? d.state : "none"};
+  }
+  return STATIONS.map(([k]) => by[k] || {verdict: "—", state: "none"});
 }
 function addRequests(items, live){
-  let added = 0;
+  const fresh = [];
   for (const raw of items){
     const r = norm(raw); if (!r || S.seen.has(r.id)) continue;
-    S.seen.add(r.id); S.recent.push(r); added++;
-    if (live) spawnTrain(r);
+    S.seen.add(r.id); S.recent.push(r); fresh.push(r);
   }
-  if (!added) return;
+  if (!fresh.length) return;
   S.recent.sort((x, y) => y.ts - x.ts);
   if (S.recent.length > 200){ for (const r of S.recent.splice(200)) S.seen.delete(r.id); }
+  // the flow paints from S.recent: start it only after the sort, so the newest request and "Last 10" are right
+  if (live) for (const r of fresh){ spawnTrain(r); flowStart(r); }
   if (S.panel === "recent" || S.panel === "agent" || S.panel === "provider") renderPanelSoon();
 }
 
@@ -437,9 +467,6 @@ function currentLines(){
     if (prev){ prev.rpm += +l.rpm || 0; prev.err_pct = Math.max(prev.err_pct, +l.err_pct || 0); continue; }
     const o = {key, a, p, rpm: +l.rpm || 0, err_pct: +l.err_pct || 0};
     by.set(key, o); out.push(o);
-  }
-  if (S.test && S.test.route && !by.has(S.test.route)){
-    const [a, p] = S.test.route.split("|"); out.push({key: S.test.route, a, p, rpm: 0, err_pct: 0, ghost: true});
   }
   for (const o of out) Object.assign(o, judge(o));
   return out;
@@ -536,7 +563,7 @@ function renderMap(force){
     sv("text", {x: p.x - 30, y: p.y + 7, class: "lbl", "text-anchor": "end", text: a.name}, g);
   }
   // apex interchange: the small inner line reads as "open me"
-  const hub = station(st, "apex", "apex, open its 12 inner steps", " hub", ["*"]);
+  const hub = station(st, "apex", "apex, open its live decisions", " hub", ["*"]);
   sv("rect", {x: HUB.x - HUB.w / 2 - 8, y: HUB.y - HUB.h / 2 - 8, width: HUB.w + 16, height: HUB.h + 16, rx: 40, class: "fring"}, hub);
   sv("rect", {x: HUB.x - HUB.w / 2, y: HUB.y - HUB.h / 2, width: HUB.w, height: HUB.h, rx: 34, class: "ring"}, hub);
   sv("text", {x: HUB.x, y: HUB.y - 6, class: "hubname", "text-anchor": "middle", text: "apex"}, hub);
@@ -558,7 +585,7 @@ function renderMap(force){
   if (fk){ const e = qa("#g-st [data-node]").find(x => x.getAttribute("data-node") === fk); if (e) e.focus(); }
   applyFocus();
 }
-const TIPS = {apex: () => ["Open apex: 12 inner steps.", "The relay on this Mac. It passes and counts each request."],
+const TIPS = {apex: () => ["Open apex: live decisions per request.", "The relay on this Mac. It passes and counts each request."],
   records: () => ["Records: speed, wait, disk and the jobs that read them.", "What apex writes down on this Mac. No prompt text."]};
 function station(parent, key, label, cls, keys){
   const g = sv("g", {class: "station" + cls, tabindex: 0, role: "button", "aria-label": label, "data-node": key,
@@ -757,18 +784,17 @@ setInterval(() => {
 let soonT = 0;
 function renderPanelSoon(){ if (!soonT) soonT = setTimeout(() => { soonT = 0; renderPanel(); }, 400); }
 function openPanel(kind, arg){
-  if (S.panel !== kind || S.arg !== arg){ S.selReq = null; }
+  if (S.panel !== kind || S.arg !== arg){ S.selReq = null; flowStop(); }
   S.panel = kind; S.arg = arg === undefined ? null : arg;
   document.body.classList.add("panel-open");
   qa("nav button").forEach(b => b.setAttribute("aria-pressed", String(b.getAttribute("data-panel") === kind)));
   if (kind === "agent") setFocus(new Set(Object.values(S.geo ? S.geo.L : {}).filter(l => l.a === arg).map(l => l.key)));
   else if (kind === "provider") setFocus(new Set(Object.values(S.geo ? S.geo.L : {}).filter(l => l.p === arg).map(l => l.key)));
-  else if (kind === "apex" && S.test) setFocus(new Set([S.test.route]));
   else setFocus(null);
   renderPanel(true);
 }
 function closePanel(){
-  const was = S.panel; S.panel = null; S.arg = null; S.test = null; S.testRes = null;
+  const was = S.panel; S.panel = null; S.arg = null; flowStop();
   document.body.classList.remove("panel-open");
   qa("nav button").forEach(b => b.setAttribute("aria-pressed", "false"));
   setFocus(null); renderMap(true);
@@ -795,11 +821,11 @@ function hopList(r){
   return h("ul", {class: "hops"},
     h("li", {text: `${agentOf(r.a).name} → apex → ${p ? p.name : "provider"}` + (r.family ? ` (${r.family})` : "")}),
     r.status === "error" ? h("li", {class: "fail", text: "Stopped: " + (r.cause || "the request failed") + "."}) : null,
-    r.status === "retried" ? h("li", {text: "apex tried again once. Then it went through."}) : null,
     r.status !== "error" ? h("li", {text: "First word after " + secs(r.ttft) + "." + (r.ms ? " Whole answer in " + secs(r.ms) + "." : "")}) : null,
     r.status === "error" && r.ms ? h("li", {text: "It stopped after " + secs(r.ms) + "."}) : null,
     h("li", {text: `Input ${big(inp)} tokens` + (inp ? `: ${big(r.cr)} from cache, ${big(r.tin + r.cw)} sent new.` : ".")}),
-    h("li", {text: `Output ${big(r.tout)} tokens.`}));
+    h("li", {text: `Output ${big(r.tout)} tokens.`}),
+    h("li", {}, decList(r, "small")));
 }
 function selectReq(r){
   const same = S.selReq === r.id;
@@ -1002,7 +1028,7 @@ VIEWS.tokens = () => {
   return {title: "Tokens", sub: "Input and output tokens of your agents.", body};
 };
 
-/* apex: inner steps (from /api/flow client + proxy nodes), settings, try a prompt */
+/* apex: the live decision flow of each request (contract: API.md "Decision flow"); the step settings stay one click away */
 function nodeById(id){ return S.flow && S.flow.nodes.find(n => n.id === id); }
 function plain(id){ return (STEP[id] && STEP[id][0]) || id; }
 function stepState(n){
@@ -1012,12 +1038,11 @@ function stepState(n){
   return {cls: "on", text: "on"};
 }
 function stepList(ids){
-  const lit = S.test && S.test.path;
   const ol = h("ol", {class: "inner"});
   for (const id of ids){
     const n = nodeById(id); if (!n) continue;
-    const st = stepState(n), cls = lit ? (lit.has(id) ? " lit" : " dimmed") : "";
-    ol.append(h("li", {}, h("button", {type: "button", class: "step " + st.cls + cls, "data-k": "s" + id,
+    const st = stepState(n);
+    ol.append(h("li", {}, h("button", {type: "button", class: "step " + st.cls, "data-k": "s" + id,
       "aria-label": `${plain(id)}, ${st.text}. Open its settings.`, onclick: () => openPanel("apex", id)},
       h("span", {class: "stop", "aria-hidden": "true"}), h("span", {class: "sn", text: plain(id)}), h("span", {class: "chip " + st.cls, text: st.text}))));
   }
@@ -1061,48 +1086,76 @@ function toggleSwitch(id){
   const live = s.current && s.current.value !== null && s.current.value !== undefined ? s.current.value : s.default;
   if (d && String(live) === next) putDraft({unset: [d.key]}); else putDraft({set: [{id, value: next, proxy: S.proxy}]});
 }
-function reasonText(t){
-  const rs = t.reason || {};
-  if (rs.source === "cue") return `You asked for >>${t.cue}.`;
-  const c = Math.round(100 * (+rs.confidence || 0)), task = rs.task_type || "general work";
-  if (/static|default|fallback/.test(String(rs.source || ""))) return `Not sure (${c} %), so the default model is used.`;
-  return `Task looks like ${task}. Sure: ${c} %.`;
-}
-function tryBox(){
-  const input = h("input", {id: "try-in", "aria-label": "Prompt to try (dry run, no model call)", placeholder: "fix the failing test   or   >>deep plan the change",
-    autocomplete: "off", spellcheck: "false", maxlength: "20000", value: S.tryText || ""});
-  const form = h("form", {class: "try", role: "search", "aria-label": "Try a prompt"}, input, h("button", {class: "btn main", type: "submit", text: "Try"}));
-  form.addEventListener("submit", ev => { ev.preventDefault(); const v = input.value.trim(); if (v){ S.tryText = v; runTest(v); } });
-  const out = [form];
-  const t = S.testRes;
-  if (S.testing) out.push(h("p", {class: "muted", text: "Trying…"}));
-  else if (t){
-    if (!t.ok) out.push(h("div", {class: "result"}, h("p", {class: "fail", text: "Not tried: " + (t.error || "failed")})));
-    else if (!t.family) out.push(h("div", {class: "result"}, h("p", {text: `>>${t.cue} is not a known model group.`}),
-      h("p", {class: "muted small", text: "Known: " + (t.families || []).map(f => ">>" + f).join(", ")})));
-    else {
-      const p = provOf(provKey(t.upstream)), direct = !(t.path || []).includes("detect");
-      out.push(h("div", {class: "result"},
-        h("p", {}, h("b", {text: direct ? `pi → ${p ? p.name : "provider"}` : `pi → apex → ${p ? p.name : "provider"}`}),
-          direct ? " (does not pass apex)" : ""),
-        h("p", {}, "Model: ", h("span", {class: "mono", text: String(t.model || "?")}), ` (>>${t.family}` + (t.effort ? `, thinking: ${t.effort})` : ")")),
-        h("p", {text: reasonText(t)}),
-        h("p", {class: "muted small", text: "Dry run: no model call, nothing written."}),
-        h("button", {class: "btn", type: "button", text: "Clear", onclick: () => { S.test = null; S.testRes = null; setFocus(null); renderMap(true); renderPanel(); }})));
-    }
+/* the live decision line: a train moves station to station (STATION_MS each); a warn or error station
+   stays amber or red while one of the last LIT_MAX requests had it. Verdicts come from the server's fixed maps. */
+function sticky(i, skip){
+  let worst = null;
+  for (const r of S.recent.slice(0, LIT_MAX)){
+    if (r.id === skip) continue;
+    const d = r.dec[i];
+    if (d.state === "error" && (!worst || worst.state !== "error")) worst = d;
+    else if (d.state === "warn" && !worst) worst = d;
   }
-  return out;
+  return worst;
 }
-async function runTest(v){
-  S.testing = true; renderPanel();
-  let t; try { t = await api("/api/test", {method: "POST", body: {prompt: v}}); } catch (e) { t = {ok: false, error: e.message}; }
-  S.testing = false; S.testRes = t;
-  if (t && t.ok && t.family){ const p = provKey(t.upstream) || "anthropic";
-    S.test = {route: "pi|" + p, path: new Set(t.path || []), skipped: new Set(t.skipped || [])}; }
-  else S.test = null;
-  renderMap(true);
-  setFocus(S.test ? new Set([S.test.route]) : null);
-  if (S.panel === "apex") renderPanel(); else openPanel("apex");
+const RANK = {none: 0, ok: 1, warn: 2, error: 3};
+function worse(a, b){ return b && RANK[b] > RANK[a] ? b : a; }
+function flowReq(){ return (S.flowRun && S.recent.find(r => r.id === S.flowRun.id)) || S.recent[0] || null; }
+function flowPaint(){
+  const F = S.fl; if (!F || !F.ol.isConnected) return;
+  const r = flowReq(), at = S.flowRun ? S.flowRun.at : STATIONS.length;
+  F.head.textContent = r ? `${S.flowRun ? "Now" : "Last request"}: ${agentOf(r.a).name} → ${provOf(r.p) ? provOf(r.p).name : "provider"}, ${ago(r.ts)} ago.` : "No requests yet.";
+  STATIONS.forEach(([, name], i) => {
+    const passed = i <= at, li = F.items[i], d = r ? r.dec[i] : {verdict: "—", state: "none"};
+    const s = sticky(i, passed || !r ? null : r.id);
+    const st = passed ? worse(d.state, s && s.state) : (s ? s.state : "wait");
+    li.className = st + (S.flowRun && i === at ? " here" : "");
+    li.querySelector(".dv").textContent = passed ? d.verdict : "";
+    const w = li.querySelector(".dw");
+    w.textContent = s && !(passed && s.verdict === d.verdict) ? "Last 10: " + s.verdict : "";
+    li.setAttribute("aria-label", `${name}: ${passed ? d.verdict : "waits"}` + (w.textContent ? ". " + w.textContent : ""));
+  });
+  if (F.train) F.train.style.transform = S.flowRun ? `translateY(${F.items[Math.min(at, STATIONS.length - 1)].offsetTop - F.items[0].offsetTop}px)` : "translateY(0)";
+  if (F.train) F.train.hidden = !S.flowRun;
+}
+function flowLine(){
+  const ol = h("ol", {class: "dline", "aria-label": "Decisions of the newest request"});
+  const items = STATIONS.map(([k, name]) => h("li", {"data-step": k}, h("span", {class: "stop", "aria-hidden": "true"}),
+    h("span", {class: "dn", text: name}), h("span", {class: "dv"}), h("span", {class: "dw"})));
+  ol.append(...items);
+  const train = REDUCE ? null : h("span", {class: "train", "aria-hidden": "true", hidden: true});
+  if (train) ol.append(train);
+  const head = h("p", {class: "dhead", "aria-live": "off"});
+  S.fl = {ol, items, train, head};
+  return [head, ol];
+}
+function flowStart(r){
+  if (S.panel !== "apex" || S.arg || document.hidden){ return; }
+  if (REDUCE){ flowPaint(); return; }       // no motion: the newest verdicts show at once
+  S.flowQ.push(r.id); if (S.flowQ.length > 3) S.flowQ.splice(0, S.flowQ.length - 3);
+  if (!S.flowRun) flowNext();
+}
+function flowNext(){
+  clearTimeout(S.flowT);
+  const id = S.flowQ.shift();
+  if (!id){ S.flowRun = null; flowPaint(); return; }
+  S.flowRun = {id, at: 0}; flowPaint();
+  const step = () => {
+    if (!S.flowRun) return;
+    S.flowRun.at++;
+    if (S.flowRun.at >= STATIONS.length){ S.flowRun.at = STATIONS.length; flowPaint(); S.flowT = setTimeout(flowNext, 400); return; }
+    flowPaint(); S.flowT = setTimeout(step, STATION_MS);
+  };
+  S.flowT = setTimeout(step, STATION_MS);
+}
+function flowStop(){ clearTimeout(S.flowT); S.flowQ = []; S.flowRun = null; }
+/* the same list, still (Recent items) */
+function decList(r, cls){
+  const ol = h("ol", {class: "dline " + (cls || ""), "aria-label": "Decisions of this request"});
+  STATIONS.forEach(([, name], i) => { const d = r.dec[i];
+    ol.append(h("li", {class: d.state}, h("span", {class: "stop", "aria-hidden": "true"}), h("span", {class: "dn", text: name}),
+      h("span", {class: "dv", text: d.verdict}))); });
+  return ol;
 }
 function relaySeg(){
   return h("div", {class: "seg", role: "group", "aria-label": "Which relay"}, [["main", "Cloud relay"], ["local", "Local relay"]].map(([k, t]) =>
@@ -1111,11 +1164,14 @@ function relaySeg(){
 }
 VIEWS.apex = step => {
   if (!S.flow){ loadFlow().then(() => { if (S.panel === "apex") renderPanel(); }); return {title: "apex", sub: "Loading…"}; }
-  if (step && nodeById(step)) return stepView(step);
-  const body = [h("h3", {text: "Try a prompt"}), ...tryBox(),
+  if (step && nodeById(step)){ flowStop(); return stepView(step); }
+  const steps = h("details", {open: S.stepsOpen}, h("summary", {text: "Steps and settings"}),
     h("h3", {text: "In pi"}), stepList(CLIENT_STEPS),
-    h("h3", {text: "In apex"}), h("div", {class: "row"}, relaySeg()), stepList(PROXY_STEPS)];
-  return {title: "apex", sub: "The relay on this Mac. It passes and counts each request. It keeps no prompt text.", body};
+    h("h3", {text: "In apex"}), h("div", {class: "row"}, relaySeg()), stepList(PROXY_STEPS));
+  steps.addEventListener("toggle", () => { S.stepsOpen = steps.open; });
+  const body = [...flowLine(), steps];
+  setTimeout(flowPaint, 0);
+  return {title: "apex", sub: "Each request, decision by decision, as it passes. No prompt text.", body};
 };
 function stepView(id){
   const n = nodeById(id), st = stepState(n);
@@ -1171,7 +1227,7 @@ VIEWS.provider = k => {
     ...lineFacts(ls), fams.length ? "Models: " + fams.join(", ") + "." : null,
     med !== null ? "Typical wait for the first word: " + secs(med) + "." : null,
     k === "ollama" ? "Nothing leaves this Mac on this line." : null])];
-  body.push(h("button", {class: "btn main", type: "button", text: "Try a prompt", onclick: () => focusTry()}));
+  body.push(h("button", {class: "btn", type: "button", text: "Show the decisions in apex", onclick: () => openPanel("apex")}));
   return {title: p.name, sub: "AI provider. The end of the line.", body};
 };
 function rate(bps){ bps = +bps || 0;
@@ -1277,10 +1333,6 @@ function openFlowId(id){
   if (/^sink\./.test(id)) return openPanel("records");
   return openPanel("apex", id);
 }
-function focusTry(){
-  if (S.panel !== "apex" || S.arg) openPanel("apex");
-  const i = $("try-in"); if (i) i.focus(); else setTimeout(() => { const j = $("try-in"); if (j) j.focus(); }, 300);
-}
 async function loadFlow(){
   try { S.flow = await api("/api/flow?proxy=" + S.proxy); } catch (e) { toast("Steps not loaded: " + e.message, true); }
 }
@@ -1292,8 +1344,6 @@ qa("nav button").forEach(b => b.addEventListener("click", () => {
     if (k === "tokens") S.tok = null; openPanel(k); }
 }));
 document.addEventListener("keydown", ev => {
-  const tag = (ev.target && ev.target.tagName) || "";
-  if (ev.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(tag) && !ev.metaKey && !ev.ctrlKey){ ev.preventDefault(); focusTry(); return; }
   if (ev.key === "Escape"){
     tip.style.display = "none";
     if (S.selReq || (S.focus && S.panel === "recent")){ setFocus(null); renderPanel(); return; }
@@ -1305,8 +1355,6 @@ function applyHash(){
   if (q.has("review")) { S.review = null; return openPanel("changes"); }
   for (const k of ["recent", "experiments", "tokens", "records", "apex"]) if (q.has(k) && !q.get(k)) return openPanel(k);
   if (q.get("node")) return openFlowId(q.get("node"));
-  // a link only fills the box: the user clicks Try (no request from a link alone)
-  if (q.get("test")){ S.tryText = q.get("test").slice(0, 2000); return focusTry(); }
   // #branches (v1) has no view in v2: ignored
 }
 addEventListener("hashchange", applyHash);
