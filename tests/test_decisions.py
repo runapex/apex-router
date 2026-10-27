@@ -166,3 +166,34 @@ def test_a_cut_file_is_reported_not_passed_in_silence(monkeypatch, tmp_path):
     p.write_text("".join(json.dumps({"id": f"D{i}", "state": "open", "text": "q" * 40}) + "\n" for i in range(10)))
     rows, bad = D.read_rows()
     assert bad >= 1
+
+
+def test_compaction_never_drops_an_open_row_behind_a_large_recent_history(monkeypatch, tmp_path):
+    # xval round 2: > 1 MiB of recent closed rows made the capped reader miss older open rows, and the
+    # compaction deleted them
+    import json
+    import time
+    from apex_router import decisions as D
+    p = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(D, "path", lambda: p)
+    now = time.time()
+    rows = [{"id": f"OPEN{i}", "ts": now - 10, "topic": "a", "text": "q", "state": "open"} for i in range(5)]
+    rows += [{"id": f"C{i}", "ts": now - 5, "topic": "a", "text": "x" * 480, "state": "closed"} for i in range(2500)]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert p.stat().st_size > D.READ_CAP
+    D.add("trigger a compaction")
+    ids = {r["id"] for r in D.open_rows()}
+    assert {f"OPEN{i}" for i in range(5)} <= ids
+    assert p.stat().st_size < D.READ_CAP
+
+
+def test_no_compaction_when_the_file_has_a_bad_row(monkeypatch, tmp_path):
+    import json
+    from apex_router import decisions as D
+    p = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(D, "path", lambda: p)
+    monkeypatch.setattr(D, "COMPACT_AT", 100)
+    p.write_text(json.dumps({"id": "OPEN1", "ts": 1, "state": "open"}) + "\n{bad\n" + "x" * 200 + "\n")
+    before = p.read_text()
+    D.add("q")
+    assert p.read_text().startswith(before)

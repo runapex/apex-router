@@ -38,6 +38,8 @@ def _valid(r: object) -> bool:
 
 COMPACT_AT = 256 * 1024          # writers rewrite the file (latest row per id) above this size
 CLOSED_KEEP_S = 30 * 86400       # closed decisions older than this are dropped at a compaction
+CLOSED_KEEP_N = 200              # and at most this many closed rows are kept (newest)
+COMPACT_READ_MAX = 16 << 20      # a compaction reads the whole file up to this size; above it, no compaction
 
 
 def read_rows() -> tuple[list[dict], int]:
@@ -93,18 +95,53 @@ class _Locked:
         os.close(self.fd)          # closing the fd drops the lock
 
 
+def _ts(r: dict) -> float:
+    try:
+        return float(r.get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _whole_rows(p: Path) -> list[dict] | None:
+    """Latest row per id from the WHOLE file, or None (no compaction) when the file is larger than
+    COMPACT_READ_MAX or has any bad row: a compaction must never drop an open decision it did not see."""
+    try:
+        with open(p, "rb") as f:
+            data = f.read(COMPACT_READ_MAX + 1)
+    except OSError:
+        return None
+    if len(data) > COMPACT_READ_MAX:
+        return None
+    latest: dict[str, dict] = {}
+    for line in data.decode("utf-8", "replace").split("\n"):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            return None
+        if not _valid(r):
+            return None
+        latest.pop(r["id"], None)
+        latest[r["id"]] = r
+    return list(latest.values())
+
+
 def _append(row: dict) -> None:
-    """Append one row; the caller holds _Locked. Above COMPACT_AT the file is rewritten first with the
-    latest row per id (open rows always kept; closed rows older than CLOSED_KEEP_S dropped)."""
+    """Append one row; the caller holds _Locked. Above COMPACT_AT the file is rewritten first from a read
+    of the whole file: the latest row per id, every open row, the newest CLOSED_KEEP_N closed rows of the
+    last CLOSED_KEEP_S. If the whole file cannot be read cleanly, there is no compaction (append only)."""
     p = path()
     try:
         big = p.stat().st_size > COMPACT_AT
     except FileNotFoundError:
         big = False
-    if big:
-        rows, _bad = read_rows()
+    rows = _whole_rows(p) if big else None
+    if rows is not None:
         now = time.time()
-        keep = [r for r in rows if r["state"] == "open" or now - float(r.get("ts") or 0) < CLOSED_KEEP_S]
+        closed = [r for r in rows if r["state"] == "closed" and now - _ts(r) < CLOSED_KEEP_S]
+        closed_ids = {r["id"] for r in sorted(closed, key=_ts)[-CLOSED_KEEP_N:]}
+        keep = [r for r in rows if r["state"] == "open" or r["id"] in closed_ids]
         tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in keep)
