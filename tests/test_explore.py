@@ -319,3 +319,14 @@ def test_one_cmd_backend_reused_across_runs_gets_a_fresh_dir_each_time(tmp_path)
                        oracle=lambda t: OracleResult(True, 5.0, "ok"))
         assert rep["call_errors"] == 0 and rep["best_score"] == 5.0, (arm, rep)
     assert be.cwd is None
+
+
+def test_check_reject_records_reply_shape_not_text(tmp_path):
+    task = _task(tmp_path)
+    be = lambda p, s: "MECHANISM: x\nCANDIDATE:\n```python\ndef solve(x:\n    SECRET_BODY"  # truncated reply
+    rep = run_task(task, "baseline", 1, be, tmp_path / "r", oracle=fake_oracle)
+    assert rep["check_rejects"] == 1
+    raw = (tmp_path / "r" / "evidence.jsonl").read_text()
+    row = json.loads(raw.splitlines()[0])
+    assert row["kind"] == "check_reject" and row["reply_fences"] == 1 and row["reply_has_mechanism"] is True
+    assert "SECRET_BODY" not in raw

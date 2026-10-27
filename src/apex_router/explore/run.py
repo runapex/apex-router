@@ -142,9 +142,12 @@ class _Run:
         if why is not None:
             self.check_rejects += 1
             self.call_cands.append(None)
+            # shape only (no text): reply length, fence count, MECHANISM line seen -> diagnose a format miss
             self.evidence.append("check_reject", arm=self.arm, call=self.calls, id=cand.id,
                                  operator=operator, tags=list(cand.tags), fingerprint=cand.fingerprint,
-                                 detail=why)
+                                 detail=why, reply_chars=len(reply or ""),
+                                 reply_fences=(reply or "").count("```"),
+                                 reply_has_mechanism=bool(re.search(r"MECHANISM", reply or "", re.I)))
             return None
         self.archive.add(cand)
         self.call_cands.append(cand.id)
