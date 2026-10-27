@@ -21,7 +21,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
-import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, JobManager, softCapGate, STALE_CODE_NOTE, type Meta } from "./lib/agents.ts";
+import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, headInfo, JobManager, runGit, softCapGate, spawnGate, STALE_CODE_NOTE, withEvidence, type Meta } from "./lib/agents.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -163,6 +163,7 @@ export default function (pi: ExtensionAPI) {
 			idle_s: Type.Optional(Type.Number({ description: "no-event limit (default 900; keep above the child's bash timeout)" })),
 			max_cost: Type.Optional(Type.Number({ description: "cost budget in USD: at 85 % the job must write its final report; hard stop above 110 %. Not for agent=xval (no USD usage)" })),
 			wait_s: Type.Optional(Type.Number({ description: "wait up to this many seconds for the result (max 600); 0 = background" })),
+			override: Type.Optional(Type.String({ description: "reason (10 characters or more) to pass one spawn-gate refusal (pending branches, open decisions, xval review rounds); recorded in meta.json" })),
 		}),
 		async execute(_id, p, signal, _onUpdate, ctx: ExtensionContext) {
 			if (depth() >= maxDepth()) return text(`agent_spawn refused: this is a sub-agent at depth ${depth()} (max ${maxDepth()}). Do the task yourself.`);
@@ -171,6 +172,10 @@ export default function (pi: ExtensionAPI) {
 			let cwd = p.cwd ? resolvePath(p.cwd.replace(/^~(?=$|\/)/, homedir())) : ctx.cwd;
 			if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return text(`agent_spawn refused: cwd ${cwd} is not a folder.`);
 			if (p.thinking && !THINKING.has(p.thinking)) return text(`agent_spawn refused: thinking must be one of ${[...THINKING].join(", ")}.`);
+			const kind = def.kind ?? "pi";
+			// Spawn gates (owner order 2026-10-27): before the worktree, so a refusal leaves no branch. Fail open.
+			const gate = spawnGate({ agent: def.name, kind, cwd, override: p.override });
+			if (!gate.allow) return text([gate.message, ...gate.warnings].join("\n"), { refused: "spawn_gate" });
 			if (p.worktree) {
 				try {
 					cwd = worktree(cwd, `${Date.now().toString(36)}`);
@@ -178,9 +183,19 @@ export default function (pi: ExtensionAPI) {
 					return text(`worktree failed: ${(e as Error).message}`);
 				}
 			}
-			const budget = effectiveMaxCost(def.kind ?? "pi", p.max_cost); // M1: no silent budget on xval
+			let place = gate.head;
+			if (kind === "xval" && p.worktree) {
+				try {
+					place = headInfo(cwd, (a, t) => runGit(a, t), 500) ?? undefined; // record the job's own worktree
+				} catch {
+					place = undefined;
+				}
+			}
+			const budget = effectiveMaxCost(kind, p.max_cost); // M1: no silent budget on xval
 			const m = manager().spawn({
-				task: p.task, agent: def.name, kind: def.kind ?? "pi", cwd,
+				task: kind === "xval" ? withEvidence(p.task) : p.task, agent: def.name, kind, cwd,
+				gate_override: gate.override,
+				...(kind === "xval" && place ? { repo: place.repo, branch: place.branch, head: place.head } : {}),
 				model: p.model ?? def.model ?? (def.kind === "xval" ? undefined : ctx.model?.id),
 				provider: p.provider ?? def.provider ?? (def.kind === "xval" ? undefined : ctx.model?.provider),
 				thinking: def.kind === "xval" ? undefined : (p.thinking ?? def.thinking ?? ctx.thinkingLevel),
@@ -190,7 +205,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			const advice0 = m.kind === "pi" ? costAdviceLine(m.max_cost, m.agent, argOf(m.argv, "--model"), argOf(m.argv, "--thinking")) : "";
 			const stale = codeHash(CODE_FILES) !== LOAD_HASH ? STALE_CODE_NOTE : ""; // C1b: warn only; no reload, no block
-			const advice = [advice0, budget.note, stale].filter(Boolean).join("\n");
+			const advice = [advice0, budget.note, stale, ...gate.warnings].filter(Boolean).join("\n");
 			const wait = Math.min(Math.max(p.wait_s ?? 0, 0), MAX_WAIT_S);
 			if (wait > 0) {
 				const [r] = await holdWait([m.id], () => manager().wait([m.id], wait * 1000, "all", signal));
