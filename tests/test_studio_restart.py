@@ -322,3 +322,29 @@ def test_restart_endpoint_needs_confirm_token_and_never_shows_secrets(home):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_pid_line_far_down_in_launchctl_print_is_found():
+    out = "x = y\n" * 2000 + "\tpid = 4242\n"
+    assert R._launchd_pid("l", lambda argv: (0, out)) == 4242
+
+
+def test_rollback_with_unreachable_new_process_does_not_reload_without_drain(home):
+    # the new process has a pid but its /stats does not answer: no bootout of it (fail closed)
+    p = FakeProxy()
+    run = FakeRun(p)
+    real = run.__call__
+    state = {"booted": False}
+
+    def boot(argv):
+        rc, out = real(argv)
+        if argv[1:2] == ["bootstrap"]:
+            state["booted"] = True
+            p.up = False                                # answers nothing, but launchd has a pid
+        if argv[1:2] == ["print"] and state["booted"]:
+            return 0, f"pid = {p.pid}\n"
+        return rc, out
+    with pytest.raises(R.RestartError, match="NOT confirmed healthy"):
+        R.restart(home, "main", {"APEX_CONNECT_RETRIES": "3"}, 120, boot, p.fetch, health_timeout=0.2)
+    v = _verbs(run)
+    assert v.count("bootout") == 1                      # only the first, drained one

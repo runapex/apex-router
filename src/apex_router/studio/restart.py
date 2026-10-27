@@ -48,7 +48,7 @@ class RestartError(Exception):
 
 def _run(argv: list) -> tuple:
     p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-    return p.returncode, (p.stdout + p.stderr)[-400:]
+    return p.returncode, (p.stdout + p.stderr)[:65536]      # launchctl print puts pid near the top
 
 
 def _fetch(url: str):
@@ -260,7 +260,10 @@ def restart(paths: Paths, proxy: str, env_changes: dict, idle_s: float = DEFAULT
                                f"launchctl print gui/$(id -u)/{label}", 500) from None
         if ok:
             manifest["complete"] = True
-            _save(bdir, manifest)
+            try:
+                _save(bdir, manifest)                  # the restart worked: a failed note must not undo it
+            except OSError:
+                pass
             return {"ok": True, "proxy": proxy, "label": label, "changed": sorted(env_changes),
                     "backup": bdir.name, "restart_s": round(time.time() - t0, 1)}
         # automatic restore. A new process that answers is drained first (it may already serve).
@@ -269,14 +272,14 @@ def restart(paths: Paths, proxy: str, env_changes: dict, idle_s: float = DEFAULT
         _save(bdir, manifest)
         back = False
         try:
-            if fetch(f"http://127.0.0.1:{proxy_port(paths, proxy)}/healthz") is not None:
+            if _launchd_pid(label, run) is not None:    # a new process runs: it may serve, drain it first
                 back, _ = _swap(paths, proxy, label, plist, run, fetch, health_timeout)
-            else:                                       # nothing answers: nothing to break
+            else:                                       # no process (crash loop or not loaded): nothing to break
                 t1 = time.time()
                 rc2, _ = _reload(label, plist, run)
                 back = rc2 == 0 and _healthy(paths, proxy, t1, fetch, health_timeout)
         except RestartError:
-            back = False
+            back = False                                # fail closed: no reload without a drain
         raise RestartError(
             "the proxy did not come back healthy with the new settings; the old plist is restored and "
             + ("the proxy runs again" if back else f"the proxy is NOT confirmed healthy: check launchctl print "
