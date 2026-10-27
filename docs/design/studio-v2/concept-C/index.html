@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apex studio · concept C · Hub</title>
+<style>
+  :root {
+    --bg: #1a1b26; --card: #24283b; --line: #3b4261; --fg: #c0caf5; --fg2: #a9b1d6;
+    --flow: #7aa2f7; --focus: #7dcfff; --warn: #e0af68; --err: #f7768e;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--sans); overflow: hidden; }
+  .num { font-family: var(--mono); }
+  header { position: absolute; top: 0; left: 0; right: 0; height: 76px; display: flex; align-items: center;
+           justify-content: space-between; padding: 0 36px; z-index: 2; }
+  #status { font-size: 22px; font-weight: 500; letter-spacing: .1px; display: flex; align-items: center; gap: 12px; }
+  #status .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--focus); }
+  body.problem #status .dot { background: var(--err); }
+  .icons { display: flex; gap: 10px; }
+  .icons button { width: 40px; height: 40px; border-radius: 10px; background: var(--card); border: 1px solid var(--line);
+                  color: var(--fg2); display: grid; place-items: center; cursor: pointer; position: relative; padding: 0; }
+  .icons button:hover, .icons button:focus-visible { color: var(--fg); border-color: var(--fg2); outline: none; }
+  .icons button .badge { position: absolute; top: -4px; right: -4px; width: 9px; height: 9px; border-radius: 50%;
+                         background: var(--fg2); border: 2px solid var(--bg); }
+  .icons svg { width: 20px; height: 20px; }
+  svg#map { position: absolute; top: 60px; left: 0; width: 100%; height: calc(100% - 60px); }
+  .lbl { fill: var(--fg); font-size: 18px; }
+  .col { fill: var(--fg2); font-size: 14px; letter-spacing: 1.5px; text-transform: uppercase; }
+  .cause { fill: var(--err); font-size: 15px; }
+  .node { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+  .node.err { stroke: var(--err); stroke-width: 2.5; }
+  .node.off { opacity: .55; }
+  .ico { stroke: var(--fg2); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .spoke { fill: none; stroke-linecap: round; transition: opacity .3s; }
+  .hit { fill: none; stroke: transparent; stroke-width: 26; cursor: pointer; }
+  #hub { cursor: pointer; }
+  .hubtxt { fill: var(--fg); font-size: 30px; font-weight: 600; }
+  .hubcap { fill: var(--fg2); font-size: 15px; }
+  .inner { opacity: 0; transition: opacity .3s; pointer-events: none; }
+  body.detail .inner { opacity: 1; pointer-events: auto; }
+  body.detail .dimmable { opacity: .25; }
+  .step { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+  .steplbl { fill: var(--fg2); font-size: 13px; }
+  #tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+         padding: 10px 14px; font-size: 14px; line-height: 1.6; color: var(--fg); opacity: 0; transition: opacity .15s;
+         box-shadow: 0 6px 24px rgba(0,0,0,.4); z-index: 3; min-width: 200px; }
+  #tip b { display: block; color: var(--fg2); font-weight: 500; font-size: 13px; margin-bottom: 2px; }
+  #panel { position: absolute; right: 36px; bottom: 32px; width: 360px; background: var(--card); border: 1px solid var(--line);
+           border-radius: 14px; padding: 18px 20px; display: none; z-index: 2; }
+  body.detail #panel { display: block; }
+  #panel h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+  #panel ul { margin: 0 0 16px; padding: 0; list-style: none; font-size: 14.5px; line-height: 1.5; }
+  #panel li { padding: 5px 0; border-top: 1px solid var(--line); }
+  #panel li:first-child { border-top: 0; }
+  .bar { height: 10px; border-radius: 5px; background: var(--line); margin-top: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 75%; background: var(--focus); }
+  #panel button { background: transparent; border: 1px solid var(--focus); color: var(--focus); border-radius: 8px;
+                  padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .pop { position: absolute; top: 70px; right: 36px; width: 330px; background: var(--card); border: 1px solid var(--line);
+         border-radius: 12px; padding: 14px 16px; font-size: 14px; line-height: 1.6; display: none; z-index: 4; }
+  .pop.open { display: block; }
+  .pop h3 { margin: 0 0 8px; font-size: 15px; }
+  .pop .tag { font-size: 12px; color: var(--fg2); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; margin-left: 6px; }
+  .pop .tag.wait { color: var(--warn); border-color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <div id="status" role="status"><span class="dot"></span><span id="statustxt"></span></div>
+  <nav class="icons" aria-label="More">
+    <button data-pop="pop-changes" aria-label="Changes" title="Changes">
+      <svg viewBox="0 0 24 24" class="ico"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      <span class="badge" aria-hidden="true"></span>
+    </button>
+    <button data-pop="pop-exp" aria-label="Experiments" title="Experiments">
+      <svg viewBox="0 0 24 24" class="ico"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><path d="M7.5 15h9"/></svg>
+    </button>
+    <button data-pop="pop-tokens" aria-label="Tokens" title="Tokens">
+      <svg viewBox="0 0 24 24" class="ico"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>
+    </button>
+  </nav>
+</header>
+
+<div class="pop" id="pop-changes"><h3>Changes</h3>
+  <div>Retry once on timeout <span class="tag">applies now</span></div>
+  <div>Local relay restart <span class="tag wait">waits until idle</span></div>
+</div>
+<div class="pop" id="pop-exp"><h3>Experiments</h3>
+  <div>JEPA model choice: paused</div>
+  <div>Gold labels: <span class="num">85</span>% done, provisional</div>
+  <div>Savings estimate: off</div>
+</div>
+<div class="pop" id="pop-tokens"><h3>Tokens, last 15 min</h3>
+  <div>Of <span class="num">1.2</span>&nbsp;M input tokens, <span class="num">0.9</span>&nbsp;M came from cache.</div>
+  <div class="bar"><i></i></div>
+</div>
+
+<svg id="map" viewBox="0 0 1440 800" preserveAspectRatio="xMidYMid meet" aria-label="Your agents send requests through apex to AI providers">
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <text class="col" x="250" y="90" text-anchor="middle">Your agents</text>
+  <text class="col" x="1190" y="90" text-anchor="middle">AI providers</text>
+  <g id="spokes"></g>
+  <g id="dots"></g>
+  <g id="nodes"></g>
+  <g id="hits"></g>
+  <g id="hub" tabindex="0" role="button" aria-label="apex: open inner steps">
+    <circle cx="720" cy="390" r="104" fill="var(--bg)"/>
+    <circle cx="720" cy="390" r="92" fill="none" stroke="var(--line)" stroke-width="16"/>
+    <circle id="arc" cx="720" cy="390" r="92" fill="none" stroke-width="16" stroke-linecap="round"
+            transform="rotate(-90 720 390)" filter="url(#glow)"/>
+    <circle cx="720" cy="390" r="74" fill="var(--card)"/>
+    <text class="hubtxt" x="720" y="392" text-anchor="middle">apex</text>
+    <text class="hubcap" x="720" y="420" text-anchor="middle"><tspan class="num">75</tspan>% cache</text>
+  </g>
+  <g class="inner" id="inner"></g>
+</svg>
+
+<div id="tip" role="tooltip"></div>
+
+<aside id="panel" aria-label="apex details">
+  <h2>apex, the local relay on this Mac</h2>
+  <ul>
+    <li>Passes each request and counts it. Keeps nothing of your prompts.</li>
+    <li><span class="num">37</span> requests a minute now.</li>
+    <li>Of <span class="num">1.2</span>&nbsp;M input tokens, <span class="num">0.9</span>&nbsp;M came from cache.<div class="bar"><i></i></div></li>
+    <li>Typical wait <span class="num">1.4</span>&nbsp;s.</li>
+    <li>No changes wait for a restart.</li>
+  </ul>
+  <button type="button">Open request log</button>
+</aside>
+
+<script>
+(() => {
+  const C = { flow: '#7aa2f7', focus: '#7dcfff', warn: '#e0af68', err: '#f7768e', line: '#3b4261' };
+  const HX = 720, HY = 390, RO = 104;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Mock data (requests a minute, failed share, typical wait in s).
+  const agents = [
+    { id: 'pi', name: 'pi', y: 210, rate: 24, wait: 1.3 },
+    { id: 'cc', name: 'Claude Code', y: 390, rate: 9, wait: 1.6 },
+    { id: 'cx', name: 'Codex', y: 570, rate: 4, wait: 1.1 },
+  ];
+  const providers = [
+    { id: 'claude', name: 'Claude models', y: 210, rate: 22, wait: 1.5 },
+    { id: 'gpt', name: 'GPT models', y: 390, rate: 11, wait: 1.2 },
+    { id: 'mac', name: 'Models on this Mac', y: 570, rate: 0, wait: 0.6, idle: true },
+  ];
+  const records = { id: 'rec', name: 'Records', rate: 37 };
+  const steps = ['Who is calling', 'Model choice', 'Sign-in', 'Send and retry', 'Token count', 'Savings test'];
+  const stepIcons = [
+    '<circle cx="0" cy="-4" r="4"/><path d="M-7 8c1-5 13-5 14 0"/>',
+    '<path d="M-7 6l7-12 7 12"/><path d="M-4 1h8"/>',
+    '<rect x="-6" y="-2" width="12" height="9" rx="2"/><path d="M-3.5-2v-3a3.5 3.5 0 0 1 7 0v3"/>',
+    '<path d="M-7 0h12M1-5l5 5-5 5"/>',
+    '<path d="M-6 6V0M0 6V-6M6 6V-2"/>',
+    '<circle r="7" stroke-dasharray="3 3"/><path d="M-2 0h4"/>',
+  ];
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, parent) => { const e = document.createElementNS(ns, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const width = r => r <= 0 ? 2 : 1.5 + 2.4 * Math.log(1 + r);   // log scale, capped by the data range
+  const gS = document.getElementById('spokes'), gD = document.getElementById('dots'),
+        gN = document.getElementById('nodes'), gH = document.getElementById('hits'), gI = document.getElementById('inner');
+
+  const spokes = [];
+  function ringPoint(y, side) {
+    const a = ((y - HY) / 180) * 0.5;
+    return [HX + side * RO * Math.cos(a), HY + RO * Math.sin(a)];
+  }
+  function addSpoke(item, d, dir) {
+    const p = el('path', { d, class: 'spoke dimmable' }, gS);
+    const hit = el('path', { d, class: 'hit' }, gH);
+    const s = { item, p, hit, dir, len: 0, dots: [] }; spokes.push(s);
+    hit.addEventListener('mousemove', ev => showTip(ev, s));
+    hit.addEventListener('mouseleave', hideTip);
+    return s;
+  }
+  function agentIcon(g) { el('path', { d: 'M-8-5l6 5-6 5M1 6h8', class: 'ico' }, g); }
+  function provIcon(g) { el('path', { d: 'M-8 4a5 5 0 0 1 2-9.6A6 6 0 0 1 6-4a4 4 0 0 1 1 8z', class: 'ico' }, g); }
+  function macIcon(g) { el('path', { d: 'M-8-6h16v10h-16zM-4 8h8', class: 'ico' }, g); }
+
+  agents.forEach(a => {
+    const [ex, ey] = ringPoint(a.y, -1);
+    a.spoke = addSpoke(a, `M282 ${a.y} C470 ${a.y} 500 ${ey} ${ex} ${ey}`, 1);
+    const g = el('g', { transform: `translate(250 ${a.y})`, class: 'dimmable' }, gN);
+    a.node = el('circle', { r: 30, class: 'node' }, g); agentIcon(g);
+    el('text', { x: -46, y: 6, class: 'lbl', 'text-anchor': 'end' }, g).textContent = a.name;
+  });
+  providers.forEach(p => {
+    const [sx, sy] = ringPoint(p.y, 1);
+    p.spoke = addSpoke(p, `M${sx} ${sy} C940 ${sy} 970 ${p.y} 1158 ${p.y}`, 1);
+    const g = el('g', { transform: `translate(1190 ${p.y})`, class: 'dimmable' }, gN);
+    p.node = el('circle', { r: 30, class: 'node' + (p.idle ? ' off' : '') }, g);
+    (p.id === 'mac' ? macIcon : provIcon)(g);
+    el('text', { x: 46, y: 6, class: 'lbl' }, g).textContent = p.name;
+    p.cause = el('text', { x: 46, y: 30, class: 'cause' }, g);
+  });
+  records.spoke = addSpoke(records, `M${HX} ${HY + RO} L${HX} 662`, 1);
+  { const g = el('g', { transform: `translate(${HX} 690)`, class: 'dimmable' }, gN);
+    el('rect', { x: -26, y: -26, width: 52, height: 52, rx: 12, class: 'node' }, g);
+    el('path', { d: 'M-7-9h10l4 4v14h-14zM-3 0h7M-3 4h7', class: 'ico' }, g);
+    el('text', { x: 44, y: 6, class: 'lbl' }, g).textContent = records.name; }
+
+  // Inner steps: a small ring of icons around the hub (shown when the hub is open).
+  el('circle', { cx: HX, cy: HY, r: 176, fill: 'none', stroke: C.line, 'stroke-width': 1.5, 'stroke-dasharray': '2 6' }, gI);
+  steps.forEach((name, i) => {
+    const a = -Math.PI / 2 + i * (2 * Math.PI / steps.length);
+    const x = HX + 176 * Math.cos(a), y = HY + 176 * Math.sin(a);
+    const g = el('g', { transform: `translate(${x} ${y})` }, gI);
+    el('circle', { r: 22, class: 'step', opacity: i === 5 ? .5 : 1 }, g);
+    el('g', { class: 'ico', opacity: i === 5 ? .6 : 1 }, g).innerHTML = stepIcons[i];
+    const w = name.length * 7 + 14;
+    el('rect', { x: -w / 2, y: 26, width: w, height: 20, rx: 6, fill: '#1a1b26' }, g);
+    const t = el('text', { y: 41, class: 'steplbl', 'text-anchor': 'middle' }, g); t.textContent = name;
+  });
+
+  const tip = document.getElementById('tip');
+  let state = 'ok';
+  function facts(s) {
+    const it = s.item, f = it.fail || 0;
+    if (it === records) return ['apex → Records', 'Written on this Mac only', 'Last written 4 s ago', 'Counts and health, no prompts'];
+    const from = agents.includes(it) ? `${it.name} → apex` : `apex → ${it.name}`;
+    if (it.idle) return [from, 'No traffic in the last minute', 'Ready, not in use', `Typical wait ${it.wait} s`];
+    return [from, `${it.rate} requests a minute`,
+      f ? `${Math.round(f * 10)} of 10 fail: provider not reached` : 'None failed',
+      `Typical wait ${it.wait} s`];
+  }
+  function showTip(ev, s) {
+    const [h, ...rest] = facts(s);
+    tip.innerHTML = `<b>${h}</b>` + rest.map(x => `<div>${x}</div>`).join('');
+    tip.style.left = (ev.clientX + 16) + 'px'; tip.style.top = (ev.clientY + 16) + 'px'; tip.style.opacity = 1;
+  }
+  function hideTip() { tip.style.opacity = 0; }
+
+  function apply() {
+    state = (location.hash.slice(1) || 'ok');
+    if (!['ok', 'problem', 'detail'].includes(state)) state = 'ok';
+    document.body.className = state;
+    const gpt = providers[1], cx = agents[2];
+    gpt.fail = state === 'problem' ? 0.3 : 0;
+    const health = state === 'problem' ? C.warn : C.focus;
+    const arc = document.getElementById('arc'), circ = 2 * Math.PI * 92;
+    arc.setAttribute('stroke', health);
+    arc.setAttribute('stroke-dasharray', `${circ * 0.75} ${circ}`);
+    document.getElementById('statustxt').innerHTML = state === 'problem'
+      ? 'Problem: GPT models fail <span class="num">30</span>%.'
+      : 'All good. Last request <span class="num">4</span>&nbsp;s ago.';
+    spokes.forEach(s => {
+      const it = s.item, failing = it.fail > 0;
+      s.p.setAttribute('stroke-width', width(it.rate));
+      s.p.setAttribute('stroke', failing ? C.err : it.idle ? C.line : C.flow);
+      s.p.setAttribute('stroke-opacity', failing ? 1 : it.idle ? 1 : 0.45);
+      s.p.setAttribute('stroke-dasharray', failing ? '10 9' : 'none');
+      s.p.setAttribute('stroke-linecap', failing ? 'butt' : 'round');
+      s.len = s.p.getTotalLength();
+    });
+    providers.forEach(p => {
+      p.node.setAttribute('class', 'node' + (p.idle ? ' off' : '') + (p.fail ? ' err' : ''));
+      p.cause.textContent = p.fail ? 'Not reached' : '';
+    });
+    buildDots();
+  }
+
+  // Moving dots: count follows traffic, only on live spokes.
+  let dots = [];
+  function buildDots() {
+    gD.innerHTML = ''; dots = [];
+    if (reduce) return;
+    spokes.forEach(s => {
+      if (s.item.idle || s.item.rate <= 0) return;
+      const n = Math.max(2, Math.round(Math.log(1 + s.item.rate) * 2.2 * Math.min(1, s.len / 420)));
+      for (let i = 0; i < n; i++) {
+        const failing = s.item.fail > 0 && i % 3 === 0;   // about 1 in 3 dots stops at the break
+        const c = el('circle', { r: 3.4, fill: failing ? C.err : C.flow, class: 'dimmable' }, gD);
+        dots.push({ s, c, t: i / n, failing });
+      }
+    });
+  }
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(64, now - last) / 1000; last = now;
+    dots.forEach(d => {
+      d.t += dt * 0.22;
+      if (d.t >= 1) d.t -= 1;
+      let t = d.t, op = 1;
+      if (d.failing && t > 0.55) { t = 0.55; op = Math.max(0, 1 - (d.t - 0.55) * 4); }
+      const pt = d.s.p.getPointAtLength(t * d.s.len);
+      d.c.setAttribute('cx', pt.x); d.c.setAttribute('cy', pt.y); d.c.setAttribute('opacity', op);
+    });
+    requestAnimationFrame(frame);
+  }
+
+  const hub = document.getElementById('hub');
+  const toggleHub = () => { location.hash = state === 'detail' ? 'ok' : 'detail'; };
+  hub.addEventListener('click', toggleHub);
+  hub.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleHub(); } });
+  document.querySelectorAll('.icons button').forEach(b => b.addEventListener('click', () => {
+    const p = document.getElementById(b.dataset.pop), open = p.classList.contains('open');
+    document.querySelectorAll('.pop').forEach(x => x.classList.remove('open'));
+    if (!open) p.classList.add('open');
+  }));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') {
+    document.querySelectorAll('.pop').forEach(x => x.classList.remove('open'));
+    if (state === 'detail') location.hash = 'ok'; } });
+  addEventListener('hashchange', apply);
+  apply();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
