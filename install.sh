@@ -24,6 +24,8 @@
 #                         model resident in ollama (keep_alive:-1) so bursty pi/codex turns never hit
 #                         a multi-minute cold-load stall. Pins VRAM (opt-in). MODEL defaults to the
 #                         active ornith tier (apex-router ornith-tier --json).
+#         --az-keepwarm  (macOS) install scripts/az-token-cached to ~/.local/bin plus a launchd agent that
+#                       refreshes the Azure token every 60 s outside pi requests (scripts/az-token-keepwarm.sh)
 #         --no-embed    skip ollama / nomic-embed
 #         --watch       install the background watchers (drain worker + daily report)
 #         --proxy       install the measuring proxy ([proxy] extra: starlette/uvicorn/…)
@@ -64,6 +66,7 @@ DO_WATCH=0
 DO_PROXY=0
 DO_KEEPWARM=0        # --ollama-keepwarm: launchd agent that pins the active local model resident
 KEEPWARM_MODEL=""    # optional explicit model tag; empty => resolve the active ornith tier
+DO_AZ_KEEPWARM=0     # --az-keepwarm: az-token-cached + launchd agent that keeps the Azure token warm
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
 DO_AGENT_ROUTE_LOG=0 # --agent-route-log-hook: wire the Agent-dispatch label PostToolUse hook
@@ -105,6 +108,7 @@ while [ $# -gt 0 ]; do
     --ornith-tier) ORNITH_TIER="${2:-small}"; shift ;;
     --ornith-serve) DO_ORNITH_SERVE=1 ;;   # macOS: install the Ornith stack as launchd agents
     --ollama-keepwarm) DO_KEEPWARM=1; case "${2:-}" in -*|"") : ;; *) KEEPWARM_MODEL="$2"; shift ;; esac ;;
+    --az-keepwarm) DO_AZ_KEEPWARM=1 ;;
     --no-embed)  DO_EMBED=0 ;;
     --watch)     DO_WATCH=1 ;;
     --proxy)     DO_PROXY=1 ;;
@@ -446,6 +450,15 @@ PLIST
   [ "$loaded" = "1" ] \
     && ok "ollama keep-warm agent loaded (pinning $model; re-pins every 240s, survives ollama restart)" \
     || warn "  failed to load $label — re-run: launchctl bootstrap gui/$uid $agents/$label.plist"
+}
+
+# 4c. Azure token keep-warm (opt-in --az-keepwarm). All logic is in scripts/az-token-keepwarm.sh.
+install_az_keepwarm() {
+  [ "$DO_AZ_KEEPWARM" = "1" ] || return 0
+  if [ "$OS" != "Darwin" ]; then warn "--az-keepwarm is macOS-only (launchd) — skipping"; return 0; fi
+  bash "$INSTALL_DIR/scripts/az-token-keepwarm.sh" install \
+    && ok "az token keep-warm agent loaded" \
+    || warn "az token keep-warm install failed — re-run: bash $INSTALL_DIR/scripts/az-token-keepwarm.sh install"
 }
 
 # --------------------------------------------------------------------------- #
@@ -842,6 +855,7 @@ main() {
   install_embed
   install_ornith
   install_ollama_keepwarm
+  install_az_keepwarm
   check_clients_and_table
   install_watchers
   install_hooks

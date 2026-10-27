@@ -34,6 +34,19 @@ next tag will carry.
   (process group kill), under pi's 10 s apiKey limit. A token with less than 15 min left gets one
   background refresh. Before: parallel pi starts each ran `az` and failed with "Failed to resolve
   API key" (13 failures).
+- `scripts/az-token-cached` refresh window (2026-10-27): the background refresh starts below 240 s,
+  not 900 s. `az` (MSAL) gives a new token only when < 300 s are left, so refreshes at 900..300 s got
+  the same token (17 wasted `az` calls). After an idle gap a pi request then ran the slow network
+  refresh inside its 8 s limit and failed (job `20261026221508-v6kn`, 15:44). `AZ_TOKEN_MIN_S` sets
+  the minimum life; a refresh that returns that much or less fails.
+- `scripts/az-token-keepwarm.sh` + `install.sh --az-keepwarm` (new, macOS): launchd agent
+  `com.apex.az-token-keepwarm` runs every 60 s and refreshes below 240 s (3 tries, 30 s each), outside
+  any pi request. The token never goes to a log. Limit: after Mac sleep longer than the token life the
+  first pi request can still race the first run.
+- tests: `scripts/test.sh` runs the suite with a throwaway HOME. Before: on a dev Mac, live pi jobs,
+  xval and mesh-up wrote `~/.apex-router` during the run and the isolation guard failed (rc=1) with
+  all tests green. The guard is unchanged (same rules and exclusions) on the throwaway home. Plain
+  `uv run pytest` still guards the real home.
 - `scripts/judge_probe.py` (D29 PIN, owner decision 2026-10-26): the credentialed judge call uses
   `safe_http.urlopen` (no credential header on a cross-origin redirect). Scoring is unchanged.
 - pi `apex-hangguard` (B1): the log no longer stores command text (a command can hold a token). A row
