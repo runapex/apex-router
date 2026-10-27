@@ -330,3 +330,32 @@ def test_check_reject_records_reply_shape_not_text(tmp_path):
     row = json.loads(raw.splitlines()[0])
     assert row["kind"] == "check_reject" and row["reply_fences"] == 1 and row["reply_has_mechanism"] is True
     assert "SECRET_BODY" not in raw
+
+
+def test_parse_reply_accepts_mechanistic_variant():
+    # live smoke pilot: qwen wrote "MECHANISTIC:" instead of "MECHANISM:"; the tags must not be lost
+    tags, text = ops.parse_reply("MECHANISTIC: complement search, local search\nCANDIDATE:\n```python\nx = 1\n```\n")
+    assert tags == ["complement search", "local search"] and text == "x = 1"
+
+
+def test_ollama_reply_cut_at_token_limit_is_a_failed_call(monkeypatch):
+    import io
+    import json as _json
+    from apex_router.explore import backends as be
+    b = be.OllamaBackend()
+    assert b.num_predict == be.DEFAULT_NUM_PREDICT >= 4096
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _open(payload):
+        return lambda req, timeout=None: _Resp(_json.dumps(payload).encode())
+    monkeypatch.setattr(b._opener, "open", _open({"done_reason": "length", "message": {"content": "```python\ndef f("}}))
+    with pytest.raises(be.ReplyTruncated):
+        b("p", 1)
+    monkeypatch.setattr(b._opener, "open", _open({"done_reason": "stop", "message": {"content": "ok"}}))
+    assert b("p", 1) == "ok"

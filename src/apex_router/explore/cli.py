@@ -34,7 +34,7 @@ def main(argv=None) -> int:
     r.add_argument("--model", default=DEFAULT_OLLAMA_MODEL, help="ollama model")
     r.add_argument("--cmd", dest="shell_cmd", default=None, help="cmd backend: prompt on stdin, reply on stdout")
     r.add_argument("--temperature", type=float, default=0.8)
-    r.add_argument("--num-predict", type=int, default=2048)
+    r.add_argument("--num-predict", type=int, default=6144)
     r.add_argument("--floor", type=float, default=DEFAULT_FLOOR, help="exploration floor per round")
     r.add_argument("--round-size", type=int, default=6)
     r.add_argument("--oracle-per-round", type=int, default=None,

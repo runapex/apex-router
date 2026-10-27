@@ -90,7 +90,7 @@ def evolve_prompt(mode: str, goal: str, parents: Sequence[tuple[str, str, str]],
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
-_MECH = re.compile(r"^\s*\**\s*MECHANISM\s*\**\s*:\s*(.+)$", re.M | re.I)
+_MECH = re.compile(r"^\s*\**\s*MECHANIS[MT]\w*\s*\**\s*:\s*(.+)$", re.M | re.I)   # "MECHANISTIC:" seen live
 _FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)```", re.S)
 
 

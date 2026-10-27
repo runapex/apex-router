@@ -12,14 +12,19 @@ import subprocess
 import urllib.request
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+DEFAULT_NUM_PREDICT = 6144   # 2048 cut a 27b model's code replies (smoke pilot, 2026-10-27)
 DEFAULT_OLLAMA_MODEL = "qwen3.8:27b-mlx"
+
+
+class ReplyTruncated(RuntimeError):
+    """The model stopped at the token limit. The call counts and gives no candidate."""
 
 
 class OllamaBackend:
     name = "ollama"
 
     def __init__(self, model: str = DEFAULT_OLLAMA_MODEL, url: str = DEFAULT_OLLAMA_URL,
-                 temperature: float = 0.8, num_predict: int = 2048, timeout: float = 600.0):
+                 temperature: float = 0.8, num_predict: int = DEFAULT_NUM_PREDICT, timeout: float = 600.0):
         self.model, self.url = model, url
         self.temperature, self.num_predict, self.timeout = temperature, num_predict, timeout
         # local server: never route through an HTTP proxy from the environment
@@ -34,6 +39,8 @@ class OllamaBackend:
                                      headers={"Content-Type": "application/json"})
         with self._opener.open(req, timeout=self.timeout) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
+        if data.get("done_reason") == "length":   # cut at num_predict: a half candidate is a failed call
+            raise ReplyTruncated(f"reply cut at num_predict={self.num_predict}")
         return (data.get("message") or {}).get("content", "")
 
 
@@ -54,7 +61,7 @@ class CmdBackend:
 
 
 def make_backend(kind: str, model: str | None = None, cmd: str | None = None, cwd: str | None = None,
-                 temperature: float = 0.8, num_predict: int = 2048, timeout: float = 600.0):
+                 temperature: float = 0.8, num_predict: int = DEFAULT_NUM_PREDICT, timeout: float = 600.0):
     if kind == "ollama":
         return OllamaBackend(model=model or DEFAULT_OLLAMA_MODEL, temperature=temperature,
                              num_predict=num_predict, timeout=timeout)

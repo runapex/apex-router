@@ -36,7 +36,7 @@ def main(argv=None) -> int:
     ap.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
     ap.add_argument("--cmd", dest="shell_cmd", default=None)
     ap.add_argument("--temperature", type=float, default=0.8)
-    ap.add_argument("--num-predict", type=int, default=2048)
+    ap.add_argument("--num-predict", type=int, default=6144)
     ap.add_argument("--floor", type=float, default=0.3)
     ap.add_argument("--round-size", type=int, default=6)
     ap.add_argument("--seed", type=int, default=0)
