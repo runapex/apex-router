@@ -151,12 +151,14 @@ export const liveRules = (rules: Compiled[], now: number = Date.now()): Compiled
 	rules.filter(r => r.expiresAt === undefined || r.expiresAt >= now);
 
 export function check(rules: Compiled[], toolName: string, input: unknown, now: number = Date.now()): Verdict {
-	const text = callText(toolName, input).slice(0, MAX_TEXT);
+	const full = callText(toolName, input);
+	// user regexes see the head and the tail (bounded work); built-in checks (fn) see the full text
+	const text = full.length <= 2 * MAX_TEXT ? full : `${full.slice(0, MAX_TEXT)}\n${full.slice(-MAX_TEXT)}`;
 	for (const r of rules) {
 		if (r.tool !== "*" && r.tool !== toolName) continue;
 		if (r.expiresAt !== undefined && r.expiresAt < now) continue;
 		let hit: boolean;
-		if (r.fn) hit = r.fn(text);
+		if (r.fn) hit = r.fn(full);
 		else {
 			r.re.lastIndex = 0;
 			hit = r.re.test(text);
@@ -201,13 +203,13 @@ export function bashWritesRulesFile(cmd: string, file: string, home?: string): b
 	/** the parent directory or a directory above it ("/x/*" and "/x/" count as "/x") */
 	const isDirUp = (t0: string): boolean => {
 		const t = expand(t0).replace(/\/\*$/, "").replace(/\/+$/, "");
-		if (t === dirBase || t.endsWith(`/${dirBase}`)) return true;
-		if (!t.startsWith("/") && t !== "") return false;
+		if (t === dirBase) return true;                        // relative name of the parent dir
+		if (!t.startsWith("/") && t !== "") return false;      // other relative paths: not seen (documented)
 		return t === "" || dir === t || dir.startsWith(`${t}/`);
 	};
 	const isDir = (t0: string): boolean => {
 		const t = expand(t0).replace(/\/+$/, "");
-		return t === dir || t === dirBase || t.endsWith(`/${dirBase}`);
+		return t === dir || t === dirBase;
 	};
 	const hits = (t: string) => isFile(t) || isDirUp(t);
 	for (const seg of cmd.split(/&&|\|\||[;&|\n()`]|\$\(/)) {

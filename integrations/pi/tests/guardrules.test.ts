@@ -99,7 +99,25 @@ test("F4 ReDoS: a nested quantifier like ^(a+)+$ is rejected; the tested text is
 	assert.equal(check(r, "bash", { command: "a".repeat(30) + "!" }).block, false);
 	assert.ok(Date.now() - t0 < 1000);
 	const tail = compileRules([{ id: "tail", match: "TAIL$", reason: "x" }], "file", NOW).rules;
-	assert.equal(check(tail, "bash", { command: "x".repeat(MAX_TEXT) + "TAIL" }).block, false, "only the first MAX_TEXT chars are tested");
+	// xval pass 2: a head-only cap let "<8 k harmless>; rm -rf ~/.apex-router" pass. User regexes now see the head
+	// and the tail (bounded: 2 x MAX_TEXT); only a match in the middle of a very long call is not seen.
+	assert.equal(check(tail, "bash", { command: "x".repeat(3 * MAX_TEXT) + "TAIL" }).block, true, "the tail is tested");
+	const mid = compileRules([{ id: "mid", match: "MID", reason: "x" }], "file", NOW).rules;
+	assert.equal(check(mid, "bash", { command: "x".repeat(MAX_TEXT + 10) + "MID" + "x".repeat(MAX_TEXT + 10) }).block, false, "the middle of a long call is not tested (documented)");
+});
+
+test("xval pass 2: built-in self-protect sees the full text; a long prefix does not hide rm of the rules dir", () => {
+	const sp = selfProtect("/Users/u/.apex-router/pi-guardrules.json", "/Users/u");
+	const cmd = "echo " + "x".repeat(3 * MAX_TEXT) + " ; rm -rf /Users/u/.apex-router ; echo " + "y".repeat(3 * MAX_TEXT);
+	assert.equal(check(sp, "bash", { command: cmd }).block, true);
+});
+
+test("xval pass 2: a directory that only has the same name is not protected", () => {
+	const sp = selfProtect("/Users/u/.apex-router/pi-guardrules.json", "/Users/u");
+	assert.equal(check(sp, "bash", { command: "rm -rf /tmp/test/.apex-router" }).block, false);
+	assert.equal(check(sp, "bash", { command: "chmod -R u+rw /tmp/test/.apex-router" }).block, false);
+	assert.equal(check(sp, "bash", { command: "rm -rf ~/.apex-router" }).block, true);
+	assert.equal(check(sp, "bash", { command: "rm -rf /Users/u" }).block, true);
 });
 
 test("F5 expires: a compiled (cached) rule is off after its end, checked at each call", () => {

@@ -103,7 +103,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (process.env.APEX_GUARD === "0") return;
-		const v = check(activeRules(ctx), event.toolName, event.input);
+		let v;
+		try {
+			v = check(activeRules(ctx), event.toolName, event.input);
+		} catch {
+			const now = Date.now();
+			appendLog(GUARD_LOG, { ts: now, rule: null, error: "guard-exception", tool: event.toolName }, now);
+			return; // fail open: a guard bug must not stop all tools (documented: guard against mistakes, not a sandbox)
+		}
 		if (!v.block) return;
 		const now = Date.now();
 		appendLog(GUARD_LOG, { ts: now, rule: v.rule.id, source: v.rule.source, tool: event.toolName }, now); // no input text
