@@ -188,6 +188,23 @@ test("F3 P3: a capture of another branch leaf (or without a leaf id) is not repl
 	assert.equal((await runCompaction(ev(s, keep), ok.d)).row.path, "p3-replay", "the same leaf replays");
 });
 
+test("F3 P3: a capture followed only by the reply (assistant, tool results) still replays; a later user message does not", async () => {
+	const { s, keep, leaf } = session();
+	const replay = async () => ({ content: [{ type: "text", text: "## Goal\nreplayed" }], stopReason: "stop" });
+	const reply = [
+		{ type: "message", id: "r1", parentId: leaf, message: { role: "assistant", content: [{ type: "text", text: "ok" }] } },
+		{ type: "message", id: "r2", parentId: "r1", message: { role: "toolResult", content: [{ type: "text", text: "out" }] } },
+	];
+	const cap = () => ({ payload: PAYLOAD, provider: "anthropic", id: "opus", at: 1_000_000, leafId: leaf });
+	const e1 = ev(s, keep);
+	const okRun = deps({ captured: cap, replay }, { APEX_COMPACT_CACHE: "1" });
+	assert.equal((await runCompaction({ ...e1, branchEntries: [...e1.branchEntries, ...reply] as never }, okRun.d)).row.path, "p3-replay");
+	const user = { type: "message", id: "u9", parentId: "r2", message: { role: "user", content: [{ type: "text", text: "next task" }] } };
+	const noRun = deps({ captured: cap, replay }, { APEX_COMPACT_CACHE: "1" });
+	const out = await runCompaction({ ...e1, branchEntries: [...e1.branchEntries, ...reply, user] as never }, noRun.d);
+	assert.deepEqual(out.row.fails, ["p3-branch-changed"]);
+});
+
 test("F8 P3: /compact custom instructions are appended to the replay instruction", async () => {
 	const { s, keep, leaf } = session();
 	const sent: Record<string, unknown>[] = [];

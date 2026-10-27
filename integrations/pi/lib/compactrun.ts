@@ -5,7 +5,7 @@
  * Order of the summary text (first that works wins; each failure is a reason code in telemetry):
  *   P3 replay   — APEX_COMPACT_CACHE=1: the last captured provider payload + one instruction (cache prefix).
  *                 Only when the capture's branch leaf id is the leaf at compaction (the last branch entry):
- *                 a capture of another branch or an older leaf is not used (p3-branch-changed). The /compact
+ *                 a capture of another branch, or one with a user message after it, is not used (p3-branch-changed). The /compact
  *                 custom instructions are appended to the replay instruction (as pi does: "Additional focus").
  *   P5 model    — APEX_COMPACT_MODEL=<provider/model>: pi compact() with that model.
  *   P4 budget   — pi compact() with the session model and the summary budget (APEX_COMPACT_SUMMARY_TOKENS).
@@ -121,11 +121,15 @@ export async function runCompaction(ev: CompactEventLike, deps: Deps): Promise<C
 		row.p3 = "skip";
 		const cap = deps.captured?.();
 		const maxAge = envInt(env, "APEX_COMPACT_CACHE_MAX_AGE_S", 300, 1)! * 1000;
-		const leaf = ev.branchEntries.length ? ev.branchEntries[ev.branchEntries.length - 1]!.id : null;
+		// The capture must be on THIS branch, and only the reply to it (assistant + tool results) may follow:
+		// a new user message, or a leaf of another branch, means the payload does not cover the context.
+		const at = cap?.leafId ? ev.branchEntries.findIndex(e => e.id === cap.leafId) : -1;
+		const after = at >= 0 ? ev.branchEntries.slice(at + 1) : [];
+		const onBranch = at >= 0 && !after.some(e => (e as { message?: { role?: string } }).message?.role === "user");
 		if (!deps.model || !deps.replay) fails.push("p3-no-deps");
 		else if (!cap) fails.push("p3-no-capture");
 		else if (cap.provider !== deps.model.provider || cap.id !== deps.model.id) fails.push("p3-model-changed");
-		else if (!cap.leafId || cap.leafId !== leaf) fails.push("p3-branch-changed");
+		else if (!onBranch) fails.push("p3-branch-changed");
 		else if (t0 - cap.at > maxAge) fails.push("p3-stale");
 		else {
 			const ri = replayInstruction(budget) + (ev.customInstructions ? `\n\nAdditional focus: ${ev.customInstructions}` : "");
