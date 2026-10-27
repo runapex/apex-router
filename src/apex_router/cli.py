@@ -164,6 +164,10 @@ def main(argv=None) -> int:
     if raw[:1] == ["offload-report"]:
         from .ornith.offload_report import main_cli as _offload_report
         return _offload_report(raw[1:])
+    if raw[:1] == ["explore"]:
+        # Discovery harness (docs/research/2026-10-27-p99-discovery-harness.md). Own subcommands.
+        from .explore.cli import main as _explore
+        return _explore(raw[1:])
     if raw[:1] == ["worldmodel"]:
         # P6 world model (docs/DESIGN-worldmodel-P6.md): one dispatcher; numpy/mlx load lazily inside commands.
         from .worldmodel.cli import main as _worldmodel
@@ -350,6 +354,8 @@ def main(argv=None) -> int:
     sub.add_parser("mail", help="mail bus between a fan-out's agents and the owner: `mail post|read` "
                                 "(agent side), `mail send|inbox [--follow]|runs|agents|brief|widget`",
                    add_help=False)
+    sub.add_parser("explore", help="discovery harness: `explore run --task DIR --arm explore|baseline "
+                                   "--budget B`, `explore table RESULTS.jsonl`", add_help=False)
     sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|snapshot|baseline|chains|progress|"
                                       "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
