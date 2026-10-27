@@ -9,7 +9,7 @@ families: fable GREEN, opus AMBER, sonnet GREEN | emojize=false symbolize=false 
 errors 15m: 2 (http_529 1, midstream_ReadError 1) | emojize=false symbolize=false color=#B5372B,#f7768e
 ---
 Flow · 15m | size=12 color=#C15F3C,#7aa2f7
-sources: pi — · claude 22 · codex 0 | color=#3A6A9E,#7dcfff tooltip="requests per source, last 15 min · pi = pi turns in route_log.jsonl" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:src.pi terminal=false refresh=false
+sources: pi 1 · claude 20 · codex 0 | color=#3A6A9E,#7dcfff tooltip="requests per agent, last 15 min, by session id (pi sends Claude-style headers, so the client field is not used)" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:src.pi terminal=false refresh=false
 proxy :8788: down · in flight — · idle — | color=#B5372B,#f7768e tooltip="proxy /stats activity: requests in progress and time since the last one started or ended · — = the running proxy does not report it" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:detect terminal=false refresh=false
 upstreams: anthropic 21 · openai 1 · local — · err 9.1% · ttft p50 1.5s | color=#A86A1E,#e0af68 tooltip="requests per upstream, last 15 min · local = the local proxy :8789 · err = failed / all" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:upstream terminal=false refresh=false
 ---
