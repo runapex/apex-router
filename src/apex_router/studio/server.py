@@ -457,9 +457,11 @@ def _flush():
 
 
 def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit=print,
-          open_target: str | None = None, paths: flow.Paths | None = None, opener=None) -> int:
+          open_target: str | None = None, paths: flow.Paths | None = None, opener=None,
+          on_start=None) -> int:
     """Start the studio (or, with ``open_target``, reuse the running one) and open the browser at
-    its URL + the target hash. Blocks while it serves; returns at once on reuse."""
+    its URL + the target hash. Blocks while it serves; returns at once on reuse. ``on_start(srv)``
+    (tests) runs once the server and its instance file exist."""
     h = target_hash(open_target) if open_target is not None else ""
     if h is None:
         emit("apex-router studio: bad --open target (use node:<id>, review or branches)")
@@ -484,6 +486,8 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
         except OSError:
             pass                              # read-only home: the studio still runs, no reuse
     url = url_of(srv)
+    if on_start:
+        on_start(srv)
     emit(url + h)
     _flush()
     if idle_exit_s and idle_exit_s > 0:

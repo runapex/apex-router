@@ -65,19 +65,29 @@ def _free_port():
     return port
 
 
-def _serve_bg(paths, **kw):
-    """serve() in a thread (it blocks); returns (thread, emitted lines, opened urls)."""
-    out, opened = [], []
-    th = threading.Thread(target=server.serve, kwargs=dict(
-        paths=paths, emit=out.append, opener=opened.append, **kw), daemon=True)
-    th.start()
-    return th, out, opened
+class _Bg:
+    """serve() in a thread (it blocks). ``stop()`` shuts it down cleanly (the finally path that
+    deletes the instance file), so no test depends on idle-exit timing under load."""
+
+    def __init__(self, paths, **kw):
+        self.out, self.opened, self.srv = [], [], []
+        self.th = threading.Thread(target=server.serve, kwargs=dict(
+            paths=paths, emit=self.out.append, opener=self.opened.append,
+            on_start=self.srv.append, **kw), daemon=True)
+        self.th.start()
+
+    def stop(self):
+        if _wait(lambda: self.srv):
+            self.srv[0].shutdown()
+        self.th.join(10)
+        assert not self.th.is_alive()
 
 
 def test_serve_writes_instance_file_0600_and_deletes_it_on_clean_exit(paths):
     ipath = server.instance_path(paths)
-    th, out, opened = _serve_bg(paths, idle_exit_s=0.3, open_target="node:detect")
-    assert _wait(lambda: ipath.exists())
+    bg = _Bg(paths, open_target="node:detect")
+    out, opened = bg.out, bg.opened
+    assert _wait(lambda: out)
     assert stat.S_IMODE(ipath.stat().st_mode) == 0o600
     inst = json.loads(ipath.read_text())
     assert set(inst) == {"pid", "port", "token"} and inst["pid"] == os.getpid()
@@ -86,8 +96,16 @@ def test_serve_writes_instance_file_0600_and_deletes_it_on_clean_exit(paths):
     assert _wait(lambda: out) and out[0].endswith("#node=detect")
     assert opened == [out[0]]
     assert not list(ipath.parent.glob(".instance.json.*.tmp"))          # atomic: no temp left
-    th.join(5)
-    assert not th.is_alive() and not ipath.exists()                     # idle exit = clean exit
+    bg.stop()
+    assert not ipath.exists()                                           # clean exit: file gone
+
+
+def test_idle_exit_is_a_clean_exit(paths):
+    ipath = server.instance_path(paths)
+    bg = _Bg(paths, idle_exit_s=0.2)
+    assert _wait(lambda: bg.out)
+    bg.th.join(10)
+    assert not bg.th.is_alive() and not ipath.exists()
 
 
 def test_open_reuses_the_live_studio(paths, monkeypatch):
@@ -120,7 +138,8 @@ def test_stale_instance_file_is_replaced(paths, stale):
         old["port"] = other.port
     ipath.write_text("{not json" if stale == "garbage" else json.dumps(old))
     assert server.live_instance(ipath) is None
-    th, out, opened = _serve_bg(paths, idle_exit_s=0.3, open_target="branches")
+    bg = _Bg(paths, open_target="branches")
+    out = bg.out
     try:
         assert _wait(lambda: out)
         new = json.loads(ipath.read_text())
@@ -129,7 +148,7 @@ def test_stale_instance_file_is_replaced(paths, stale):
         assert out[0] == f"http://127.0.0.1:{new['port']}/?token={new['token']}#branches"
         assert server.live_instance(ipath) == new
     finally:
-        th.join(5)
+        bg.stop()
         if other:
             _stop(other)
     assert not ipath.exists()
@@ -151,10 +170,10 @@ def test_clear_instance_keeps_a_newer_studios_file(paths):
 def test_plain_studio_without_open_does_not_reuse(paths, monkeypatch):
     srv = _running(paths)
     try:
-        th, out, opened = _serve_bg(paths, idle_exit_s=0.3)
-        assert _wait(lambda: out)
-        assert f":{srv.port}/" not in out[0] and "#" not in out[0]
-        th.join(5)
+        bg = _Bg(paths)
+        assert _wait(lambda: bg.out)
+        assert f":{srv.port}/" not in bg.out[0] and "#" not in bg.out[0]
+        bg.stop()
     finally:
         _stop(srv)
 

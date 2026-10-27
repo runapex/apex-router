@@ -272,10 +272,11 @@ def test_collect_and_menu_with_flow_stay_fast_on_a_large_telemetry_file(home, tm
                       "tokens_in": 1, "pad": "x" * 400}) + "\n"
     tel.write_text(row * 50_000 + tel.read_text())   # old rows first: the file is in ts order
     assert tel.stat().st_size > 20_000_000
-    t0 = time.perf_counter()
+    t0, c0 = time.perf_counter(), time.process_time()
     snap = snapshot.collect(home=root, telemetry=tel, observe_dir=root / "obs", adapters=root / "ad",
                             now=now, proxy_fn=lambda: {"up": False}, worker_fn=lambda: {"label": "w"})
     text = snapshot.menubar(snap, bin_path=BIN)
-    dt = time.perf_counter() - t0
+    cpu, wall = time.process_time() - c0, time.perf_counter() - t0
     assert "Flow · 15m" in text and not snap["flow"].get("error")
-    assert dt < 1.0, dt
+    assert cpu < 1.0, cpu                          # ~0.15 s on an idle Mac; CPU time ignores load
+    assert wall < snapshot.HARD_LIMIT_S, wall
