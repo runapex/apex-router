@@ -66,6 +66,9 @@ export const IDS = /\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|\bEYE
  *  ignore lint errors" is a rule, not a retire message). */
 const RETIRE = /(?:^|[.;:,!?\n]\s*|\b(?:please|ok|okay|now|you can|we can)\s+)(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove)\b|\b(?:no longer (?:needed|applies|valid|relevant)|not needed any ?more|scratch that|never ?mind|rule is (?:off|gone|retired))\b/i;
 const DONE = /\b(done|finished|completed|resolved)\b/i;
+/** A leading retire verb ("ok, forget: ", "please drop ") and a trailing done-word ("... - done."), anchored. */
+const LEAD_RETIRE = /^\W*(?:(?:ok(?:ay)?|please|now)[,.]?\s+)*(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove)\b\s*(?:the rule)?\s*[:\-\u2013\u2014]?\s*/i;
+const TRAIL_DONE = /\s*[,:;\-\u2013\u2014]?\s*(?:is\s+)?(?:done|finished|completed|resolved)\W*$/i;
 const PRONOUN_ONLY = /^\W*(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?(?:forget|ignore|drop|cancel|scratch|disregard|never ?mind)\s*(?:that|it|this|the last (?:rule|one)|what i said)?\s*(?:rule)?\W*$/i;
 const NOGO = /\bNO[- ]?GO\b/;
 const GO_VERDICT = /(?<![-\w])(?:GO|PASS)(?![-\w])/;
@@ -122,13 +125,13 @@ export function extractRules(text: string): string[] {
 		const s = unquoted(s0);
 		return (RULE_STRONG.test(s) || (short && RULE_WEAK.test(s))) && words(s, 3).size >= 2;
 	};
-	// the stored rule is the text WITHOUT quoted parts: a quote inside a rule message is not a rule (xval F1 pass 2)
-	const keep = (s: string): string => unquoted(s).replace(/[ \t]{2,}/g, " ").trim();
-	if (t.length < 800) return isRule(t, true) ? [keep(t)] : [];
+	// Quotes only decide IF a text is a rule (a quoted log line alone is not). The stored rule is the user's
+	// text verbatim, with its framing ("the log says ..."): editing it lost literals like "--dry-run" (xval pass 3).
+	if (t.length < 800) return isRule(t, true) ? [t] : [];
 	const out: string[] = [];
 	for (const raw of t.split(/\n+|(?<=[.!?])\s+(?=[A-Z0-9"'`*(-])/)) {
 		const s = raw.trim();
-		if (s.length >= 12 && s.length <= RULE_CHARS && !/^```/.test(s) && isRule(s, false)) out.push(keep(s));
+		if (s.length >= 12 && s.length <= RULE_CHARS && !/^```/.test(s) && isRule(s, false)) out.push(s);
 		if (out.length >= 12) break;
 	}
 	return out;
@@ -282,14 +285,20 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 		if (last) retire(last, "retired", entryId);
 		return { retire: true };
 	}
-	// 3. the exact rule text: the message minus the retire words equals one rule (not a substring of it)
-	const rest = norm(unquoted(t).replace(RETIRE, " ").replace(DONE, " ").replace(/^[\W_]+|[\W_]+$/g, ""));
-	const quoted = [...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => norm(m[1] ?? m[2] ?? ""));
-	for (const r of rules) {
-		const n = norm(r.text).replace(/^[\W_]+|[\W_]+$/g, "");
-		if (n && (n === rest || quoted.includes(n) || quoted.includes(norm(r.text)))) retire(r, status, entryId);
+	// 3. the exact rule text, anchored: "<verb>[:] <rule>", "<rule> - done", or the rule in quotes. Only the
+	//    leading verb or trailing done-word is cut; the rule text itself is never edited (xval pass 3).
+	const edge = (x: string): string => norm(x).replace(/^[\W_]+|[\W_]+$/g, "");
+	const cands = new Set<string>([
+		edge(t.replace(LEAD_RETIRE, "")),
+		edge(t.replace(TRAIL_DONE, "")),
+		...[...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => edge(m[1] ?? m[2] ?? "")),
+	]);
+	let hit = false;
+	for (const r of rules) if (cands.has(edge(r.text))) {
+		retire(r, status, entryId);
+		hit = true;
 	}
-	return { retire: isRetire };
+	return { retire: isRetire || hit };   // a message that retired a rule is not itself a new rule
 }
 
 function closeNogo(l: Ledger, entryId: string): void {

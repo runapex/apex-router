@@ -158,10 +158,12 @@ export function check(rules: Compiled[], toolName: string, input: unknown, now: 
 		if (r.tool !== "*" && r.tool !== toolName) continue;
 		if (r.expiresAt !== undefined && r.expiresAt < now) continue;
 		let hit: boolean;
+		// built-in rules are ours and linear: they see the full text; user regexes see head + tail (xval pass 3)
+		const subject = r.source === "built-in" ? full : text;
 		if (r.fn) hit = r.fn(full);
 		else {
 			r.re.lastIndex = 0;
-			hit = r.re.test(text);
+			hit = r.re.test(subject);
 		}
 		if (hit) return { block: true, rule: r, reason: blockMessage(r) };
 	}

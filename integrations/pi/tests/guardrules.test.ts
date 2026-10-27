@@ -161,3 +161,9 @@ test("F7 source: set by the code; a 'source' field in the file is ignored and no
 	const s = compileRules([{ id: "b", match: "x", reason: "y", source: "file" }], "session", NOW).rules;
 	assert.equal(s[0]!.source, "session");
 });
+
+test("xval pass 3: built-in edit protection sees the full input, not head + tail", () => {
+	const sp = selfProtect("/Users/u/.apex-router/pi-guardrules.json", "/Users/u");
+	const input = { oldText: "a".repeat(3 * MAX_TEXT), path: "/Users/u/.apex-router/pi-guardrules.json", newText: "b".repeat(3 * MAX_TEXT) };
+	assert.equal(check(sp, "edit", input).block, true);
+});

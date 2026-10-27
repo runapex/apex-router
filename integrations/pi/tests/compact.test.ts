@@ -349,12 +349,31 @@ test("file lists: earlier lists merge in (pi skips them after a hook compaction)
 	assert.match(f.text, /<read-files>\na\nc\n<\/read-files>/);
 });
 
-test("xval pass 2 F1: a quote inside a rule message is cut out of the stored rule", () => {
-	assert.deepEqual(extractRules('Always run tests. The log says "Never run tests".'), ["Always run tests. The log says ."]);
+test("xval pass 3 F1: rules are stored verbatim with their framing; quotes only decide rule-ness", () => {
+	// a quoted instruction stays inside its framing ("The log says ..."), never as a bare rule
+	assert.deepEqual(extractRules('Always run tests. The log says "Never run tests".'), ['Always run tests. The log says "Never run tests".']);
+	// literals in quotes are part of the rule and must survive
+	assert.deepEqual(extractRules('Always pass "--dry-run" to deployment commands.'), ['Always pass "--dry-run" to deployment commands.']);
 	const s = new FakeSession();
-	s.user('Always run tests. The log says "Never run tests".');
-	const l = updateLedger(null, s.entries);
-	assert.ok(!active(l, "rule").some(i => /never run tests/i.test(i.text)), "the quoted instruction is not pinned");
+	s.user('Never deploy to "production" on Friday');
+	s.user('Never deploy to "staging" on Friday');
+	assert.equal(active(updateLedger(null, s.entries), "rule").length, 2, "rules that differ only in a quoted word stay apart");
+	// a long message: a sentence that is only a quoted log line is not a rule
+	const long = `${"Context line about the build. ".repeat(30)}\nThe log says "never retry without a lock". Do not touch tests/conftest.py.`;
+	assert.deepEqual(extractRules(long), ["Do not touch tests/conftest.py."]);
+});
+
+test("xval pass 3 F2: exact-text retire works for rules that contain a done-word", () => {
+	const s = new FakeSession();
+	s.user("Never delete completed backups");
+	s.user("Never close resolved tickets");
+	let l = updateLedger(null, s.entries);
+	s.user("forget: Never delete completed backups");
+	l = updateLedger(l, s.entries);
+	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never close resolved tickets"]);
+	s.user("Never close resolved tickets - done");
+	l = updateLedger(l, s.entries);
+	assert.equal(active(l, "rule").length, 0);
 });
 
 test("xval pass 2 F2: the exact text of a longer rule does not retire a shorter rule it contains", () => {
