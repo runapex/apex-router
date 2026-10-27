@@ -5,7 +5,7 @@ Read only. Prints one JSON object. Heuristics (state them when you cite a number
 - a "user rule" is a user message < 800 chars with do not/don't/never/always/must/stop/only/without;
   it is "matched" if >= 50 % of its first 6 words of >= 6 chars occur in the next summary OR in the
   kept raw messages (from firstKeptEntryId). No match is NOT proof of loss: a paraphrase does not match.
-- an "id" is a git sha (7-40 hex), EYE-<n>, a pi job id or #<4-6 digits> in a user message.
+- an "id" is a git sha (7-40 hex), EYE-<n>, a pi job id (14 digits-xxxx) or #<4-6 digits> in a user message.
 - cached_prefix_cost_est: the summary call reads the last assistant prefix at 10 % of the input
   price, plus 2000 new input tokens, plus the same output. A model, not a measurement.
 Usage: compaction_audit.py [--sessions DIR] [--last N]
@@ -20,7 +20,7 @@ import re
 import statistics
 
 RULE = re.compile(r"\b(do not|don't|never|always|must|stop|only|without)\b", re.I)
-IDS = re.compile(r"\b(?:[0-9a-f]{7,40}|EYE-\d+|\d{8}-\d{6}-[a-z0-9]{4})\b|(?<![\w#])#\d{4,6}\b")
+IDS = re.compile(r"\b(?:[0-9a-f]{7,40}|EYE-\d+|\d{14}-[a-z0-9]{4}|\d{8}-\d{6}-[a-z0-9]{4})\b|(?<![\w#])#\d{4,6}\b")
 
 
 def text(m: dict) -> str:

@@ -34,20 +34,23 @@ Checked by xval (GPT, 2026-10-27). Its corrections are applied below.
 | Summary growth per re-compaction | median x1.07, max x1.74 | one session went 16 k -> 44 k chars |
 | Tool error rate, 30 results before / after | 2.8 % / 3.5 % | small sample: no conclusion |
 
-Hand check of 3 "no match" rules (xval):
+Hand check (xval pass 2 + own check):
 
-| Rule (shortened) | Result |
-|---|---|
-| "don't post anything, apply resolutions and resume" | Kept as paraphrase ("Do not post yet") and verbatim in kept messages. |
-| "only devtest22 and devtest66 we shouldn't touch" | Kept as paraphrase ("never touch devtest22 ... or devtest66"). |
-| "every move must be regressed ... no negative impact" | **Really absent.** Harm not proven: the PR was already merged. |
+| Rule (shortened) | Heuristic | Hand check |
+|---|---|---|
+| `7c1d60cd` "we only fix the sync problem ... shouldn't merge risky changes" | no match | Kept as paraphrase ("user explicitly rejected large or risky changes"). |
+| `424e9b02` "merge instructions must be careful and precise when approvals exist" | no match | Kept as paraphrase (scope-lock rules for approved PRs). |
+| `f076659c` "run 3 research agents ... majority of votes" | no match | Kept as paraphrase ("3 research agents", "majority votes"). |
+| `a1eef098` "every move must be regressed ... no negative impact" | **match** (3/6 words) | **Really absent** at compaction `902e84a3`. Harm not proven: the PR was already merged. |
 
-So the true loss rate is lower than the heuristic shows. We have 1 confirmed loss of a user rule.
+The heuristic is wrong in both directions: all 3 "no match" rules were kept, and the 1 rule we know
+was dropped counted as "match". So the 94 % is not a loss rate. It is a word-overlap rate. A real
+loss rate needs a semantic check (P2 with a judge, section 7).
 
 ## 4. Answer to the question
 
-1. Compaction **can** cause "repeats a corrected mistake", but our data shows it rarely. We found
-   1 confirmed lost user rule and ~29 % unmatched ids. A lost "do not" rule looks the same as a model
+1. Compaction **can** cause "repeats a corrected mistake". We observed 1 dropped user rule; we do
+   not know the true rate (the heuristic is not reliable, see above). ~29 % of ids were unmatched. A lost "do not" rule looks the same as a model
    that ignores the rule. We found no confirmed repeat in the transcripts.
 2. Recall is not enforcement. A rule in the summary does not stop a tool call that breaks it.
 3. Cost: the summary call re-reads 154-822 k tokens with no cache. That is ~$5 each time.
@@ -70,7 +73,7 @@ So the true loss rate is lower than the heuristic shows. We have 1 confirmed los
 | P0 | **Enforce critical limits with a `tool_call` hook**, not text: e.g. block `ssh devtest66`, `git push`, Medium/Jira/Slack posts while a "do not post" rule is active. Extends `apex-hangguard`. | C6 | a forgotten rule cannot cause the action | false blocks; rules need an owner and an end |
 | P1 | **Pinned ledger**: extract user rules (verbatim, with source entry id), ids, open NO-GO findings and the last failing command + error deterministically. Store in `details`; the extension must render it into the summary text and carry it to the next compaction. | C1, C2, C5 | extracted items always reach the next context | extraction misses; stale or replaced rules stay: each item needs source, scope and a retire rule (superseded / done / `/forget`); cap ~3 k tokens |
 | P2 | **Survival gate**: after the summary, check each ledger item and each id is present; append missing ones. Log the miss rate to telemetry. | C1, C2 | measured, not assumed | adds tokens; same limits as P1 |
-| P3 | **Cache-prefix summary**: capture the last request payload (`before_provider_request`), replay it with one final user message "summarize" via `ctx.modelRegistry.complete` (system prompt, tools, messages; not `completeSummarization`). | C4 | model: $196 -> $56 (-71 %) if every prefix hits cache; full miss ~$267 | not guaranteed: cache lifetime, routing, payload rewrites, cache-write premium; measure on 5 events first |
+| P3 | **Cache-prefix summary**: (a) in `before_provider_request`, keep a copy of the last provider payload (provider JSON: system, tools, messages). (b) In `session_before_compact`, call `ctx.modelRegistry.complete(model, <minimal Context>, { onPayload })`; `onPayload` replaces the built payload with the kept copy plus one appended user message "summarize". Same model, same tools, same `cacheRetention` as the session; not `completeSummarization`. Check `usage.cacheRead > 0`, else log a miss. | C4 | model: $196 -> $56 (-71 %) if every prefix hits cache; full miss ~$267 | not guaranteed: cache lifetime, routing, payload rewrites, cache-write premium; the payload copy must be the last one (no stale copy after a model switch); measure on 5 events first |
 | P4 | **Fixed summary budget**: re-summarize from ledger + last summary into a fixed token budget, not an ever-growing one. | C3 | stops x1.74 growth | may drop old detail; the ledger keeps the critical part |
 | P5 | Cheaper summary model (Sonnet 5.5). | C4 | 5x cheaper input ($3 vs $15 per M) | lower summary quality; only with P1+P2 |
 | P6 | Raise `keepRecentTokens` to 40-60 k. | C1, C5 | more raw recent turns | more tokens per turn after compaction |
@@ -97,3 +100,34 @@ P6 only after P1+P2 measure well.
 - P3 savings are a model (prefix at 10 % of the input price), not a measurement.
 - 39 events from one user and 13 sessions. Sonnet 5.5 has 1 event.
 - The tool-error-rate change (2.8 % -> 3.5 %) is inside noise.
+
+## 9. Implementation (2026-10-27, `integrations/pi/apex-compact.ts`)
+
+| Part | File | State |
+|---|---|---|
+| P1 ledger, P2 gate, P4 budget, P6 cut, P3 replay payload (pure) | `integrations/pi/lib/compact.ts` | tests: `compact.test.ts` |
+| Order of paths: P3 -> P5 -> P4 -> pi default | `integrations/pi/lib/compactrun.ts` | tests: `compactrun.test.ts` |
+| P0 rules, `/guard` command, self-protect of the rules file | `integrations/pi/lib/guardrules.ts` | tests: `guardrules.test.ts` |
+| Hooks | `integrations/pi/apex-compact.ts` | `session_before_compact`, `before_provider_request`, `tool_call`, `/guard` |
+| Example rules (copy to `~/.apex-router/pi-guardrules.json`) | `integrations/pi/guardrules.example.json` | none active by default |
+
+| Env flag | Default | Effect |
+|---|---|---|
+| `APEX_COMPACT` | on | `0` turns off all compaction work (pi default) |
+| `APEX_COMPACT_SUMMARY_TOKENS` | 6000 | P4 summary budget; the ledger is outside it |
+| `APEX_COMPACT_LEDGER_TOKENS` | 3000 | P1 ledger cap |
+| `APEX_COMPACT_CACHE` | off | `1` turns on P3 (cache-prefix replay); logs `p3_cache_read` |
+| `APEX_COMPACT_CACHE_MAX_AGE_S` | 300 | P3 does not use an older payload copy |
+| `APEX_COMPACT_MODEL` | off | P5: `provider/model` writes the summary text |
+| `APEX_COMPACT_KEEP_TOKENS` | off | P6: keep more recent raw tokens (max half the window) |
+| `APEX_GUARD` | on | `0` turns off P0 |
+| `APEX_GUARDRULES_FILE` | `~/.apex-router/pi-guardrules.json` | No file = no rules |
+
+Telemetry: `~/.apex-router/pi-compact/YYYY-MM-DD-<pid>.jsonl` and `~/.apex-router/pi-guard/...` (counts,
+rule ids and reason codes only; no message text; mode 0600; 14 days).
+
+Not done yet: P3 is not measured on a live provider. Before `APEX_COMPACT_CACHE=1` is a default,
+measure 5 events (`p3_cache_read > 0`, cost per event, summary quality by the probe questions).
+Known limits: a false "retire" by word overlap can unpin a rule (use `forget R<n>` labels); the
+ledger does not make P0 rules by itself (owner decision); the audit id regex now also matches
+14-digit pi job ids (no change: user messages held none).
