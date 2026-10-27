@@ -91,3 +91,30 @@ def test_cli_runs(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
     assert P.main(["--files", "src/x.py", "--model", "", "--repo", str(tmp_path)]) == 0
     assert "SUCCESS" in capsys.readouterr().out
+
+
+def test_finding_lines_xval_cases():
+    keep = ["- P1: timeout when token is None. src/x.py:9",
+            "- [P1] Unbounded read of the whole file. src/x.py:9",
+            "- **P1: Child processes survive cancellation.** src/x.py:9"]
+    drop = ["- **P1: CLOSED** - timeout is fixed. src/x.py:9",
+            "P1(a): closed. Own process group.",
+            "- New P0/P1 findings: none.",
+            "| P1: Pytest PID accepted | Partly | Exact case now fails |"]
+    assert P.finding_lines("\n".join(keep + drop)) == keep
+    assert P.classify(keep[2]) == ["signal or cleanup path"]
+
+
+def test_listing_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "LIST_MAX", 5)
+    for i in range(20):
+        _job(tmp_path, f"202610010000{i:02d}-x", "worker", "done")
+    assert len(P.scan_jobs(tmp_path)) <= 5
+
+
+def test_git_output_is_capped_and_bad_bytes_decode(monkeypatch):
+    import sys
+    monkeypatch.setattr(P, "GIT_OUT_MAX", 1000)
+    out = P._git_capped([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff' * 10_000_000)"])
+    assert out is not None and len(out) == 1000
+    assert P._git_capped([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5) is None

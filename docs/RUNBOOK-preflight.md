@@ -26,13 +26,15 @@ It shows only fault-type names, counts, job ids and repo paths. It never shows f
 
 ## Evidence (2026-10-27)
 
-Backtest on 41 earlier reviews with findings. Only earlier jobs are used for each review.
+Backtest on 46 earlier reviews with findings: `PYTHONPATH=src python3 scripts/preflight_backtest.py`.
+Only earlier jobs are used for each review.
 
 | Ranking of the top 6 fault types | Recall of the real fault types |
 |---|---|
-| 2 x share in these files + share over all files (used) | 78 % |
-| share over all files only | 74 % |
+| 2 x share in these files + share over all files (used) | 75 % |
+| share over all files only | 73 % |
 | these files, else all files | 64 % |
-| random 6 of 11 | 57 % |
+| random 6 of 11 | 56 % |
 
+The gain over "all files only" is small. Most of the value is the list of fault types itself.
 The sample is small. Do not tune the ranking on it again; rotate in new reviews first (RSI R5).

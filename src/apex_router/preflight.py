@@ -29,6 +29,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 JOBS_MAX = 2000
+LIST_MAX = 8000     # directory names looked at, at most (job ids sort by time; a bigger dir is cut)
+GIT_OUT_MAX = 4 * 1024 * 1024
 RESULT_MAX = 64 * 1024
 META_MAX = 256 * 1024
 GIT_DAYS = 60
@@ -45,7 +47,8 @@ FAULTS: tuple = (
      "an oversized file and a huge directory stay within the byte and entry caps"),
     ("raw text or secret in output", r"secret|leak|raw (text|row)|credential|unmasked|prompt text",
      "a row with a key-like string and long text shows only the fixed-map words"),
-    ("signal or cleanup path", r"sigterm|signal|finally|cleanup|keyboardinterrupt|leak(s|ed)? (a|the) (process|child|fd)",
+    ("signal or cleanup path", r"sigterm|signal|finally|cleanup|keyboardinterrupt|orphan|surviv|"
+                               r"child process|leak(s|ed)? (a|the) (process|child|fd)",
      "kill at each stage leaves no file, lock or child behind"),
     ("restart or rollback", r"rollback|bootout|restart|drain|plist",
      "a failure after each write step restores the earlier state"),
@@ -61,8 +64,9 @@ FAULTS: tuple = (
      "every input item is still present (or reported) after the change"),
 )
 _FAULT_RX = tuple((n, re.compile(rx), t) for n, rx, t in FAULTS)
-_FINDING = re.compile(r"\bP[01]\b\s*(\([^)]{0,20}\))?\s*[:\-—*]|\*\*P[01]\b|^\s*[-\d.]*\s*\**P[01]\b")
-_STATUS = re.compile(r"\b(none|closed|fixed|no p0|no new|not a newly|confirms?)\b", re.I)
+_MARK = re.compile(r"\[?\bP[01]\b\]?(?:\s*\([^)]{0,20}\))?\s*\**\s*[:\-—\]]?")
+_STATUS = re.compile(r"^\W*(none|closed|fixed|open|partly|yes|no|confirmed|not a newly|unverified)\b|"
+                     r"^\W*findings?\W*(none|no)\b|^\s*/?\s*P[0-3]", re.I)
 _PATH = re.compile(r"(?:src|tests|integrations|scripts|docs|bench)/[A-Za-z0-9_./-]+\.(?:py|ts|html|sh|md|json)")
 _ROUND_RX = re.compile(r"xval (?:pass (\d+)|P[012]\b)|\(xval")
 
@@ -86,11 +90,19 @@ def classify(line: str) -> list[str]:
 
 
 def finding_lines(text: str) -> list[str]:
-    """P0/P1 finding lines; status lines ("none", "closed") are not findings."""
+    """P0/P1 finding lines. The words right after the marker decide: "P1: CLOSED", "New P0/P1 findings:
+    none" and "P1 (1): closed" are status lines, not findings; a status word later in the line (for
+    example "when token is None") does not matter."""
     out = []
-    for ln in text.splitlines():
-        if _FINDING.search(ln) and not (_STATUS.search(ln) and not re.search(r"\*\*P[01]", ln)):
-            out.append(ln)
+    for ln in text.splitlines()[:5000]:
+        if ln.lstrip().startswith("|"):
+            continue                                  # a table row restates an earlier finding: not counted twice
+        m = _MARK.search(ln)
+        if not m or re.search(r"P[01]\s*/\s*P[01]", ln[: m.end() + 3]):
+            continue                                  # "P0/P1 findings: ..." is a summary line
+        if _STATUS.search(ln[m.end(): m.end() + 40]):
+            continue
+        out.append(ln)
     return out
 
 
@@ -103,11 +115,16 @@ def _norm(p: str) -> str:
 def scan_jobs(jobs_dir: Path | None = None) -> list[dict]:
     """[{id, agent, state, cost, files, faults}] for the newest JOBS_MAX jobs (fail open)."""
     d = jobs_dir or router_home() / "pi-jobs"
+    names = []
     try:
         with os.scandir(d) as it:
-            names = sorted((e.name for e in it), reverse=True)[:JOBS_MAX]
+            for i, e in enumerate(it):
+                if i >= LIST_MAX:
+                    break
+                names.append(e.name)
     except OSError:
         return []
+    names = sorted(names, reverse=True)[:JOBS_MAX]
     out = []
     for name in names:
         raw = _read(d / name / "meta.json", META_MAX)
@@ -140,16 +157,50 @@ def _touches(job_files, targets) -> bool:
     return any(t == f or f.endswith("/" + t) or t.endswith("/" + f) for t in targets for f in job_files)
 
 
+def _git_capped(argv: list, timeout: float = 10.0) -> str | None:
+    """git output, at most GIT_OUT_MAX bytes kept (the rest is dropped, the child is stopped), None on
+    any error or timeout. Bytes decode with replacement."""
+    import threading
+    import time
+    try:
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+    except OSError:
+        return None
+    keep, timer, end = bytearray(), None, time.monotonic() + timeout
+    try:
+        timer = threading.Timer(timeout, p.kill)
+        timer.daemon = True
+        timer.start()
+        while len(keep) < GIT_OUT_MAX:
+            chunk = p.stdout.read(min(65536, GIT_OUT_MAX - len(keep)))
+            if not chunk:
+                break
+            keep += chunk
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if p.poll() is None:
+            p.kill()                       # enough bytes, or an error: stop git, do not read the rest
+        try:
+            p.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        p.stdout.close()
+    if time.monotonic() > end:
+        return None
+    return keep.decode("utf-8", "replace")
+
+
 def review_rounds(repo: Path, targets: list[str]) -> dict:
     """Commits in the last GIT_DAYS days whose subject names an xval finding, per target file."""
-    try:
-        p = subprocess.run(["git", "-C", str(repo), "log", f"--since={GIT_DAYS} days ago", "--name-only",
-                            "--format=\x1e%s"], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
+    out = _git_capped(["git", "-C", str(repo), "log", f"--since={GIT_DAYS} days ago", "--name-only",
+                       "--format=\x1e%s"])
+    if out is None:
         return {"fix_commits": 0, "by_file": {}}
     by_file: Counter = Counter()
     n = 0
-    for block in p.stdout.split("\x1e")[1:][:5000]:
+    for block in out.split("\x1e")[1:][:5000]:
         subj, _, rest = block.partition("\n")
         if not _ROUND_RX.search(subj):
             continue
@@ -162,9 +213,9 @@ def review_rounds(repo: Path, targets: list[str]) -> dict:
 
 
 def rank(here: Counter, all_f: Counter, k: int = 6) -> list[str]:
-    """Top-k fault types: 2 x share in these files + share over all files (variant C of 3 fixed
-    variants, backtest on 41 earlier reviews, only earlier jobs used: recall of the real fault types in
-    the top 6 was 78 %; global only 74 %; files-else-global 64 %; a random 6 of 11, 57 %)."""
+    """Top-k fault types: 2 x share in these files + share over all files. Chosen from 3 fixed variants
+    by scripts/preflight_backtest.py (earlier jobs only, 46 reviews, 2026-10-27): recall of the real
+    fault types in the top 6 was 75 %; global only 73 %; files-else-global 64 %; random 6 of 11, 56 %."""
     th, ta = sum(here.values()) or 1, sum(all_f.values()) or 1
     s = {n: 2 * here[n] / th + all_f[n] / ta for n in set(here) | set(all_f) if n != "other"}
     return [n for n, _ in sorted(s.items(), key=lambda x: (-x[1], x[0]))][:k]
