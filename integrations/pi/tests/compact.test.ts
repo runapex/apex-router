@@ -348,3 +348,39 @@ test("file lists: earlier lists merge in (pi skips them after a hook compaction)
 	assert.deepEqual(f.modifiedFiles, ["b", "d"]);
 	assert.match(f.text, /<read-files>\na\nc\n<\/read-files>/);
 });
+
+test("xval pass 2 F1: a quote inside a rule message is cut out of the stored rule", () => {
+	assert.deepEqual(extractRules('Always run tests. The log says "Never run tests".'), ["Always run tests. The log says ."]);
+	const s = new FakeSession();
+	s.user('Always run tests. The log says "Never run tests".');
+	const l = updateLedger(null, s.entries);
+	assert.ok(!active(l, "rule").some(i => /never run tests/i.test(i.text)), "the quoted instruction is not pinned");
+});
+
+test("xval pass 2 F2: the exact text of a longer rule does not retire a shorter rule it contains", () => {
+	const s = new FakeSession();
+	s.user("Never delete backups");
+	s.user("Never delete backups from production");
+	let l = updateLedger(null, s.entries);
+	assert.equal(active(l, "rule").length, 2);
+	s.user("forget: Never delete backups from production");
+	l = updateLedger(l, s.entries);
+	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never delete backups"]);
+	s.user('drop "Never delete backups"');
+	l = updateLedger(l, s.entries);
+	assert.equal(active(l, "rule").length, 0, "a quoted exact rule text retires it");
+});
+
+test("xval pass 2: a long replace retires the old rule and does not add the command as a rule", () => {
+	const s = new FakeSession();
+	s.user("Always deploy to staging first");
+	let l = updateLedger(null, s.entries);
+	const text = "Always deploy to staging first and " + "wait for the canary metrics and the on-call OK, ".repeat(14) + "then prod.";
+	assert.ok(text.length > 640);
+	s.user(`replace R1: ${text}`);
+	l = updateLedger(l, s.entries);
+	const rules = active(l, "rule");
+	assert.equal(rules.length, 1);
+	assert.ok(!/^replace R1/i.test(rules[0]!.text), "the replace command itself is not a rule");
+	assert.ok(rules[0]!.text.startsWith("Always deploy to staging first and wait"));
+});

@@ -122,11 +122,13 @@ export function extractRules(text: string): string[] {
 		const s = unquoted(s0);
 		return (RULE_STRONG.test(s) || (short && RULE_WEAK.test(s))) && words(s, 3).size >= 2;
 	};
-	if (t.length < 800) return isRule(t, true) ? [t] : [];
+	// the stored rule is the text WITHOUT quoted parts: a quote inside a rule message is not a rule (xval F1 pass 2)
+	const keep = (s: string): string => unquoted(s).replace(/[ \t]{2,}/g, " ").trim();
+	if (t.length < 800) return isRule(t, true) ? [keep(t)] : [];
 	const out: string[] = [];
 	for (const raw of t.split(/\n+|(?<=[.!?])\s+(?=[A-Z0-9"'`*(-])/)) {
 		const s = raw.trim();
-		if (s.length >= 12 && s.length <= RULE_CHARS && !/^```/.test(s) && isRule(s, false)) out.push(s);
+		if (s.length >= 12 && s.length <= RULE_CHARS && !/^```/.test(s) && isRule(s, false)) out.push(keep(s));
 		if (out.length >= 12) break;
 	}
 	return out;
@@ -256,7 +258,7 @@ function retire(i: Item, status: Status, by: string): void {
 export function applyRetire(l: Ledger, text: string, entryId: string): { retire: boolean; replacement?: string } {
 	const t = text.trim();
 	if (!t) return { retire: false };
-	const rep = t.length <= RULE_CHARS + 40 ? REPLACE.exec(t) : null;
+	const rep = t.length <= SCAN_CHARS ? REPLACE.exec(t) : null;   // any length: a long replace must not leave the old rule
 	if (rep) {
 		const target = l.items.find(i => i.kind === "rule" && i.status === "active" && label(i) === `R${Number(rep[1])}`);
 		if (target) retire(target, "retired", entryId);
@@ -280,9 +282,13 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 		if (last) retire(last, "retired", entryId);
 		return { retire: true };
 	}
-	// 3. the exact rule text in the message
-	const low = norm(t);
-	for (const r of rules) if (low.includes(norm(r.text))) retire(r, status, entryId);
+	// 3. the exact rule text: the message minus the retire words equals one rule (not a substring of it)
+	const rest = norm(unquoted(t).replace(RETIRE, " ").replace(DONE, " ").replace(/^[\W_]+|[\W_]+$/g, ""));
+	const quoted = [...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => norm(m[1] ?? m[2] ?? ""));
+	for (const r of rules) {
+		const n = norm(r.text).replace(/^[\W_]+|[\W_]+$/g, "");
+		if (n && (n === rest || quoted.includes(n) || quoted.includes(norm(r.text)))) retire(r, status, entryId);
+	}
 	return { retire: isRetire };
 }
 
