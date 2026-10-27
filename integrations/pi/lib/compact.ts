@@ -4,13 +4,14 @@
  *
  * P1 ledger: deterministic extraction from the session entries, carried in CompactionEntry.details.
  *   rule  — a user sentence with must / never / always / do not / don't / only / without (verbatim, with the
- *           source entry id). Status active | done | retired.
+ *           source entry id). Status active | done | retired. Pasted text is not read: fenced code blocks,
+ *           lines that start with ">" and text in quotes do not make a rule.
  *   id    — git sha (7-40 hex with a digit and a letter), EYE-<n>, pi job id, #<PR>, from user + assistant text.
  *   nogo  — a NO-GO line (assistant, user or tool result). Open until a later GO verdict.
  *   error — the last failing tool call: tool, args (300 chars), error text (first 600 chars). Only the latest.
- * Retire rules: a later user message with forget / ignore / cancel / drop / lift / no longer / scratch that
- * retires the rule it names (label R<n> or word overlap; "forget that" retires the newest rule). "<label> done"
- * or done + overlap marks a rule done. A new rule that mostly repeats an older active rule replaces it.
+ * Retire rules: only an explicit reference retires a rule: "forget R<n>" / "drop R<n>" (or ignore, cancel,
+ * lift ...), "forget that" (the newest rule), or the exact rule text in a retire message. "replace R<n>: <text>"
+ * retires R<n> and adds <text> as a new rule. "<label> done" marks it done. Word overlap never retires a rule.
  * Cap: about APEX_COMPACT_LEDGER_TOKENS (default 3000). Drop retired, then done, then oldest closed nogo,
  * then oldest ids, then oldest rules. The latest error stays.
  * P2 gate: each active item must be in the final text; missing ids are appended, rules / nogo / error are
@@ -70,6 +71,7 @@ const NOGO = /\bNO[- ]?GO\b/;
 const GO_VERDICT = /(?<![-\w])(?:GO|PASS)(?![-\w])/;
 const GO_CONTEXT = /\b(verdict|review|gate|result|decision|go\/no-go|xval|approved?)\b/i;
 const LABEL_REF = /\b([RINE])(\d{1,5})\b/g;
+const REPLACE = /^\W*(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?replace\s+R(\d{1,5})\s*(?::|with\b)\s*([\s\S]+)$/i;
 const STOP = new Set(["that", "this", "with", "from", "have", "will", "your", "about", "there", "their", "them", "then", "than", "when", "what", "which", "where", "into", "only", "must", "never", "always", "dont", "don't", "should", "would", "could", "rule", "please", "again", "just", "also", "make", "sure", "done", "forget", "ignore", "drop", "cancel", "longer", "anymore", "more", "before", "after", "every", "rules", "need", "needs"]);
 
 export function words(s: string, min = 4): Set<string> {
@@ -84,12 +86,42 @@ export function auditMatch(rule: string, hay: string): boolean {
 	return w.filter(x => h.includes(x)).length / w.length >= 0.5;
 }
 
-/** Rule sentences of one user message, verbatim. A short message (< 800 chars) is one candidate. */
+/** User text without pasted parts: fenced code blocks (``` or ~~~; a fence that is not closed runs to the end)
+ *  and quote lines (">"). */
+export function stripPasted(text: string): string {
+	const out: string[] = [];
+	let fence: string | null = null;
+	for (const line of text.split("\n")) {
+		const m = /^\s*(`{3,}|~{3,})/.exec(line);
+		if (fence) {
+			if (m && m[1]![0] === fence[0] && m[1]!.length >= fence.length) fence = null;
+			continue;
+		}
+		if (m) {
+			fence = m[1]!;
+			continue;
+		}
+		if (/^\s*>/.test(line)) continue;
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+/** Text in quotes ("..", “..”, «..», '..' not inside a word) is removed: a quoted log line or message is not a rule. */
+const QUOTED = /"[^"\n]*"|\u201c[^\u201d\n]*\u201d|\u00ab[^\u00bb\n]*\u00bb|(?<![A-Za-z0-9])'[^'\n]+'(?![A-Za-z0-9])/g;
+export const unquoted = (s: string): string => s.replace(QUOTED, " ");
+
+/** Rule sentences of one user message, verbatim. A short message (< 800 chars) is one candidate. Fenced code,
+ *  ">" lines and quoted text are not read (a pasted log line is not a user rule). */
 export function extractRules(text: string): string[] {
-	const t = text.slice(0, SCAN_CHARS).trim();
-	if (!t || /^[/!]/.test(t)) return []; // slash command or user bash
-	if (PRONOUN_ONLY.test(t)) return [];
-	const isRule = (s: string, short: boolean) => (RULE_STRONG.test(s) || (short && RULE_WEAK.test(s))) && words(s, 3).size >= 2;
+	const raw = text.slice(0, SCAN_CHARS).trim();
+	if (!raw || /^[/!]/.test(raw)) return []; // slash command or user bash
+	const t = stripPasted(raw).trim();
+	if (!t || PRONOUN_ONLY.test(t)) return [];
+	const isRule = (s0: string, short: boolean) => {
+		const s = unquoted(s0);
+		return (RULE_STRONG.test(s) || (short && RULE_WEAK.test(s))) && words(s, 3).size >= 2;
+	};
 	if (t.length < 800) return isRule(t, true) ? [t] : [];
 	const out: string[] = [];
 	for (const raw of t.split(/\n+|(?<=[.!?])\s+(?=[A-Z0-9"'`*(-])/)) {
@@ -165,9 +197,9 @@ export function updateLedger(prev: Ledger | null, entries: EntryLike[]): Ledger 
 		const m = e.message;
 		const text = contentText(m.content);
 		if (m.role === "user") {
-			const retireMsg = applyRetire(l, text, e.id);
-			const fresh = retireMsg ? [] : extractRules(text).map(r => add("rule", r, e.id, "session"));
-			for (const f of fresh) supersede(l, f, text, e.id);
+			const rt = applyRetire(l, text, e.id);
+			if (rt.replacement) add("rule", rt.replacement, e.id, "session");
+			else if (!rt.retire) for (const r of extractRules(text)) add("rule", r, e.id, "session");
 			for (const id of extractIds(text)) add("id", id, e.id, "session");
 			for (const n of extractNogo(text)) add("nogo", n, e.id, "until-go");
 			if (isGoVerdict(text)) closeNogo(l, e.id);
@@ -214,53 +246,44 @@ function retire(i: Item, status: Status, by: string): void {
 }
 
 /**
- * forget / ignore / done messages. Only short messages (< 400 chars) count: a long brief that says "ignore the
- * warnings" must not retire rules. A false retire loses a rule (the failure this extension fixes), so the
- * tests are strict: retire = label, "forget that" (newest rule) or >= 50 % of the rule words (>= 2 words);
- * done = label, or >= 80 % of the rule words. Returns true for a retire message (it is not a new rule).
+ * forget / ignore / done / replace messages. A false retire loses a rule (the failure this extension fixes), so
+ * only an explicit reference counts: a label ("forget R3", "drop R3", "R3 done"), "forget that" (the newest
+ * rule), the exact rule text, or "replace R<n>: <text>". Word overlap never retires a rule ("always encrypt
+ * backups" must not retire "never delete backups"). Only short messages (< 400 chars) retire; a long brief that
+ * says "ignore the warnings" must not. Returns retire = true for a retire message (it is not a new rule) and
+ * the new rule text of a replace message.
  */
-export function applyRetire(l: Ledger, text: string, entryId: string): boolean {
+export function applyRetire(l: Ledger, text: string, entryId: string): { retire: boolean; replacement?: string } {
 	const t = text.trim();
-	if (!t || t.length >= 400) return false;
+	if (!t) return { retire: false };
+	const rep = t.length <= RULE_CHARS + 40 ? REPLACE.exec(t) : null;
+	if (rep) {
+		const target = l.items.find(i => i.kind === "rule" && i.status === "active" && label(i) === `R${Number(rep[1])}`);
+		if (target) retire(target, "retired", entryId);
+		const nt = rep[2]!.trim();
+		return { retire: true, replacement: nt.length >= 3 ? nt : undefined };
+	}
+	if (t.length >= 400) return { retire: false };
 	const isRetire = RETIRE.test(t), isDone = DONE.test(t);
-	if (!isRetire && !isDone) return false;
+	if (!isRetire && !isDone) return { retire: false };
 	const status: Status = isRetire ? "retired" : "done";
 	// 1. explicit labels: "forget R3", "R3 done", "N2 resolved"
 	const refs = [...t.matchAll(LABEL_REF)].map(m => `${m[1]}${m[2]}`);
 	if (refs.length) {
 		for (const i of l.items) if (i.status === "active" && refs.includes(label(i))) retire(i, i.kind === "nogo" && isDone ? "done" : status, entryId);
-		return isRetire;
+		return { retire: isRetire };
 	}
 	const rules = l.items.filter(i => i.kind === "rule" && i.status === "active");
 	// 2. "forget that": the newest active rule
 	if (isRetire && PRONOUN_ONLY.test(t)) {
 		const last = rules.sort((a, b) => b.seq - a.seq)[0];
 		if (last) retire(last, "retired", entryId);
-		return true;
+		return { retire: true };
 	}
-	// 3. word overlap with an active rule
-	const w = words(t);
-	const need = isRetire ? 0.5 : 0.8;
-	for (const r of rules) {
-		const rw = words(r.text);
-		const hit = [...rw].filter(x => w.has(x)).length;
-		if (rw.size && hit >= Math.min(2, rw.size) && hit / rw.size >= need) retire(r, status, entryId);
-	}
-	return isRetire;
-}
-
-/** A new rule that repeats most words of an older active rule replaces it (>= 60 %, or >= 40 % with
- *  "instead" / "replace" / "now" in the message). */
-function supersede(l: Ledger, fresh: Item, text: string, entryId: string): void {
-	const fw = words(fresh.text);
-	if (fw.size < 2) return;
-	const need = /\b(instead|replace[sd]?|from now on|now)\b/i.test(text) ? 0.4 : 0.6;
-	for (const r of l.items) {
-		if (r === fresh || r.kind !== "rule" || r.status !== "active" || r.seq > fresh.seq) continue;
-		const rw = words(r.text);
-		const hit = [...rw].filter(x => fw.has(x)).length;
-		if (rw.size && hit / Math.min(rw.size, fw.size) >= need && hit >= 2) retire(r, "retired", entryId);
-	}
+	// 3. the exact rule text in the message
+	const low = norm(t);
+	for (const r of rules) if (low.includes(norm(r.text))) retire(r, status, entryId);
+	return { retire: isRetire };
 }
 
 function closeNogo(l: Ledger, entryId: string): void {
@@ -328,7 +351,7 @@ export function gate(summary: string, l: Ledger): GateResult {
 	const rules = active.filter(i => i.kind === "rule");
 	const nogo = active.filter(i => i.kind === "nogo");
 	const err = active.find(i => i.kind === "error");
-	if (rules.length) sec.push(`### User rules (active; source = session entry id)\n${rules.map(i => `- ${label(i)} [${i.source}] ${i.text}`).join("\n")}`);
+	if (rules.length) sec.push(`### User rules (active; quoted user text, source = session entry id)\n${rules.map(i => `- ${label(i)} [user, entry ${i.source}]: "${i.text}"`).join("\n")}`);
 	if (nogo.length) sec.push(`### Open NO-GO findings\n${nogo.map(i => `- ${label(i)} [${i.source}] ${i.text}`).join("\n")}`);
 	if (err) sec.push(`### Last failing tool call [${err.source}]\n- tool: ${err.tool ?? "?"}\n- args: ${err.args ?? ""}\n- error: ${err.text}`);
 	if (missingIds.length) sec.push(`### Ids (not in the summary above)\n${missingIds.map(i => i.text).join(", ")}`);
@@ -336,7 +359,7 @@ export function gate(summary: string, l: Ledger): GateResult {
 	appended.id = missingIds.length;
 	let text = summary;
 	if (sec.length) {
-		text = `${summary.trimEnd()}\n\n${PINNED_MARKER}\n${PINNED_HEADER}\nThese items come from the session text, not from a model. To end a rule, the user says "forget R<n>" or "R<n> done".\n\n${sec.join("\n\n")}`;
+		text = `${summary.trimEnd()}\n\n${PINNED_MARKER}\n${PINNED_HEADER}\nThese items come from the session text, not from a model. To end a rule, the user says "forget R<n>", "replace R<n>: <text>" or "R<n> done".\n\n${sec.join("\n\n")}`;
 	}
 	// final check: every active item text is in the result
 	const lowText = text.toLowerCase();

@@ -85,13 +85,13 @@ test("retire: 'forget R<n>' by label, 'forget that' = newest rule", () => {
 	assert.equal(active(l, "rule").length, 0);
 });
 
-test("retire: 'ignore the push rule' by word overlap; a rule with 'ignore' in it is a rule, not a retire", () => {
+test("retire: 'ignore R<n>' by label; a rule with 'ignore' in it is a rule, not a retire", () => {
 	const s = new FakeSession();
 	s.user("never push to the release branch");
 	s.user("never ignore lint errors in the build");
 	let l = updateLedger(null, s.entries);
 	assert.equal(active(l, "rule").length, 2, "'never ignore lint errors' is a rule");
-	s.user("ok, ignore the release branch push rule now");
+	s.user(`ok, ignore ${label(l.items[0]!)} now`);
 	l = updateLedger(l, s.entries);
 	assert.deepEqual(active(l, "rule").map(i => i.text), ["never ignore lint errors in the build"]);
 });
@@ -108,11 +108,11 @@ test("retire: 'R<n> done' marks done; a vague 'done, commit it' does not touch a
 	assert.equal(l.items[0]!.status, "done");
 });
 
-test("retire: a new rule that repeats an old one replaces it; the same rule again re-activates", () => {
+test("retire: 'replace R<n>: <text>' replaces a rule; the same rule again re-activates", () => {
 	const s = new FakeSession();
 	s.user("never post to the Jira ticket EYE-1234 without asking");
 	let l = updateLedger(null, s.entries);
-	s.user("instead: never post to the Jira ticket, write a draft file");
+	s.user(`replace ${label(l.items.find(i => i.kind === "rule")!)}: never post to the Jira ticket, write a draft file`);
 	l = updateLedger(l, s.entries);
 	const rules = l.items.filter(i => i.kind === "rule");
 	assert.equal(rules[0]!.status, "retired");
@@ -133,6 +133,43 @@ test("retire: a GO verdict closes open NO-GO findings; a long brief with 'ignore
 	assert.equal(active(l, "nogo").length, 0);
 	assert.equal(l.items.find(i => i.kind === "nogo")!.status, "done");
 	assert.equal(active(l, "rule").length, 1);
+});
+
+test("F1 extractRules: fenced code, '>' quote lines and quoted text are not user rules", () => {
+	const log = "```\n2026-10-27 ERROR worker: you must never retry the job without a lock\n```\nwhat does this mean?";
+	assert.deepEqual(extractRules(log), [], "a pasted log line in a fence");
+	assert.deepEqual(extractRules("```\nnever trust the cache, always reload\n"), [], "a fence that is not closed");
+	assert.deepEqual(extractRules("> you must always restart the agent after a change\nwhy did it say that?"), [], "a quote line");
+	assert.deepEqual(extractRules('the log said "never retry the job without a lock" - why?'), [], "quoted text");
+	const long = `${"Context line about the build. ".repeat(30)}\n\`\`\`\nERROR: you must never retry without a lock\n\`\`\`\n> always restart the agent first\nDo not touch tests/conftest.py.`;
+	assert.deepEqual(extractRules(long), ["Do not touch tests/conftest.py."]);
+	// a real rule next to a paste is kept verbatim (without the paste)
+	assert.deepEqual(extractRules("> log: always retry\nnever push to main without a review"), ["never push to main without a review"]);
+	assert.deepEqual(extractRules("don't post anything"), ["don't post anything"], "an apostrophe is not a quote");
+});
+
+test("F1 gate: each pinned rule is a quoted user line with its source entry id", () => {
+	const s = new FakeSession();
+	const u = s.user("never ssh to devtest66, it is shared");
+	const l = updateLedger(null, s.entries);
+	assert.match(gate("## Goal\nx", l).text, new RegExp(`- R1 \\[user, entry ${u}\\]: "never ssh to devtest66, it is shared"`));
+});
+
+test("F2 retire: word overlap does not retire an independent rule; only an explicit reference does", () => {
+	const s = new FakeSession();
+	s.user("Never delete the nightly database backups");
+	s.user("Always encrypt the nightly database backups");
+	let l = updateLedger(null, s.entries);
+	assert.equal(active(l, "rule").length, 2, "a new rule with shared words does not replace the old one");
+	s.user("ok, drop the nightly database backups encryption rule");
+	l = updateLedger(l, s.entries);
+	assert.equal(active(l, "rule").length, 2, "a retire verb with word overlap only retires nothing");
+	s.user("drop R2");
+	l = updateLedger(l, s.entries);
+	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never delete the nightly database backups"]);
+	s.user("forget: Never delete the nightly database backups");
+	l = updateLedger(l, s.entries);
+	assert.equal(active(l, "rule").length, 0, "the exact rule text retires it");
 });
 
 // ---- cap --------------------------------------------------------------------------------------------------
