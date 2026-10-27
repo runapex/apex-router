@@ -71,6 +71,13 @@ const NOGO = /\bNO[- ]?GO\b/;
 const GO_VERDICT = /(?<![-\w])(?:GO|PASS)(?![-\w])/;
 const GO_CONTEXT = /\b(verdict|review|gate|result|decision|go\/no-go|xval|approved?)\b/i;
 const LABEL_REF = /\b([RINE])(\d{1,5})\b/g;
+/** A whole message that is only a label command (xval pass 6): "forget R3", "ok, drop R1 and R3.", "R3 done",
+ *  "R2, N1 resolved". A label inside other text ("Do not mark R3 as done", "Build completed. Keep R3
+ *  active.", a quoted "R3 done") never changes a status. */
+const LABELS = String.raw`[RINE]\d{1,5}(?:\s*(?:,|and|&)\s*[RINE]\d{1,5})*`;
+const PREFIX = String.raw`^\s*(?:(?:ok(?:ay)?|please|now)[,.]?\s+)*`;
+const CMD_RETIRE = new RegExp(`${PREFIX}(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove|retire)\\s+(?:rules?\\s+)?(${LABELS})(?:[,\\s]+(?:now|please))?\\s*[.!]?\\s*$`, "i");
+const CMD_DONE = new RegExp(`${PREFIX}(${LABELS})\\s*(?:is\\s+|are\\s+)?(?:done|finished|completed|resolved)\\s*[.!]?\\s*$`, "i");
 const REPLACE = /^\W*(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?replace\s+R(\d{1,5})\s*(?::|with\b)\s*([\s\S]+)$/i;
 const STOP = new Set(["that", "this", "with", "from", "have", "will", "your", "about", "there", "their", "them", "then", "than", "when", "what", "which", "where", "into", "only", "must", "never", "always", "dont", "don't", "should", "would", "could", "rule", "please", "again", "just", "also", "make", "sure", "done", "forget", "ignore", "drop", "cancel", "longer", "anymore", "more", "before", "after", "every", "rules", "need", "needs"]);
 
@@ -249,8 +256,8 @@ function retire(i: Item, status: Status, by: string): void {
 
 /**
  * forget / ignore / done / replace messages. A false retire loses a rule (the failure this extension fixes), so
- * only an explicit reference counts: a label ("forget R3", "drop R3", "R3 done"), "forget that" (the newest
- * rule), or "replace R<n>: <text>". The rule text itself never retires a rule. Word overlap never retires a rule ("always encrypt
+ * only an explicit command counts, and it must be the whole message: a label ("forget R3", "drop R3", "R3
+ * done"), "forget that" (the newest rule), or "replace R<n>: <text>". The rule text itself never retires a rule. Word overlap never retires a rule ("always encrypt
  * backups" must not retire "never delete backups"). Only short messages (< 400 chars) retire; a long brief that
  * says "ignore the warnings" must not. Returns retire = true for a retire message (it is not a new rule) and
  * the new rule text of a replace message.
@@ -268,12 +275,13 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 	if (t.length >= 400) return { retire: false };
 	const isRetire = RETIRE.test(t), isDone = DONE.test(t);
 	if (!isRetire && !isDone) return { retire: false };
-	const status: Status = isRetire ? "retired" : "done";
-	// 1. explicit labels: "forget R3", "R3 done", "N2 resolved"
-	const refs = [...t.matchAll(LABEL_REF)].map(m => `${m[1]}${m[2]}`);
-	if (refs.length) {
-		for (const i of l.items) if (i.status === "active" && refs.includes(label(i))) retire(i, i.kind === "nogo" && isDone ? "done" : status, entryId);
-		return { retire: isRetire };
+	// 1. explicit labels, only as the whole message: "forget R3", "R3 done", "N2 resolved"
+	const cmd = CMD_RETIRE.exec(t) ?? CMD_DONE.exec(t);
+	if (cmd) {
+		const status: Status = CMD_RETIRE.test(t) ? "retired" : "done";
+		const refs = [...cmd[1]!.matchAll(/([RINE])(\d{1,5})/gi)].map(m => `${m[1].toUpperCase()}${m[2]}`);
+		for (const i of l.items) if (i.status === "active" && refs.includes(label(i))) retire(i, i.kind === "nogo" ? "done" : status, entryId);
+		return { retire: true };
 	}
 	const rules = l.items.filter(i => i.kind === "rule" && i.status === "active");
 	// 2. "forget that": the newest active rule

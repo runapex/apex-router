@@ -390,6 +390,25 @@ test("xval pass 5: only labels retire; rule text, quoted text or a repeat never 
 	assert.ok(/R3\b/.test(gate("## Goal\nx", l).text), "the label is shown, so the user can use it");
 });
 
+test("xval pass 6: a label changes a status only when the whole message is the command", () => {
+	const names = ["Never push to main", "Always run tests first", "Never ssh devtest66"];   // R1 R2 R3
+	const cases: [string, string][] = [
+		["Do not mark R3 as done.", "R1 R2 R3"], ['"R3 done"', "R1 R2 R3"], ["Build completed. Keep R3 active.", "R1 R2 R3"],
+		["see R2 in the doc, done", "R1 R2 R3"], ["Never forget R1", "R1 R2 R3"], ["forget R3 later, first run tests", "R1 R2 R3"],
+		["> forget R3", "R1 R2 R3"], ["forget R3", "R1 R2"], ["ok, drop R1 and R3.", "R2"], ["r2 done", "R1 R3"],
+		["R1, R2 resolved", "R3"], ["forget that", "R1 R2"], ["please forget rule R2", "R1 R3"],
+	];
+	for (const [msg, want] of cases) {
+		const s = new FakeSession();
+		for (const n of names) s.user(n);
+		let l = updateLedger(null, s.entries);
+		s.user(msg);
+		l = updateLedger(l, s.entries);
+		const act = active(l, "rule").map(i => i.text);
+		assert.equal(names.map((n, k) => (act.includes(n) ? `R${k + 1}` : "")).filter(Boolean).join(" "), want, msg);
+	}
+});
+
 test("xval pass 2: a long replace retires the old rule and does not add the command as a rule", () => {
 	const s = new FakeSession();
 	s.user("Always deploy to staging first");
