@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from . import restart as restart_mod
 from . import drafts, flow, live
 
 MAX_BODY = 64 * 1024
@@ -49,6 +50,9 @@ class StudioServer(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.last_request = time.time()
         self.ui = UI_PATH.read_text(encoding="utf-8")
+        self.waiter = restart_mod.Waiter()
+        self.restart_run = restart_mod._run      # tests replace these (never the real launchctl)
+        self.restart_fetch = restart_mod._fetch
 
     @property
     def port(self) -> int:
@@ -161,6 +165,8 @@ class Handler(BaseHTTPRequestHandler):
             return handler(self, q)
         except drafts.DraftError as e:
             return self._err(e.status, str(e))
+        except restart_mod.RestartError as e:
+            return self._err(e.status, str(e))
         except Exception as e:  # noqa: BLE001 — the page shows an error, the server keeps running
             return self._err(500, f"internal error: {type(e).__name__}")
 
@@ -213,7 +219,57 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True, **out})
 
 
+    # ---- restart-class apply: plist + restart only when the proxy is idle ----
+    def _proxy_q(self, q, body=None):
+        proxy = (body or {}).get("proxy") if isinstance(body, dict) and body.get("proxy") else (q.get("proxy") or ["main"])[0]
+        if proxy not in flow.PROXIES:
+            raise drafts.DraftError("proxy must be main or local", 400)
+        return proxy
+
+    def api_restart_get(self, q):
+        p = self.server.get_paths()
+        proxy = self._proxy_q(q)
+        idle = float((q.get("idle_s") or [restart_mod.DEFAULT_IDLE_S])[0])
+        self._json(200, {"proxy": proxy, "label": flow.PROXIES[proxy]["label"],
+                         "gate": restart_mod.gate(p, proxy, idle, self.server.restart_fetch),
+                         "changes": drafts.restart_changes(p, proxy),
+                         "job": self.server.waiter.status(proxy)})
+
+    def api_restart_post(self, q):
+        body = self._body()
+        if not isinstance(body, dict):
+            raise drafts.DraftError("body must be a JSON object", 400)
+        p = self.server.get_paths()
+        proxy = self._proxy_q(q, body)
+        label = flow.PROXIES[proxy]["label"]
+        if body.get("confirm") != f"restart {label}":          # no restart by accident or by a stray call
+            raise drafts.DraftError(f'confirm must be "restart {label}"', 400)
+        try:
+            idle = max(restart_mod.MIN_IDLE_S, float(body.get("idle_s", restart_mod.DEFAULT_IDLE_S)))
+            max_wait = min(4 * 3600.0, max(0.0, float(body.get("max_wait_s", restart_mod.DEFAULT_MAX_WAIT_S))))
+        except (TypeError, ValueError):
+            raise drafts.DraftError("idle_s and max_wait_s must be numbers", 400) from None
+        with self.server.lock:
+            changes = drafts.restart_changes(p, proxy)          # validated values from the draft
+        env = {c["name"]: c["value"] for c in changes}
+        on_done = lambda: drafts.clear_restart_changes(p, proxy, [c["key"] for c in changes])  # noqa: E731
+        if body.get("wait"):
+            st = self.server.waiter.start(p, proxy, env, idle, max_wait, self.server.restart_run,
+                                          self.server.restart_fetch, on_done=on_done)
+            return self._json(202, {"ok": True, "job": st})
+        r = restart_mod.restart(p, proxy, env, idle, self.server.restart_run, self.server.restart_fetch)
+        on_done()
+        self._json(200, {"ok": True, "result": r})
+
+    def api_restart_delete(self, q):
+        proxy = self._proxy_q(q)
+        self._json(200, {"ok": True, "job": self.server.waiter.cancel(proxy)})
+
+
 ROUTES = {
+    ("GET", "/api/restart"): Handler.api_restart_get,
+    ("POST", "/api/restart"): Handler.api_restart_post,
+    ("DELETE", "/api/restart"): Handler.api_restart_delete,
     ("GET", "/api/flow"): Handler.api_flow,
     ("GET", "/api/live"): Handler.api_live,
     ("POST", "/api/test"): Handler.api_test,
@@ -251,7 +307,7 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
         def watch():
             while True:
                 time.sleep(min(30.0, idle_exit_s))
-                if time.time() - srv.last_request > idle_exit_s:
+                if time.time() - srv.last_request > idle_exit_s and not srv.waiter.busy():
                     srv.shutdown()
                     return
         threading.Thread(target=watch, daemon=True).start()

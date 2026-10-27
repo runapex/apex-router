@@ -11,7 +11,9 @@ next tag will carry.
   steps → proxy → upstreams → sinks, with live numbers per window, an inspector per step, a dry-run
   "Test a prompt" that lights the chosen path, and a draft → review → apply flow. Apply writes only
   live-class files (`models.json` families, `pi-routes.json`) with a backup and rollback; proxy env
-  changes give a plan (plist diff + commands) and are never applied by the studio. 127.0.0.1 only,
+  changes are applied with "Apply + restart when idle": plist backup + write, then a launchd
+  restart only at 0 requests in progress after an idle window, with an automatic restore when the
+  new process is not healthy. The proxy `/stats` gains `activity` (in-progress count, idle seconds). 127.0.0.1 only,
   token on every call, Host/Origin checks, CSP with nonce, secrets masked. Menu bar: "Open flow
   studio ↗" (does not cost agent rows). `route_resolve.resolve(record=False)` writes no conformance
   row. Docs: `docs/STUDIO.md`.

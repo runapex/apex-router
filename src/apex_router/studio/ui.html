@@ -146,6 +146,11 @@ td.n{font-family:var(--mono);word-break:break-all}
 .svals{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px;margin-bottom:6px}
 .svals .k{color:var(--muted)} .svals .v{font-family:var(--mono);overflow-wrap:anywhere}
 .scard .edit{display:flex;gap:6px} .scard .edit input,.scard .edit select{flex:1;min-width:0}
+.rs{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.rs-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rs .num{width:70px} .rs-state{margin-top:8px;font-size:12.5px;color:var(--fg2)}
+.rs-state.ok{color:var(--good)} .rs-state.err{color:var(--bad)} .small{font-size:11.5px;margin:6px 0 0}
+details.manual{margin-top:8px} details.manual summary{cursor:pointer;color:var(--fg2);font-size:12px}
 .badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:650;border:1px solid;white-space:nowrap}
 .badge.live{color:var(--good);border-color:var(--good)}
 .badge.restart{color:var(--warn);border-color:var(--warn)}
@@ -657,27 +662,62 @@ function renderReview(extra){
   const rv = S.review || {targets: [], count: 0, errors: []};
   const body = document.getElementById("rv-body"); const kids = [];
   if (extra) kids.push(extra);
-  kids.push(h("p", {class: "muted", text: rv.count ? `${rv.count} change(s): ${rv.live} live (Apply writes the file, with a backup), ${rv.restart} restart (Apply makes a plan only).` :
+  kids.push(h("p", {class: "muted", text: rv.count ? `${rv.count} change(s): ${rv.live} live (Apply writes the file, with a backup), ${rv.restart} restart (applied with a proxy restart when it is idle).` :
     "The draft is empty. Use a switch on a card, or Add to draft in the inspector."}));
   for (const e of rv.errors || []) kids.push(h("div", {class: "msg err", text: `${e.key}: ${e.error}`}));
   for (const t of rv.targets){
     const box = h("div", {class: "tgt"});
-    box.append(h("div", {class: "th"}, h("span", {class: "badge " + t.class, text: t.class === "live" ? "live: Apply writes" : "restart: plan only"}),
+    box.append(h("div", {class: "th"}, h("span", {class: "badge " + t.class, text: t.class === "live" ? "live: Apply writes" : "restart: when idle"}),
       h("span", {class: "f", text: t.file})));
     box.append(h("div", {class: "why", text: t.error ? "Cannot apply: " + t.error : t.why}));
     box.append(h("ul", {}, t.changes.map(c => h("li", {}, h("span", {class: "code", text: `${c.name} = ${c.value}`}),
       h("button", {class: "rm", type: "button", "aria-label": "Remove " + c.name + " from draft", text: "✕",
         onclick: async () => { await putDraft({unset: [c.key]}); renderReview(); }})))));
     if (t.diff) box.append(diffPre(t.diff));
-    if (t.commands) box.append(h("pre", {class: "cmds", tabindex: "0", "aria-label": "commands to run yourself", text: "# run these yourself when no agent is busy\n" + t.commands.join("\n")}));
+    if (t.target && t.target.startsWith("plist:")) box.append(restartPanel(t.target.slice(6)));
+    if (t.commands) box.append(h("details", {class: "manual"}, h("summary", {text: "Or run the commands yourself"}),
+      h("pre", {class: "cmds", tabindex: "0", "aria-label": "commands to run yourself", text: t.commands.join("\n")})));
     kids.push(box);
   }
   const lb = rv.last_backup;
   kids.push(h("p", {class: "muted", text: lb ? `Last backup: ${lb.id} (${lb.files.join(", ")})` : "No backup yet: Rollback has nothing to restore."}));
   body.replaceChildren(...kids);
   const ap = document.getElementById("rv-apply");
-  ap.textContent = rv.live ? `Apply ${rv.live} live change${rv.live === 1 ? "" : "s"}` + (rv.restart ? " + plan" : "") : (rv.restart ? "Make restart plan" : "Apply");
-  ap.disabled = !rv.count; document.getElementById("rv-rollback").disabled = !lb; document.getElementById("rv-discard").disabled = !rv.count;
+  ap.textContent = rv.live ? `Apply ${rv.live} live change${rv.live === 1 ? "" : "s"}` + "" : "Apply live changes";
+  ap.disabled = !rv.live; document.getElementById("rv-rollback").disabled = !lb; document.getElementById("rv-discard").disabled = !rv.count;
+}
+/* restart when idle: the server writes the plist and restarts the proxy only at 0 requests in
+   progress after the idle window; a failed health check restores the old plist by itself */
+const RS = {timer: null};
+function restartPanel(proxy){
+  const box = h("div", {class: "rs", "aria-live": "polite"});
+  const idle = h("input", {type: "number", min: "60", step: "30", value: "120", "aria-label": "idle seconds before restart", class: "num"});
+  const state = h("div", {class: "rs-state", text: "Checking the proxy…"});
+  const go = h("button", {class: "btn primary", type: "button", text: "Apply + restart when idle"});
+  const cancel = h("button", {class: "btn", type: "button", text: "Cancel wait"}); cancel.hidden = true;
+  async function refresh(){
+    let r; try { r = await api(`/api/restart?proxy=${proxy}&idle_s=${Number(idle.value) || 120}`); } catch (e) { state.textContent = e.message; return; }
+    const j = r.job || {}; const g = r.gate || {};
+    const waiting = j.state === "waiting"; cancel.hidden = !waiting; go.disabled = waiting;
+    if (waiting) state.textContent = `Waiting for idle (${(j.gate && j.gate.why) || g.why}). It restarts by itself.`;
+    else if (j.state === "done") state.textContent = `Restarted ${r.label} in ${j.result.restart_s}s, healthy. Backup ${j.result.backup}.`;
+    else if (j.state === "failed" || j.state === "timeout") state.textContent = `Not restarted: ${j.result && j.result.error}`;
+    else state.textContent = (g.ready ? "Ready: " : "Not now: ") + g.why + ".";
+    state.className = "rs-state " + (j.state === "done" ? "ok" : (j.state === "failed" ? "err" : (g.ready ? "ok" : "")));
+    if (waiting){ clearTimeout(RS.timer); RS.timer = setTimeout(refresh, 3000); }
+    else if (j.state === "done"){ const d = await api("/api/draft"); S.draft = d.draft; S.review = d.review; paintSwitches(); }
+  }
+  go.addEventListener("click", async () => {
+    const label = proxy === "main" ? "com.apex-router.serve" : "com.apex.local-qwen-proxy";
+    try { await api("/api/restart", {method: "POST", body: {proxy, wait: true, idle_s: Number(idle.value) || 120,
+      max_wait_s: 1800, confirm: "restart " + label}}); } catch (e) { state.textContent = e.message; return; }
+    refresh();
+  });
+  cancel.addEventListener("click", async () => { await api(`/api/restart?proxy=${proxy}`, {method: "DELETE"}); refresh(); });
+  box.append(h("div", {class: "rs-row"}, go, h("label", {class: "muted"}, "after ", idle, " s with no request"), cancel), state,
+    h("p", {class: "muted small", text: "Restart only when no request is in progress and none started for the idle time. The old plist is kept as a backup; if the proxy does not come back healthy, the studio restores it."}));
+  refresh();
+  return box;
 }
 async function openReview(){
   try { const r = await api("/api/draft"); S.draft = r.draft; S.review = r.review; } catch (e) { banner("Review: " + e.message, true); }

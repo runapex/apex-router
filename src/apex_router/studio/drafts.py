@@ -7,8 +7,9 @@ Effect classes (``flow``):
   live     Apply writes the file: a timestamped backup in ``studio/backups/<stamp>/`` first, then
            an atomic write (temp file + fsync + os.replace) of JSON that parses back and passes
            the family checks. Rollback restores the newest backup set that is not rolled back.
-  restart  Apply only returns a plan (the plist diff with secrets masked, and the commands). It
-           never writes a plist and never runs launchctl: a restart breaks running agents.
+  restart  `apply()` here only returns a plan (the plist diff with secrets masked, and the commands).
+           The plist write + restart is `restart.py`: only when the proxy reports 0 requests in
+           progress after an idle window, with an automatic restore if it does not come back healthy.
   locked   rejected (also when a hand-edited draft.json carries one). Secret settings too.
 """
 from __future__ import annotations
@@ -258,9 +259,9 @@ def _plist_plan(paths: Paths, proxy: str, items: list) -> dict:
              f'launchctl bootstrap "gui/$(id -u)" {q}']
     return {"target": f"plist:{proxy}", "file": tilde(plist), "present": plist.is_file(), "diff": diff,
             "commands": cmds, "class": "restart",
-            "why": f"The proxy :{PROXIES[proxy]['port']} reads its env only at start. A restart breaks the "
-                   "requests of running agents, so the studio does not restart it. Run the commands when no "
-                   "agent is busy. bootout + bootstrap load the new plist env; kickstart -k alone keeps the old env."}
+            "why": f"The proxy :{PROXIES[proxy]['port']} reads its env only at start. A restart during a request "
+                   "breaks it, so the studio restarts only when no request is in progress and none started for "
+                   "the idle time (bootout + bootstrap: kickstart -k alone keeps the old env)."}
 
 
 def _pi_env_plan(items: list) -> dict:
@@ -425,7 +426,7 @@ def apply(paths: Paths) -> dict:
                 draft["changes"].pop(k, None)
         save_draft(paths, draft)
     return {"applied": written, "plans": plans, "remaining": len(draft["changes"]),
-            "note": "Restart-class changes stay in the draft. The studio wrote no plist and ran no command.",
+            "note": "Restart-class changes stay in the draft until \"Apply + restart when idle\" runs.",
             "last_backup": last_backup(paths)}
 
 
@@ -468,3 +469,25 @@ def rollback(paths: Paths) -> dict:
     m["rolled_back_at"] = time.time()
     _atomic_write(d / "manifest.json", json.dumps(m, indent=2) + "\n", 0o600)
     return {"restored": restored, "backup": d.name, "warnings": warnings, "last_backup": last_backup(paths)}
+
+
+def restart_changes(paths: Paths, proxy: str) -> list:
+    """The draft's restart-class proxy-env changes for one proxy, re-validated:
+    [{"key", "id", "name", "value"}]. Locked or secret ids raise (403)."""
+    draft = load_draft(paths)
+    settings = all_settings(paths)
+    out = []
+    for key, c in sorted(draft["changes"].items()):
+        s = check_editable(c.get("id", ""), settings)
+        if s["scope"] != "proxy_env" or s["class"] != "restart" or (c.get("proxy") or "main") != proxy:
+            continue
+        out.append({"key": key, "id": s["id"], "name": s["name"], "value": validate_value(s, c.get("value"))})
+    return out
+
+
+def clear_restart_changes(paths: Paths, proxy: str, keys: list) -> None:
+    """Drop applied restart changes from the draft (after a healthy restart)."""
+    draft = load_draft(paths)
+    for k in keys:
+        draft["changes"].pop(k, None)
+    save_draft(paths, draft)

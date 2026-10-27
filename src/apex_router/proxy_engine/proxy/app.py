@@ -90,11 +90,39 @@ def _load_policy(cfg: Config) -> PolicyVersion | None:
         raise  # fail-closed: refuse to start shadow on an unverifiable bundle (not a silent None)
 
 
+LOCAL_PATHS = frozenset({"/healthz", "/status", "/stats"})
+
+
+class ActivityCounter:
+    """Pure ASGI wrapper: counts proxied requests that are in progress, until the LAST byte of a
+    streamed body is sent (or the client goes away). The local /healthz /status /stats are not
+    counted, so a monitor that polls them does not keep the proxy "busy". `/stats` shows it; the
+    flow studio restarts a proxy only at inflight == 0 after an idle window. O(1), no I/O."""
+
+    def __init__(self, app, activity: dict):
+        self.app = app
+        self.activity = activity
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path") in LOCAL_PATHS:
+            await self.app(scope, receive, send)
+            return
+        a = self.activity
+        a["inflight"] += 1
+        a["last_start"] = time.time()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            a["inflight"] -= 1
+            a["last_end"] = time.time()
+
+
 def create_app(cfg: Config | None = None) -> Starlette:
     cfg = cfg or CONFIG
     cfg.ensure_home()
 
     state: dict = {}
+    activity = {"inflight": 0, "last_start": 0.0, "last_end": 0.0, "started": time.time()}
 
     @asynccontextmanager
     async def lifespan(_app: Starlette):
@@ -144,6 +172,14 @@ def create_app(cfg: Config | None = None) -> Starlette:
                     "gc_removed": state.get("gc_removed", 0),
                 },
                 "upstream": {"anthropic": cfg.anthropic_upstream, "openai": cfg.openai_upstream},
+                # proxied requests in progress (stream end counted) and seconds since the last one
+                # started or ended; idle_s is 0 while one is in progress
+                "activity": {
+                    "inflight": activity["inflight"],
+                    "idle_s": 0.0 if activity["inflight"] > 0 else round(
+                        time.time() - max(activity["last_start"], activity["last_end"], activity["started"]), 1),
+                    "started_s_ago": round(time.time() - activity["started"], 1),
+                },
                 "ttft_budget_ms": cfg.ttft_budget_ms,
                 "shadow": {
                     "enabled": cfg.shadow_mode,
@@ -207,4 +243,5 @@ def create_app(cfg: Config | None = None) -> Starlette:
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.apex = state
+    app.add_middleware(ActivityCounter, activity=activity)
     return app

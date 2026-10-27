@@ -36,10 +36,18 @@ proxy and writes no conformance row.
 | Effect class | Example | Apply does |
 |---|---|---|
 | live | `>>deep` effort in `~/.apex-router/models.json`, `pi-routes.json` | Writes the file: timestamped backup in `~/.apex-router/studio/backups/`, atomic write, JSON check. Run `/reload` in pi. "Rollback last apply" restores the backup. |
-| restart | `APEX_CONNECT_RETRIES` and other proxy env | Plan only: the plist diff and the commands. The studio never writes a plist and never runs `launchctl`, because a restart breaks the requests of running agents. |
+| restart | `APEX_CONNECT_RETRIES` and other proxy env | "Apply + restart when idle": the studio waits until the proxy reports 0 requests in progress and no request for the idle time (default 120 s, min 60 s, max wait 30 min). Then it backs up and writes the plist (`plutil -lint`), checks the gate again, and runs `launchctl bootout` + `bootstrap`. If a new process does not answer `/healthz` within 25 s, it restores the old plist and restarts again. The commands stay visible for a manual run. |
 | locked | policy path, upstream URLs, auth injection | Read-only. The server rejects a change, also from a hand-edited draft. |
 
 Edits go to a draft (`~/.apex-router/studio/draft.json`) first. "Review" shows a diff per file.
+
+## Restart gate
+
+The proxy counts proxied requests in progress in a small ASGI wrapper (`ActivityCounter`): a
+streamed answer counts until its last byte. `/stats` → `activity` = `inflight`, `idle_s`,
+`started_s_ago`. A proxy that does not report `activity` (older code) is never restarted by the
+studio: restart it once by hand when it is quiet. A restart needs `confirm: "restart <label>"` in the
+request body, and only one restart per proxy runs at a time (lock file).
 
 ## Safety rules
 
