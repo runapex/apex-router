@@ -250,6 +250,7 @@ def test_menu_without_history_or_series_has_no_spark_lines():
     gpu = next(v for v in vis if v.startswith("gpu  "))                # System line, no spark yet
     assert "▁" not in gpu and gpu.endswith("6% · mem 1.5GB · load 3.3")
     assert "bash=" not in text and "Open dashboard" not in text      # no binary: no actions
+    assert "Open flow studio" not in text
 
 
 def test_click_actions_only_with_valid_ids_and_binary():
@@ -266,6 +267,12 @@ def test_click_actions_only_with_valid_ids_and_binary():
     text = snapshot.menubar(_snap([good, bad, idle]), history=_hist(), bin_path=BIN)
     acts = _actions(text)
     assert acts
+    studio = [(ln, p) for ln, p in acts if ln.startswith("Open flow studio ↗ | ")]
+    assert len(studio) == 1                                       # exactly one studio row, fixed params
+    assert studio[0][1] == {"bash": BIN, "param1": "studio", "param2": "--idle-exit",
+                            "param3": str(snapshot.STUDIO_IDLE_EXIT_S), "terminal": "false",
+                            "refresh": "false", **{k: v for k, v in studio[0][1].items() if k == "color"}}
+    acts = [(ln, p) for ln, p in acts if (ln, p) not in studio]
     for ln, p in acts:
         assert set(p) - {"font", "size", "emojize", "symbolize", "tooltip"} == {
             "bash", "param1", "param2", "param3", "terminal", "refresh"}, ln
@@ -289,6 +296,7 @@ def test_click_actions_only_with_valid_ids_and_binary():
                                       "/x/apex-router param4=1"])
 def test_click_action_rejects_unsafe_binaries(bin_path):
     assert snapshot.click_action(bin_path, SID) == ""
+    assert snapshot.studio_action(bin_path) == ""
     assert "bash=" not in snapshot.menubar(_snap(), bin_path=bin_path)
 
 

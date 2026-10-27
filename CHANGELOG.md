@@ -7,6 +7,14 @@ next tag will carry.
 ## 0.4.2 — unreleased
 
 ### Added
+- `apex-router studio` (apex flow studio): a local web canvas of the request flow, source → client
+  steps → proxy → upstreams → sinks, with live numbers per window, an inspector per step, a dry-run
+  "Test a prompt" that lights the chosen path, and a draft → review → apply flow. Apply writes only
+  live-class files (`models.json` families, `pi-routes.json`) with a backup and rollback; proxy env
+  changes give a plan (plist diff + commands) and are never applied by the studio. 127.0.0.1 only,
+  token on every call, Host/Origin checks, CSP with nonce, secrets masked. Menu bar: "Open flow
+  studio ↗" (does not cost agent rows). `route_resolve.resolve(record=False)` writes no conformance
+  row. Docs: `docs/STUDIO.md`.
 - `apex-router explore run|table`: a discovery harness (diverge → cheap check → archive → oracle →
   evidence → evolve). 6 isolated operator islands; a MAP-Elites archive (niche = operator + mechanism
   tags, one champion per niche, immutable candidates with lineage); an append-only evidence store

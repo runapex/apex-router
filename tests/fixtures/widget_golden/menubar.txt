@@ -1,6 +1,7 @@
 ● 3 ⚠ | color=#FF9500
 ---
 Open dashboard ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=all terminal=false refresh=false
+Open flow studio ↗ | bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 terminal=false refresh=false
 ---
 Pressure | size=12 color=#C15F3C,#D97757
 AMBER · 22 requests / 15 min | color=#A86A1E,#D4A27F

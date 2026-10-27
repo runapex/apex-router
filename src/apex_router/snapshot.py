@@ -492,6 +492,19 @@ def click_action(bin_path, target, kind: str = "any") -> str:
             "terminal=false refresh=false")
 
 
+STUDIO_IDLE_EXIT_S = 1800
+
+
+def studio_action(bin_path) -> str:
+    """SwiftBar params that start ``apex-router studio`` (it opens the browser) — '' unless the
+    binary is valid (same ``valid_bin`` check as ``click_action``). Only fixed arguments: the
+    studio picks a free port, binds 127.0.0.1, and exits after 30 min without a request."""
+    if not valid_bin(bin_path):
+        return ""
+    return (f"bash={bin_path} param1=studio param2=--idle-exit param3={STUDIO_IDLE_EXIT_S} "
+            "terminal=false refresh=false")
+
+
 def _col(s: str, w: int) -> str:
     s = str(s)
     return s.ljust(w) if len(s) <= w else s[:w - 1] + "…"
@@ -1160,8 +1173,9 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
     flag = " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
     head = [_bar(color, f"● {_active(snap)}{flag}"), "---"]
     dash = click_action(bin_path, "all")
+    studio = studio_action(bin_path)
     if dash:
-        head += [f"Open dashboard ↗ | {dash}", "---"]
+        head += [f"Open dashboard ↗ | {dash}"] + ([f"Open flow studio ↗ | {studio}"] if studio else []) + ["---"]
     sections: list = []
 
     def section(title, body, user_text=False):
@@ -1204,7 +1218,8 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
         age = f"updated {fmt_age(ad.get('age_s'))} ago"
         body.append(f"stale · {age}" if ad.get("stale") else age)
         section(esc(ad.get("title", "?")), body, user_text=True)
-    other = len(head) + 1 + sum(len(x) for x in sections if x)
+    # the studio row is not counted: adding it must not cost agent rows (MENU_LINES_MAX + 1 at most)
+    other = len(head) - (1 if studio and dash else 0) + 1 + sum(len(x) for x in sections if x)
     budget = max(30, MENU_LINES_MAX - other - 2)
     n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a)) \
         + len(_quiet_procs(snap))

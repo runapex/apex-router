@@ -135,14 +135,17 @@ def _kimi_route(task_type: str, ctx_tokens: int | None, vpol: dict) -> tuple[str
 
 def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | None = None,
                  registry: dict | None = None, embed_fn="auto", venue: str = "skill",
-                 ctx_tokens: int | None = None) -> dict:
+                 ctx_tokens: int | None = None, record: bool = True) -> dict:
     """Resolve a model for free-text `text`. Returns a JSON-able dict with the Decision
     plus the explain payload (cell id, classification, why the table did/didn't win).
 
     `venue` selects the static-default map + route table: 'skill' (Claude tiers, the
     default) or a registry venue policy like 'codex' (Kimi venue: default k3 — its 1M
     window is load-bearing at the venue's p50 346k context — with a documented downshift
-    to the cheaper k2.7-code under the venue's ctx ceiling)."""
+    to the cheaper k2.7-code under the venue's ctx ceiling).
+
+    `record=False` is a dry run: no conformance row is written (the flow studio's
+    "Test a prompt" uses it, so a test never counts as a dispatch)."""
     reg = model_registry.load() if registry is None else registry
     if embed_fn == "auto":
         embed_fn = _embed_fn()
@@ -216,6 +219,8 @@ def resolve_text(text: str, *, tools=None, sys_markers=None, table_path: Path | 
             "ctx_tokens": ctx_tokens,
             "deep_ctx_floor": vpol.get("deep_ctx_floor") or vpol.get("downshift_ctx_ceiling"),
         }
+    if not record:
+        return out
     try:
         from .route_conformance import log_resolve_conformance
         _tt = out.get("task_type")
