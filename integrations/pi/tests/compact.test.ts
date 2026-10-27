@@ -397,6 +397,7 @@ test("xval pass 6: a label changes a status only when the whole message is the c
 		["see R2 in the doc, done", "R1 R2 R3"], ["Never forget R1", "R1 R2 R3"], ["forget R3 later, first run tests", "R1 R2 R3"],
 		["> forget R3", "R1 R2 R3"], ["forget R3", "R1 R2"], ["ok, drop R1 and R3.", "R2"], ["r2 done", "R1 R3"],
 		["R1, R2 resolved", "R3"], ["forget that", "R1 R2"], ["please forget rule R2", "R1 R3"],
+		["retire R3", "R1 R2"], ["r1 resolved please.", "R2 R3"], ["R2 done now!", "R1 R3"],   // xval pass 7
 	];
 	for (const [msg, want] of cases) {
 		const s = new FakeSession();
@@ -406,6 +407,19 @@ test("xval pass 6: a label changes a status only when the whole message is the c
 		l = updateLedger(l, s.entries);
 		const act = active(l, "rule").map(i => i.text);
 		assert.equal(names.map((n, k) => (act.includes(n) ? `R${k + 1}` : "")).filter(Boolean).join(" "), want, msg);
+	}
+});
+
+test("xval pass 7: NO-GO labels follow the same whole-message grammar", () => {
+	for (const [msg, want] of [["n2 resolved please.", "done"], ["Do not mark N2 as done.", "active"], ["please drop n2!", "done"]] as const) {
+		const s = new FakeSession();
+		s.user("Never push to main");                       // R1
+		s.assistant("xval verdict: NO-GO, P1 in foo.ts");   // N2
+		let l = updateLedger(null, s.entries);
+		assert.equal(label(l.items.find(i => i.kind === "nogo")!), "N2");
+		s.user(msg);
+		l = updateLedger(l, s.entries);
+		assert.equal(l.items.find(i => i.kind === "nogo")!.status, want, msg);
 	}
 });
 

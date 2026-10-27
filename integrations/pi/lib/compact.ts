@@ -76,8 +76,9 @@ const LABEL_REF = /\b([RINE])(\d{1,5})\b/g;
  *  active.", a quoted "R3 done") never changes a status. */
 const LABELS = String.raw`[RINE]\d{1,5}(?:\s*(?:,|and|&)\s*[RINE]\d{1,5})*`;
 const PREFIX = String.raw`^\s*(?:(?:ok(?:ay)?|please|now)[,.]?\s+)*`;
-const CMD_RETIRE = new RegExp(`${PREFIX}(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove|retire)\\s+(?:rules?\\s+)?(${LABELS})(?:[,\\s]+(?:now|please))?\\s*[.!]?\\s*$`, "i");
-const CMD_DONE = new RegExp(`${PREFIX}(${LABELS})\\s*(?:is\\s+|are\\s+)?(?:done|finished|completed|resolved)\\s*[.!]?\\s*$`, "i");
+const SUFFIX = String.raw`(?:[,\s]+(?:now|please))?\s*[.!]?\s*$`;
+const CMD_RETIRE = new RegExp(`${PREFIX}(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove|retire)\\s+(?:rules?\\s+)?(${LABELS})${SUFFIX}`, "i");
+const CMD_DONE = new RegExp(`${PREFIX}(${LABELS})\\s*(?:is\\s+|are\\s+)?(?:done|finished|completed|resolved)${SUFFIX}`, "i");
 const REPLACE = /^\W*(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?replace\s+R(\d{1,5})\s*(?::|with\b)\s*([\s\S]+)$/i;
 const STOP = new Set(["that", "this", "with", "from", "have", "will", "your", "about", "there", "their", "them", "then", "than", "when", "what", "which", "where", "into", "only", "must", "never", "always", "dont", "don't", "should", "would", "could", "rule", "please", "again", "just", "also", "make", "sure", "done", "forget", "ignore", "drop", "cancel", "longer", "anymore", "more", "before", "after", "every", "rules", "need", "needs"]);
 
@@ -273,8 +274,6 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 		return { retire: true, replacement: nt.length >= 3 ? nt : undefined };
 	}
 	if (t.length >= 400) return { retire: false };
-	const isRetire = RETIRE.test(t), isDone = DONE.test(t);
-	if (!isRetire && !isDone) return { retire: false };
 	// 1. explicit labels, only as the whole message: "forget R3", "R3 done", "N2 resolved"
 	const cmd = CMD_RETIRE.exec(t) ?? CMD_DONE.exec(t);
 	if (cmd) {
@@ -283,6 +282,8 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 		for (const i of l.items) if (i.status === "active" && refs.includes(label(i))) retire(i, i.kind === "nogo" ? "done" : status, entryId);
 		return { retire: true };
 	}
+	const isRetire = RETIRE.test(t), isDone = DONE.test(t);
+	if (!isRetire && !isDone) return { retire: false };
 	const rules = l.items.filter(i => i.kind === "rule" && i.status === "active");
 	// 2. "forget that": the newest active rule
 	if (isRetire && PRONOUN_ONLY.test(t)) {
