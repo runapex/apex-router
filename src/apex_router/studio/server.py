@@ -481,6 +481,11 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
         except OSError as e:
             emit(f"apex-router studio: cannot bind 127.0.0.1:{port} ({e.strerror or e})")
             return 1
+        # serve BEFORE the file names this studio and before the lock goes: a second start that
+        # finds the file must get its /api/ping answer at once, or it calls this studio stale
+        loop = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5},
+                                name="studio-serve", daemon=True)
+        loop.start()
         try:
             write_instance(ipath, srv)       # replaces a stale file (dead pid or no answer)
         except OSError:
@@ -509,9 +514,10 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
     if open_browser:
         _open_url(url + h, opener)
     try:
-        srv.serve_forever(poll_interval=0.5)
+        while loop.is_alive():
+            loop.join(0.5)                    # the main thread stays free for SIGTERM / Ctrl-C
     except KeyboardInterrupt:
-        pass
+        srv.shutdown()
     finally:
         clear_instance(ipath, srv)
         srv.server_close()

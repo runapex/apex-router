@@ -203,3 +203,30 @@ def test_cli_open_passes_target_and_rejects_bad_one(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["studio", "--open", "#test=rm -rf"])
     assert e.value.code == 2 and len(got) == 3
+
+
+def test_second_open_during_a_slow_browser_start_reuses_the_first(paths, monkeypatch):
+    # xval P1: the first studio held the lock, opened a slow browser, and only then served; a
+    # second --open in that gap saw no ping answer and started a second studio.
+    gate = threading.Event()
+
+    def slow_opener(url):
+        gate.wait(5)                                   # the browser takes its time
+    first = []
+    th = threading.Thread(target=server.serve, kwargs=dict(
+        paths=paths, emit=lambda s: None, opener=slow_opener, on_start=first.append,
+        open_target="node:detect"), daemon=True)
+    th.start()
+    assert _wait(lambda: first)
+    made = []
+    real = server.make_server
+    monkeypatch.setattr(server, "make_server", lambda *a, **k: made.append(1) or real(*a, **k))
+    out, opened = [], []
+    rc = server.serve(paths=paths, emit=out.append, opener=opened.append, open_target="review")
+    try:
+        assert rc == 0 and made == [], "a second studio was started"
+        assert opened and f":{first[0].port}/" in opened[0]
+    finally:
+        gate.set()
+        first[0].shutdown()
+        th.join(10)
