@@ -8,6 +8,27 @@ import sys
 import tempfile
 
 
+# Model-written code runs here. On macOS, sandbox-exec denies network and any file write outside the
+# temp dir; CPU seconds are capped everywhere. Without sandbox-exec (not macOS) the oracle fails closed
+# unless EXPLORE_ALLOW_UNSANDBOXED=1.
+SANDBOX = '(version 1)(allow default)(deny network*)(deny file-write*)' \
+          '(allow file-write* (subpath (param "D")) (literal "/dev/null"))'
+
+
+def sandboxed(d: str) -> list:
+    if os.path.exists("/usr/bin/sandbox-exec"):
+        return ["/usr/bin/sandbox-exec", "-D", "D=" + os.path.realpath(d), "-p", SANDBOX]
+    if os.environ.get("EXPLORE_ALLOW_UNSANDBOXED") == "1":
+        return []
+    raise RuntimeError("no sandbox-exec; set EXPLORE_ALLOW_UNSANDBOXED=1 to run unsandboxed")
+
+
+def _limits(timeout: float) -> None:
+    import resource
+    cpu = int(timeout) + 5
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+
+
 def run_child(candidate: str, child_code: str, payload: dict, timeout: float) -> dict:
     """Run the candidate in a separate `python -I` process in an empty temp dir.
     The child gets the candidate path and the payload on stdin. It does not get the oracle path."""
@@ -17,9 +38,10 @@ def run_child(candidate: str, child_code: str, payload: dict, timeout: float) ->
             fh.write(candidate)
         payload = dict(payload, candidate_path=path)
         try:
-            p = subprocess.run([sys.executable, "-I", "-c", child_code], input=json.dumps(payload),
+            p = subprocess.run(sandboxed(d) + [sys.executable, "-I", "-c", child_code], input=json.dumps(payload),
                                capture_output=True, text=True, timeout=timeout, cwd=d,
-                               env={"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"})
+                               env={"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"},
+                               preexec_fn=lambda: _limits(timeout))
         except subprocess.TimeoutExpired:
             return {"ok": False, "why": f"timeout after {timeout:g} s"}
         lines = [x for x in p.stdout.splitlines() if x.startswith("@@RESULT ")]

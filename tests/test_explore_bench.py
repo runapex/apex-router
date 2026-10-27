@@ -2,6 +2,7 @@
 slow/weak candidate (no hit) from a known good one (hit). Runs the real oracle commands; no model."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -119,3 +120,19 @@ def test_oracle_rejects_wrong_and_tracer_tamper():
     r = orc("import sys\n" + LIS_FAST.replace("    t = []", "    sys.settrace(None)\n    t = []"))
     assert not r.valid and "tracer" in r.detail
     assert not orc("def solve(:\n").valid
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
+@pytest.mark.parametrize("name", ["speedup-lis", "speedup-pairsum", "binpack"])
+def test_oracle_sandbox_blocks_write_outside_tmp_and_network(name, tmp_path):
+    # model-written code runs in the oracle: a write outside its temp dir or a socket must fail
+    t = Task.load(BENCH / name)
+    target = tmp_path / "escape.txt"
+    probe = (f"import socket\nopen({str(target)!r}, 'w').write('x')\n"
+             "socket.create_connection(('127.0.0.1', 8788), timeout=2)\n")
+    r = t.oracle_fn()(probe + {"binpack": BIN_FILL}.get(name, LIS_FAST if name == "speedup-lis" else PAIRSUM_FAST))
+    assert not r.valid, r
+    assert not target.exists()
+    net_only = "import socket\nsocket.create_connection(('127.0.0.1', 8788), timeout=2)\n"
+    r = t.oracle_fn()(net_only + {"binpack": BIN_FILL}.get(name, LIS_FAST if name == "speedup-lis" else PAIRSUM_FAST))
+    assert not r.valid, r
