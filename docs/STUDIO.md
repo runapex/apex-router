@@ -1,12 +1,18 @@
 # apex flow studio
 
 A local web page that shows the apex-router request flow from source to sink, like a recipe canvas.
-Start it from the menu bar ("Open flow studio ↗") or with:
+Start it from the menu bar ("Flow studio ↗", or a row of the "Flow · 15m" section) or with:
 
 ```bash
 apex-router studio            # opens the browser; --no-open prints the URL only
 apex-router studio --idle-exit 1800 --port 8790
+apex-router studio --open node:upstream   # reuse the running studio, open it at a step
 ```
+
+One studio at a time: a started studio writes `~/.apex-router/studio/instance.json` (`{pid, port,
+token}`, mode 0600) and deletes it on a clean exit. `--open [TARGET]` reuses that studio when its pid
+is alive and it answers `/api/ping` with that token; else it starts a new one and replaces the file.
+TARGET is `node:<id>` (a step id, for example `src.pi`, `detect`, `upstream`), `review` or `branches`.
 
 ## What you see
 

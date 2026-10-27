@@ -14,8 +14,11 @@ next tag will carry.
   changes are applied with "Apply + restart when idle": plist backup + write, then a launchd
   restart only at 0 requests in progress after an idle window, with an automatic restore when the
   new process is not healthy. The proxy `/stats` gains `activity` (in-progress count, idle seconds). 127.0.0.1 only,
-  token on every call, Host/Origin checks, CSP with nonce, secrets masked. Menu bar: "Open flow
-  studio ↗" (does not cost agent rows). `route_resolve.resolve(record=False)` writes no conformance
+  token on every call, Host/Origin checks, CSP with nonce, secrets masked. Menu bar: "Flow studio ↗"
+  first, and a "Flow · 15m" section (sources, proxy in flight / idle, upstreams, errors, draft) whose rows
+  open the studio at their step (`studio --open node:<id>`); one running studio is reused
+  (`~/.apex-router/studio/instance.json`, 0600). Neither costs agent rows. "Open dashboard ↗" is gone
+  (`snapshot --detail all` still works, deprecated). Menu dark colours: Tokyo Night. `route_resolve.resolve(record=False)` writes no conformance
   row. Docs: `docs/STUDIO.md`.
 - `apex-router explore run|table`: a discovery harness (diverge → cheap check → archive → oracle →
   evidence → evolve). 6 isolated operator islands; a MAP-Elites archive (niche = operator + mechanism

@@ -244,7 +244,23 @@ tok  ▁▁▂▅▂▁▁▁▂▂▄▆                    out 9.8k per 5 min
 
 ## Clicking: detail pages
 
-Every session row, every subagent row, every idle row and the top `Open dashboard ↗` item run
+The first row, `Flow studio ↗`, and each row of the `Flow · 15m` section (after Pressure) run
+`<apex-router binary> studio --idle-exit 1800 --open [node:<id>|review]`. It reuses the running studio
+(`~/.apex-router/studio/instance.json`, mode 0600) when that one answers with its token, else starts one,
+and opens the page at the step:
+
+| Row | Opens |
+|---|---|
+| `sources: pi N · claude N · codex N` | `#node=src.pi` |
+| `proxy :8788: up/down · in flight N · idle Ns` (`—` when the proxy has no `/stats` activity) | `#node=detect` |
+| `upstreams: anthropic N · openai N · local N · err % · ttft p50` | `#node=upstream` |
+| `errors: retries N · 502 N` (only when > 0, red) | `#node=upstream` |
+| `draft: N changes` (only when a studio draft has changes) | `#review` |
+
+The numbers are the studio's own 15-min numbers (`studio.live.collect`). The Flow rows and the studio
+row do not cost agent rows. The studio token never reaches the menu.
+
+Every session row, every subagent row and every idle row run
 
 ```
 <apex-router binary> snapshot --detail <id>      (terminal=false refresh=false)
@@ -264,7 +280,8 @@ No description, repo, process or model name ever reaches a command parameter.
 with `open`:
 
 - `~/.apex-router/widget/detail-<id8>.html` for a session (a subagent click opens its session's
-  page with that subagent first, anchored at `#a…`), `detail-all.html` for the dashboard.
+  page with that subagent first, anchored at `#a…`), `detail-all.html` for the dashboard
+  (`--detail all`: deprecated, no menu row; use `apex-router studio`).
 - Session page: header (repo, session id, status, pid, uptime, models, memory / cpu / disk now,
   context X/W %, cache share); cpu %, memory, disk MB/s and context tokens over the history;
   requests, tokens stacked (input / cached read / cache write / output) and output tokens per
