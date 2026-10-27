@@ -62,6 +62,36 @@ score) apply to any later loop that auto-adopts candidates, and the oracle is th
 - Ablations: no archive (greedy), shared context (islands see each other), no oracle (model self-score).
 - A smoke pilot on a few tasks checks the plumbing only. It is not evidence of a p99 gain.
 
-## 4. Status
+## 4. Status (2026-10-27)
 
-See the commit log for the implementation and the pilot result table.
+Implemented: `src/apex_router/explore/`, `apex-router explore run|table`, `bench/explore/` (3 tasks),
+`scripts/explore_pilot.py`. xval: NO-GO (5 findings), NO-GO (1), GO on pass 3.
+
+| Safety property | How |
+|---|---|
+| The candidate cannot set its own verdict | The child only returns raw outputs. The parent checks them against its own reference and measures child CPU with `os.wait4`. |
+| Model code is contained | `sandbox-exec`: no network, no fork/spawn, no read of the oracle dir, writes only in a temp dir; CPU rlimit. No sandbox = fail closed. |
+| No candidate text in diverge prompts | Fixed oracle reason strings; negative evidence = tags + one line ≤ 120 chars. |
+| Equal budget | Same call count per arm, own deadline per arm; HitRate counts complete rows only. |
+
+Smoke pilot (plumbing check, NOT evidence): `binpack`, B = 6, local `qwen3.8:27b-mlx`, tau 0.985.
+
+| Arm | Calls | Valid | Tag niches | Best score | Hit |
+|---|---|---|---|---|---|
+| explore | 6 | 3 | 6 | 0.97089 | no |
+| baseline | 6 | 4 | 5 | 0.97089 | no |
+
+Findings of the smoke run:
+1. Every valid candidate in both arms scored exactly 0.97089, the first-fit-decreasing score. The
+   "6 niches" are 6 tag sets for one behavior. Tag fingerprints overstate diversity: the model names
+   a different mechanism but writes the same algorithm. This is the essay's own warning ("novelty on
+   mechanisms, not wording"), seen on the first run.
+2. The 4 crashes were real candidate bugs (`NameError`, `TypeError`, `ValueError`), not harness faults.
+3. The first run found 2 harness faults: `num_predict` 2048 cut replies, and the model wrote
+   `MECHANISTIC:` for `MECHANISM:`. Both are fixed with tests.
+
+Next (not done):
+1. Behavioral fingerprint: niche key = a hash of the oracle's output signature on a small public probe
+   set, not the model's tags. Then two texts with one behavior share a niche.
+2. A real comparison needs n ≥ 20 tasks per arm and a stronger model; a 27b local model did not pass
+   FFD on binpack in 12 calls.
