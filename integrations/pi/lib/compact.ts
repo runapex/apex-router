@@ -66,9 +66,6 @@ export const IDS = /\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|\bEYE
  *  ignore lint errors" is a rule, not a retire message). */
 const RETIRE = /(?:^|[.;:,!?\n]\s*|\b(?:please|ok|okay|now|you can|we can)\s+)(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove)\b|\b(?:no longer (?:needed|applies|valid|relevant)|not needed any ?more|scratch that|never ?mind|rule is (?:off|gone|retired))\b/i;
 const DONE = /\b(done|finished|completed|resolved)\b/i;
-/** A leading retire verb ("ok, forget: ", "please drop ") and a trailing done-word ("... - done."), anchored. */
-const LEAD_RETIRE = /^\W*(?:(?:ok(?:ay)?|please|now)[,.]?\s+)*(?:forget|ignore|disregard|cancel|drop|lift|revoke|remove)\b\s*(?:the rule)?\s*[:\-\u2013\u2014]?\s*/i;
-const TRAIL_DONE = /\s*[,:;\-\u2013\u2014]?\s*(?:is\s+)?(?:done|finished|completed|resolved)\W*$/i;
 const PRONOUN_ONLY = /^\W*(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?(?:forget|ignore|drop|cancel|scratch|disregard|never ?mind)\s*(?:that|it|this|the last (?:rule|one)|what i said)?\s*(?:rule)?\W*$/i;
 const NOGO = /\bNO[- ]?GO\b/;
 const GO_VERDICT = /(?<![-\w])(?:GO|PASS)(?![-\w])/;
@@ -253,7 +250,7 @@ function retire(i: Item, status: Status, by: string): void {
 /**
  * forget / ignore / done / replace messages. A false retire loses a rule (the failure this extension fixes), so
  * only an explicit reference counts: a label ("forget R3", "drop R3", "R3 done"), "forget that" (the newest
- * rule), the exact rule text, or "replace R<n>: <text>". Word overlap never retires a rule ("always encrypt
+ * rule), or "replace R<n>: <text>". The rule text itself never retires a rule. Word overlap never retires a rule ("always encrypt
  * backups" must not retire "never delete backups"). Only short messages (< 400 chars) retire; a long brief that
  * says "ignore the warnings" must not. Returns retire = true for a retire message (it is not a new rule) and
  * the new rule text of a replace message.
@@ -285,22 +282,10 @@ export function applyRetire(l: Ledger, text: string, entryId: string): { retire:
 		if (last) retire(last, "retired", entryId);
 		return { retire: true };
 	}
-	// 3. the exact rule text, anchored: "<verb>[:] <rule>", "<rule> - done", or the rule in quotes. Only the
-	//    leading verb or trailing done-word is cut; the rule text itself is never edited (xval pass 3).
-	const edge = (x: string): string => norm(x).replace(/^[\W_]+|[\W_]+$/g, "");
-	// a candidate exists only when the anchored verb / done-word was really there: a message that just repeats
-	// a rule (which can contain "completed") must not retire it (xval pass 4)
-	const cut = (re: RegExp): string | null => (re.test(t) ? edge(t.replace(re, "")) : null);
-	const cands = new Set<string>([
-		cut(LEAD_RETIRE), cut(TRAIL_DONE),
-		...(isRetire || isDone ? [...t.matchAll(/"([^"\n]+)"|\u201c([^\u201d\n]+)\u201d/g)].map(m => edge(m[1] ?? m[2] ?? "")) : []),
-	].filter((x): x is string => !!x));
-	let hit = false;
-	for (const r of rules) if (cands.has(edge(r.text))) {
-		retire(r, status, entryId);
-		hit = true;
-	}
-	return { retire: isRetire || hit };   // a message that retired a rule is not itself a new rule
+	// No free-text retire. Five review passes showed every text match (word overlap, substring, cut verbs,
+	// quoted text) turns off a rule the user did not mean to end. Only labels, "forget that" and
+	// "replace R<n>:" end a rule; the labels are shown in the pinned block (xval pass 5, root fix).
+	return { retire: isRetire };
 }
 
 function closeNogo(l: Ledger, entryId: string): void {

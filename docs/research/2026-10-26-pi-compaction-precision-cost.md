@@ -128,6 +128,9 @@ rule ids and reason codes only; no message text; mode 0600; 14 days).
 
 Not done yet: P3 is not measured on a live provider. Before `APEX_COMPACT_CACHE=1` is a default,
 measure 5 events (`p3_cache_read > 0`, cost per event, summary quality by the probe questions).
-Known limits: a false "retire" by word overlap can unpin a rule (use `forget R<n>` labels); the
+Retire rule (after 5 xval passes): a pinned rule ends only by its label (`forget R3`, `R3 done`,
+`replace R3: <text>`) or `forget that` (the newest rule). The rule text itself never ends a rule: every
+text match tried (word overlap, substring, cut verbs, quoted text) ended rules the user did not mean
+to end. Known limits: the
 ledger does not make P0 rules by itself (owner decision); the audit id regex now also matches
 14-digit pi job ids (no change: user messages held none).

@@ -169,7 +169,10 @@ test("F2 retire: word overlap does not retire an independent rule; only an expli
 	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never delete the nightly database backups"]);
 	s.user("forget: Never delete the nightly database backups");
 	l = updateLedger(l, s.entries);
-	assert.equal(active(l, "rule").length, 0, "the exact rule text retires it");
+	assert.equal(active(l, "rule").length, 1, "the rule text alone does not retire (labels only, xval pass 5)");
+	s.user("forget R1");
+	l = updateLedger(l, s.entries);
+	assert.equal(active(l, "rule").length, 0, "the label retires it");
 });
 
 // ---- cap --------------------------------------------------------------------------------------------------
@@ -363,31 +366,28 @@ test("xval pass 3 F1: rules are stored verbatim with their framing; quotes only 
 	assert.deepEqual(extractRules(long), ["Do not touch tests/conftest.py."]);
 });
 
-test("xval pass 3 F2: exact-text retire works for rules that contain a done-word", () => {
+test("xval pass 5: only labels retire; rule text, quoted text or a repeat never does", () => {
 	const s = new FakeSession();
-	s.user("Never delete completed backups");
-	s.user("Never close resolved tickets");
+	const rules = ["Never delete completed backups", "Never close resolved tickets", "Never delete backups"]; // R1 R2 R3
+	for (const r of rules) s.user(r);
 	let l = updateLedger(null, s.entries);
-	s.user("forget: Never delete completed backups");
+	const live = () => active(l, "rule").map(i => i.text).filter(x => rules.includes(x)).sort();
+	for (const msg of [
+		"forget: Never delete completed backups", "Never close resolved tickets - done", 'drop "Never delete backups"',
+		'Keep "Never delete completed backups" active.', 'Do not mark "Never delete backups" as done.',
+		'Build completed. Keep "Never delete backups" active.', '"Never delete completed backups"',
+		"Do not forget: Never delete backups", "Never delete completed backups",
+	]) {
+		s.user(msg);
+		l = updateLedger(l, s.entries);
+		assert.deepEqual(live(), [...rules].sort(), msg);
+	}
+	s.user("R2 done");
 	l = updateLedger(l, s.entries);
-	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never close resolved tickets"]);
-	s.user("Never close resolved tickets - done");
+	s.user("forget R1");
 	l = updateLedger(l, s.entries);
-	assert.equal(active(l, "rule").length, 0);
-});
-
-test("xval pass 2 F2: the exact text of a longer rule does not retire a shorter rule it contains", () => {
-	const s = new FakeSession();
-	s.user("Never delete backups");
-	s.user("Never delete backups from production");
-	let l = updateLedger(null, s.entries);
-	assert.equal(active(l, "rule").length, 2);
-	s.user("forget: Never delete backups from production");
-	l = updateLedger(l, s.entries);
-	assert.deepEqual(active(l, "rule").map(i => i.text), ["Never delete backups"]);
-	s.user('drop "Never delete backups"');
-	l = updateLedger(l, s.entries);
-	assert.equal(active(l, "rule").length, 0, "a quoted exact rule text retires it");
+	assert.deepEqual(live(), ["Never delete backups"]);
+	assert.ok(/R3\b/.test(gate("## Goal\nx", l).text), "the label is shown, so the user can use it");
 });
 
 test("xval pass 2: a long replace retires the old rule and does not add the command as a rule", () => {
