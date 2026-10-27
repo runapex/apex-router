@@ -287,9 +287,10 @@ def report_markdown(rows: list[dict]) -> str:
                  f"{x['valid']} | {x['check_rejects']} | {x['call_errors']} | {x['elapsed_s']}"
                  f"{' (truncated)' if x.get('truncated') else ''} |\n")
     summ = metrics.summary(rows)
-    tail = "\n| arm | HitRate_tau@B (k/n) | 95% Wilson CI | p99 score |\n|---|---|---|---|\n"
+    tail = ("\n| arm | HitRate_tau@B (k/n, complete rows only) | 95% Wilson CI | p99 score | truncated rows |\n"
+            "|---|---|---|---|---|\n")
     for arm, s in summ.items():
         h = s["hit_rate"]
         tail += (f"| {arm} | {h['k']}/{h['n']} | [{h['ci'][0]:.2f}, {h['ci'][1]:.2f}] | "
-                 f"{s['p99_score']} |\n")
+                 f"{s['p99_score']} | {s['truncated']} |\n")
     return head + body + tail

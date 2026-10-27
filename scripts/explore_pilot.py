@@ -40,7 +40,7 @@ def main(argv=None) -> int:
     ap.add_argument("--floor", type=float, default=0.3)
     ap.add_argument("--round-size", type=int, default=6)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--max-minutes", type=float, default=None, help="wall-clock limit for the whole pilot")
+    ap.add_argument("--max-minutes", type=float, default=None, help="wall-clock limit for EACH arm run (own deadline per arm, xval F5)")
     ap.add_argument("--out-dir", type=Path, default=None,
                     help="default ~/.apex-router/explore/pilot-<ts>")
     a = ap.parse_args(argv)
@@ -50,7 +50,6 @@ def main(argv=None) -> int:
     out = a.out_dir or Path.home() / ".apex-router" / "explore" / f"pilot-{time.strftime('%Y%m%d-%H%M%S')}"
     out.mkdir(parents=True, exist_ok=True)
     results = out / "results.jsonl"
-    deadline = time.time() + 60 * a.max_minutes if a.max_minutes else None
     backend = make_backend(a.backend, model=a.model, cmd=a.shell_cmd, temperature=a.temperature,
                            num_predict=a.num_predict)
     rows = []
@@ -59,6 +58,7 @@ def main(argv=None) -> int:
         for arm in ARMS:
             kw = {"floor": a.floor, "round_size": a.round_size} if arm == "explore" else {}
             t0 = time.time()
+            deadline = t0 + 60 * a.max_minutes if a.max_minutes else None   # own deadline per arm (F5)
             rep = run_task(task, arm, a.budget, backend, out / f"{name}-{arm}", seed=a.seed,
                            deadline=deadline, **kw)
             rows.append(rep)

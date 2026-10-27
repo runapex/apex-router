@@ -433,3 +433,40 @@ def test_ollama_reply_cut_at_token_limit_is_a_failed_call(monkeypatch):
         b("p", 1)
     monkeypatch.setattr(b._opener, "open", _open({"done_reason": "stop", "message": {"content": "ok"}}))
     assert b("p", 1) == "ok"
+
+
+def test_f5_truncated_rows_do_not_count_in_hit_rate():
+    from apex_router.explore import metrics as mx
+    rows = [
+        {"arm": "explore", "budget": 6, "calls": 6, "tau": 1.0, "best_score": 1.0, "niches": 2, "valid_scores": [1.0]},
+        {"arm": "baseline", "budget": 6, "calls": 2, "tau": 1.0, "best_score": 2.0, "truncated": True, "niches": 1,
+         "valid_scores": [2.0]},
+        {"arm": "baseline", "budget": 6, "calls": 6, "tau": 1.0, "best_score": 0.5, "niches": 1, "valid_scores": [0.5]},
+    ]
+    s = mx.summary(rows)
+    assert s["baseline"]["hit_rate"]["n"] == 1 and s["baseline"]["hit_rate"]["k"] == 0   # the cut row's hit is not counted
+    assert s["baseline"]["truncated"] == 1
+    assert s["explore"]["hit_rate"]["n"] == 1 and s["explore"]["truncated"] == 0
+
+
+def test_f5_pilot_gives_each_arm_its_own_deadline(monkeypatch, tmp_path):
+    import importlib.util
+    import time as _time
+    spec = importlib.util.spec_from_file_location("explore_pilot", Path(__file__).resolve().parents[1] / "scripts" / "explore_pilot.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    clock = [1000.0]
+    monkeypatch.setattr(mod.time, "time", lambda: clock[0])
+    seen = []
+
+    def fake_run_task(task, arm, budget, backend, run_dir, seed=0, deadline=None, **kw):
+        seen.append((arm, deadline))
+        clock[0] += 50 * 60   # each arm uses 50 of the 60 minutes
+        return {"task": task.name, "arm": arm, "budget": budget, "calls": budget, "best_score": None, "tau": 1.0,
+                "hit": False, "first_hit_call": None, "niches": 0, "valid": 0, "check_rejects": 0,
+                "call_errors": 0, "elapsed_s": 1, "valid_scores": []}
+    monkeypatch.setattr(mod, "run_task", fake_run_task)
+    monkeypatch.setattr(mod, "make_backend", lambda *a, **k: object())
+    mod.main(["--tasks", "binpack", "--budget", "2", "--max-minutes", "60", "--out-dir", str(tmp_path)])
+    assert [a for a, _ in seen] == list(mod.ARMS)
+    assert seen[1][1] - seen[0][1] == 50 * 60, seen   # the second arm's deadline starts when it starts

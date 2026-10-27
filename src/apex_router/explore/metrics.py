@@ -52,7 +52,9 @@ def summary(rows: Sequence[dict]) -> dict:
     """Per arm: HitRate_tau@B, mean first-hit call, niches, calls, p99 of valid candidate scores."""
     out: dict[str, dict] = {}
     for arm in sorted({r["arm"] for r in rows}):
-        rs = [r for r in rows if r["arm"] == arm]
+        every = [r for r in rows if r["arm"] == arm]
+        # F5: a row cut by a deadline (calls < budget) would compare arms at unequal budgets; leave it out
+        rs = [r for r in every if not r.get("truncated") and r.get("calls", 0) >= r.get("budget", 0)]
         fh = [r["first_hit_call"] for r in rs if r.get("first_hit_call")]
         scores = [s for r in rs for s in (r.get("valid_scores") or [])]
         out[arm] = {
@@ -61,5 +63,6 @@ def summary(rows: Sequence[dict]) -> dict:
             "niches": sum(r.get("niches", 0) for r in rs),
             "calls": sum(r.get("calls", 0) for r in rs),
             "p99_score": p99(scores),
+            "truncated": len(every) - len(rs),
         }
     return out
