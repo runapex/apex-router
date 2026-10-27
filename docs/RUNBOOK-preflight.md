@@ -1,6 +1,6 @@
 # Runbook: pre-analysis before a build (`apex-router preflight`)
 
-Owner order 2026-10-27: do a pre-analysis before every build, so a known mistake is not made again.
+Owner order 2026-10-27: do a pre-analysis before every build, so that we do not make a known mistake again.
 
 ## What it does
 
@@ -27,7 +27,7 @@ It shows only fault-type names, counts, job ids and repo paths. It never shows f
 ## Evidence (2026-10-27)
 
 Backtest on 46 earlier reviews with findings: `PYTHONPATH=src python3 scripts/preflight_backtest.py`.
-Only earlier jobs are used for each review.
+For each review, the script uses only earlier jobs.
 
 | Ranking of the top 6 fault types | Recall of the real fault types |
 |---|---|
@@ -37,7 +37,7 @@ Only earlier jobs are used for each review.
 | random 6 of 11 | 56 % |
 
 The gain over "all files only" is small. Most of the value is the list of fault types itself.
-The sample is small. Do not tune the ranking on it again; rotate in new reviews first (RSI R5).
+The sample is small. Do not tune the rank order on it again; rotate in new reviews first (RSI R5).
 
 ## agent_spawn gates (owner order 2026-10-27)
 
