@@ -891,6 +891,31 @@
     "n": 2,
     "window_min": 15
   },
+  "flow": {
+    "draft_changes": 0,
+    "error_pct": 9.1,
+    "proxy": {
+      "activity": null,
+      "checked": true,
+      "port": 8788,
+      "up": false
+    },
+    "requests": 22,
+    "retries": 0,
+    "sources": {
+      "claude": 22,
+      "codex": 0,
+      "pi": null
+    },
+    "ttft_p50_ms": 1500,
+    "unreachable": 0,
+    "upstreams": {
+      "anthropic": 21,
+      "local": null,
+      "openai": 1
+    },
+    "window_min": 15
+  },
   "graph": {
     "edges": [
       {

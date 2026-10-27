@@ -1,13 +1,17 @@
 ● 3 ⚠ | color=#FF9500
 ---
-Open dashboard ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=all terminal=false refresh=false
-Open flow studio ↗ | bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 terminal=false refresh=false
+Flow studio ↗ | color=#C15F3C,#7aa2f7 bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open terminal=false refresh=false
 ---
 Pressure | size=12 color=#C15F3C,#7aa2f7
 AMBER · 22 requests / 15 min | color=#A86A1E,#e0af68
 causes: transport 1 | color=#141413,#c0caf5
 families: fable GREEN, opus AMBER, sonnet GREEN | emojize=false symbolize=false color=#141413,#c0caf5
 errors 15m: 2 (http_529 1, midstream_ReadError 1) | emojize=false symbolize=false color=#B5372B,#f7768e
+---
+Flow · 15m | size=12 color=#C15F3C,#7aa2f7
+sources: pi — · claude 22 · codex 0 | color=#3A6A9E,#7dcfff tooltip="requests per source, last 15 min · pi = pi turns in route_log.jsonl" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:src.pi terminal=false refresh=false
+proxy :8788: down · in flight — · idle — | color=#B5372B,#f7768e tooltip="proxy /stats activity: requests in progress and time since the last one started or ended · — = the running proxy does not report it" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:detect terminal=false refresh=false
+upstreams: anthropic 21 · openai 1 · local — · err 9.1% · ttft p50 1.5s | color=#A86A1E,#e0af68 tooltip="requests per upstream, last 15 min · local = the local proxy :8789 · err = failed / all" bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:upstream terminal=false refresh=false
 ---
 Limit | size=12 color=#C15F3C,#7aa2f7
 5h 42% · age 2m | emojize=false symbolize=false color=#141413,#c0caf5

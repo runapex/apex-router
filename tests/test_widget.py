@@ -250,7 +250,7 @@ def test_menu_without_history_or_series_has_no_spark_lines():
     gpu = next(v for v in vis if v.startswith("gpu  "))                # System line, no spark yet
     assert "▁" not in gpu and gpu.endswith("6% · mem 1.5GB · load 3.3")
     assert "bash=" not in text and "Open dashboard" not in text      # no binary: no actions
-    assert "Open flow studio" not in text
+    assert "Flow studio" not in text
 
 
 def test_click_actions_only_with_valid_ids_and_binary():
@@ -267,12 +267,13 @@ def test_click_actions_only_with_valid_ids_and_binary():
     text = snapshot.menubar(_snap([good, bad, idle]), history=_hist(), bin_path=BIN)
     acts = _actions(text)
     assert acts
-    studio = [(ln, p) for ln, p in acts if ln.startswith("Open flow studio ↗ | ")]
+    studio = [(ln, p) for ln, p in acts if ln.startswith("Flow studio ↗ | ")]
     assert len(studio) == 1                                       # exactly one studio row, fixed params
     assert studio[0][1] == {"bash": BIN, "param1": "studio", "param2": "--idle-exit",
-                            "param3": str(snapshot.STUDIO_IDLE_EXIT_S), "terminal": "false",
-                            "refresh": "false", **{k: v for k, v in studio[0][1].items() if k == "color"}}
-    acts = [(ln, p) for ln, p in acts if (ln, p) not in studio]
+                            "param3": str(snapshot.STUDIO_IDLE_EXIT_S), "param4": "--open",
+                            "terminal": "false", "refresh": "false", "color": snapshot.INK["accent"]}
+    assert text.splitlines()[2].startswith("Flow studio ↗ | ")   # first row under the bar cell
+    acts = [(ln, p) for ln, p in acts if p.get("param1") != "studio"]
     for ln, p in acts:
         assert set(p) - {"font", "size", "emojize", "symbolize", "tooltip"} == {
             "bash", "param1", "param2", "param3", "terminal", "refresh"}, ln
@@ -280,14 +281,14 @@ def test_click_actions_only_with_valid_ids_and_binary():
         assert p["terminal"] == "false" and p["refresh"] == "false"
         assert snapshot.valid_target(p["param3"]), ln
     targets = {p["param3"] for _, p in acts}
-    assert targets == {"all", SID, AID, "ffffffff-0000-4000-8000-000000000000"}
+    assert targets == {SID, AID, "ffffffff-0000-4000-8000-000000000000"}   # no "all": no dashboard row
     # the injection-shaped description stays visible text, never a parameter
     inj = next(ln for ln in text.splitlines() if "bash=/bin/sh" in ln.split(" | ")[0]
                or "bash¦" in ln or "¦ bash=/bin/sh" in ln)
     assert "bash=" + BIN not in inj and inj.count(" | ") == 1     # session-shaped id: no action
     assert snapshot.click_action(BIN, "abcdef12", "agent") == ""
     assert snapshot.click_action(BIN, SID, "agent") == "" and snapshot.click_action(BIN, AID)
-    assert "Open dashboard ↗ | bash=" + BIN in text
+    assert "Open dashboard" not in text and "param3=all " not in text
     assert any(ln.startswith("--Open details ↗ | ") and SID in ln for ln in text.splitlines())
 
 
