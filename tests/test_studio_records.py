@@ -387,3 +387,52 @@ def test_page_has_the_records_panel_reader(studio):
     srv, _, _ = studio
     st, html = get(srv, "/")
     assert st == 200 and "/api/records" in html and "innerHTML" not in html
+
+
+# ---- bounds (xval P1: whole-file reads, unbounded listing, unbounded subprocess output) ----------
+
+def test_read_capped_refuses_a_file_over_the_cap_in_one_read(tmp_path):
+    from apex_router.studio import records as R
+    p = tmp_path / "s.json"
+    p.write_bytes(b"x" * 101)
+    import pytest
+    with pytest.raises(ValueError):
+        R.read_capped(p, 100)
+    p.write_bytes(b"x" * 100)
+    assert R.read_capped(p, 100) == b"x" * 100
+
+
+def test_generations_are_bounded_and_skip_symlinks(tmp_path, monkeypatch):
+    from apex_router.studio import records as R
+    monkeypatch.setattr(R, "GENS_MAX", 3)
+    base = tmp_path / "telemetry.jsonl"
+    for i in range(1, 7):
+        (tmp_path / f"telemetry.jsonl.{i}").write_text("{}\n")
+    (tmp_path / "telemetry.jsonl.99").symlink_to(tmp_path / "telemetry.jsonl.1")
+    assert [g.name for g in R.generations(base)] == ["telemetry.jsonl.4", "telemetry.jsonl.5", "telemetry.jsonl.6"]
+    monkeypatch.setattr(R, "LIST_MAX", 2)
+    assert len(R.generations(base)) <= 2
+
+
+def test_run_keeps_at_most_the_cap_and_is_killed_on_timeout(monkeypatch):
+    import subprocess, sys, time as _t
+    import pytest
+    from apex_router.studio import records as R
+    monkeypatch.setattr(R, "RUN_OUT_MAX", 1000)
+    rc, txt = R._run([sys.executable, "-c", "import sys; sys.stdout.write('a' * 5_000_000)"])
+    assert rc == 0 and len(txt) == 1000
+    t = _t.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        R._run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5)
+    assert _t.monotonic() - t < 5
+
+
+def test_an_oversized_plist_gives_no_schedule(tmp_path):
+    from apex_router.studio import records as R
+    from apex_router.studio.flow import Paths
+    import types
+    la = tmp_path / "LaunchAgents"
+    la.mkdir()
+    (la / "x.plist").write_bytes(b"<?xml version='1.0'?>" + b" " * (R.PLIST_MAX + 10))
+    paths = types.SimpleNamespace(launch_agents=la)
+    assert R._plist_schedule(paths, "x") is None

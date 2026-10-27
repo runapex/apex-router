@@ -36,6 +36,11 @@ from . import live
 from .flow import Paths
 
 READ_CAP = 16 * 1024 * 1024       # bytes read from the end of one telemetry file
+LIST_MAX = 2000                   # directory entries looked at, at most, per listing
+GENS_MAX = 64                     # rotated generations kept, at most (newest)
+PLIST_MAX = 256 * 1024            # bytes of one launchd plist
+STORE_MAX = 32 * 1024 * 1024      # bytes of one JSON store
+RUN_OUT_MAX = 64 * 1024           # bytes kept from one launchctl call
 SPAN_S = 2 * 3600                 # rows parsed: the last 2 h (the widest window below + slack)
 TTL_S = 8.0
 LAUNCHD_TTL_S = 60.0
@@ -119,15 +124,32 @@ def _size(p: Path) -> int:
     return int(st.st_size) if st else 0
 
 
+def read_capped(p: Path, cap: int) -> bytes:
+    """The whole file, or ValueError when it is larger than ``cap`` (one read of cap+1 bytes: no
+    size-check-then-read gap)."""
+    with open(p, "rb") as f:
+        raw = f.read(cap + 1)
+    if len(raw) > cap:
+        raise ValueError("store too large")
+    return raw
+
+
 def generations(path: Path) -> list:
-    """Rotated generations ``<name>.<N>`` (only exact integer suffixes), oldest first."""
+    """Rotated generations ``<name>.<N>`` (only exact integer suffixes), oldest first; at most
+    LIST_MAX entries looked at and the newest GENS_MAX kept."""
     pat = re.compile(re.escape(path.name) + r"\.(\d+)$")
+    found = []
     try:
-        gens = sorted((int(m.group(1)), q) for q in path.parent.iterdir()
-                      if (m := pat.fullmatch(q.name)) and q.is_file())
+        with os.scandir(path.parent) as it:
+            for i, e in enumerate(it):
+                if i >= LIST_MAX:
+                    break
+                m = pat.fullmatch(e.name)
+                if m and e.is_file(follow_symlinks=False):
+                    found.append((int(m.group(1)), path.parent / e.name))
     except OSError:
         return []
-    return [q for _, q in gens]
+    return [q for _, q in sorted(found)[-GENS_MAX:]]
 
 
 # ---- telemetry rows (one bounded read) ------------------------------------------------------------
@@ -244,9 +266,30 @@ def disk(paths: Paths) -> dict:
 
 # ---- launchd (injected runner; tests never call the real launchctl) ---------------------------------
 
-def _run(argv: list) -> tuple:
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=5)
-    return p.returncode, (p.stdout + p.stderr)[:65536]
+def _run(argv: list, timeout: float = 5.0) -> tuple:
+    """(rc, text): stdout+stderr in one pipe, at most RUN_OUT_MAX bytes kept in memory (the rest is
+    read and dropped so the child never blocks), killed after ``timeout``."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    keep, end = bytearray(), time.monotonic() + timeout
+    timer = threading.Timer(timeout, p.kill)
+    timer.start()
+    try:
+        while True:
+            chunk = p.stdout.read(8192)
+            if not chunk:
+                break
+            if len(keep) < RUN_OUT_MAX:
+                keep += chunk[: RUN_OUT_MAX - len(keep)]
+        rc = p.wait(timeout=max(0.1, end - time.monotonic()))
+    finally:
+        timer.cancel()
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        p.stdout.close()
+    if time.monotonic() > end:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return rc, keep.decode("utf-8", "replace")
 
 
 _ld_cache: dict = {}
@@ -288,9 +331,10 @@ def launchd_state(paths: Paths, label: str, run=None) -> dict:
 def _plist_schedule(paths: Paths, label: str) -> dict | None:
     import plistlib
     try:
-        with open(paths.launch_agents / f"{label}.plist", "rb") as f:
-            d = plistlib.load(f)
+        d = plistlib.loads(read_capped(paths.launch_agents / f"{label}.plist", PLIST_MAX))
     except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    if not isinstance(d, dict):
         return None
     if isinstance(d.get("StartInterval"), int):
         return {"every_s": d["StartInterval"]}
@@ -308,12 +352,12 @@ def _rows_before(rs: list, end: float, span: float) -> int:
 
 def _reservoir(paths: Paths) -> dict:
     p = paths.proxy_home("main") / "telemetry_reservoir.json"
-    if _size(p) > 32 * 1024 * 1024:
-        raise ValueError("store too large")
     try:
-        doc = json.loads(p.read_text())
+        doc = json.loads(read_capped(p, STORE_MAX))
     except FileNotFoundError:
         doc = {"folded": []}
+    if not isinstance(doc, dict):
+        raise ValueError("store not an object")
     folded = [f for f in (doc.get("folded") or []) if isinstance(f, dict)]
     names = {str(f.get("name")) for f in folded}
     gens = generations(paths.telemetry("main"))
