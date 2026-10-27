@@ -341,6 +341,60 @@ def test_one_cmd_backend_reused_across_runs_gets_a_fresh_dir_each_time(tmp_path)
     assert be.cwd is None
 
 
+F3_AGENT = """import json, os, sys
+sys.stdin.read()
+obs = {"cwd": os.getcwd(), "ls": sorted(os.listdir("."))}
+try:
+    obs["read"] = open(sys.argv[1]).read()
+except OSError:
+    obs["read"] = "DENIED"
+try:
+    open(sys.argv[2], "w").write("x")
+    obs["write_out"] = "WROTE"
+except OSError:
+    obs["write_out"] = "DENIED"
+open("state.txt", "w").write("from an earlier call")  # must not reach the next call
+print("MECHANISM: m\\nCANDIDATE:\\n```\\ndef solve(x):\\n    return x * 5  # " + json.dumps(obs)
+      + " " + os.environ["EXPLORE_SEED"] + "\\n```")
+"""
+
+
+def test_f3_cmd_backend_sandbox_hides_oracle_and_gives_a_fresh_workdir_per_call(tmp_path):
+    from apex_router.explore.backends import CmdBackend
+    task = _task(tmp_path)
+    (task.oracle_dir / "secret.txt").write_text("ORACLE_SECRET")
+    agent = tmp_path / "agent.py"
+    agent.write_text(F3_AGENT)
+    outside = tmp_path / "escape.txt"
+    be = CmdBackend(f"{sys.executable} {agent} {task.oracle_dir / 'secret.txt'} {outside}")
+    seen: list[str] = []
+
+    def orc(text):
+        seen.append(text)
+        return OracleResult(True, 5.0, "ok")
+    rep = run_task(task, "baseline", 2, be, tmp_path / "r", oracle=orc)
+    assert rep["calls"] == 2 and rep["call_errors"] == 0 and len(seen) == 2, rep
+    obs = [json.loads(t.split("# ", 1)[1].rsplit(" ", 1)[0]) for t in seen]
+    for o in obs:
+        assert o["read"] == "DENIED" and o["write_out"] == "DENIED", o
+        assert o["ls"] == ["goal.md"], o  # no state.txt from the call before
+        assert not Path(o["cwd"]).exists(), o  # deleted after the call
+    assert obs[0]["cwd"] != obs[1]["cwd"]
+    assert not outside.exists() and "ORACLE_SECRET" not in "".join(seen)
+    assert be.deny_read == [] and be.cwd is None
+
+
+def test_f3_cmd_backend_fails_closed_without_sandbox_exec(tmp_path, monkeypatch):
+    from apex_router.explore import backends
+    monkeypatch.setattr(backends, "SANDBOX_EXEC", str(tmp_path / "no-sandbox-exec"))
+    monkeypatch.delenv("EXPLORE_ALLOW_UNSANDBOXED", raising=False)
+    marker = tmp_path / "ran.txt"
+    be = backends.CmdBackend(f"touch {marker}; echo reply")
+    with pytest.raises(RuntimeError, match="sandbox-exec"):
+        be("p", 1)
+    assert not marker.exists()
+
+
 def test_check_reject_records_reply_shape_not_text(tmp_path):
     task = _task(tmp_path)
     be = lambda p, s: "MECHANISM: x\nCANDIDATE:\n```python\ndef solve(x:\n    SECRET_BODY"  # truncated reply

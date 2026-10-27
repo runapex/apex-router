@@ -1,19 +1,25 @@
 """Model backends for `apex-router explore`. A backend is a callable `(prompt: str, seed: int) -> str`.
 
 - `ollama`: local ollama /api/chat (free). Default model qwen3.8:27b-mlx, thinking off.
-- `cmd`: any shell command. Prompt on stdin, reply on stdout. $EXPLORE_SEED holds the seed.
+- `cmd`: any shell command. Prompt on stdin, reply on stdout. $EXPLORE_SEED holds the seed. The command runs
+  under sandbox-exec: no reads of the hidden dirs (`deny_read`, e.g. the oracle dir), writes only in its
+  workdir. Each call gets a fresh workdir with a copy of the files in `cwd` (goal.md only); the harness
+  deletes it after the call. Without sandbox-exec the backend fails closed (EXPLORE_ALLOW_UNSANDBOXED=1 opts out).
 Neither backend logs the prompt, the reply, stderr or the environment.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import urllib.request
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 DEFAULT_NUM_PREDICT = 6144   # 2048 cut a 27b model's code replies (smoke pilot, 2026-10-27)
 DEFAULT_OLLAMA_MODEL = "qwen3.8:27b-mlx"
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
 class ReplyTruncated(RuntimeError):
@@ -47,14 +53,37 @@ class OllamaBackend:
 class CmdBackend:
     name = "cmd"
 
-    def __init__(self, cmd: str, cwd: str | None = None, timeout: float = 600.0):
+    def __init__(self, cmd: str, cwd: str | None = None, timeout: float = 600.0,
+                 deny_read: list | None = None):
         self.cmd, self.cwd, self.timeout = cmd, cwd, timeout
+        self.deny_read = list(deny_read or [])  # dirs the command must not read (run_task adds the oracle dir)
         self.model = cmd.split()[0] if cmd.split() else "cmd"
 
+    def _sandbox(self, workdir: str) -> list[str]:
+        if not os.path.exists(SANDBOX_EXEC):
+            if os.environ.get("EXPLORE_ALLOW_UNSANDBOXED") == "1":
+                return []
+            raise RuntimeError("cmd backend: no sandbox-exec; set EXPLORE_ALLOW_UNSANDBOXED=1 to run unsandboxed")
+        args = [SANDBOX_EXEC, "-D", "W=" + os.path.realpath(workdir)]
+        prof = ('(version 1)(allow default)(deny file-write*)'
+                '(allow file-write* (subpath (param "W")) (literal "/dev/null") (literal "/dev/tty"))')
+        for i, d in enumerate(self.deny_read):
+            args += ["-D", f"O{i}=" + os.path.realpath(d)]
+            prof += f'(deny file-read* (subpath (param "O{i}")))'
+        return args + ["-p", prof]
+
     def __call__(self, prompt: str, seed: int = 0) -> str:
-        p = subprocess.run(self.cmd, shell=True, input=prompt, capture_output=True, text=True,
-                           timeout=self.timeout, cwd=self.cwd,
-                           env={**os.environ, "EXPLORE_SEED": str(int(seed))})
+        wd = tempfile.mkdtemp(prefix="explore-call-")
+        try:
+            if self.cwd:  # a fresh copy of the run's generator files (goal.md only) for each call
+                for f in os.listdir(self.cwd):
+                    if os.path.isfile(os.path.join(self.cwd, f)):
+                        shutil.copy(os.path.join(self.cwd, f), os.path.join(wd, f))
+            argv = self._sandbox(wd) + ["/bin/sh", "-c", self.cmd]
+            p = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=wd,
+                               env={**os.environ, "EXPLORE_SEED": str(int(seed)), "TMPDIR": wd})
+        finally:
+            shutil.rmtree(wd, ignore_errors=True)
         if p.returncode != 0:
             raise RuntimeError(f"cmd backend exit {p.returncode}")  # stderr not logged: may hold secrets
         return p.stdout
