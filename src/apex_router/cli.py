@@ -173,6 +173,10 @@ def main(argv=None) -> int:
         # Advisory review acceptance gate + review-loop records (no text). Own subcommands.
         from .review_gate import main as _review_gate
         return _review_gate(raw[1:])
+    if raw[:1] == ["decisions"]:
+        # Open owner decisions (append-only jsonl); the pi agent_spawn gate counts the open rows.
+        from .decisions import main as _decisions
+        return _decisions(raw[1:])
     if raw[:1] == ["telemetry-reservoir"]:
         # Stratified sample of telemetry kept before rotation deletes it. Own subcommands.
         from .telemetry_reservoir import main as _tres
