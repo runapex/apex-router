@@ -270,3 +270,26 @@ def test_sigterm_while_the_url_print_blocks_clears_the_file(paths, tmp_path):
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+
+def test_cleanup_ignores_a_second_sigterm_and_clears_the_file_first(paths, monkeypatch):
+    # xval P1 (pass 4): a 2nd SIGTERM inside finally escaped before clear_instance. Cleanup now
+    # sets SIGTERM to SIG_IGN and deletes the file before the (slow) shutdown wait.
+    import signal as _signal
+    seen = []
+    real_clear = server.clear_instance
+
+    def clear(path, srv):
+        seen.append(("clear", _signal.getsignal(_signal.SIGTERM)))
+        real_clear(path, srv)
+    monkeypatch.setattr(server, "clear_instance", clear)
+
+    def start(srv):
+        raise KeyboardInterrupt                  # as a SIGTERM right after the start
+    before = _signal.getsignal(_signal.SIGTERM)
+    rc = server.serve(paths=paths, open_browser=False, emit=lambda s: None, on_start=start)
+    assert rc == 0
+    assert seen and seen[0][0] == "clear" and seen[0][1] == _signal.SIG_IGN
+    assert not server.instance_path(paths).exists()
+    assert _signal.getsignal(_signal.SIGTERM) == before       # the old handler is back

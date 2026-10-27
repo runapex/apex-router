@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import http.client
+import contextlib
 import json
 import os
 import re
@@ -523,12 +524,17 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
     except KeyboardInterrupt:
         pass
     finally:
+        # cleanup must finish: a 2nd SIGTERM (or Ctrl-C) here is ignored, and the file goes FIRST
+        if prev_term is not None:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
         if srv is not None:
+            clear_instance(ipath, srv)       # removes the file only if it names this studio
             if loop is not None and loop.is_alive():   # shutdown() waits for serve_forever
                 stopper = threading.Thread(target=srv.shutdown, daemon=True)
                 stopper.start()
-                stopper.join(5)
-            clear_instance(ipath, srv)       # removes the file only if it names this studio
+                with contextlib.suppress(KeyboardInterrupt):
+                    stopper.join(5)
             srv.server_close()
         if prev_term is not None:
             try:
