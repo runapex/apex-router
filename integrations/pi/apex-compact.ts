@@ -24,7 +24,7 @@ import {
 
 import type { EntryLike, PrepLike } from "./lib/compact.ts";
 import { runCompaction, type Captured, type ModelRef, type Reply } from "./lib/compactrun.ts";
-import { applyGuardCmd, check, compileRules, formatRules, GUARD_HELP, parseGuardCmd, selfProtect, type Compiled, type GuardRule } from "./lib/guardrules.ts";
+import { applyGuardCmd, check, compileRules, formatRules, GUARD_HELP, liveRules, parseGuardCmd, selfProtect, type Compiled, type GuardRule } from "./lib/guardrules.ts";
 import { appendLog, pruneLogs } from "./lib/hangguard.ts";
 
 const COMPACT_LOG = join(homedir(), ".apex-router", "pi-compact");
@@ -65,11 +65,14 @@ export default function (pi: ExtensionAPI) {
 		warned = w;
 		return rules;
 	};
+	// the file cache key is the mtime: a rule with "expires" stays in the cache, so expiry is checked at each
+	// call (liveRules here, and again in check())
 	const activeRules = (ctx: ExtensionContext): Compiled[] => {
-		const fromFile = fileRules(ctx);
-		const fromSession = compileRules(sessionRules, "session").rules;
+		const now = Date.now();
+		const fromFile = liveRules(fileRules(ctx), now);
+		const fromSession = compileRules(sessionRules, "session", now).rules;
 		const all = [...fromFile, ...fromSession];
-		return all.length && fromFile.length ? [...all, ...selfProtect(rulesFile())] : all;
+		return all.length && fromFile.length ? [...all, ...selfProtect(rulesFile(), homedir())] : all;
 	};
 	const restoreSession = (ctx: ExtensionContext) => {
 		sessionRules = [];
