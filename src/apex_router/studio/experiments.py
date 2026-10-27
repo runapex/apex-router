@@ -51,7 +51,13 @@ def ml_root(paths: Paths) -> Path:
 def _read(path: Path, cap: int = CAP, tail: bool = False, whole: bool = False) -> bytes:
     """At most ``cap`` bytes (head, or tail). ``whole``: a file larger than cap is an error."""
     try:
-        with open(path, "rb") as f:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)   # a link can point outside the root: refuse
+    except FileNotFoundError:
+        raise ReadError("missing") from None
+    except OSError:
+        raise ReadError("unreadable") from None
+    try:
+        with os.fdopen(fd, "rb") as f:
             size = os.fstat(f.fileno()).st_size
             if whole and size > cap:
                 raise ReadError("too large")
@@ -151,13 +157,41 @@ def _f(v, nd: int = 1) -> str:
 
 # ---- item shape ------------------------------------------------------------------------------
 
+HEADLINE_MAX = 160
+_SECRETISH = re.compile(r"(?:sk-|xox[abp]-|ghp_|gho_|eyJ|AKIA)[A-Za-z0-9._-]{6,}|[A-Za-z0-9+/_=-]{32,}")
+
+
+def _clean(v, n: int = HEADLINE_MAX):
+    """One output text: secret-shaped words masked, one line, at most n chars."""
+    if v is None:
+        return None
+    t = _SECRETISH.sub("[hidden]", " ".join(str(v).split()))
+    return t if len(t) <= n else t[:n - 1].rstrip() + "…"
+
+
+def _clean_metric(m):
+    if not isinstance(m, dict):
+        return None
+    v = m.get("value")
+    return {"name": _clean(m.get("name"), 40), "value": v if _num(v) is not None else None,
+            "unit": _clean(m.get("unit"), 8) or ""}
+
+
+def _clean_gate(g):
+    if not isinstance(g, dict):
+        return None
+    p = g.get("passed")
+    return {"name": _clean(g.get("name"), 40), "passed": p if isinstance(p, bool) else None}
+
+
 def _item(id_, name, source, state="unknown", headline="", metric=None, gate=None, n=None,
           updated_ts=None, error=None, now=None):
     now = time.time() if now is None else now
-    return {"id": id_, "name": name, "state": state, "headline": headline, "metric": metric,
-            "gate": gate, "n": n, "updated_ts": round(updated_ts) if updated_ts else None,
+    return {"id": id_, "name": name, "state": state, "headline": _clean(headline) or "",
+            "metric": _clean_metric(metric), "gate": _clean_gate(gate),
+            "n": n if _num(n) is not None else None, "updated_ts": round(updated_ts) if updated_ts else None,
             "stale": bool(updated_ts) and now - updated_ts > STALE_S, "source": tilde(source),
-            "error": error}
+            "error": _clean(error, 80)}
 
 
 def _metric(name, value, unit=""):
@@ -250,7 +284,7 @@ def read_label_judge(paths: Paths, now: float) -> dict:
 def read_explore(paths: Paths, now: float) -> dict:
     base = paths.router_home / "explore"
     try:
-        dirs = (p for p in base.iterdir() if p.is_dir())
+        dirs = (p for p in base.iterdir() if p.is_dir() and not p.is_symlink())
         d = _newest(dirs)
     except OSError:
         d = None
@@ -316,7 +350,7 @@ def read_xval(paths: Paths, now: float) -> dict:
 def read_panel(paths: Paths, now: float) -> dict:
     base = paths.router_home / "panel"
     try:
-        f = _newest(base.glob("card-*.json"))
+        f = _newest(p for p in base.glob("card-*.json") if not p.is_symlink())
     except OSError:
         f = None
     if f is None:
@@ -413,7 +447,8 @@ def read_compaction(paths: Paths, now: float) -> dict:
     doc = repo_root(paths) / COMPACT_DOC
     rows, seen = [], False
     try:
-        files = sorted((p for p in d.glob("*.jsonl") if p.is_file()), key=lambda p: _mtime(p) or 0)[-FILES_MAX:]
+        files = sorted((p for p in d.glob("*.jsonl") if p.is_file() and not p.is_symlink()),
+                       key=lambda p: _mtime(p) or 0)[-FILES_MAX:]
     except OSError:
         files = []
     for p in files:

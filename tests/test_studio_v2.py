@@ -686,3 +686,44 @@ def test_tail_rotation_keeps_every_old_row_beyond_the_read_cap(tmp_path):
         got += t.read(cap=64)              # tiny cap: many polls needed
     nums = [ln for ln in got]
     assert len(nums) == 51 and nums[-1] == b'{"n": "new"}'
+
+
+def test_tail_truncate_and_regrow_past_the_offset_reads_from_zero(tmp_path):
+    # xval P1: truncate + regrow to >= the old offset between polls skipped the new head
+    from apex_router.studio import traffic
+    p = tmp_path / "t.jsonl"
+    p.write_text('{"old": 1}\n' * 10)
+    t = traffic.Tail(p)                          # starts at the end (offset 110)
+    with open(p, "w") as f:                      # same inode: truncate, then write more
+        for i in range(20):
+            f.write(f'{{"new": {i:02d}}}\n')
+    got = []
+    for _ in range(5):
+        got += t.read()
+    assert got[0] == b'{"new": 00}' and len(got) == 20
+
+
+@pytest.mark.parametrize("path", ["/api/recent", "/api/tokens", "/api/experiments", "/api/live", "/api/flow"])
+def test_get_routes_refuse_a_foreign_origin(path, studio):
+    # xval P1: Origin was checked only for POST/PUT/DELETE
+    srv = studio[0]
+    c = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=5)
+    c.request("GET", path, headers={"X-Studio-Token": srv.token, "Host": f"127.0.0.1:{srv.port}",
+                                    "Origin": "http://evil.example"})
+    assert c.getresponse().status == 403
+
+
+def test_experiment_items_are_short_masked_and_never_follow_links(tmp_path):
+    # xval P1 x3: unbounded headline captures, secret-shaped values, symlinks out of the root
+    from apex_router.studio import experiments as E
+    it = E._item("x", "X", tmp_path, "done", "signals " + "A" * 100_000 + " key sk-abcdefghijklmnop end",
+                 {"name": "m", "value": "not a number"}, {"name": "g", "passed": "yes"}, n="9")
+    assert len(it["headline"]) <= E.HEADLINE_MAX and "sk-abc" not in it["headline"]
+    assert "[hidden]" in it["headline"]
+    assert it["metric"]["value"] is None and it["gate"]["passed"] is None and it["n"] is None
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret": 1}')
+    link = tmp_path / "link.json"
+    link.symlink_to(outside)
+    with pytest.raises(E.ReadError):
+        E._read(link)

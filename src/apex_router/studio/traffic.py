@@ -329,6 +329,9 @@ def tokens_cached(paths: Paths, window: str) -> dict:
 
 # ---- stream: tail by offset ------------------------------------------------------------------
 
+HEAD_BYTES = 256
+
+
 class Tail:
     """Follows one file by offset. Starts at the end (only new lines). A replaced file (rotation:
     a new inode) is read to its end first, then the new file from offset 0; a truncated file
@@ -339,6 +342,7 @@ class Tail:
         self.f = None
         self.ino = None
         self.buf = b""
+        self.head = b""          # the first bytes of the file: a truncate + regrow changes them
         self._open(at_end=True)
 
     def _open(self, at_end: bool):
@@ -349,9 +353,17 @@ class Tail:
             return
         st = os.fstat(f.fileno())
         self.ino = (st.st_dev, st.st_ino)
+        self.head = self._head(f)
         if at_end:
             f.seek(st.st_size)
         self.f, self.buf = f, b""
+
+    @staticmethod
+    def _head(f) -> bytes:
+        try:
+            return os.pread(f.fileno(), HEAD_BYTES, 0)
+        except OSError:
+            return b""
 
     def _drain(self, cap: int) -> list:
         try:
@@ -366,12 +378,27 @@ class Tail:
             self.buf = b""
         return [ln for ln in lines if ln.strip()]
 
+    def _truncated(self) -> bool:
+        """Same inode, but cut: smaller than our offset, or regrown past it (the head differs)."""
+        try:
+            size = os.fstat(self.f.fileno()).st_size
+        except OSError:
+            return False
+        head = self._head(self.f)
+        return self.f.tell() > size or bool(self.head and head[:len(self.head)] != self.head)
+
     def read(self, cap: int = TAIL_READ_CAP) -> list:
         if self.f is None:
             self._open(at_end=False)
             if self.f is None:
                 return []
+        if self._truncated():                # check BEFORE reading at the old offset
+            self.f.seek(0)
+            self.buf = b""
+            self.head = self._head(self.f)
         out = self._drain(cap)
+        if len(self.head) < HEAD_BYTES:      # a young file: learn more of its head
+            self.head = self._head(self.f)
         try:
             st = os.stat(self.path)
         except OSError:
@@ -388,9 +415,6 @@ class Tail:
             self._open(at_end=False)
             if self.f is not None:
                 out += self._drain(cap)
-        elif self.f.tell() > st.st_size:     # truncated in place
-            self.f.seek(0)
-            self.buf = b""
         return out
 
     def close(self):

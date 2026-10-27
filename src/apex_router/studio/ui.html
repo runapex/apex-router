@@ -1208,7 +1208,8 @@ function applyHash(){
   if (q.has("review")) { S.review = null; return openPanel("changes"); }
   for (const k of ["recent", "experiments", "tokens", "records", "apex"]) if (q.has(k) && !q.get(k)) return openPanel(k);
   if (q.get("node")) return openFlowId(q.get("node"));
-  if (q.get("test")){ S.tryText = q.get("test"); return runTest(q.get("test")); }
+  // a link only fills the box: the user clicks Try (no request from a link alone)
+  if (q.get("test")){ S.tryText = q.get("test").slice(0, 2000); return focusTry(); }
   // #branches (v1) has no view in v2: ignored
 }
 addEventListener("hashchange", applyHash);

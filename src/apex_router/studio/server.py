@@ -207,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(204, b"", "image/x-icon")
         if not self._token_ok(q, path):
             return self._err(403, "missing or bad token")
-        if method in ("POST", "PUT", "DELETE") and not self._origin_ok():
+        if not self._origin_ok():             # every method: a foreign page gets nothing, not even GETs
             return self._err(403, "bad Origin")
         try:
             if path == "/" and method == "GET":
