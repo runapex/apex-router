@@ -114,6 +114,6 @@ Rank 1 and 2 have the same score. Rank 1 comes first because it is the entry to 
 
 ## 8. Limits of this research
 
-- No interview and no usability test. The ranks are estimates from documents and owner feedback.
+- No user sessions and no usability test. The ranks are estimates from documents and owner feedback.
 - Frequency for P2 is a guess. The standalone app does not exist yet.
 - Next: test the 6 questions with the owner and one teammate (5-second test on a mockup).
