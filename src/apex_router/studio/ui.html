@@ -428,15 +428,16 @@ function normDec(ds){
   return STATIONS.map(([k]) => by[k] || {verdict: "—", state: "none"});
 }
 function addRequests(items, live){
-  let added = 0;
+  const fresh = [];
   for (const raw of items){
     const r = norm(raw); if (!r || S.seen.has(r.id)) continue;
-    S.seen.add(r.id); S.recent.push(r); added++;
-    if (live){ spawnTrain(r); flowStart(r); }
+    S.seen.add(r.id); S.recent.push(r); fresh.push(r);
   }
-  if (!added) return;
+  if (!fresh.length) return;
   S.recent.sort((x, y) => y.ts - x.ts);
   if (S.recent.length > 200){ for (const r of S.recent.splice(200)) S.seen.delete(r.id); }
+  // the flow paints from S.recent: start it only after the sort, so the newest request and "Last 10" are right
+  if (live) for (const r of fresh){ spawnTrain(r); flowStart(r); }
   if (S.panel === "recent" || S.panel === "agent" || S.panel === "provider") renderPanelSoon();
 }
 

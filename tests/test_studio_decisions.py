@@ -289,3 +289,11 @@ def test_ui_draws_the_decision_line_from_the_decisions_field():
         assert f'"{name}"' in html, name
     assert "LIT_MAX = 10" in html
     assert "prefers-reduced-motion" in html
+
+
+def test_flow_starts_only_after_recent_is_sorted():
+    # xval: with reduced motion the flow painted before the sort, so a newer error was hidden from "Last 10"
+    html = (Path(__file__).parents[1] / "src" / "apex_router" / "studio" / "ui.html").read_text()
+    body = html[html.index("function addRequests("):]
+    body = body[: body.index("\n}\n")]
+    assert body.index("S.recent.sort(") < body.index("flowStart(")
