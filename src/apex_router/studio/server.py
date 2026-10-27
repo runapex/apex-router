@@ -11,13 +11,24 @@ Safety:
     ``<style>`` and one inline ``<script>``; ``connect-src 'self'``; no frames, no forms, no base.
 
 API: GET /api/flow?proxy=  GET /api/live?window=&proxy=  POST /api/test  GET|PUT /api/draft
-     POST /api/apply  POST /api/rollback
+     POST /api/apply  POST /api/rollback  GET /api/ping (token check + pid, for single instance)
+
+Single instance: a started studio writes ``<router home>/studio/instance.json`` ``{pid, port,
+token}`` (mode 0600, atomic) and deletes it on a clean exit. ``apex-router studio --open <target>``
+reuses the studio that file names when its pid is alive AND it answers ``/api/ping`` with that
+token and pid; else it starts a new one and replaces the file. A lock file
+(``instance.lock``, ``flock``) makes the check + start one step, so two clicks start one studio.
 """
 from __future__ import annotations
 
 import hmac
+import http.client
+import contextlib
 import json
+import os
+import re
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -28,7 +39,14 @@ from urllib.parse import parse_qs, urlsplit
 from . import restart as restart_mod
 from . import drafts, flow, live
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — not POSIX: no lock, the check still runs
+    fcntl = None
+
 MAX_BODY = 64 * 1024
+PING_TIMEOUT_S = 1.0
+TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 UI_PATH = Path(__file__).with_name("ui.html")
 
 
@@ -176,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": _csp(nonce)})
 
     # ---- API ----
+    def api_ping(self, q):
+        self._json(200, {"ok": True, "app": "apex-studio", "pid": os.getpid()})
+
     def api_flow(self, q):
         proxy = (q.get("proxy") or ["main"])[0]
         self._json(200, flow.build_flow(self.server.get_paths(), proxy))
@@ -267,6 +288,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 ROUTES = {
+    ("GET", "/api/ping"): Handler.api_ping,
     ("GET", "/api/restart"): Handler.api_restart_get,
     ("POST", "/api/restart"): Handler.api_restart_post,
     ("DELETE", "/api/restart"): Handler.api_restart_delete,
@@ -291,36 +313,232 @@ def url_of(srv: StudioServer) -> str:
     return f"http://127.0.0.1:{srv.port}/?token={srv.token}"
 
 
-def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit=print) -> int:
+# ---- single instance -----------------------------------------------------------------------
+
+def instance_path(paths: flow.Paths | None = None) -> Path:
+    return (paths or flow.resolve_paths()).studio / "instance.json"
+
+
+def read_instance(path: Path) -> dict | None:
+    """``{pid, port, token}`` from the instance file, or None when missing or malformed."""
+    d = flow.read_json(path)
+    if not isinstance(d, dict):
+        return None
+    pid, port, token = d.get("pid"), d.get("port"), d.get("token")
+    if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0):
+        return None
+    if not (isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536):
+        return None
+    if not (isinstance(token, str) and TOKEN_RE.fullmatch(token)):
+        return None
+    return {"pid": pid, "port": port, "token": token}
+
+
+def pid_alive(pid: int) -> bool:
     try:
-        srv = make_server(port)
-    except OSError as e:
-        emit(f"apex-router studio: cannot bind 127.0.0.1:{port} ({e.strerror or e})")
-        return 1
-    url = url_of(srv)
-    emit(url)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:      # exists, another user: it cannot be our studio, but it is alive
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def ping(port: int, token: str, timeout: float = PING_TIMEOUT_S):
+    """The ``/api/ping`` body of a studio on 127.0.0.1:port with this token, or None."""
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        try:
+            c.request("GET", "/api/ping", headers={"Host": f"127.0.0.1:{port}", "X-Studio-Token": token})
+            r = c.getresponse()
+            body = r.read(4096)
+            if r.status != 200:
+                return None
+        finally:
+            c.close()
+        d = json.loads(body)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    return d if isinstance(d, dict) and d.get("ok") is True and d.get("app") == "apex-studio" else None
+
+
+def live_instance(path: Path) -> dict | None:
+    """The instance the file names when its pid is alive AND it answers with that token and pid."""
+    inst = read_instance(path)
+    if not inst or not pid_alive(inst["pid"]):
+        return None
+    d = ping(inst["port"], inst["token"])
+    if not d or d.get("pid") != inst["pid"]:
+        return None
+    return inst
+
+
+def write_instance(path: Path, srv: StudioServer) -> None:
+    """Atomic write, mode 0600 (the file holds the token)."""
+    drafts._atomic_write(path, json.dumps({"pid": os.getpid(), "port": srv.port, "token": srv.token}) + "\n",
+                         0o600)
+
+
+def clear_instance(path: Path, srv: StudioServer) -> None:
+    """Delete the instance file — only when it still names this server (a newer studio may own it)."""
+    inst = read_instance(path)
+    if inst and inst["token"] == srv.token and inst["port"] == srv.port:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+class _instance_lock:
+    """``flock`` on ``instance.lock`` next to the instance file: check + start is one step."""
+
+    def __init__(self, path: Path):
+        self.path = path.with_name("instance.lock")
+        self.fd = None
+
+    def __enter__(self):
+        if fcntl is None:
+            return self
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except OSError:
+            self._close()
+        return self
+
+    def _close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)   # closing drops the lock
+            except OSError:
+                pass
+            self.fd = None
+
+    def __exit__(self, *exc):
+        self._close()
+        return False
+
+
+NODE_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:\.[a-z0-9]+)?")
+
+
+def target_hash(target: str | None) -> str | None:
+    """The page hash for an ``--open`` target, or None when it is not allowed. Only fixed shapes:
+    '' (no hash), ``review``, ``branches``, ``node:<id>`` (or ``#review``, ``#branches``,
+    ``#node=<id>``) where <id> is a node of the flow. No free text (no ``#test=``)."""
+    if target is None or target == "":
+        return ""
+    t = target[1:] if target.startswith("#") else target
+    if t in ("review", "branches"):
+        return "#" + t
+    m = re.fullmatch(r"node[:=](.+)", t)
+    if m and NODE_ID_RE.fullmatch(m.group(1)) and m.group(1) in {n["id"] for n in flow.NODES}:
+        return "#node=" + m.group(1)
+    return None
+
+
+def _open_url(url: str, opener=None) -> None:
+    try:
+        if opener is None:
+            import webbrowser
+            opener = webbrowser.open
+        opener(url)
+    except Exception:  # noqa: BLE001 — the URL is printed; opening is a convenience
+        pass
+
+
+def _flush():
     try:
         sys.stdout.flush()   # a pipe or file buffers stdout: the URL must show before serve_forever
     except Exception:  # noqa: BLE001
         pass
-    if idle_exit_s and idle_exit_s > 0:
-        def watch():
-            while True:
-                time.sleep(min(30.0, idle_exit_s))
-                if time.time() - srv.last_request > idle_exit_s and not srv.waiter.busy():
-                    srv.shutdown()
-                    return
-        threading.Thread(target=watch, daemon=True).start()
-    if open_browser:
+
+
+def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit=print,
+          open_target: str | None = None, paths: flow.Paths | None = None, opener=None,
+          on_start=None) -> int:
+    """Start the studio (or, with ``open_target``, reuse the running one) and open the browser at
+    its URL + the target hash. Blocks while it serves; returns at once on reuse. ``on_start(srv)``
+    (tests) runs once the server and its instance file exist."""
+    h = target_hash(open_target) if open_target is not None else ""
+    if h is None:
+        emit("apex-router studio: bad --open target (use node:<id>, review or branches)")
+        return 2
+    ipath = instance_path(paths)
+    # SIGTERM (launchd, kill) = a clean exit, from the first line on: the finally below clears the
+    # instance file on every path after it is written
+    prev_term = None
+    if threading.current_thread() is threading.main_thread():
+        def on_term(signum, frame):
+            raise KeyboardInterrupt
         try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception:  # noqa: BLE001 — the URL is printed; opening is a convenience
-            pass
+            prev_term = signal.signal(signal.SIGTERM, on_term)
+        except (ValueError, OSError):
+            prev_term = None
+    srv = loop = None
     try:
-        srv.serve_forever(poll_interval=0.5)
+        with _instance_lock(ipath):
+            inst = live_instance(ipath) if open_target is not None else None
+            if inst:
+                url = f"http://127.0.0.1:{inst['port']}/?token={inst['token']}"
+                emit(url + h)
+                _flush()
+                if open_browser:
+                    _open_url(url + h, opener)
+                return 0
+            try:
+                srv = make_server(port, paths=paths)
+            except OSError as e:
+                emit(f"apex-router studio: cannot bind 127.0.0.1:{port} ({e.strerror or e})")
+                return 1
+            # serve BEFORE the file names this studio and before the lock goes: a second start
+            # that finds the file must get its /api/ping answer at once, or it calls this stale
+            loop = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5},
+                                    name="studio-serve", daemon=True)
+            loop.start()
+            try:
+                write_instance(ipath, srv)   # replaces a stale file (dead pid or no answer)
+            except OSError:
+                pass                          # read-only home: the studio still runs, no reuse
+        url = url_of(srv)
+        if on_start:
+            on_start(srv)
+        emit(url + h)
+        _flush()
+        if idle_exit_s and idle_exit_s > 0:
+            def watch():
+                while True:
+                    time.sleep(min(30.0, idle_exit_s))
+                    if time.time() - srv.last_request > idle_exit_s and not srv.waiter.busy():
+                        srv.shutdown()
+                        return
+            threading.Thread(target=watch, daemon=True).start()
+        if open_browser:
+            # in a thread: a slow browser start must not hold up Ctrl-C / SIGTERM or the cleanup
+            threading.Thread(target=_open_url, args=(url + h, opener), name="studio-open", daemon=True).start()
+        while loop.is_alive():
+            loop.join(0.5)                    # the main thread stays free for SIGTERM / Ctrl-C
     except KeyboardInterrupt:
         pass
     finally:
-        srv.server_close()
+        # cleanup must finish: a 2nd SIGTERM (or Ctrl-C) here is ignored, and the file goes FIRST
+        if prev_term is not None:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if srv is not None:
+            clear_instance(ipath, srv)       # removes the file only if it names this studio
+            if loop is not None and loop.is_alive():   # shutdown() waits for serve_forever
+                stopper = threading.Thread(target=srv.shutdown, daemon=True)
+                stopper.start()
+                with contextlib.suppress(KeyboardInterrupt):
+                    stopper.join(5)
+            srv.server_close()
+        if prev_term is not None:
+            try:
+                signal.signal(signal.SIGTERM, prev_term)
+            except (ValueError, OSError):
+                pass
     return 0

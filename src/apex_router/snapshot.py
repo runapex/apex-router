@@ -18,6 +18,9 @@ Composes, without writing anything (no ``pressure.json``, no cache, no log):
   graph      ``{nodes, edges}``: session -spawned-> subagent, session -runs-> process,
              session/subagent -calls-> model
   proxy      ``/healthz`` on the loopback proxy
+  flow       the studio's 15-min numbers (``studio.live.collect``, read-only): sources, upstreams,
+             error %, ttft p50, retries, unreachable (the proxy's 502); proxy ``/stats``
+             ``activity`` (in flight, idle) when the proxy is up; the studio draft's change count
   adapters   ``$DATAPCE_HOME/adapters/*.json`` (default ``~/.datapce``) and
              ``~/.apex-router/adapters/*.json``, de-duplicated by file name (the datapce home
              wins); ``$APEX_ADAPTERS_DIR`` replaces both. Each file is
@@ -29,7 +32,8 @@ menu lines); ``--graph`` prints the call graph as an indented text tree; ``--det
 self-contained HTML page (``widget_detail``) and opens it. The ONE write of the menu path:
 ``--menubar`` appends a bounded sample to ``~/.apex-router/widget/history.jsonl``
 (``widget_history``; ``--no-history`` or ``APEX_WIDGET_NO_HISTORY=1`` turn it off); ``--json`` /
-``--graph`` write nothing. Rows click through to ``--detail`` via ``click_action``. Every sub-collector fails open: an error becomes an ``error`` field, never an
+``--graph`` write nothing. Rows click through to ``--detail`` via ``click_action``; the Flow
+rows and "Flow studio ↗" open ``apex-router studio --open <target>`` (``studio_action``). Every sub-collector fails open: an error becomes an ``error`` field, never an
 exception, and the command always exits 0. Stdlib only.
 
 The menu shows no dollar amounts (``measure.cost_usd`` stays in ``--json``). It is bounded: 8
@@ -80,17 +84,18 @@ STALE_S = 24 * 3600
 
 # The bar dot keeps the system status colours (readable on any menu bar).
 COLORS = {"green": "#34C759", "orange": "#FF9500", "red": "#FF3B30", "gray": "#8E8E93"}
-# Menu text: Anthropic's palette as SwiftBar ``light,dark`` pairs. A line with neither an action nor
-# a colour is a DISABLED NSMenuItem, which AppKit draws grey — so every line gets one (``_ink``).
+# Menu text as SwiftBar ``light,dark`` pairs: light = Anthropic's palette (dark ink on a light
+# menu), dark = Tokyo Night. A line with neither an action nor a colour is a DISABLED NSMenuItem,
+# which AppKit draws grey — so every line gets one (``_ink``).
 INK = {
-    "text": "#141413,#FAF9F5",      # slate dark / ivory
-    "muted": "#5E5D59,#B0AEA5",     # body muted / cloud
-    "accent": "#C15F3C,#D97757",    # crail / clay: section headers
-    "blue": "#3A6A9E,#6A9BCC",      # sky: network, sparklines
-    "green": "#5A7A3C,#8FB05F",     # cactus: healthy
-    "amber": "#A86A1E,#D4A27F",     # kraft: warn / not checked
-    "red": "#B5372B,#E06C5C",       # error / down
-    "violet": "#7A5C9E,#A88CC9",    # heather: GPU, models
+    "text": "#141413,#c0caf5",      # slate dark / TN foreground
+    "muted": "#5E5D59,#737aa2",     # body muted / TN comment
+    "accent": "#C15F3C,#7aa2f7",    # crail / TN blue: section headers
+    "blue": "#3A6A9E,#7dcfff",      # sky / TN cyan: network, sparklines, Flow sources
+    "green": "#5A7A3C,#9ece6a",     # cactus / TN green: healthy
+    "amber": "#A86A1E,#e0af68",     # kraft / TN yellow: warn / not checked
+    "red": "#B5372B,#f7768e",       # error / down
+    "violet": "#7A5C9E,#bb9af7",    # heather / TN purple: GPU, models, upstreams
 }
 _LEVEL_INK = {"GREEN": "green", "AMBER": "amber", "RED": "red"}
 _PLUGIN_LEVELS = ("GREEN", "AMBER", "RED")
@@ -291,9 +296,9 @@ def _default_proxy(dl):
 
 def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
             now: float | None = None, proxy_fn=None, worker_fn=None, resources_fn=None,
-            deadline=None) -> dict:
+            deadline=None, flow_fn=None) -> dict:
     """The snapshot dict. ``home`` overrides ``~`` for agent discovery; the injectable
-    ``proxy_fn``/``worker_fn``/``resources_fn`` exist for tests. Never raises; never writes.
+    ``proxy_fn``/``worker_fn``/``resources_fn``/``flow_fn`` exist for tests. Never raises; never writes.
     Every subprocess / network call (launchctl, ps, lsof, ioreg, ollama, /healthz) shares one
     ``agent_resources.Deadline``; a source that would start after it is skipped."""
     now = time.time() if now is None else now
@@ -314,6 +319,8 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
     else:
         system = res if isinstance(res, dict) else {"error": "resources unavailable"}
         graph = {"nodes": [], "edges": []}
+    px = _safe(proxy_fn) if proxy_fn else _safe(_default_proxy, dl)
+    fl = _safe(flow_fn) if flow_fn else _safe(flow_block, telemetry, now, px, dl)
     return {
         "schema": SCHEMA,
         "ts": now,
@@ -324,9 +331,65 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         "worker": w,
         "system": system,
         "graph": graph,
-        "proxy": _safe(proxy_fn) if proxy_fn else _safe(_default_proxy, dl),
+        "proxy": px,
+        "flow": fl,
         "quality": _safe(quality.collect, now, telemetry),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
+    }
+
+
+def proxy_activity(px: dict, dl=None) -> dict | None:
+    """``/stats`` ``activity`` of the loopback proxy (``{inflight, idle_s}``) — None when the proxy
+    is down, the deadline is near, or it runs older code without the block."""
+    if not isinstance(px, dict) or not px.get("up"):
+        return None
+    port = px.get("port") if isinstance(px.get("port"), int) else agents_mod.proxy_port()
+    try:
+        t = dl.timeout(0.2) if dl else 0.2
+        raw = agent_resources.http_get(f"http://127.0.0.1:{port}/stats", timeout=t)
+        a = json.loads(raw).get("activity")
+    except (agent_resources.DeadlineSkip, Exception):  # noqa: BLE001 — a state, not a failure
+        return None
+    if not isinstance(a, dict) or not isinstance(a.get("inflight"), int) \
+            or not isinstance(a.get("idle_s"), (int, float)) or isinstance(a.get("inflight"), bool):
+        return None
+    return {"inflight": a["inflight"], "idle_s": float(a["idle_s"])}
+
+
+def flow_block(telemetry=None, now: float | None = None, px=None, dl=None) -> dict:
+    """The 15-min Flow numbers for the menu, from ``studio.live.collect`` (the studio's own
+    numbers, read-only, bounded tail reads) — one source for the menu and the studio page."""
+    if dl is not None and dl.remaining() <= 0:        # the refresh is late already: draw without it
+        return {"skipped": True, "error": "skipped: deadline"}
+    from .studio import drafts, flow as flow_mod, live
+    now = time.time() if now is None else now
+    env = dict(os.environ)
+    tel = Path(telemetry) if telemetry else pressure.default_telemetry_path()
+    env["APEX_STUDIO_MAIN_HOME"] = str(tel.parent)     # the same file the pressure block reads
+    paths = flow_mod.resolve_paths(env)
+    d = live.collect("15m", "main", paths, now)
+    m, t = d.get("metrics") or {}, d.get("telemetry") or {}
+    present = bool(t.get("present"))
+    px = px if isinstance(px, dict) else {}
+    try:
+        n_draft = len(drafts.load_draft(paths).get("changes") or {})
+    except Exception:  # noqa: BLE001
+        n_draft = 0
+    return {
+        "window_min": 15,
+        "sources": {"pi": m.get("pi.turns"), "claude": m.get("tel.client.claude-code"),
+                    "codex": m.get("tel.client.codex")},
+        "upstreams": {"anthropic": m.get("tel.endpoint.anthropic"), "openai": m.get("tel.endpoint.openai"),
+                      "local": m.get("local.requests")},
+        "requests": m.get("tel.requests"),
+        "error_pct": t.get("error_pct") if present else None,
+        "ttft_p50_ms": t.get("ttft_p50") if present else None,
+        "retries": m.get("tel.retries"),
+        "unreachable": m.get("tel.unreachable"),
+        "proxy": {"port": px["port"] if isinstance(px.get("port"), int) else agents_mod.proxy_port(),
+                  "up": bool(px.get("up")), "checked": not px.get("skipped"),
+                  "activity": proxy_activity(px, dl)},
+        "draft_changes": n_draft,
     }
 
 
@@ -495,14 +558,24 @@ def click_action(bin_path, target, kind: str = "any") -> str:
 STUDIO_IDLE_EXIT_S = 1800
 
 
-def studio_action(bin_path) -> str:
-    """SwiftBar params that start ``apex-router studio`` (it opens the browser) — '' unless the
-    binary is valid (same ``valid_bin`` check as ``click_action``). Only fixed arguments: the
-    studio picks a free port, binds 127.0.0.1, and exits after 30 min without a request."""
+# A Flow row opens the studio at one node: ``studio --open <target>``, <target> one of these fixed
+# shapes (no '=' or '#': a SwiftBar parameter value stays one plain token). The studio maps
+# ``node:<id>`` to the page hash ``#node=<id>`` and ``review`` to ``#review``.
+STUDIO_TARGET_RE = re.compile(r"node:[a-z][a-z0-9]*(?:\.[a-z0-9]+)?|review|branches")
+
+
+def studio_action(bin_path, target: str = "") -> str:
+    """SwiftBar params that run ``apex-router studio --open [target]``: it reuses the running studio
+    (``~/.apex-router/studio/instance.json``) or starts one, and opens the browser — '' unless the
+    binary is valid (same ``valid_bin`` check as ``click_action``) and ``target`` is '' or a fixed
+    ``STUDIO_TARGET_RE`` shape. A new studio binds 127.0.0.1 and exits after 30 min without a
+    request. The token never reaches the menu."""
     if not valid_bin(bin_path):
         return ""
+    if target and not (isinstance(target, str) and STUDIO_TARGET_RE.fullmatch(target)):
+        return ""
     return (f"bash={bin_path} param1=studio param2=--idle-exit param3={STUDIO_IDLE_EXIT_S} "
-            "terminal=false refresh=false")
+            "param4=--open" + (f" param5={target}" if target else "") + " terminal=false refresh=false")
 
 
 def _col(s: str, w: int) -> str:
@@ -1163,19 +1236,72 @@ def _proxy_line(p: dict) -> str:
     return "proxy down"
 
 
+def _n(v) -> str:
+    """A count for a Flow row: ``—`` when the source is missing."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
+        return "—"
+    return f"{v:g}" if v < 10_000 else f"{v / 1000:.0f}k"
+
+
+def _flow_lines(fl: dict, bin_path=None) -> list:
+    """The Flow section rows; each opens the studio at its node (``studio_action``)."""
+    def row(text, ink, target, tip=""):
+        act = studio_action(bin_path, target)
+        params = [f"color={INK[ink]}"] + ([f'tooltip="{_tip(tip)}"'] if tip else []) + ([act] if act else [])
+        return f"{text} | {' '.join(params)}"
+    if isinstance(fl, dict) and fl.get("skipped"):
+        return [f"flow not checked (deadline) | color={INK['amber']}"]
+    if not isinstance(fl, dict) or fl.get("error"):
+        err = fl.get("error") if isinstance(fl, dict) else "missing"
+        return [_u(f"flow unavailable · {esc(err)}") + f" color={INK['muted']}"]
+    src = fl.get("sources") or {}
+    up = fl.get("upstreams") or {}
+    px = fl.get("proxy") or {}
+    out = [row(f"sources: pi {_n(src.get('pi'))} · claude {_n(src.get('claude'))} · codex {_n(src.get('codex'))}",
+               "blue", "node:src.pi", "requests per source, last 15 min · pi = pi turns in route_log.jsonl")]
+    port = px.get("port") if isinstance(px.get("port"), int) else "?"
+    act = px.get("activity") if isinstance(px.get("activity"), dict) else {}
+    state = "up" if px.get("up") else "not checked" if px.get("checked") is False else "down"
+    infl = _n(act.get("inflight")) if act else "—"
+    idle = fmt_age(act.get("idle_s")) if act else "—"
+    out.append(row(f"proxy :{port}: {state} · in flight {infl} · idle {idle}",
+                   "green" if px.get("up") else "amber" if state == "not checked" else "red", "node:detect",
+                   "proxy /stats activity: requests in progress and time since the last one started or ended "
+                   "· — = the running proxy does not report it"))
+    err = fl.get("error_pct")
+    ttft = fl.get("ttft_p50_ms")
+    ttft_s = "—" if not isinstance(ttft, (int, float)) else f"{ttft / 1000:.1f}s" if ttft >= 1000 else f"{ttft:.0f}ms"
+    errs = "—" if not isinstance(err, (int, float)) else f"{err:g}%"
+    out.append(row(f"upstreams: anthropic {_n(up.get('anthropic'))} · openai {_n(up.get('openai'))} · "
+                   f"local {_n(up.get('local'))} · err {errs} · ttft p50 {ttft_s}",
+                   "amber" if isinstance(err, (int, float)) and err >= 5 else "violet", "node:upstream",
+                   "requests per upstream, last 15 min · local = the local proxy :8789 · err = failed / all"))
+    rt, un = fl.get("retries"), fl.get("unreachable")
+    rt = rt if isinstance(rt, int) and not isinstance(rt, bool) else 0
+    un = un if isinstance(un, int) and not isinstance(un, bool) else 0
+    if rt > 0 or un > 0:
+        out.append(row(f"errors: retries {rt} · 502 {un}", "red", "node:upstream",
+                       "connect retries, and requests the proxy answered 502 (upstream unreachable), last 15 min"))
+    nd = fl.get("draft_changes")
+    if isinstance(nd, int) and not isinstance(nd, bool) and nd > 0:
+        out.append(row(f"draft: {nd} change{'s' if nd != 1 else ''}", "amber", "review",
+                       "a studio draft waits for review and apply"))
+    return out
+
+
 def menubar(snap: dict, history=None, bin_path=None) -> str:
     """SwiftBar/xbar plugin output for a snapshot. The bar is ``● N`` (active agents) plus
     `` ⚠`` when any agent is stuck or erroring; the dot colour stays the pressure rule.
     ``history`` (``widget_history.load`` rows, oldest first) feeds the sparklines; with a valid
-    ``bin_path`` rows open ``snapshot --detail`` on click (``click_action``)."""
+    ``bin_path`` rows open ``snapshot --detail`` on click (``click_action``); "Flow studio ↗" and
+    the Flow rows open the studio (``studio_action``)."""
     color = dot(snap)
     ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
     flag = " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
     head = [_bar(color, f"● {_active(snap)}{flag}"), "---"]
-    dash = click_action(bin_path, "all")
     studio = studio_action(bin_path)
-    if dash:
-        head += [f"Open dashboard ↗ | {dash}"] + ([f"Open flow studio ↗ | {studio}"] if studio else []) + ["---"]
+    if studio:
+        head += [f"Flow studio ↗ | color={INK['accent']} {studio}", "---"]
     sections: list = []
 
     def section(title, body, user_text=False):
@@ -1190,6 +1316,10 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
         ink = lvl if i == 0 else INK["red"] if x.startswith("errors 15m") else INK["text"]
         plines.append(f"{ln} color={ink}")
     section("Pressure", plines)
+    flow_at = None
+    if isinstance(snap.get("flow"), dict):
+        flow_at = len(sections)
+        section("Flow · 15m", _flow_lines(snap["flow"], bin_path))
     m = snap.get("measure") if isinstance(snap.get("measure"), dict) else {"error": "missing"}
     if m.get("limit_pct") is not None or m.get("error"):   # an age with no meter says nothing
         section("Limit", [_u(_measure_line(m))])
@@ -1218,8 +1348,10 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
         age = f"updated {fmt_age(ad.get('age_s'))} ago"
         body.append(f"stale · {age}" if ad.get("stale") else age)
         section(esc(ad.get("title", "?")), body, user_text=True)
-    # the studio row is not counted: adding it must not cost agent rows (MENU_LINES_MAX + 1 at most)
-    other = len(head) - (1 if studio and dash else 0) + 1 + sum(len(x) for x in sections if x)
+    # the studio row and the Flow section are not counted: they must not cost agent rows
+    # (at most MENU_LINES_MAX + 1 + the Flow section)
+    flow_n = len(sections[flow_at]) if flow_at is not None else 0
+    other = len(head) - (1 if studio else 0) + 1 + sum(len(x) for x in sections if x) - flow_n
     budget = max(30, MENU_LINES_MAX - other - 2)
     n_idle = sum(1 for a in ags if not a.get("error") and not agent_resources.agent_active(a)) \
         + len(_quiet_procs(snap))
@@ -1344,8 +1476,9 @@ def main(argv=None) -> int:
     g.add_argument("--graph", action="store_true",
                    help="print the agent call graph (session -> subagents/processes/models)")
     g.add_argument("--detail", metavar="ID",
-                   help="write a self-contained HTML detail page for a session id, a subagent id "
-                        "or 'all' to ~/.apex-router/widget/ and open it")
+                   help="write a self-contained HTML detail page for a session id or a subagent id "
+                        "to ~/.apex-router/widget/ and open it ('all': the dashboard page — deprecated: "
+                        "use apex-router studio)")
     ap.add_argument("--no-open", action="store_true", help="--detail: write the page, do not open it")
     ap.add_argument("--no-history", action="store_true",
                     help="--menubar: do not append this run to ~/.apex-router/widget/history.jsonl")
