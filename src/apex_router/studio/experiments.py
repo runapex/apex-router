@@ -76,7 +76,8 @@ def _fd_inside_roots(fd: int) -> bool:
         return False
     try:
         real = fcntl.fcntl(fd, getpath, b"\0" * 1024).split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
-        return _under_roots(os.path.realpath(real))
+        return _under_roots(real)                        # F_GETPATH is already the real path: no
+                                                         # second name lookup (that would race again)
     except OSError:
         return False
 
