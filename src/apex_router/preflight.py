@@ -158,38 +158,14 @@ def _touches(job_files, targets) -> bool:
 
 
 def _git_capped(argv: list, timeout: float = 10.0) -> str | None:
-    """git output, at most GIT_OUT_MAX bytes kept (the rest is dropped, the child is stopped), None on
-    any error or timeout. Bytes decode with replacement."""
-    import threading
-    import time
+    """git output, at most GIT_OUT_MAX bytes (git is stopped at the cap), None on any error or timeout.
+    Bytes decode with replacement. Time, bytes and the process tree are bounded by safe_proc."""
+    from .safe_proc import run_capped
     try:
-        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                             start_new_session=True)
-    except OSError:
+        _rc, out = run_capped(argv, timeout, GIT_OUT_MAX, stop_at_cap=True)
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    keep, timer, end = bytearray(), None, time.monotonic() + timeout
-    try:
-        timer = threading.Timer(timeout, p.kill)
-        timer.daemon = True
-        timer.start()
-        while len(keep) < GIT_OUT_MAX:
-            chunk = p.stdout.read(min(65536, GIT_OUT_MAX - len(keep)))
-            if not chunk:
-                break
-            keep += chunk
-    finally:
-        if timer is not None:
-            timer.cancel()
-        if p.poll() is None:
-            p.kill()                       # enough bytes, or an error: stop git, do not read the rest
-        try:
-            p.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
-        p.stdout.close()
-    if time.monotonic() > end:
-        return None
-    return keep.decode("utf-8", "replace")
+    return out.decode("utf-8", "replace")
 
 
 def review_rounds(repo: Path, targets: list[str]) -> dict:

@@ -118,3 +118,11 @@ def test_git_output_is_capped_and_bad_bytes_decode(monkeypatch):
     out = P._git_capped([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff' * 10_000_000)"])
     assert out is not None and len(out) == 1000
     assert P._git_capped([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5) is None
+
+
+def test_git_capped_kills_a_grandchild_that_holds_the_pipe():
+    import sys, time as _t
+    t = _t.monotonic()
+    code = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']); time.sleep(30)"
+    assert P._git_capped([sys.executable, "-c", code], timeout=0.5) is None
+    assert _t.monotonic() - t < 3

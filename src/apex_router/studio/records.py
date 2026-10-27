@@ -27,7 +27,6 @@ import json
 import os
 import re
 import statistics
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -266,44 +265,12 @@ def disk(paths: Paths) -> dict:
 
 # ---- launchd (injected runner; tests never call the real launchctl) ---------------------------------
 
-def _kill_group(p) -> None:
-    try:
-        os.killpg(p.pid, 9)            # the whole group: a grandchild must not keep the pipe open
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-
-
 def _run(argv: list, timeout: float = 5.0) -> tuple:
-    """(rc, text): stdout+stderr in one pipe, at most RUN_OUT_MAX bytes kept in memory (the rest is
-    read and dropped so the child never blocks). The child runs in its own process group; at the
-    timeout the whole group is killed, so a grandchild that holds the pipe cannot hang the read."""
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         start_new_session=True)
-    keep, end, timer = bytearray(), time.monotonic() + timeout, None
-    try:
-        timer = threading.Timer(timeout, _kill_group, (p,))
-        timer.daemon = True
-        timer.start()
-        while True:
-            chunk = p.stdout.read(8192)
-            if not chunk:
-                break
-            if len(keep) < RUN_OUT_MAX:
-                keep += chunk[: RUN_OUT_MAX - len(keep)]
-        rc = p.wait(timeout=max(0.1, end - time.monotonic()))
-    finally:
-        if timer is not None:
-            timer.cancel()
-        if p.poll() is None or time.monotonic() > end:
-            _kill_group(p)
-        try:
-            p.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
-        p.stdout.close()
-    if time.monotonic() > end:
-        raise subprocess.TimeoutExpired(argv, timeout)
-    return rc, keep.decode("utf-8", "replace")
+    """(rc, text): stdout+stderr, at most RUN_OUT_MAX bytes kept; time, bytes and the whole process
+    tree are bounded by safe_proc.run_capped (raises subprocess.TimeoutExpired)."""
+    from ..safe_proc import run_capped
+    rc, out = run_capped(argv, timeout, RUN_OUT_MAX, merge_stderr=True)
+    return rc, out.decode("utf-8", "replace")
 
 
 _ld_cache: dict = {}

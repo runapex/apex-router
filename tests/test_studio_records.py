@@ -456,12 +456,13 @@ def test_run_cleans_up_when_the_timer_cannot_start(monkeypatch):
     def popen(*a, **k):
         seen.append(real(*a, **k))
         return seen[-1]
-    monkeypatch.setattr(R.subprocess, "Popen", popen)
+    import apex_router.safe_proc as S
+    monkeypatch.setattr(S.subprocess, "Popen", popen)
 
     class NoThread:
         def __init__(self, *a, **k):
             raise RuntimeError("can't start new thread")
-    monkeypatch.setattr(R.threading, "Timer", NoThread)
+    monkeypatch.setattr(S.threading, "Timer", NoThread)
     with pytest.raises(RuntimeError):
         R._run(["/bin/sleep", "30"])
     assert seen[0].poll() is not None and seen[0].stdout.closed
