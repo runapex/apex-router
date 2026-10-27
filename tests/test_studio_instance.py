@@ -71,9 +71,9 @@ class _Bg:
 
     def __init__(self, paths, **kw):
         self.out, self.opened, self.srv = [], [], []
+        kw.setdefault("opener", self.opened.append)
         self.th = threading.Thread(target=server.serve, kwargs=dict(
-            paths=paths, emit=self.out.append, opener=self.opened.append,
-            on_start=self.srv.append, **kw), daemon=True)
+            paths=paths, emit=self.out.append, on_start=self.srv.append, **kw), daemon=True)
         self.th.start()
 
     def stop(self):
@@ -230,3 +230,15 @@ def test_second_open_during_a_slow_browser_start_reuses_the_first(paths, monkeyp
         gate.set()
         first[0].shutdown()
         th.join(10)
+
+
+def test_stop_during_a_slow_browser_start_clears_the_file(paths):
+    # xval P1 (pass 2): the browser opener blocked outside the cleanup try; a stop in that gap
+    # left instance.json behind. Now the opener runs in a thread and every exit clears the file.
+    ipath = server.instance_path(paths)
+    hold = threading.Event()
+    bg = _Bg(paths, opener=lambda url: hold.wait(30))
+    assert _wait(lambda: bg.srv) and _wait(ipath.exists)
+    bg.stop()                                  # the opener is still blocked
+    assert not ipath.exists()
+    hold.set()

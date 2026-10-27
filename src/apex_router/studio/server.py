@@ -490,35 +490,40 @@ def serve(port: int = 0, open_browser: bool = True, idle_exit_s: float = 0, emit
             write_instance(ipath, srv)       # replaces a stale file (dead pid or no answer)
         except OSError:
             pass                              # read-only home: the studio still runs, no reuse
-    url = url_of(srv)
-    if on_start:
-        on_start(srv)
-    emit(url + h)
-    _flush()
-    if idle_exit_s and idle_exit_s > 0:
-        def watch():
-            while True:
-                time.sleep(min(30.0, idle_exit_s))
-                if time.time() - srv.last_request > idle_exit_s and not srv.waiter.busy():
-                    srv.shutdown()
-                    return
-        threading.Thread(target=watch, daemon=True).start()
     prev_term = None
-    if threading.current_thread() is threading.main_thread():
-        def on_term(signum, frame):
-            raise KeyboardInterrupt     # a launchd / kill stop is a clean exit: the file goes
-        try:
-            prev_term = signal.signal(signal.SIGTERM, on_term)
-        except (ValueError, OSError):
-            prev_term = None
-    if open_browser:
-        _open_url(url + h, opener)
-    try:
+    try:                                      # from here on, every exit path clears the file
+        url = url_of(srv)
+        if on_start:
+            on_start(srv)
+        emit(url + h)
+        _flush()
+        if idle_exit_s and idle_exit_s > 0:
+            def watch():
+                while True:
+                    time.sleep(min(30.0, idle_exit_s))
+                    if time.time() - srv.last_request > idle_exit_s and not srv.waiter.busy():
+                        srv.shutdown()
+                        return
+            threading.Thread(target=watch, daemon=True).start()
+        if threading.current_thread() is threading.main_thread():
+            def on_term(signum, frame):
+                raise KeyboardInterrupt     # a launchd / kill stop is a clean exit: the file goes
+            try:
+                prev_term = signal.signal(signal.SIGTERM, on_term)
+            except (ValueError, OSError):
+                prev_term = None
+        if open_browser:
+            # in a thread: a slow browser start must not hold up Ctrl-C / SIGTERM or the cleanup
+            threading.Thread(target=_open_url, args=(url + h, opener), name="studio-open", daemon=True).start()
         while loop.is_alive():
             loop.join(0.5)                    # the main thread stays free for SIGTERM / Ctrl-C
     except KeyboardInterrupt:
-        srv.shutdown()
+        pass
     finally:
+        if loop.is_alive():                   # shutdown() waits for serve_forever: never call it on a dead loop
+            stopper = threading.Thread(target=srv.shutdown, daemon=True)
+            stopper.start()
+            stopper.join(5)
         clear_instance(ipath, srv)
         srv.server_close()
         if prev_term is not None:
