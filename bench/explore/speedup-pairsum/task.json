@@ -3,7 +3,7 @@
   "entry": "solve",
   "lang": "python",
   "tau": 50.0,
-  "tau_note": "score = traced line events reference / candidate on a hidden n=800 list; tau fixed before the pilot",
+  "tau_note": "score = child CPU (os.wait4 user+sys, no-op run subtracted, 5 ms floor, cap 100) reference / candidate on a hidden n=7500 list (reference ~1 s); tau fixed before the pilot, unchanged",
   "constraints": ["Python 3 standard library only", "define solve(a, lo, hi) at module level", "same result as the reference on every input"],
   "facts": ["Pairs are index pairs i < j; equal values at different indexes are different pairs."],
   "oracle": {"dir": "oracle", "cmd": ["{python}", "check.py"], "timeout": 180}

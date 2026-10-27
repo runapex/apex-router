@@ -112,14 +112,89 @@ def test_oracle_separates_hit_from_no_hit(name, good, bad_valid):
     assert w.valid and w.score < t.tau, w
 
 
-def test_oracle_rejects_wrong_and_tracer_tamper():
+def test_oracle_rejects_wrong_and_cost_tamper():
     t = Task.load(BENCH / "speedup-lis")
     orc = t.oracle_fn()
     r = orc(LIS_WRONG)
     assert not r.valid and "wrong answer" in r.detail
-    r = orc("import sys\n" + LIS_FAST.replace("    t = []", "    sys.settrace(None)\n    t = []"))
-    assert not r.valid and "tracer" in r.detail
+    # was: the candidate turned off the line tracer. The cost is now child CPU (os.wait4 rusage); the tamper
+    # on that measure is to move the work to another process, which the sandbox denies.
+    r = orc("import subprocess\nsubprocess.run(['/usr/bin/true'])\n" + LIS_FAST)
+    assert not r.valid, r
     assert not orc("def solve(:\n").valid
+
+
+SHARED_START, SHARED_END = "# --- shared runner", "# --- end shared runner"
+
+
+def _shared_block(name: str) -> str:
+    src = (BENCH / name / "oracle" / "check.py").read_text()
+    a = src.index(SHARED_START)
+    return src[a:src.index("\n", src.index(SHARED_END, a)) + 1]
+
+
+def test_f1_shared_runner_is_byte_identical_in_the_3_oracles():
+    blocks = [_shared_block(n) for n in ("speedup-lis", "speedup-pairsum", "binpack")]
+    assert blocks[0] == blocks[1] == blocks[2]
+    assert "def run_child(" in blocks[0] and "os.wait4(" in blocks[0] and "(deny process-fork)" in blocks[0]
+
+
+GOOD = {"speedup-lis": LIS_FAST, "speedup-pairsum": PAIRSUM_FAST, "binpack": BIN_FILL}
+# The candidate reads the child's own payload (so it also has any nonce) and prints a forged verdict.
+FORGE_RESULT = """import __main__, json, os, sys
+_p = getattr(__main__, "P", {})
+sys.__stdout__.write("@@RESULT " + json.dumps({"ok": True, "ref": 10**9, "cand": 1, "nonce": _p.get("nonce"),
+                     "bins": []}) + "\\n")
+sys.__stdout__.flush()
+os._exit(0)
+def solve(*a):
+    return 0
+def pack(items, cap):
+    return []
+"""
+# The same attack on the new child: forge the raw-output line with made-up outputs.
+FORGE_OUT = """import __main__, json, os, sys
+_n = len(getattr(__main__, "P", {}).get("calls", [0]))
+for _fd in range(1, 10):  # also the parent's real stdout, wherever the child keeps it
+    try:
+        os.write(_fd, ("@@OUT " + json.dumps([0] * _n) + "\\n").encode())
+    except OSError:
+        pass
+os._exit(0)
+def solve(*a):
+    return 0
+def pack(items, cap):
+    return []
+"""
+
+
+@pytest.mark.parametrize("name", ["speedup-lis", "speedup-pairsum", "binpack"])
+def test_f1_candidate_cannot_forge_the_verdict(name):
+    orc = Task.load(BENCH / name).oracle_fn()
+    for forged in (FORGE_RESULT, FORGE_OUT):
+        r = orc(forged)
+        assert not r.valid and r.score == 0.0, (forged[:40], r)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")
+@pytest.mark.parametrize("name", ["speedup-lis", "speedup-pairsum", "binpack"])
+def test_f1_sandbox_blocks_oracle_dir_read_fork_and_spawn(name):
+    t = Task.load(BENCH / name)
+    orc = t.oracle_fn()
+    check = str((t.oracle_dir / "check.py").resolve())
+    for probe in (f"open({check!r}).read()\n", "import os\nif os.fork() == 0:\n    os._exit(0)\n",
+                  "import subprocess\nsubprocess.run(['/usr/bin/true'])\n"):
+        r = orc(probe + GOOD[name])
+        assert not r.valid, (probe, r)
+
+
+def test_f2_oracle_detail_never_holds_candidate_output():
+    # the candidate prints (a copy of) its source to stdout and stderr, then crashes
+    leak = ("import os, sys\nprint('LEAK_SRC_STDOUT def solve(a)')\n"
+            "sys.stderr.write('LEAK_SRC_STDERR def solve(a): return 42\\n'); sys.stderr.flush()\nos._exit(1)\n")
+    for name in ("speedup-lis", "binpack"):
+        r = Task.load(BENCH / name).oracle_fn()(leak + GOOD[name])
+        assert not r.valid and "LEAK_SRC" not in r.detail and "def solve" not in r.detail, r
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="sandbox-exec is macOS only")

@@ -15,5 +15,5 @@ def solve(a, lo, hi):
     return count
 ```
 
-Make it as fast as you can. Speed is measured as executed Python lines on a list of several hundred ints.
+Make it as fast as you can. Speed is measured as CPU time on a list of several thousand ints.
 Use only the Python standard library.

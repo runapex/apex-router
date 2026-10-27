@@ -16,5 +16,5 @@ def solve(a):
     return max(best)
 ```
 
-Make it as fast as you can. Speed is measured as executed Python lines on a list of a few hundred ints.
+Make it as fast as you can. Speed is measured as CPU time on a list of several thousand ints.
 Do not change the input list in a way that changes the answer. Use only the Python standard library.

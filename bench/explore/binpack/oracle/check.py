@@ -1,23 +1,43 @@
 """Hidden oracle for bench/explore/binpack. Reads the candidate on stdin; prints one JSON line.
 The generator must never see this directory."""
-# --- shared runner (copied into each oracle dir; each oracle dir is self-contained) -------------
+# --- shared runner (byte-identical in each oracle dir; tests/test_explore_bench.py checks it) -----
+# The child process only runs model-written code and returns raw outputs. The parent (this oracle)
+# decides correctness and cost itself. The child never gets the expected answers, the oracle path or a
+# verdict to print. A child that prints a forged line can only forge outputs; the parent checks them.
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 
-
-# Model-written code runs here. On macOS, sandbox-exec denies network and any file write outside the
-# temp dir; CPU seconds are capped everywhere. Without sandbox-exec (not macOS) the oracle fails closed
-# unless EXPLORE_ALLOW_UNSANDBOXED=1.
-SANDBOX = '(version 1)(allow default)(deny network*)(deny file-write*)' \
-          '(allow file-write* (subpath (param "D")) (literal "/dev/null"))'
+# sandbox-exec profile: no network, writes only in the temp dir D, no reads of the oracle dir O,
+# no fork/spawn. CPU seconds are capped. Without sandbox-exec the oracle fails closed unless
+# EXPLORE_ALLOW_UNSANDBOXED=1.
+SANDBOX = ('(version 1)(allow default)(deny network*)(deny file-write*)'
+           '(allow file-write* (subpath (param "D")) (literal "/dev/null"))'
+           '(deny file-read* (subpath (param "O")))(deny process-fork)')
+ORACLE_DIR = os.path.dirname(os.path.realpath(__file__))
+OUT_TAG = "@@OUT "
+CHILD = r'''
+import importlib.util, json, os, sys
+P = json.loads(sys.stdin.read())
+out = os.fdopen(os.dup(1), "w")
+os.dup2(2, 1)  # candidate prints go to stderr; the parent discards stderr
+spec = importlib.util.spec_from_file_location("candidate", P["path"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+fn = getattr(mod, P["entry"])
+res = [fn(*args) for args in P["calls"]]
+out.write("@@OUT " + json.dumps(res) + "\n")
+out.flush()
+'''
 
 
 def sandboxed(d: str) -> list:
     if os.path.exists("/usr/bin/sandbox-exec"):
-        return ["/usr/bin/sandbox-exec", "-D", "D=" + os.path.realpath(d), "-p", SANDBOX]
+        return ["/usr/bin/sandbox-exec", "-D", "D=" + os.path.realpath(d), "-D", "O=" + ORACLE_DIR,
+                "-p", SANDBOX]
     if os.environ.get("EXPLORE_ALLOW_UNSANDBOXED") == "1":
         return []
     raise RuntimeError("no sandbox-exec; set EXPLORE_ALLOW_UNSANDBOXED=1 to run unsandboxed")
@@ -27,68 +47,61 @@ def _limits(timeout: float) -> None:
     import resource
     cpu = int(timeout) + 5
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (64 << 20, 64 << 20))
 
 
-def run_child(candidate: str, child_code: str, payload: dict, timeout: float) -> dict:
-    """Run the candidate in a separate `python -I` process in an empty temp dir.
-    The child gets the candidate path and the payload on stdin. It does not get the oracle path."""
+def run_child(source: str, entry: str, calls: list, timeout: float) -> dict:
+    """Run `entry(*args)` for each args in `calls` from `source` in a sandboxed `python -I -S` child in an
+    empty temp dir. -> {"ok": True, "out": [raw results], "cpu": child user+sys s} or {"ok": False, "why"}.
+    `cpu` comes from os.wait4 rusage of the child, never from the child. "why" is a fixed string."""
     with tempfile.TemporaryDirectory(prefix="explore-cand-") as d:
         path = os.path.join(d, "candidate.py")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(candidate)
-        payload = dict(payload, candidate_path=path)
-        try:
-            p = subprocess.run(sandboxed(d) + [sys.executable, "-I", "-c", child_code], input=json.dumps(payload),
-                               capture_output=True, text=True, timeout=timeout, cwd=d,
-                               env={"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"},
-                               preexec_fn=lambda: _limits(timeout))
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "why": f"timeout after {timeout:g} s"}
-        lines = [x for x in p.stdout.splitlines() if x.startswith("@@RESULT ")]
-        if not lines:
-            err = (p.stderr.strip().splitlines() or ["no output"])[-1][:160]
-            return {"ok": False, "why": f"candidate crashed: {err}"}
-        return json.loads(lines[-1][len("@@RESULT "):])
+            fh.write(source)
+        with tempfile.TemporaryFile("w+") as fin, tempfile.TemporaryFile("w+b") as fout:
+            fin.write(json.dumps({"path": path, "entry": entry, "calls": calls}))
+            fin.seek(0)
+            p = subprocess.Popen(sandboxed(d) + [sys.executable, "-I", "-S", "-c", CHILD], stdin=fin,
+                                 stdout=fout, stderr=subprocess.DEVNULL, cwd=d,
+                                 env={"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"},
+                                 preexec_fn=lambda: _limits(timeout))
+            end, timed_out = time.monotonic() + timeout, False
+            while True:
+                pid, status, ru = os.wait4(p.pid, os.WNOHANG)
+                if pid:
+                    break
+                if time.monotonic() >= end:
+                    p.kill()
+                    timed_out = True
+                    pid, status, ru = os.wait4(p.pid, 0)
+                    break
+                time.sleep(0.005)
+            p.returncode = os.waitstatus_to_exitcode(status)  # reaped here; Popen must not wait again
+            cpu = ru.ru_utime + ru.ru_stime
+            if timed_out:
+                return {"ok": False, "why": "timeout"}
+            fout.seek(0)
+            lines = [x for x in fout.read().decode("utf-8", "replace").splitlines() if x.startswith(OUT_TAG)]
+    if p.returncode != 0 or len(lines) != 1:
+        return {"ok": False, "why": "candidate crashed or printed no result"}
+    try:
+        out = json.loads(lines[0][len(OUT_TAG):])
+    except ValueError:
+        return {"ok": False, "why": "candidate result is not JSON"}
+    if not isinstance(out, list) or len(out) != len(calls):
+        return {"ok": False, "why": "candidate result has the wrong shape"}
+    return {"ok": True, "out": out, "cpu": cpu}
 
 
 def emit(valid: bool, score: float, detail: str) -> None:
     print(json.dumps({"valid": bool(valid), "score": float(score), "detail": detail[:300]}))
-# ------------------------------------------------------------------------------------------------
+# --- end shared runner ----------------------------------------------------------------------------
 
 import math
 import random
-import secrets
 
 SEED = 20261029
 TIME_LIMIT_S = 20.0  # all 12 instances together; a timeout makes the candidate invalid
-
-CHILD = r'''
-import importlib.util, json, sys, time
-P = json.loads(sys.stdin.read())
-nonce = P["nonce"]
-real_out = sys.stdout
-sys.stdout = sys.stderr
-
-def result(d):
-    real_out.write("@@RESULT " + json.dumps(dict(d, nonce=nonce)) + "\n"); real_out.flush()
-    raise SystemExit(0)
-
-try:
-    spec = importlib.util.spec_from_file_location("candidate", P["candidate_path"])
-    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-    pack = getattr(mod, "pack")
-except BaseException as e:
-    result({"ok": False, "why": "load failed: " + type(e).__name__})
-out = []
-for i, (items, cap) in enumerate(P["cases"]):
-    try:
-        bins = pack(list(items), cap)
-        bins = [[int(x) for x in b] for b in bins]
-    except BaseException as e:
-        result({"ok": False, "why": f"hidden instance {i}: raised or bad return type ({type(e).__name__})"})
-    out.append(bins)
-result({"ok": True, "bins": out})
-'''
 
 
 def hidden_cases():
@@ -113,23 +126,28 @@ def hidden_cases():
     return cases
 
 
+def _bins_ok(bins, n: int, cap: int, items: list) -> bool:
+    """The parent checks the child's raw bins: list of non-empty int lists, each index once, no overflow."""
+    if not isinstance(bins, list) or not all(isinstance(b, list) and b for b in bins):
+        return False
+    flat = [x for b in bins for x in b]
+    if not all(type(x) is int for x in flat) or sorted(flat) != list(range(n)):
+        return False
+    return all(sum(items[x] for x in b) <= cap for b in bins)
+
+
 def check(cand: str) -> None:
+    """The child returns bins only. The parent checks them and computes the score."""
     cases = hidden_cases()
-    nonce = secrets.token_hex(8)
-    r = run_child(cand, CHILD, {"nonce": nonce, "cases": cases}, TIME_LIMIT_S)
-    if r.get("nonce", nonce) != nonce or not r.get("ok"):
-        emit(False, 0.0, r.get("why", "bad child result"))
+    r = run_child(cand, "pack", [[list(items), cap] for items, cap in cases], TIME_LIMIT_S)
+    if not r["ok"]:
+        emit(False, 0.0, r["why"])
         return
     ratios = []
-    for i, ((items, cap), bins) in enumerate(zip(cases, r["bins"])):
-        flat = [x for b in bins for x in b]
-        if sorted(flat) != list(range(len(items))):
-            emit(False, 0.0, f"hidden instance {i}: each item index must be in exactly one bin")
+    for i, ((items, cap), bins) in enumerate(zip(cases, r["out"])):
+        if not _bins_ok(bins, len(items), cap, items):
+            emit(False, 0.0, f"hidden instance {i}: bins are not a valid packing")
             return
-        for b in bins:
-            if not b or sum(items[x] for x in b) > cap:
-                emit(False, 0.0, f"hidden instance {i}: a bin is empty or over capacity")
-                return
         ratios.append(math.ceil(sum(items) / cap) / len(bins))
     score = sum(ratios) / len(ratios)
     fam = [sum(ratios[k:k + 4]) / 4 for k in (0, 4, 8)]

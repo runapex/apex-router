@@ -3,7 +3,7 @@
   "entry": "solve",
   "lang": "python",
   "tau": 20.0,
-  "tau_note": "score = traced line events reference / candidate on a hidden n=600 list; tau fixed before the pilot",
+  "tau_note": "score = child CPU (os.wait4 user+sys, no-op run subtracted, 5 ms floor, cap 100) reference / candidate on a hidden n=9000 list (reference ~1 s); tau fixed before the pilot, unchanged",
   "constraints": ["Python 3 standard library only", "define solve(a) at module level", "same result as the reference on every input"],
   "facts": ["Strictly increasing: equal values do not extend a subsequence."],
   "oracle": {"dir": "oracle", "cmd": ["{python}", "check.py"], "timeout": 180}
