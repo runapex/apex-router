@@ -123,11 +123,18 @@ def _studio(argv) -> int:
     ap.add_argument("--no-open", action="store_true", help="print the URL, do not open a browser")
     ap.add_argument("--idle-exit", type=int, default=0, metavar="S",
                     help="stop after S seconds without a request (0 = never; the menu uses 1800)")
+    ap.add_argument("--open", nargs="?", const="", default=None, metavar="TARGET",
+                    help="reuse the running studio (~/.apex-router/studio/instance.json) when it answers, "
+                         "else start one; open the page at TARGET: node:<id>, review or branches "
+                         "(or #node=<id>, #review, #branches); no TARGET = the flow")
     args = ap.parse_args(argv)
     if not 0 <= args.port <= 65535 or args.idle_exit < 0:
         ap.error("bad --port or --idle-exit")
     from .studio import server
-    return server.serve(port=args.port, open_browser=not args.no_open, idle_exit_s=args.idle_exit)
+    if args.open is not None and server.target_hash(args.open) is None:
+        ap.error("bad --open target (use node:<id>, review or branches)")
+    return server.serve(port=args.port, open_browser=not args.no_open, idle_exit_s=args.idle_exit,
+                        open_target=args.open)
 
 
 def main(argv=None) -> int:
