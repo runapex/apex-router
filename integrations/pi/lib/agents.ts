@@ -1072,7 +1072,12 @@ const JOB_ID = /^\d{14}-[A-Za-z0-9]+$/;
  *  is not refused for ever). Reads the newest JOB_SCAN_CAP job names only.
  *  skipped: unreadable or too large meta.json. partial: the time budget ended before the scan did. */
 export function reviewRounds(root: string, repo: string, branch: string, io: GateIO, deadline: number, now = Date.now()): { nogo: string[]; skipped: number; partial: boolean; capped: boolean } {
+	// One ROUND per reviewed commit (meta.head), not per job: parallel part-reviews of one commit are one
+	// round (owner, 2026-10-28: 3 parts of round 1 counted as 3 rounds). A GO on a commit ends the scan, and
+	// NO-GO parts of that same commit do not count. nogo holds the first NO-GO job id of each round.
 	const r = { nogo: [] as string[], skipped: 0, partial: false, capped: false };
+	const rounds = new Map<string, string>(); // head (or the job id when no head) -> first NO-GO job id seen
+	const pending: { key: string; id: string }[] = [];
 	const ls = io.list(root, JOB_LIST_CEILING);
 	if (!ls) return r;
 	r.capped = ls.capped;
@@ -1082,7 +1087,7 @@ export function reviewRounds(root: string, repo: string, branch: string, io: Gat
 			r.partial = true;
 			break;
 		}
-		let m: { kind?: unknown; repo?: unknown; branch?: unknown; created?: unknown };
+		let m: { kind?: unknown; repo?: unknown; branch?: unknown; created?: unknown; head?: unknown };
 		try {
 			const f = io.read(join(root, id, "meta.json"), META_READ_CAP);
 			if (!f) continue; // a folder without meta.json is not a job
@@ -1097,14 +1102,21 @@ export function reviewRounds(root: string, repo: string, branch: string, io: Gat
 		}
 		if (m?.kind !== "xval" || m.repo !== repo || m.branch !== branch) continue;
 		if (typeof m.created === "number" && now - m.created > ROUND_WINDOW_MS) break; // newest first: the rest is older
+		const key = typeof m.head === "string" && /^[0-9a-f]{7,64}$/.test(m.head) ? `head:${m.head}` : `job:${id}`;
 		try {
 			const res = io.read(join(root, id, "result.md"), RESULT_TAIL_CAP, true);
-			if (res && endsGo(res.text)) break; // the change before this GO is done
-			if (res && endsNoGo(res.text)) r.nogo.push(id);
+			if (res && endsGo(res.text)) {
+				// this commit passed: its NO-GO parts are not a round, and older rounds belong to earlier changes
+				for (let i = pending.length - 1; i >= 0; i--) if (pending[i].key === key) pending.splice(i, 1);
+				break;
+			}
+			if (res && endsNoGo(res.text)) pending.push({ key, id });
 		} catch {
 			r.skipped++;
 		}
 	}
+	for (const p of pending) if (!rounds.has(p.key)) rounds.set(p.key, p.id);
+	r.nogo = [...rounds.values()];
 	return r;
 }
 
