@@ -1,4 +1,9 @@
-● 3 ⚠ | color=#FF9500
+● 3 ⚠ 3 | color=#FF9500
+---
+Problems · 3 | size=12 color=#B5372B,#f7768e
+proxy down · health check got no answer | color=#B5372B,#f7768e bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:detect terminal=false refresh=false
+upstream errors 9% · 15 min · failed requests | color=#A86A1E,#e0af68 bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:upstream terminal=false refresh=false
+pressure amber · transport errors | color=#A86A1E,#e0af68 bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open param5=node:sink.pressure terminal=false refresh=false
 ---
 Flow studio ↗ | color=#C15F3C,#7aa2f7 bash=/opt/apex/bin/apex-router param1=studio param2=--idle-exit param3=1800 param4=--open terminal=false refresh=false
 ---
@@ -45,17 +50,13 @@ demo bbbb2222          busy     70MB   40%  5 req · out 4.5k · ↑2.9M ↓44K 
 --Open details ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
 --Σ 60m  5 req · in 600 · cached 750.0k · write 10.0k · out 4.5k · cache 99% · ↑2.9M ↓44K | font=Menlo size=12 emojize=false symbolize=false tooltip="main thread + every subagent, last 60 min of proxy traffic" color=#141413,#c0caf5
 --cpu  █                               40% | font=Menlo size=12 emojize=false symbolize=false tooltip="cpu % sampled each refresh · last 1 samples (~1/min) · scale 0..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
---mem  ▄                               70MB | font=Menlo size=12 emojize=false symbolize=false tooltip="physical footprint · last 1 samples (~1/min) · scale 70MB..max" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
---ctx  ▄                               15% 152k | font=Menlo size=12 emojize=false symbolize=false tooltip="context of the latest main-thread request · last 1 samples (~1/min)" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
 --req  ▁▁▁▁▁▁▁▁▆█▁▁                    0 per 5 min · 60 min | font=Menlo size=12 emojize=false symbolize=false tooltip="requests per 5-min bucket, main + subagents, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
---tok  ▁▁▁▁▁▁▁▁▆█▁▁                    out 0 per 5 min | font=Menlo size=12 emojize=false symbolize=false tooltip="output tokens per 5-min bucket, last 60 min" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=bbbb2222-0000-4000-8000-000000000002 terminal=false refresh=false
 --main  1 req · out 900 · cache 99% · ctx 152k/1M 15% · ttft 1.5s | font=Menlo size=12 emojize=false symbolize=false tooltip="in 120 · cached 150.0k · write 2.0k · out 900" color=#141413,#c0caf5
 --Subagents 60m · 2 · 0 running · 1 ⚠ | color=#141413,#c0caf5
 --⧗ hung review             4 req · out 3.6k · cache 99% · ctx 152k/1M 15% · last 12m | font=Menlo size=12 emojize=false symbolize=false tooltip="type general-purpose · id b0000000002 · state done · in 480 · cached 600.0k · write 8.0k · out 3.6k · waiting? its session is busy and nothing else wrote for 12m (heuristic) · run 18m · waiting? 12m · depth 1 · flagged: quiet > 10 min whil…" color=#141413,#c0caf5
 --✓ finished early          0 req · out 0 · last 25m | font=Menlo size=12 emojize=false symbolize=false tooltip="type Explore · id b0000000001 · state done · out 0 · run 15m · done 25m · depth 1" color=#141413,#c0caf5
 --Models 60m | color=#141413,#c0caf5
 ----claude-sonnet-5-5       4 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#c0caf5
-----claude-opus-5-5         1 req | font=Menlo size=12 emojize=false symbolize=false color=#141413,#c0caf5
 pi:pilot 0000abcd      active  210MB   60%  1 req · out 900 · ↑586K ↓8.8K · ctx 52k/1M 5% · last 2m | font=Menlo size=12 emojize=false symbolize=false tooltip="pid 300 · up 1d · 2 procs · cpu time 43m · io life 801/701MB · io now r 0.00 w 0.00 MB/s · rss 84MB · cpu sampled · matched by lsof-cwd" bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=0199aaaa-0000-7000-8000-00000000abcd terminal=false refresh=false
 --Open details ↗ | bash=/opt/apex/bin/apex-router param1=snapshot param2=--detail param3=0199aaaa-0000-7000-8000-00000000abcd terminal=false refresh=false
 --Σ 60m  1 req · in 10.0k · cached 40.0k · write 2.0k · out 900 · cache 77% · ↑586K ↓8.8K | font=Menlo size=12 emojize=false symbolize=false tooltip="main thread + every subagent, last 60 min of proxy traffic" color=#141413,#c0caf5
