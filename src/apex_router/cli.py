@@ -127,7 +127,14 @@ def _studio(argv) -> int:
                     help="reuse the running studio (~/.apex-router/studio/instance.json) when it answers, "
                          "else start one; open the page at TARGET: node:<id>, review or branches "
                          "(or #node=<id>, #review, #branches); no TARGET = the flow")
+    ap.add_argument("--opens", action="store_true",
+                    help="print how often the studio page was opened (today, 7 days, 30 days) and exit")
     args = ap.parse_args(argv)
+    if args.opens:
+        from .studio import flow, opens
+        import json as _json
+        print(_json.dumps(opens.summary(flow.resolve_paths().studio)))
+        return 0
     if not 0 <= args.port <= 65535 or args.idle_exit < 0:
         ap.error("bad --port or --idle-exit")
     from .studio import server

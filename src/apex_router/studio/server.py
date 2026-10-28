@@ -47,7 +47,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import restart as restart_mod
-from . import drafts, experiments, flow, live, records, traffic, workflows
+from . import drafts, experiments, flow, live, opens, records, traffic, workflows
 
 try:
     import fcntl
@@ -306,6 +306,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(500, f"internal error: {type(e).__name__}")
 
     def _page(self):
+        try:                                       # a count only: no path, query, token or time of day
+            opens.record(self.server.get_paths().studio)
+        except Exception:
+            pass
         nonce = secrets.token_urlsafe(18)
         html = self.server.ui.replace("__NONCE__", nonce).encode("utf-8")
         self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": _csp(nonce)})
