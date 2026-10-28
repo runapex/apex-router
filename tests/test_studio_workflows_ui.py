@@ -446,7 +446,9 @@ def test_old_tasks_fold_under_one_row_but_running_and_newest_stay():
 def test_the_older_row_is_one_fold_button_with_its_count():
     SCRIPT = _script(_html())
     body = _fn_src("sessionRow")
-    assert "splitOld(" in body and "SCREEN1.older" in body
+    assert "splitOld(" in body and "olderRow(" in body
+    row = _fn_src("olderRow")
+    assert "SCREEN1.older" in row and "foldBtn(" in row and "old.length" in row
     assert "aria-expanded" in _fn_src("foldBtn")
     assert re.search(r'older:\s*"older"', SCRIPT)
 

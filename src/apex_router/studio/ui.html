@@ -512,11 +512,11 @@ const SCREEN1 = {
   title: "Workflows",
   w24: "24 h",
   w7: "7 days",
-  more7: "Show 7 days",
-  less7: "Show 24 h",
+  show: "Show",
   empty: "No work yet.",
   slow: "Loading…",
-  more: "more"
+  more: "more",
+  older: "older"
 };
 const plusMore = n => "+" + Math.max(0, Math.round(+n || 0)) + " more";   // SCREEN1.more
 const WF_TIMEOUT_MS = 15000, WF_REFRESH_MS = 30000, WF_PENDING_MAX = 200, WF_OPEN_MAX = 2000, SEL_MAX = 20;
@@ -733,6 +733,28 @@ function taskRow(t){
   }
   return li;
 }
+/* old tasks fold: a task with no running sub-agent and no activity in the last OLD_TASK_S goes under one
+   "+N older" row. Running tasks and the newest task always show. A task with no time stays shown. */
+const OLD_TASK_S = 7200;
+function lastActivity(t){
+  let last = Math.max(+t.end || 0, +t.start || 0);
+  for (const a of arr(t.agents, 50)) last = Math.max(last, +a.end || 0, +a.start || 0);
+  return last;
+}
+function splitOld(tasks, now){
+  const show = [], old = [];
+  tasks.forEach((t, i) => {
+    const last = lastActivity(t);
+    const keep = i === 0 || isRun(t.state) || treeRuns(arr(t.agents, 50)) || !last || now - last <= OLD_TASK_S;
+    (keep ? show : old).push(t);
+  });
+  return {show, old};
+}
+function olderRow(sid, old){
+  const key = "o|" + sid;
+  return h("li", {class: "mr"}, h("div", {class: "row1"}, h("span", {class: "stn"}, h("span", {class: "tstop", "aria-hidden": "true"})),
+    foldBtn(key, false, [h("span", {class: "more", text: "+" + old.length + " " + SCREEN1.older})])));
+}
 function sessionRow(s, multi){
   const k = AGENT_NAME[s.agent] ? s.agent : "other", tasks = arr(s.tasks, 200);
   const running = s.state === "running" || tasks.some(t => t.state === "running");
@@ -746,7 +768,12 @@ function sessionRow(s, multi){
         h("span", {class: "mt num", text: running ? ago(s.start) : ago(s.last) + " " + SCREEN1.ago})]),
       multi ? h("button", {type: "button", class: "mini", text: SCREEN1.split, "data-k": "sp" + s.id, "aria-label": "Split " + name,
         onclick: () => splitSession(s.id)}) : null, pick));
-  if (open && tasks.length) li.append(h("ul", {class: "mline " + hueOf(k)}, tasks.slice().reverse().map(taskRow)));
+  if (open && tasks.length){
+    const {show, old} = splitOld(tasks.slice().reverse(), nowS());
+    const rows = show.map(taskRow);
+    if (old.length){ rows.push(olderRow(s.id, old)); if (isOpen("o|" + s.id, false)) rows.push(...old.map(taskRow)); }
+    li.append(h("ul", {class: "mline " + hueOf(k)}, rows));
+  }
   return li;
 }
 function workflowBlock(w){
@@ -777,7 +804,7 @@ function renderWorkflows(){
   if (W.doc && !list.length) kids.push(h("p", {class: "empty", text: SCREEN1.empty}));
   kids.push(h("ul", {class: "wfs"}, list.map(workflowBlock)));
   kids.push(h("p", {class: "wfmore"}, h("button", {type: "button", class: "btn", "data-k": "win",
-    text: S.wfWin === "7d" ? SCREEN1.less7 : SCREEN1.more7, onclick: () => setWindow(S.wfWin === "7d" ? "24h" : "7d")})));
+    text: SCREEN1.show + " " + (S.wfWin === "7d" ? SCREEN1.w24 : SCREEN1.w7), onclick: () => setWindow(S.wfWin === "7d" ? "24h" : "7d")})));
   box.replaceChildren(...kids);
   box.scrollTop = keep;
   if (actKey){ const e = Array.from(box.querySelectorAll("[data-k]")).find(x => x.getAttribute("data-k") === actKey); if (e) e.focus(); }
