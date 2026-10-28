@@ -347,3 +347,18 @@ def test_keepwarm_power_check_is_bounded(env, tmp_path):
                        capture_output=True, text=True, timeout=60)
     assert time.monotonic() - t < 15
     assert p.returncode == 1 and p.stderr.strip().endswith("(power: unknown)"), p.stderr
+
+
+def test_keepwarm_power_check_runs_no_shell(env, tmp_path):
+    """xval round 2: one-argument perl exec ran a shell; AZ_KEEPWARM_PMSET is now argv words only."""
+    e = keepwarm_env(env, tmp_path)
+    mark = tmp_path / "pwned"
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": f"touch${{IFS}}{mark};"},
+                       capture_output=True, text=True, timeout=60)
+    assert not mark.exists()
+    p2 = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                        "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": f"/bin/sh -c 'touch {mark}'"},
+                        capture_output=True, text=True, timeout=60)
+    # words only: sh gets "-c" and "'touch" as separate words, so the quoted command is not one script
+    assert p.returncode == 1 and p2.returncode == 1 and "(power: unknown)" in p.stderr

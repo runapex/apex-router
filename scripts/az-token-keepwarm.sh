@@ -36,7 +36,9 @@ power_state() {
   local last
   # the whole log (about 17k lines, < 1 s, only on a failure): a Wake can be hours of other lines back
   # bounded: perl alarm stops the command after 5 s (a stalled pmset must not hold the failure line)
-  last=$(perl -e 'alarm 5; exec @ARGV' ${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null \
+  local cmd
+  read -r -a cmd <<< "${AZ_KEEPWARM_PMSET:-pmset -g log}"      # words only: no shell runs the value
+  last=$(perl -e 'alarm 5; exec { $ARGV[0] } @ARGV' "${cmd[@]}" 2>/dev/null \
          | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} [+-][0-9]{4} (Sleep|Wake|DarkWake) ' | tail -n 1 \
          | awk '{print $4}') || true
   case "$last" in

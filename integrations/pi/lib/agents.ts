@@ -528,6 +528,12 @@ export class JobManager {
 		const cap = lvl === "RED" ? 0 : throttled ? 1 : lvl === "AMBER" ? Math.min(this.o.cap, 2) : this.o.cap;
 		let free = cap - this.running().length; // the cap counts every job on the machine
 		for (const m of this.managed().filter(x => (x.state === "queued" || x.state === "queued(pressure)") && !(x.resume_at !== undefined && x.resume_at > now))) {
+			// D1: a resume waits in the queue; its wall clock runs from the first start. Past it, the job ends here.
+			if (m.first_started !== undefined && now - m.first_started > m.timeout_s * 1000) {
+				this.write({ ...m, state: "timed_out(wall)", reason: `wall clock passed while the resume waited (after: ${m.resumed_from ?? "a temporary error"})`, ended: now });
+				writeFileSync(join(this.dir(m.id), "result.md"), this.renderResult(this.read(m.id)!));
+				continue;
+			}
 			if (free <= 0) {
 				const st: JobState = lvl === "RED" || ((lvl === "AMBER" || throttled) && this.running().length < this.o.cap) ? "queued(pressure)" : "queued";
 				if (m.state !== st) this.write({ ...m, state: st });

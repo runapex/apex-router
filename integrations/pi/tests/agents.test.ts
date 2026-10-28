@@ -138,6 +138,23 @@ test("no resume for other errors, a cancelled job, or a job at its cost limit", 
 	m.stop();
 });
 
+test("a resume that waits past the wall clock (pressure RED) ends timed_out(wall), not started late", async () => {
+	let lvl: "GREEN" | "RED" = "GREEN";
+	const { m, done } = mgr({ resumeDelayMs: 100, pressure: () => lvl, defaultTimeoutS: 2 });
+	const j = m.spawn({ task: "mode:key-fail" });
+	for (let i = 0; i < 60 && m.read(j.id)!.state === "running"; i++) await new Promise(r => setTimeout(r, 50));
+	lvl = "RED";                                          // the resume cannot start
+	assert.equal(m.read(j.id)!.resumes, 1);
+	await new Promise(r => setTimeout(r, 2300));          // past the 2 s wall clock from the first start
+	lvl = "GREEN";
+	const [r] = await m.wait([j.id], 5_000);
+	assert.equal(r!.state, "timed_out(wall)");
+	assert.match(r!.reason ?? "", /wall clock passed while the resume waited/);
+	assert.equal(r!.pid, undefined, "never started again");
+	assert.equal(done.length, 1);
+	m.stop();
+});
+
 test("resumeArgv replaces only the task line; TRANSIENT_START matches only the two transient errors", () => {
 	assert.deepEqual(resumeArgv(["pi", "-p", "--session-id", "s", "Task: do X"]), ["pi", "-p", "--session-id", "s", RESUME_TASK]);
 	assert.deepEqual(resumeArgv(["fake", "mode"]), ["fake", "mode", RESUME_TASK]);
