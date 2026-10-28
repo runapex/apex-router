@@ -222,7 +222,7 @@ Implementation notes (added 2026-10-28, `studio/workflows.py`; choices the contr
   `linked_by` (`spawn` | `pid` | `file`). A task or agent with more than 12 agents adds `agents_more` (the N of "+N more").
 - Job to parent link: exact when the parent's 64 KiB head or tail shows the agent_spawn result
   (`details.id`) or the job's own session is `apexjob-<parent job>`. Else by process: the job's
-  `parent_pid` is the `pid` of a running parent job (depth 2), or the `parent_pid` of a job the
+  `parent_pid` is the `pid` of a parent job and `created` falls in its run time (depth 2), or the `parent_pid` of a job the
   session links exactly, and `created` falls in the session span (+2 h). A pi process with no exact
   link gets one by requests: each job votes for the pi session with the nearest request (telemetry,
   same `session_id`) at most 120 s before `created`. meta.json has no parent session field.
