@@ -50,7 +50,7 @@ The gate code is in `integrations/pi/lib/agents.ts` (`spawnGate`). Tests: `integ
 |---|---|---|---|
 | Pending branches | agent `worker`, `coordinator` | 3 or more pending branches in the repo of the job cwd | the branches |
 | Open decisions | agent `worker`, `coordinator` | 5 or more open rows in `~/.apex-router/decisions.jsonl` | id, topic, text |
-| Review rounds | kind `xval` | 3 or more review rounds on the same repo and branch that ended in `NO-GO`. One round = one reviewed commit (HEAD): parallel part-reviews of one commit count once. The count goes back to the newest `GO` on that branch, inside 7 days, and only when the scan is complete | the job ids, and "send the open finding to the owner as one question" |
+| Review rounds | kind `xval` | 3 or more review rounds on the same repo and branch that ended in `NO-GO`. One round = one reviewed commit (HEAD): parallel part-reviews of one commit count once. The count goes back to the newest `GO` on that branch, inside 7 days, and only when the scan is complete. A review that ends in `BLOCKED` (it could not read the code) is not a round | the job ids, and "send the open finding to the owner as one question" |
 
 `scout`, `reviewer` and `xval` are never refused by the branch and decision gates.
 

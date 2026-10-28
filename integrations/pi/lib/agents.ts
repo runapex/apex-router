@@ -938,7 +938,7 @@ export const RESULT_TAIL_CAP = 4096;
 export const DECISIONS_READ_CAP = 1 << 20;
 export const DECISIONS_PATH = join(homedir(), ".apex-router", "decisions.jsonl");
 export const ROUND_MESSAGE = "send the open finding to the owner as one question";
-export const EVIDENCE_LINE = "A P1 counts only with evidence: a line number and a concrete input or a failing test. A GO lists the claims you checked.";
+export const EVIDENCE_LINE = "A P1 counts only with evidence: a line number and a concrete input or a failing test. A GO lists the claims you checked. If you cannot read the code, the last line is BLOCKED, not NO-GO.";
 
 /** Append the fixed evidence line to an xval task (once). */
 export function withEvidence(task: string): string {
@@ -1055,7 +1055,8 @@ export function headInfo(cwd: string, git: GitRun, timeoutMs: number): { repo: s
 }
 
 const lastLine = (text: string) => text.split("\n").map(l => l.replace(/[*_`#>|]/g, "").trim()).filter(Boolean).pop() ?? "";
-/** true when the last non-empty line (markdown marks removed) ends in NO-GO. */
+/** true when the last non-empty line (markdown marks removed) ends in NO-GO. BLOCKED (the reviewer could not read
+ * the code) is neither NO-GO nor GO: it is not a round and does not reset the count. */
 export function endsNoGo(text: string): boolean {
 	return /\bNO-GO[.!]?$/i.test(lastLine(text));
 }

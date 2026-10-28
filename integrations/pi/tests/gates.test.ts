@@ -221,7 +221,7 @@ test("gate 6: the job scan reads only the newest 2000 job names", () => {
 
 // ------------------------------------------------------------------ SUCCESS 7
 test("gate 7: every xval task gets the evidence line once", () => {
-	assert.equal(EVIDENCE_LINE, "A P1 counts only with evidence: a line number and a concrete input or a failing test. A GO lists the claims you checked.");
+	assert.equal(EVIDENCE_LINE, "A P1 counts only with evidence: a line number and a concrete input or a failing test. A GO lists the claims you checked. If you cannot read the code, the last line is BLOCKED, not NO-GO.");
 	const t = withEvidence("Review the diff.");
 	assert.equal(t, `Review the diff.\n\n${EVIDENCE_LINE}`);
 	assert.equal(withEvidence(t), t);
@@ -340,4 +340,18 @@ test("gate 6: a GO on a commit cancels the NO-GO parts of that same commit", () 
 	xvalJob(root, "20261028021000-a", "/r/.git", "apexjob/x", "GO", "xval", now - 6000, H1);
 	xvalJob(root, "20261028021001-b", "/r/.git", "apexjob/x", "NO-GO", "xval", now - 5900, H1);
 	assert.equal(reviewRounds(root, "/r/.git", "apexjob/x", FS_IO, now + 5000, now).nogo.length, 0);
+});
+
+test("gate 6: a BLOCKED review (it could not read the code) is not a round and does not reset the count", () => {
+	const root = tmp("gate-jobs-");
+	const now = Date.now();
+	const H = (c: string) => c.repeat(40);
+	xvalJob(root, "20261028030000-a", "/r/.git", "apexjob/x", "NO-GO", "xval", now - 9000, H("1"));
+	xvalJob(root, "20261028030100-b", "/r/.git", "apexjob/x", "BLOCKED", "xval", now - 8000, H("2"));
+	xvalJob(root, "20261028030200-c", "/r/.git", "apexjob/x", "**BLOCKED**", "xval", now - 7000, H("3"));
+	const r = reviewRounds(root, "/r/.git", "apexjob/x", FS_IO, now + 5000, now);
+	assert.deepEqual(r.nogo, ["20261028030000-a"]);
+	assert.equal(endsNoGo("cannot read the diff\nBLOCKED"), false);
+	assert.equal(endsGo("cannot read the diff\nBLOCKED"), false);
+	assert.match(EVIDENCE_LINE, /BLOCKED, not NO-GO/);
 });
