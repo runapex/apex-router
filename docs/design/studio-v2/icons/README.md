@@ -36,14 +36,14 @@ The edge keeps the badge visible on `#1a1b26` and on `#24283b`.
 | `agent-claude` | lavender hair, two buns | Two buns give a clear outline at 20 px. |
 | `agent-codex` | cyan hair, side ponytail | The ponytail breaks the circle on one side. |
 | `role-worker` | amber hard hat | A worker builds the change. |
-| `role-xval` | amber monocle with a chain | A second, different eye: a reviewer from another vendor. |
+| `role-xval` | two-tone glasses (amber and cyan) | Two lenses of two colours: a second view from another vendor. |
 | `role-scout` | pale cap with a long peak | A scout looks ahead. |
 | `role-reviewer` | amber magnifier | A reviewer looks closely at the change. |
 | `role-coordinator` | amber baton | A coordinator gives the timing to the team. |
 | `model-opus` | Claude base, long hair | Long hair is the largest Claude model. |
 | `model-sonnet` | Claude base, short hair | Short hair is the medium Claude model. |
 | `model-gpt` | GPT base, star on the headband | The star is for "astra". |
-| `model-gpt-sol` | GPT base, sun at the top right | The sun is for "sol". It also changes the outline. |
+| `model-gpt-sol` | smooth cap, swept fringe, side tail, sun clip | The sun is for "sol". The hair outline differs from the astra spikes. |
 | `model-local` | headphones | The model runs on the local machine. |
 | `proc-serve` | robot, antenna, arrows on both sides | The relay sends traffic both ways on :8788. |
 | `proc-local-proxy` | robot with a roof hat | The roof means "local". The proxy is on :8789. |
@@ -51,7 +51,7 @@ The edge keeps the badge visible on `#1a1b26` and on `#24283b`.
 | `proc-daily` | alarm-clock robot | Daily runs once each day. |
 | `proc-snapshot` | camera robot | Snapshot shows the state in the menu bar. |
 | `proc-mesh` | robot with three linked nodes | Mesh links the workers. |
-| `proc-keepwarm` | flame spirit | Keep-warm keeps sign-in and models warm. |
+| `proc-keepwarm` | robot in a woolly hat and a scarf | Keep-warm keeps sign-in and models warm. A flame looked like a known character. |
 | `proc-drain` | robot with a funnel hat and a down arrow | Drain empties the queue. |
 | `proc-studio` | monitor robot with a beret | The studio is the screen for the owner. |
 
