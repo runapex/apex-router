@@ -89,3 +89,26 @@ def test_a_page_open_adds_one_and_an_api_call_does_not(tmp_path, monkeypatch):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_a_held_lock_never_waits_and_drops_the_count(tmp_path):
+    import fcntl
+    import time
+    opens.record(tmp_path, D)
+    with open(tmp_path / "opens.json.lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        t0 = time.monotonic()
+        assert opens.record(tmp_path, D) is False
+        assert time.monotonic() - t0 < 1.0
+    assert opens.summary(tmp_path, D)["today"] == 1
+
+
+def test_an_old_temp_file_from_a_killed_writer_is_removed(tmp_path):
+    import time
+    old = tmp_path / ".opens-abc.tmp"
+    old.write_text("{}")
+    os.utime(old, (time.time() - 7200, time.time() - 7200))
+    new = tmp_path / ".opens-new.tmp"
+    new.write_text("{}")
+    opens.record(tmp_path, D)
+    assert not old.exists() and new.exists()

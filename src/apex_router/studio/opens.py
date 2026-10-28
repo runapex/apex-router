@@ -6,8 +6,8 @@ on demand). Each GET / adds one to today's count in ``<router home>/studio/opens
 
 Bounds: the file is read only when it is at most ``READ_MAX`` bytes (else the count starts again);
 at most ``DAYS_KEEP`` days are kept; a count is capped at ``COUNT_MAX``. The write is atomic
-(temp file + ``os.replace``) under an ``fcntl.flock`` on ``opens.json.lock``. Every error is
-swallowed: a count never stops the page.
+(temp file + ``os.replace``) under a non-blocking ``fcntl.flock`` on ``opens.json.lock``: when another
+writer holds it, this count is dropped. Every error is swallowed: a count never stops or slows the page.
 """
 from __future__ import annotations
 
@@ -17,11 +17,13 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 READ_MAX = 16 * 1024
 DAYS_KEEP = 90
 COUNT_MAX = 1_000_000
+SWEEP_MAX = 200
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -43,6 +45,19 @@ def _load(path: Path) -> dict:
             and 0 <= v <= COUNT_MAX}
 
 
+def _sweep(studio_dir: Path) -> None:
+    """Remove temp files a killed writer left (older than 1 h); looks at most at ``SWEEP_MAX`` names."""
+    try:
+        now = time.time()
+        with os.scandir(studio_dir) as it:
+            for _, e in zip(range(SWEEP_MAX), it):
+                if e.name.startswith(".opens-") and e.name.endswith(".tmp") \
+                        and now - e.stat(follow_symlinks=False).st_mtime > 3600:
+                    os.unlink(e.path)
+    except OSError:
+        pass
+
+
 def record(studio_dir: Path, today: _dt.date | None = None) -> bool:
     """Add one open to today's count. Returns False on any error (never raises)."""
     day = (today or _dt.date.today()).isoformat()
@@ -50,10 +65,11 @@ def record(studio_dir: Path, today: _dt.date | None = None) -> bool:
         studio_dir.mkdir(parents=True, exist_ok=True)
         path = studio_dir / "opens.json"
         with open(studio_dir / "opens.json.lock", "a") as lk:
-            fcntl.flock(lk, fcntl.LOCK_EX)
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)   # never wait: a held lock drops this one count
             days = _load(path)
             days[day] = min(COUNT_MAX, days.get(day, 0) + 1)
             keep = dict(sorted(days.items())[-DAYS_KEEP:])
+            _sweep(studio_dir)
             fd, tmp = tempfile.mkstemp(dir=studio_dir, prefix=".opens-", suffix=".tmp")
             try:
                 with os.fdopen(fd, "w") as f:
