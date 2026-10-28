@@ -429,15 +429,16 @@ def test_manual_join_and_split_in_the_store(home):
     w = workflow_of(doc, SID_A)
     assert {s["id"] for s in w["sessions"]} == {SID_A, SID_B, SID_C}
     assert "manual" in w["joined_by"]
-    assert doc["manual"] == {"joins": 1, "splits": 0}
+    assert doc["manual"] == {"joins": 1, "splits": 0, "incomplete": False}
     store.split(SID_C, now=now - 40)            # out of the auto join too
     doc = collect(now=now)
     assert {s["id"] for s in workflow_of(doc, SID_C)["sessions"]} == {SID_C}
     assert {s["id"] for s in workflow_of(doc, SID_A)["sessions"]} == {SID_A, SID_B}
-    assert doc["manual"] == {"joins": 1, "splits": 1}
-    store.join([SID_C, SID_A], now=now - 30)    # the latest row per session wins
+    assert doc["manual"] == {"joins": 1, "splits": 1, "incomplete": False}
+    store.join([SID_C, SID_A], now=now - 30)    # the latest row per session wins: A leaves its join with B
     doc = collect(now=now)
-    assert {s["id"] for s in workflow_of(doc, SID_C)["sessions"]} == {SID_A, SID_B, SID_C}
+    assert {s["id"] for s in workflow_of(doc, SID_C)["sessions"]} == {SID_A, SID_C}
+    assert {s["id"] for s in workflow_of(doc, SID_B)["sessions"]} == {SID_B}
 
 
 def test_store_rows_hold_ids_and_timestamps_only_under_a_flock(home, monkeypatch):
@@ -543,7 +544,7 @@ def test_bad_and_huge_files_are_skipped_and_counted_never_fatal(home):
 
 def test_an_empty_home_gives_no_workflows(home):
     doc = collect()
-    assert doc["workflows"] == [] and doc["window"] == "24h" and doc["manual"] == {"joins": 0, "splits": 0}
+    assert doc["workflows"] == [] and doc["window"] == "24h" and doc["manual"] == {"joins": 0, "splits": 0, "incomplete": False}
 
 
 def test_window_7d_includes_older_sessions(home):
@@ -805,3 +806,121 @@ def test_workflow_events_are_rate_limited_per_node():
     ev = workflows.node_events(st, doc(3.0), 101.6)                    # held change goes out
     assert [e["node"]["cost"] for e in ev] == [3.0]
     assert workflows.node_events(st, doc(3.0), 103.0) == []
+
+
+# ---- review round 1 (xval): 7 findings, one test each --------------------------------------------------
+
+def test_repo_label_masks_a_token_shaped_repo_name():
+    tok = "ghp_" + "A" * 36
+    out = workflows.repo_label(tok, "feature")
+    assert tok not in out
+
+
+def test_git_place_does_not_follow_a_git_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "HEAD").write_text("ref: refs/heads/private\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").symlink_to(outside)
+    workflows.clear_caches()
+    _name, branch = workflows.git_place(str(repo), workflows.Reads())
+    assert branch is None
+
+
+def test_deep_json_in_a_session_line_is_skipped_not_fatal():
+    # Python 3.14 json raises RecursionError near depth 200000 (checked); the parser must skip that line
+    deep = b"[" * 200_000 + b"0" + b"]" * 200_000
+    try:
+        json.loads(deep)
+        pytest.skip("this json parser has no recursion limit")
+    except RecursionError:
+        pass
+    lines = [deep, json.dumps({"type": "session", "id": "x", "cwd": "/tmp"}).encode()]
+    out = workflows._pi_parse(lines)
+    assert out["cwd"] == "/tmp"
+
+
+def test_rotation_listing_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(workflows, "NAMES_MAX", 50)
+    t = tmp_path / "telemetry.jsonl"
+    t.write_text("")
+    for i in range(300):
+        (tmp_path / f"telemetry.jsonl.{i}").write_text("")
+    looked = []
+    real_scandir = os.scandir
+
+    class Spy:
+        def __init__(self, d):
+            self.it = real_scandir(d)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.it.close()
+
+        def __iter__(self):
+            for e in self.it:
+                looked.append(e.name)
+                yield e
+    monkeypatch.setattr(workflows.os, "scandir", Spy)
+    workflows._rebuild(t, time.time() - 60, 1024, traffic)
+    assert 0 < len(looked) <= 50
+
+
+def test_a_split_survives_any_amount_of_later_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(workflows, "STORE_COMPACT_AT", 2048)
+    st = workflows.Store(tmp_path / "workflows.jsonl")
+    st.split("a", now=1)
+    for i in range(400):
+        st.join([f"x{i}", f"y{i}"], now=2 + i)
+    s = st.state()
+    assert "a" in s["split"] and not s["incomplete"]
+    assert (tmp_path / "workflows.jsonl").stat().st_size < 64 * 1024
+
+
+def test_a_newer_join_replaces_an_older_group_of_the_same_session(tmp_path):
+    st = workflows.Store(tmp_path / "workflows.jsonl")
+    st.join(["a", "b"], now=1)
+    st.join(["a", "c"], now=2)
+    groups = [sorted(g) for g in st.state()["groups"]]
+    assert ["a", "c"] in groups and not any("b" in g and "a" in g for g in groups)
+
+
+def test_a_too_big_store_is_incomplete_and_never_rewritten(tmp_path, monkeypatch):
+    monkeypatch.setattr(workflows, "STORE_READ_MAX", 100)
+    p = tmp_path / "workflows.jsonl"
+    p.write_text("".join(json.dumps({"ts": i, "op": "split", "sessions": [f"s{i}"]}) + "\n" for i in range(20)))
+    before = p.read_text()
+    st = workflows.Store(p)
+    assert st.state()["incomplete"] is True
+    monkeypatch.setattr(workflows, "STORE_COMPACT_AT", 10)
+    st.split("z", now=99)
+    assert p.read_text().startswith(before)
+
+
+def test_a_slow_workflow_build_does_not_block_stream_events(tmp_path, monkeypatch):
+    block = threading.Event()
+    monkeypatch.setattr(workflows, "collect_cached", lambda paths, window="24h": block.wait(5) or {"workflows": []})
+    workflows.clear_caches()
+    paths = flow.resolve_paths()
+    got = []
+    closing = threading.Event()
+
+    def write(b):
+        got.append(b)
+        if sum(1 for x in got if x.startswith(b": hb")) >= 2:
+            closing.set()
+    # the server's own wf_fn (server.api_stream), not a stand-in: it must not build in the stream thread
+    import inspect
+    src = inspect.getsource(server)
+    assert 'wf_fn=lambda: workflows.peek_cached(paths, "24h")' in src
+    t = threading.Thread(target=traffic.stream, args=(write, paths, closing, lambda: {}),
+                         kwargs={"poll_s": 0.005, "hb_s": 0.02, "wf_fn": lambda: workflows.peek_cached(paths, "24h"),
+                                 "wf_s": 0.01}, daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(2)
+    block.set()
+    assert closing.is_set() and time.monotonic() - t0 < 1.5

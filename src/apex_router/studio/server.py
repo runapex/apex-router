@@ -394,7 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                 paths = srv.get_paths()
                 traffic.stream(write, paths, srv.closing, srv.stream_snapshot,
                                srv.stream_poll_s, srv.stream_snap_s, srv.stream_hb_s,
-                               wf_fn=lambda: workflows.collect_cached(paths, "24h"), wf_s=srv.stream_wf_s)
+                               wf_fn=lambda: workflows.peek_cached(paths, "24h"), wf_s=srv.stream_wf_s)
             except OSError:
                 pass                                              # the client went away
             except Exception:  # noqa: BLE001 — headers are sent: end the stream, the client reconnects

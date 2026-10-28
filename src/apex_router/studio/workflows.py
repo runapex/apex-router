@@ -62,7 +62,8 @@ ACTIVE_S = 5 * 60.0
 IDLE_S = 60 * 60.0
 PID_SLACK_S = 2 * 3600.0          # a pid-linked job may start this long after the session's last seen point
 LABEL_MAX = 60
-STORE_TAIL = 1024 * 1024
+STORE_READ_MAX = 4 * 1024 * 1024  # the manual store is read whole, up to this size
+STORE_COMPACT_AT = 256 * 1024     # a writer rewrites it (deciding rows only) above this size
 STORE_IDS_MAX = 20
 TELEMETRY_CAP = {"24h": 32 * 1024 * 1024, "7d": 64 * 1024 * 1024}
 CACHE_TTL_S = 2.0
@@ -234,6 +235,8 @@ def _git_place(cwd: Path, reads: Reads):
     for _ in range(12):
         g = p / ".git"
         try:
+            if g.is_symlink():                 # xval: a .git symlink led out of the repo; do not follow it
+                return p.name or None, None
             is_dir, is_file = g.is_dir(), g.is_file()
         except OSError:
             is_dir = is_file = False
@@ -246,6 +249,11 @@ def _git_place(cwd: Path, reads: Reads):
                 gd = Path(m.group(1).decode("utf-8", "replace"))
                 if not gd.is_absolute():
                     gd = (p / gd)
+                try:
+                    if any(q.is_symlink() for q in (gd, gd.parent, gd.parent.parent)):
+                        return p.name or None, None
+                except OSError:
+                    return p.name or None, None
                 main = gd.parent.parent if gd.parent.name == "worktrees" else None
                 repo = main.parent.name if main is not None and main.name == ".git" else p.name
                 return repo or None, _head_branch(gd / "HEAD", reads)
@@ -289,6 +297,10 @@ def brief_label(task):
 
 
 def repo_label(repo, branch) -> str:
+    """Repo and branch names are user data too: they are masked like a brief (xval: a token-shaped
+    directory name reached the label)."""
+    repo = mask(repo) if isinstance(repo, str) else None
+    branch = mask(branch) if isinstance(branch, str) else None
     if repo and branch:
         return f"{repo} · {branch}"
     return repo or "session"
@@ -375,11 +387,16 @@ def _rebuild(path: Path, since: float, cap: int, traffic) -> list:
     first = _first_ts(lines)
     if (first is None or first > since) and path.parent.is_dir():
         pat = re.compile(re.escape(path.name) + r"\.(\d+)$")
+        gens = []
         try:
-            gens = sorted((int(mm.group(1)), q) for q in path.parent.iterdir()
-                          if (mm := pat.fullmatch(q.name)) and q.is_file())
+            with os.scandir(path.parent) as it:          # xval: the listing was unbounded
+                for i, e in zip(range(NAMES_MAX), it):   # stops before it reads entry NAMES_MAX + 1
+                    mm = pat.fullmatch(e.name)
+                    if mm and e.is_file(follow_symlinks=False):
+                        gens.append((int(mm.group(1)), path.parent / e.name))
         except OSError:
             gens = []
+        gens.sort()
         if gens:
             rows = _parse_requests(live._lines(gens[-1][1], cap), since, traffic) + rows
     rows.sort(key=lambda r: r[0])
@@ -489,7 +506,10 @@ def _cached(path: Path, st, build):
         hit = _sess_cache.get(key)
         if hit and hit[0] == sig:
             return hit[1], True
-    val = build()
+    try:
+        val = build()
+    except (RecursionError, MemoryError, ValueError, TypeError):   # xval: deep JSON in a small line
+        val = None                                                 # the caller skips and counts it
     with _sess_lock:
         _sess_cache[key] = (sig, val)
         while len(_sess_cache) > 4 * SESSIONS_MAX:
@@ -502,7 +522,7 @@ def _pi_parse(lines) -> dict:
     for ln in lines:
         try:
             r = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             out["bad"] += 1
             continue
         if not isinstance(r, dict):
@@ -533,7 +553,7 @@ def _claude_parse(lines, sub: bool) -> dict:
     for ln in lines:
         try:
             r = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             out["bad"] += 1
             continue
         if not isinstance(r, dict):
@@ -681,7 +701,7 @@ def _claude_subagents(path: Path, reads: Reads, skipped: Counter) -> list:
             try:
                 mj = json.loads(meta) if meta else None
                 atype = mj.get("agentType") if isinstance(mj, dict) else None
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, RecursionError):
                 pass
             p["role"] = _claude_role(atype)
             return p
@@ -748,7 +768,7 @@ def _read_job(root: Path, name: str, reads: Reads, skipped: Counter):
         return None
     try:
         m = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         skipped["jobs_bad"] += 1
         return None
     if not isinstance(m, dict) or m.get("id") not in (None, name):
@@ -798,8 +818,14 @@ def verdict_of(raw) -> str | None:
 # ---- manual store -----------------------------------------------------------------------------------------
 
 class Store:
-    """``workflows.jsonl``: append-only rows ``{"ts", "op": "join"|"split", "sessions": [ids]}``, written
-    under an exclusive flock; read from a capped tail. The latest row per session wins."""
+    """``workflows.jsonl``: rows ``{"ts", "op": "join"|"split", "sessions": [ids]}``. The latest row per
+    session wins: a join puts its sessions into one group and takes each of them out of any older group;
+    a split makes one session stand alone (no auto join).
+
+    Reads take the WHOLE file (max STORE_READ_MAX). Writers hold an exclusive flock on ``<file>.lock``;
+    above STORE_COMPACT_AT a writer rewrites the file from a full read with only the rows that still
+    decide a session (tmp file + os.replace). A file that cannot be read whole gives no manual rows and
+    ``incomplete`` = True, and is never rewritten (xval: a capped tail let old decisions fall away)."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -810,14 +836,35 @@ class Store:
             raise WorkflowError("session ids must match [A-Za-z0-9_.:-], 1..128 characters")
         return sid
 
-    def _append(self, row: dict):
+    def _lock(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
-        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = os.open(str(self.path) + ".lock", os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    def _write(self, row: dict):
+        fd = self._lock()
         try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            os.write(fd, line)
+            rows, ok = self._read()
+            try:
+                big = os.path.getsize(self.path) > STORE_COMPACT_AT
+            except OSError:
+                big = False
+            if big and ok:
+                live_rows = self._deciding(rows)
+                tmp = self.path.with_name(self.path.name + f".tmp.{os.getpid()}")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    for ts, _i, op, ss in live_rows:
+                        f.write(json.dumps({"ts": ts, "op": op, "sessions": ss}, separators=(",", ":")) + "\n")
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self.path)
+            line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
+            wfd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                os.write(wfd, line)
+            finally:
+                os.close(wfd)
         finally:
             os.close(fd)               # closing drops the lock
         with _cache_lock:
@@ -829,59 +876,70 @@ class Store:
         ids = [self._check(s) for s in sessions]
         if len(set(ids)) != len(ids):
             raise WorkflowError("session ids must differ")
-        self._append({"ts": round(time.time() if now is None else now, 3), "op": "join", "sessions": ids})
+        self._write({"ts": round(time.time() if now is None else now, 3), "op": "join", "sessions": ids})
 
     def split(self, session, now: float | None = None):
         sid = self._check(session)
-        self._append({"ts": round(time.time() if now is None else now, 3), "op": "split", "sessions": [sid]})
+        self._write({"ts": round(time.time() if now is None else now, 3), "op": "split", "sessions": [sid]})
 
-    def rows(self) -> list:
-        raw = read_capped(self.path, STORE_TAIL, Reads(), tail=True)
-        if not raw:
-            return []
-        lines = raw.split(b"\n")
+    def _read(self) -> tuple[list, bool]:
+        """(rows sorted by (ts, line), complete). complete is False when the file is larger than
+        STORE_READ_MAX or cannot be read; then rows is empty."""
         try:
-            if os.path.getsize(self.path) > STORE_TAIL:
-                lines = lines[1:]
-        except OSError:
-            pass
+            raw = read_capped(self.path, STORE_READ_MAX, Reads())    # None when larger than the cap
+        except Exception:  # noqa: BLE001
+            return [], False
+        if raw is None:
+            return [], not os.path.lexists(self.path)
         out = []
-        for i, ln in enumerate(lines):
+        for i, ln in enumerate(raw.split(b"\n")):
+            if not ln.strip():
+                continue
             try:
                 r = json.loads(ln)
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, RecursionError):
                 continue
             if not isinstance(r, dict) or r.get("op") not in ("join", "split") or _num(r.get("ts")) is None:
                 continue
             ss = r.get("sessions")
-            if not isinstance(ss, list) or not all(isinstance(s, str) and ID_RE.fullmatch(s) for s in ss):
+            if not isinstance(ss, list) or not all(isinstance(x, str) and ID_RE.fullmatch(x) for x in ss):
                 continue
-            if (r["op"] == "join" and len(ss) < 2) or (r["op"] == "split" and len(ss) != 1):
+            if (r["op"] == "join" and not 2 <= len(ss) <= STORE_IDS_MAX) or (r["op"] == "split" and len(ss) != 1):
                 continue
             out.append((float(r["ts"]), i, r["op"], ss))
         out.sort()
-        return out
+        return out, True
+
+    def rows(self) -> list:
+        return self._read()[0]
+
+    @staticmethod
+    def _latest(rows) -> dict:
+        latest: dict = {}
+        for k, (_ts, _i, op, ss) in enumerate(rows):
+            for x in ss:
+                latest[x] = k
+        return latest
+
+    def _deciding(self, rows) -> list:
+        """The rows that still decide at least one session (the compaction keeps only these)."""
+        latest = self._latest(rows)
+        keep = sorted(set(latest.values()))
+        return [rows[k] for k in keep]
 
     def state(self) -> dict:
-        """The latest row per session wins: a session whose latest row is a split stands alone (no auto
-        join); a join row holds each member that has no split after it. ``groups``: the live members of
-        each join row (2 or more); ``joins`` = that count; ``splits`` = sessions whose latest row is a split."""
-        rows = self.rows()
-        last_split: dict = {}
-        latest: dict = {}
-        for k, (ts, i, op, ss) in enumerate(rows):
-            for s in ss:
-                latest[s] = op
-                if op == "split":
-                    last_split[s] = k
+        """``split``: sessions whose latest row is a split. ``groups``: per join row, the members whose
+        latest row is that join (2 or more). ``incomplete``: the file could not be read whole."""
+        rows, ok = self._read()
+        latest = self._latest(rows)
         groups = []
-        for k, (ts, i, op, ss) in enumerate(rows):
+        for k, (_ts, _i, op, ss) in enumerate(rows):
             if op == "join":
-                live_m = [s for s in ss if last_split.get(s, -1) < k]
-                if len(live_m) >= 2:
-                    groups.append(live_m)
-        split = {s for s, op in latest.items() if op == "split"}
-        return {"split": split, "groups": groups, "joins": len(groups), "splits": len(split)}
+                members = [x for x in ss if latest.get(x) == k]
+                if len(members) >= 2:
+                    groups.append(members)
+        split = {x for x, k in latest.items() if rows[k][2] == "split"}
+        return {"split": split, "groups": groups, "joins": len(groups), "splits": len(split), "incomplete": not ok}
 
 
 def store_for(paths: Paths) -> Store:
@@ -1241,7 +1299,7 @@ def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict
                                               "depth", "listing")}
     complete = not any(sk[k] for k in ("files", "jobs_bad", "listing", "sessions"))
     return {"ts": round(now, 3), "window": window, "workflows": wfs,
-            "manual": {"joins": manual["joins"], "splits": manual["splits"]},
+            "manual": {"joins": manual["joins"], "splits": manual["splits"], "incomplete": manual.get("incomplete", False)},
             "counts": {k: int(v) for k, v in counts.items()}, "skipped": sk, "complete": complete}
 
 
@@ -1265,6 +1323,39 @@ def collect_cached(paths: Paths, window: str = "24h") -> dict:
         if len(_doc_cache) > 8:
             _doc_cache.pop(next(iter(_doc_cache)))
     return doc
+
+
+_bg_lock = threading.Lock()
+_bg_running: set = set()
+
+
+def peek_cached(paths: Paths, window: str = "24h"):
+    """The newest built document at once, never a build in the caller's thread: when the cache is old
+    or empty, ONE background thread per (home, window) builds it. Returns None until the first build
+    ends. For the SSE loop (xval: a slow build blocked request events and heartbeats)."""
+    if window not in WINDOWS:
+        raise WorkflowError("window must be 24h or 7d")
+    key = (window, str(paths.router_home), paths.env.get("HOME"))
+    now = time.time()
+    with _cache_lock:
+        hit = _doc_cache.get(key)
+    if hit and now - hit[0] < CACHE_TTL_S:
+        return hit[1]
+    with _bg_lock:
+        start = key not in _bg_running
+        if start:
+            _bg_running.add(key)
+    if start:
+        def run():
+            try:
+                collect_cached(paths, window)
+            except Exception:  # noqa: BLE001 — a failed build: the next peek tries again
+                pass
+            finally:
+                with _bg_lock:
+                    _bg_running.discard(key)
+        threading.Thread(target=run, name="studio-workflows-build", daemon=True).start()
+    return hit[1] if hit else None
 
 
 def clear_caches():

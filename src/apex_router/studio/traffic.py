@@ -227,7 +227,7 @@ def parse_line(raw: bytes):
     """A request row (with ``_ts``) from one telemetry line, or None."""
     try:
         row = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     if not is_request(row):
         return None
@@ -547,8 +547,9 @@ def stream(write, paths: Paths, closing: threading.Event, snap_fn, poll_s: float
                 last_snap = m
             if wf_fn is not None and (last_wf is None or m - last_wf >= wf_s):
                 last_wf = m
-                try:
-                    events = workflows_mod.node_events(wf_state, wf_fn(), time.time())
+                try:                     # wf_fn never builds in this thread (workflows.peek_cached)
+                    doc = wf_fn()
+                    events = workflows_mod.node_events(wf_state, doc, time.time()) if doc else []
                 except Exception:  # noqa: BLE001 — a bad build skips one round, the stream goes on
                     events = []
                 for ev in events:

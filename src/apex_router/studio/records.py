@@ -174,7 +174,7 @@ def _parse(lines: list, since: float, px: str = "main") -> tuple[list, float | N
             continue
         try:
             row = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             continue
         if not isinstance(row, dict) or row.get("ev") == "hb" or "client" not in row:
             continue
