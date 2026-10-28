@@ -354,3 +354,46 @@ def test_the_script_parses(tmp_path):
     p.write_text(_script(_html()).split(">", 1)[1])
     r = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
+
+
+# ---- review round 1 (xval): deep agent trees and a huge status sentence --------------------------------------
+
+def _fn_src(name: str) -> str:
+    """The source of one top-level function of the page script, by brace count."""
+    SCRIPT = _script(_html())
+    i = SCRIPT.index(f"function {name}(")
+    j = SCRIPT.index("{", i)
+    depth, k = 0, j
+    while True:
+        c = SCRIPT[k]
+        depth += c == "{"
+        depth -= c == "}"
+        k += 1
+        if depth == 0:
+            return SCRIPT[i:k]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_tree_walks_stop_at_the_depth_limit():
+    SCRIPT = _script(_html())
+    m = re.search(r"const WF_DEPTH = (\d+)", SCRIPT)
+    assert m, "WF_DEPTH is missing"
+    js = "\n".join([
+        f"const WF_DEPTH = {m.group(1)};",
+        "const RED = new Set(['failed']), AMBER = new Set(['timed_out(idle)']);",
+        "const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];",
+        "const isRun = s => s === 'running';",
+        _fn_src("worstOf"), _fn_src("treeRuns"),
+        "let deep = {state: 'done', agents: []}; const top = deep;",
+        "for (let i = 0; i < 12000; i++) { const c = {state: i === 11999 ? 'failed' : 'done', agents: []}; deep.agents = [c]; deep = c; }",
+        "worstOf([top]); treeRuns([top]); console.log('ok');",
+    ])
+    r = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr[-400:]
+
+
+def test_status_sentence_is_capped_and_agent_rows_stop_at_the_depth_limit():
+    SCRIPT = _script(_html())
+    assert re.search(r"String\(st\.sentence \|\| \"\"\)\.slice\(0, STATUS_MAX\)", SCRIPT)
+    assert re.search(r"kids = depth < WF_DEPTH \? arr\(a\.agents, 12\) : \[\]", SCRIPT)
+    assert "if (d > WF_DEPTH) return;" in _fn_src("wfIndex")

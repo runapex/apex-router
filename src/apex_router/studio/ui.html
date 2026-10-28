@@ -531,12 +531,13 @@ const W = {doc: null, busy: false, err: "", ctl: null, timer: 0, refreshT: 0, ag
 const str = (v, n) => typeof v === "string" ? v.slice(0, n || 200) : "";
 const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];
 function ringOf(st){ return RED.has(st) ? "ring-red" : AMBER.has(st) ? "ring-amber" : st === "running" ? "ring-run" : ""; }
-function worstOf(nodes){
+function worstOf(nodes, d = 1){
   let w = "";
+  if (d > WF_DEPTH) return w;
   for (const n of nodes){
     if (RED.has(n.state)) return "ring-red";
     if (AMBER.has(n.state)) w = "ring-amber";
-    const k = worstOf(arr(n.agents, 50)); if (k === "ring-red") return k; if (k) w = k;
+    const k = worstOf(arr(n.agents, 50), d + 1); if (k === "ring-red") return k; if (k) w = k;
   }
   return w;
 }
@@ -548,13 +549,15 @@ function causeRing(cause, nodes){
   return worstOf(nodes || []);
 }
 function agentsOfTask(t){ return arr(t.agents, 50); }
+// the contract has depth <= 2; every walk stops at WF_DEPTH, so a deep or cyclic document cannot blow the stack
+const WF_DEPTH = 3, STATUS_MAX = 240;
 function wfIndex(){
   const idx = new Map();
-  const walk = (list, path) => list.forEach((a, i) => { if (a && a.id){ idx.set("agent|" + a.id, {list, i});
-    walk(arr(a.agents, 50), path); } });
+  const walk = (list, path, d) => { if (d > WF_DEPTH) return; list.forEach((a, i) => { if (a && a.id){
+    idx.set("agent|" + a.id, {list, i}); walk(arr(a.agents, 50), path, d + 1); } }); };
   for (const w of arr(W.doc && W.doc.workflows, 300)) for (const s of arr(w.sessions, 200)) {
     const ts = arr(s.tasks, 200);
-    ts.forEach((t, i) => { if (t && t.id){ idx.set("task|" + t.id, {list: s.tasks, i}); walk(arr(t.agents, 50), t.id); } });
+    ts.forEach((t, i) => { if (t && t.id){ idx.set("task|" + t.id, {list: s.tasks, i}); walk(arr(t.agents, 50), t.id, 1); } });
   }
   W.idx = idx;
 }
@@ -643,7 +646,7 @@ function foldBtn(key, running, kids, extra){
 }
 const hueOf = k => "hue-" + (AGENT_NAME[k] ? k : "other");
 const isRun = st => st === "running" || st === "queued";
-function treeRuns(nodes){ return nodes.some(n => isRun(n.state) || treeRuns(arr(n.agents, 50))); }
+function treeRuns(nodes, d = 1){ return d <= WF_DEPTH && nodes.some(n => isRun(n.state) || treeRuns(arr(n.agents, 50), d + 1)); }
 
 /* the live decision line: the lowest station of a running sub-agent (Task, Model, Safety, Cache, Send, Answer) */
 function liveLine(a){
@@ -689,8 +692,8 @@ function stopLines(){
 }
 
 function agentRow(a, depth){
-  const st = str(a.state, 30), role = ROLE_ICON[a.role] ? a.role : "worker", kids = arr(a.agents, 12);
-  const running = isRun(st) || treeRuns(kids);
+  const st = str(a.state, 30), role = ROLE_ICON[a.role] ? a.role : "worker", kids = depth < WF_DEPTH ? arr(a.agents, 12) : [];
+  const running = isRun(st) || treeRuns(kids, depth + 1);
   const key = "a|" + a.id, open = isOpen(key, running);
   const ring = st === "running" ? "ring-run" : ringOf(st);
   const cause = AGENT_CAUSE[st] || "";
@@ -814,7 +817,7 @@ function renderStatus(){
   const st = S.snap && S.snap.status;
   let lvl = "wait", text = "Connecting…";
   if (S.stale) text = S.stale;
-  else if (st){ lvl = ["ok", "slow", "problem"].includes(st.level) ? st.level : "ok"; text = String(st.sentence || ""); }
+  else if (st){ lvl = ["ok", "slow", "problem"].includes(st.level) ? st.level : "ok"; text = String(st.sentence || "").slice(0, STATUS_MAX); }
   $("status").className = "lvl-" + lvl;
   const out = $("status-text"); out.replaceChildren();
   for (const part of text.split(/(\d+(?:[.,]\d+)?)/)){ if (!part) continue;
