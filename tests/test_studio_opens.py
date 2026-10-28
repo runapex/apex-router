@@ -103,12 +103,19 @@ def test_a_held_lock_never_waits_and_drops_the_count(tmp_path):
     assert opens.summary(tmp_path, D)["today"] == 1
 
 
-def test_an_old_temp_file_from_a_killed_writer_is_removed(tmp_path):
-    import time
-    old = tmp_path / ".opens-abc.tmp"
-    old.write_text("{}")
-    os.utime(old, (time.time() - 7200, time.time() - 7200))
-    new = tmp_path / ".opens-new.tmp"
-    new.write_text("{}")
-    opens.record(tmp_path, D)
-    assert not old.exists() and new.exists()
+def test_a_killed_writer_leaves_at_most_one_temp_file_and_the_next_write_replaces_it(tmp_path):
+    for i in range(300):                       # many unrelated names in the folder change nothing
+        (tmp_path / f"z{i}").write_text("")
+    (tmp_path / ".opens.json.tmp").write_text("partial")   # what a killed writer leaves
+    assert opens.record(tmp_path, D)
+    assert not (tmp_path / ".opens.json.tmp").exists()
+    assert len([p for p in tmp_path.iterdir() if p.name.startswith(".opens")]) == 0
+    assert opens.summary(tmp_path, D)["today"] == 1
+
+
+def test_a_symlinked_temp_name_is_not_followed(tmp_path):
+    target = tmp_path / "victim"
+    target.write_text("keep")
+    (tmp_path / ".opens.json.tmp").symlink_to(target)
+    assert opens.record(tmp_path, D) is False
+    assert target.read_text() == "keep"

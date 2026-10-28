@@ -6,7 +6,7 @@ on demand). Each GET / adds one to today's count in ``<router home>/studio/opens
 
 Bounds: the file is read only when it is at most ``READ_MAX`` bytes (else the count starts again);
 at most ``DAYS_KEEP`` days are kept; a count is capped at ``COUNT_MAX``. The write is atomic
-(temp file + ``os.replace``) under a non-blocking ``fcntl.flock`` on ``opens.json.lock``: when another
+(one fixed temp file + ``os.replace``) under a non-blocking ``fcntl.flock`` on ``opens.json.lock``: when another
 writer holds it, this count is dropped. Every error is swallowed: a count never stops or slows the page.
 """
 from __future__ import annotations
@@ -16,14 +16,11 @@ import fcntl
 import json
 import os
 import re
-import tempfile
-import time
 from pathlib import Path
 
 READ_MAX = 16 * 1024
 DAYS_KEEP = 90
 COUNT_MAX = 1_000_000
-SWEEP_MAX = 200
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -45,19 +42,6 @@ def _load(path: Path) -> dict:
             and 0 <= v <= COUNT_MAX}
 
 
-def _sweep(studio_dir: Path) -> None:
-    """Remove temp files a killed writer left (older than 1 h); looks at most at ``SWEEP_MAX`` names."""
-    try:
-        now = time.time()
-        with os.scandir(studio_dir) as it:
-            for _, e in zip(range(SWEEP_MAX), it):
-                if e.name.startswith(".opens-") and e.name.endswith(".tmp") \
-                        and now - e.stat(follow_symlinks=False).st_mtime > 3600:
-                    os.unlink(e.path)
-    except OSError:
-        pass
-
-
 def record(studio_dir: Path, today: _dt.date | None = None) -> bool:
     """Add one open to today's count. Returns False on any error (never raises)."""
     day = (today or _dt.date.today()).isoformat()
@@ -69,18 +53,13 @@ def record(studio_dir: Path, today: _dt.date | None = None) -> bool:
             days = _load(path)
             days[day] = min(COUNT_MAX, days.get(day, 0) + 1)
             keep = dict(sorted(days.items())[-DAYS_KEEP:])
-            _sweep(studio_dir)
-            fd, tmp = tempfile.mkstemp(dir=studio_dir, prefix=".opens-", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump({"days": keep}, f, sort_keys=True)
-                os.replace(tmp, path)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            # one fixed temp name, written only under the lock: a killed writer leaves at most this one
+            # file, and the next write replaces it (no sweep, no growth)
+            tmp = studio_dir / ".opens.json.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"days": keep}, f, sort_keys=True)
+            os.replace(tmp, path)
         return True
     except Exception:
         return False
