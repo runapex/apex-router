@@ -34,7 +34,8 @@ load() { [ "${AZ_KEEPWARM_NO_LOAD:-0}" = 1 ] || launchctl "$@"; }
 # AZ_KEEPWARM_PMSET replaces the pmset command (tests). Any error gives "unknown", never a wrong word.
 power_state() {
   local last
-  last=$(${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null | tail -n 400 \
+  # the whole log (about 17k lines, < 1 s, only on a failure): a Wake can be hours of other lines back
+  last=$(${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null \
          | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} [+-][0-9]{4} (Sleep|Wake|DarkWake) ' | tail -n 1 \
          | awk '{print $4}') || true
   case "$last" in

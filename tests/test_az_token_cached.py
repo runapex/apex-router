@@ -318,3 +318,18 @@ def test_keepwarm_failure_line_survives_a_missing_pmset(env, tmp_path):
                        "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(tmp_path / "nope")},
                        capture_output=True, text=True, timeout=60)
     assert p.returncode == 1 and p.stderr.strip().endswith("(power: unknown)")
+
+
+def test_keepwarm_power_state_finds_a_wake_far_back(env, tmp_path):
+    """Live check found the newest Wake 5 h and thousands of lines back: the state must not depend on a tail."""
+    e = keepwarm_env(env, tmp_path)
+    log = tmp_path / "pmset.log"
+    log.write_text("2026-10-28 09:44:15 -0700 Wake                \tDarkWake to FullWake\n"
+                   + "2026-10-28 10:00:00 -0700 Assertions          \tPID 1 noise\n" * 5000)
+    fake = tmp_path / "fake-pmset"
+    fake.write_text(f"#!/bin/sh\ncat '{log}'\n")
+    fake.chmod(0o755)
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
+                       capture_output=True, text=True, timeout=60)
+    assert p.stderr.strip().endswith("(power: awake)"), p.stderr
