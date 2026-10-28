@@ -139,3 +139,55 @@ def test_review_sheet_inlines_current_sprite(raw):
     sheet = (ROOT / "docs" / "design" / "studio-v2" / "icons" / "sheet.html").read_text(encoding="utf-8")
     assert raw.strip() in sheet, "sheet.html is out of date: inline the current icons.svg"
     assert "<script" not in sheet.lower()
+
+
+# ---- allow-lists (xval: deny-list checks missed STYLE=, url(...) and a duplicate symbol) ------------------
+
+ALLOWED_TAGS = frozenset({"svg", "symbol", "title", "g", "path", "circle", "ellipse", "rect", "line", "polygon", "polyline"})
+ALLOWED_ATTRS = frozenset({
+    "xmlns", "aria-hidden", "id", "viewBox", "width", "height", "x", "y", "cx", "cy", "r", "rx", "ry",
+    "d", "points", "x1", "y1", "x2", "y2", "transform",
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
+    "stroke-dasharray", "stroke-opacity", "opacity"})
+_VALUE_OK = re.compile(r"[A-Za-z0-9 #.,:\-()]*")
+
+
+def test_only_allowed_tags_and_attributes(root):
+    for el in root.iter():
+        tag = _local(el.tag)
+        assert tag in ALLOWED_TAGS, f"tag <{tag}> is not on the allow-list"
+        for k, v in el.attrib.items():
+            name = _local(k)
+            assert name in ALLOWED_ATTRS, f"attribute {k!r} on <{tag}> is not on the allow-list"
+            assert "url(" not in v.lower(), f"url() in {name} on <{tag}>"
+            assert _VALUE_OK.fullmatch(v), f"odd characters in {name}={v!r} on <{tag}>"
+
+
+def test_symbol_ids_unique_and_every_symbol_small(root):
+    syms = list(root.iter(f"{NS}symbol"))
+    ids = [s.get("id") for s in syms]
+    assert len(ids) == len(set(ids)), "duplicate symbol id"
+    assert set(ids) == set(THE_SET)
+    for s in syms:
+        size = len(ET.tostring(s, encoding="utf-8"))
+        assert size <= MAX_SYMBOL_BYTES + 200, f"{s.get('id')}: {size} bytes"   # +200: namespace prefixes from tostring
+
+
+@pytest.mark.parametrize("bad", [
+    '<g STYLE = "opacity:.5"/>',
+    '<path filter="url(/filters.svg#blur)" d="M0 0"/>',
+    '<circle onload="x()" r="1"/>',
+    '<use href="/x.svg#a"/>',
+])
+def test_the_allow_list_catches_known_bypasses(bad):
+    doc = f'<svg xmlns="http://www.w3.org/2000/svg"><symbol id="agent-pi" viewBox="0 0 32 32">{bad}</symbol></svg>'
+    el = ET.fromstring(doc)
+    with pytest.raises(AssertionError):
+        test_only_allowed_tags_and_attributes(el)
+
+
+def test_a_duplicate_symbol_is_caught():
+    one = '<symbol id="agent-pi" viewBox="0 0 32 32"><title>pi</title></symbol>'
+    doc = f'<svg xmlns="http://www.w3.org/2000/svg">{one}{one}</svg>'
+    with pytest.raises(AssertionError):
+        test_symbol_ids_unique_and_every_symbol_small(ET.fromstring(doc))
