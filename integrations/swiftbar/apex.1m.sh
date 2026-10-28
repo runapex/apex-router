@@ -14,6 +14,8 @@
 # `apex-router snapshot --menubar` prints; a gray dot when the binary is missing or fails.
 # Each run appends one bounded sample to ~/.apex-router/widget/history.jsonl (the sparklines);
 # add --no-history below to turn that off.
+# --alert: a NEW problem (not seen in 30 min) sends one macOS notification, at most one in 10 min;
+# state in ~/.apex-router/widget/alerts.json. Set APEX_ROUTER_NO_ALERTS=1 to turn it off.
 
 gray() {
   echo "● | color=#8E8E93"
@@ -36,7 +38,7 @@ fi
 # formatter accepts it only as a plain absolute path.
 export APEX_ROUTER_BIN="$bin"
 
-if ! out="$("$bin" snapshot --menubar 2>/dev/null)" || [ -z "$out" ]; then
+if ! out="$("$bin" snapshot --menubar --alert 2>/dev/null)" || [ -z "$out" ]; then
   gray "apex-router snapshot failed"
   exit 0
 fi

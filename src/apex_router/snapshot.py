@@ -1733,6 +1733,10 @@ def main(argv=None) -> int:
     ap.add_argument("--no-open", action="store_true", help="--detail: write the page, do not open it")
     ap.add_argument("--no-history", action="store_true",
                     help="--menubar: do not append this run to ~/.apex-router/widget/history.jsonl")
+    ap.add_argument("--alert", action="store_true",
+                    help="--menubar: after the menu, send one macOS notification for a NEW problem "
+                         "(widget_alerts: state ~/.apex-router/widget/alerts.json; "
+                         "APEX_ROUTER_NO_ALERTS=1 turns it off)")
     args = ap.parse_args(argv)
     if args.detail is not None:
         from . import widget_detail
@@ -1771,6 +1775,16 @@ def main(argv=None) -> int:
     _emit(out)
     if cur is not None:
         widget_history.append(cur)                 # only --menubar writes; fail-open
+    if args.menubar and args.alert:
+        try:
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+        try:                                       # after the menu: osascript is capped at 3 s
+            from . import widget_alerts
+            widget_alerts.run(snap.get("problems"))
+        except Exception:  # noqa: BLE001 — an alert must never blank the menu
+            pass
     return 0
 
 
