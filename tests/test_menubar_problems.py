@@ -228,7 +228,7 @@ def test_rows_carry_no_raw_error_prompt_or_token():
     rows = _section(text)
     for r in rows:
         assert ROW_RE.fullmatch(snapshot.visible(r)), r
-    blob = text + json.dumps(pb)
+    blob = "\n".join([text.splitlines()[0]] + rows) + json.dumps(pb)    # the bar, the rows, the block
     for s in (SECRET, "bash=/bin/sh", "You are", "TASK", "../", "leak"):
         assert s not in blob, s
     for it in pb["items"]:
@@ -284,6 +284,7 @@ def test_missing_sources_count_as_not_checked():
 # ---------------------------------------------------------------- slow source: the deadline
 
 def _collect(tmp_path, monkeypatch, deadline, flow_fn):
+    (tmp_path / "tel.jsonl").write_text("")                  # telemetry present: pressure is checked
     called = []
     monkeypatch.setattr(decisions, "read_rows", lambda: called.append("decisions") or ([], 0))
     real = agent_runs.ended_jobs
@@ -330,6 +331,7 @@ def test_a_failed_read_is_not_checked(tmp_path, monkeypatch):
 
     def boom2(*a, **k):
         raise PermissionError("denied")
+    (tmp_path / "tel.jsonl").write_text("")
     monkeypatch.setattr(decisions, "read_rows", boom)
     monkeypatch.setattr(agent_runs, "ended_jobs", boom2)
     snap2 = snapshot.collect(
