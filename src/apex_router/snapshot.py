@@ -514,7 +514,9 @@ def problems(snap: dict) -> dict:
     w = block("worker")
     if w is None or "DeadlineSkip" in str(w.get("error") or "") or (w.get("error") and "label" not in w):
         unchecked.append("worker")
-    elif not w.get("pid"):
+    elif not w.get("pid") and w.get("error") != "not loaded":
+        # "not loaded" = the job is not installed on this Mac (an optional service): not a problem.
+        # A loaded job with no pid (crashed, exited) is one.
         add("worker_down", "worker down · launchd job not running")
 
     p = block("pressure")

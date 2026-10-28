@@ -116,6 +116,7 @@ def test_each_rule_gives_its_problem(change, kind):
 
 @pytest.mark.parametrize("change", [
     {"flow": {"error_pct": 4.9, "retries": 3, "unreachable": 0}},          # below 5 %, retries alone: no
+    {"worker": {"label": "w", "pid": None, "running": False, "error": "not loaded", "inbox": 0}},  # not installed
     {"flow": {"error_pct": None, "retries": 0, "unreachable": 0}},          # no telemetry: not a problem
     {"pressure": {"level": "GREEN", "insufficient_sample": True, "families": {}}},   # gray dot
     {"pressure": {"level": "UNKNOWN", "insufficient_sample": True, "families": {}}},
