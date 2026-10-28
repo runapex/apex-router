@@ -351,7 +351,7 @@ def jobs_ended_block(jobs_dir, now, dl=None) -> dict:
     """Jobs that ended failed or capped (``agent_runs.ended_jobs``); skipped after the deadline."""
     if dl is not None and dl.remaining() <= 0:
         return dict(_SKIPPED)
-    return agent_runs.ended_jobs(jobs_dir, now)
+    return agent_runs.ended_jobs(jobs_dir, now, remaining=dl.remaining if dl is not None else None)
 
 
 def decisions_block(dl=None) -> dict:

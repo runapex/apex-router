@@ -63,22 +63,26 @@ def _fnum(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
-def load(p: Path | None = None) -> dict:
-    """The state, or ``{}`` when it is missing, bad or larger than ``STATE_BYTES_MAX``."""
+def load(p: Path | None = None) -> dict | None:
+    """The state; ``{}`` when the file is missing (first run); None when it exists but cannot be read,
+    is bad or is larger than ``STATE_BYTES_MAX`` (the caller then sends nothing: a lost state must
+    not reset the rate limit)."""
     p = Path(p) if p else path()
     try:
         with open(p, "rb") as f:
             raw = f.read(STATE_BYTES_MAX + 1)
+    except FileNotFoundError:
+        return {}
     except OSError:
-        return {}
+        return None
     if len(raw) > STATE_BYTES_MAX:
-        return {}
+        return None
     try:
         doc = json.loads(raw)
     except (ValueError, UnicodeDecodeError, RecursionError):
-        return {}
+        return None
     if not isinstance(doc, dict):
-        return {}
+        return None
     seen = doc.get("seen") if isinstance(doc.get("seen"), dict) else {}
     out = {"seen": {k: _fnum(v) for k, v in seen.items()
                     if isinstance(k, str) and KEY_RE.fullmatch(k) and _fnum(v) is not None}}
@@ -165,7 +169,15 @@ def run(problems, now: float | None = None, path: Path | None = None, notifier=N
         return None
     now = time.time() if now is None else now
     p = path or _state_path()
-    state, msg = decide(load(p), problems["items"], now)
+    old = load(p)
+    if old is None:
+        # bad or unreadable state: send nothing now, and start a fresh state with the rate limit
+        # running from now, so repeated damage cannot give an alert each minute
+        state, _ = decide({}, problems["items"], now)
+        state["last_alert"] = now
+        save(state, p)
+        return None
+    state, msg = decide(old, problems["items"], now)
     if not save(state, p):
         return None                                   # no state, no rate limit: send nothing
     if msg:

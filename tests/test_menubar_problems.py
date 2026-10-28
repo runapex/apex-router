@@ -427,12 +427,19 @@ def test_state_file_write_is_atomic_and_private(tmp_path):
 
 @pytest.mark.parametrize("body", [b"{bad", b"[1,2]", b'{"seen": {"a": "x"}, "last_alert": "y"}',
                                   b'{"seen": {"proxy_down": ' + b"1" * 70_000 + b"}}"])
-def test_a_bad_or_oversized_state_file_is_read_as_empty(tmp_path, body):
+def test_a_bad_or_oversized_state_file_never_gives_an_alert(tmp_path, body):
+    """Changed on purpose after xval round 1: a bad state is no longer read as empty (that reset the
+    rate limit). Unparsable or oversized = None; a dict with bad values keeps only the good ones."""
     p = tmp_path / "alerts.json"
     p.write_bytes(body)
     st = widget_alerts.load(p)
-    assert st.get("seen", {}) == {} or all(isinstance(v, float) for v in st["seen"].values())
-    assert widget_alerts.decide(st, _items("proxy_down"), NOW)[1] == "proxy down"
+    if st is None:
+        sent = []
+        assert widget_alerts.run({"n": 1, "items": _items("proxy_down"), "unchecked": []},
+                                 now=NOW, path=p, notifier=sent.append) is None
+        assert sent == []
+    else:
+        assert st == {"seen": {}}                     # bad values dropped, no float made up
 
 
 def test_load_reads_at_most_the_cap(tmp_path, monkeypatch):
@@ -456,7 +463,7 @@ def test_load_reads_at_most_the_cap(tmp_path, monkeypatch):
         def __exit__(self, *a):
             self.f.close()
     monkeypatch.setattr(builtins, "open", lambda *a, **k: Spy(real_open(*a, **k)))
-    assert widget_alerts.load(p) == {}
+    assert widget_alerts.load(p) is None                     # too large = bad state (no alert), not a first run
     assert sizes and all(0 < n <= widget_alerts.STATE_BYTES_MAX + 1 for n in sizes)
 
 
@@ -568,3 +575,70 @@ def test_main_alert_failure_never_blanks_the_menu(monkeypatch, capsys):
 def test_swiftbar_script_asks_for_alerts():
     sh = (snapshot.Path(__file__).parent.parent / "integrations" / "swiftbar" / "apex.1m.sh").read_text()
     assert "snapshot --menubar --alert" in sh and "APEX_ROUTER_NO_ALERTS" in sh
+
+
+@pytest.mark.parametrize("bad", [b"{", b"[]", b"\xff\xfe", b"[" * 100000])
+def test_a_damaged_state_never_resets_the_rate_limit(tmp_path, bad):
+    """xval round 1: a damaged alerts.json made load() return {} and allowed an alert each minute."""
+    p = tmp_path / "alerts.json"
+    sent = []
+    pb = {"n": 1, "items": _items("proxy_down"), "unchecked": []}
+    assert widget_alerts.run(pb, now=NOW, path=p, notifier=sent.append) == "proxy down"
+    for i in range(1, 6):                                   # damage before each minute's run
+        p.write_bytes(bad)
+        assert widget_alerts.run(pb, now=NOW + 60 * i, path=p, notifier=sent.append) is None
+    assert sent == ["proxy down"]
+    # the fresh state starts the rate limit at the last damage: a new key waits 10 min from there
+    pb2 = {"n": 2, "items": _items("proxy_down", "worker_down"), "unchecked": []}
+    assert widget_alerts.run(pb2, now=NOW + 300 + 60, path=p, notifier=sent.append) is None
+    assert widget_alerts.run(pb2, now=NOW + 300 + widget_alerts.RATE_S, path=p, notifier=sent.append) is not None
+
+
+def test_a_missing_state_is_a_first_run(tmp_path):
+    assert widget_alerts.load(tmp_path / "none.json") == {}
+
+
+# ---- xval round 1: a failed or slow read must not be a wrong 0 ------------------------------------
+
+def _job(d, jid, meta):
+    (d / jid).mkdir(parents=True)
+    (d / jid / "meta.json").write_text(json.dumps(meta) if isinstance(meta, dict) else meta)
+
+
+def test_ended_jobs_unreadable_meta_raises_so_the_menu_says_not_checked(tmp_path):
+    from apex_router import agent_runs
+    _job(tmp_path, "20261028100000-aaaa", {"id": "20261028100000-aaaa", "state": "failed", "ended": NOW - 60})
+    os.chmod(tmp_path / "20261028100000-aaaa" / "meta.json", 0)
+    try:
+        with pytest.raises(PermissionError):
+            agent_runs.ended_jobs(tmp_path, NOW)
+    finally:
+        os.chmod(tmp_path / "20261028100000-aaaa" / "meta.json", 0o600)
+
+
+def test_ended_jobs_damaged_meta_raises(tmp_path):
+    from apex_router import agent_runs
+    _job(tmp_path, "20261028100000-aaaa", "{not json")
+    with pytest.raises(ValueError):
+        agent_runs.ended_jobs(tmp_path, NOW)
+
+
+def test_ended_jobs_folder_without_meta_is_skipped(tmp_path):
+    from apex_router import agent_runs
+    (tmp_path / "20261028100000-bbbb").mkdir()
+    assert agent_runs.ended_jobs(tmp_path, NOW) == {"items": []}
+
+
+def test_ended_jobs_stops_at_the_deadline_and_says_skipped(tmp_path):
+    from apex_router import agent_runs
+    for i in range(5):
+        _job(tmp_path, f"2026102810000{i}-aaaa", {"state": "failed", "ended": NOW - 60})
+    left = iter([1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    r = agent_runs.ended_jobs(tmp_path, NOW, remaining=lambda: next(left))
+    assert r.get("skipped") is True and "items" not in r
+
+
+def test_a_skipped_or_failed_ended_jobs_scan_is_not_a_wrong_zero():
+    for je in ({"skipped": True, "error": "skipped: deadline"}, {"error": "PermissionError"}):
+        pb = snapshot.problems(_calm(jobs_ended=je))
+        assert "jobs" in pb["unchecked"]
