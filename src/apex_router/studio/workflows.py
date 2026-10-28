@@ -259,7 +259,7 @@ def _git_place(cwd: Path, reads: Reads):
 def _head_branch(head: Path, reads: Reads):
     raw = read_capped(head, GIT_MAX, reads)
     m = re.match(rb"ref:\s*refs/heads/(\S{1,200})", raw or b"")
-    return m.group(1).decode("utf-8", "replace") if m else None
+    return mask(m.group(1).decode("utf-8", "replace")) if m else None
 
 
 def _repo_of(cwd, reads):
@@ -319,22 +319,141 @@ class Tele:
                 a["last"], a["last_ts"] = row, ts
 
 
-def read_telemetry(paths: Paths, since: float, cap: int) -> Tele:
+TELE_STEP = 8 * 1024 * 1024       # new bytes read per build per file (the rest comes next build)
+TELE_HEAD = 256
+
+
+def _compact(r: dict, tokens_of):
+    """(ts, sid, agent_id, tokens, row) of one request row; the row is kept for the decisions only."""
+    keep = {k: r.get(k) for k in ("ts", "_ts", "session_id", "agent_id", "model_requested", "model_resolved",
+                                  "guard_fired", "guard_action", "bust", "bust_cause", "tokens_in",
+                                  "cache_read_tokens", "cache_write_tokens", "usage", "endpoint_id",
+                                  "connect_retries", "upstream_rejected", "error_cause", "is_error",
+                                  "stop_reason", "refusal", "total_ms", "client")}
+    return (r["_ts"], r.get("session_id"), r.get("agent_id"), tokens_of(r), keep)
+
+
+def _parse_requests(lines, since: float, traffic) -> list:
+    out = []
+    for ln in lines:
+        if b'"client"' not in ln:          # heartbeats: no json.loads
+            continue
+        m = live._TS_RE.search(ln[:400])
+        if m:
+            try:
+                t0 = live._norm_ts(float(m.group(1)))
+            except ValueError:
+                t0 = None
+            if t0 is not None and t0 < since:
+                continue
+        r = traffic.parse_line(ln)
+        if r is None or r["_ts"] < since:
+            continue
+        try:
+            out.append(_compact(r, traffic.tokens_of))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _first_ts(lines):
+    for ln in lines[:8]:
+        m = live._TS_RE.search(ln[:400])
+        if m:
+            try:
+                return live._norm_ts(float(m.group(1)))
+            except ValueError:
+                continue
+    return None
+
+
+def _rebuild(path: Path, since: float, cap: int, traffic) -> list:
+    """The request rows since ``since`` from the last ``cap`` bytes of the file, plus its newest
+    rotated generation when the read starts inside the window (the rule of ``live.rows_in_window``)."""
+    lines = live._lines(path, cap)
+    rows = _parse_requests(lines, since, traffic)
+    first = _first_ts(lines)
+    if (first is None or first > since) and path.parent.is_dir():
+        pat = re.compile(re.escape(path.name) + r"\.(\d+)$")
+        try:
+            gens = sorted((int(mm.group(1)), q) for q in path.parent.iterdir()
+                          if (mm := pat.fullmatch(q.name)) and q.is_file())
+        except OSError:
+            gens = []
+        if gens:
+            rows = _parse_requests(live._lines(gens[-1][1], cap), since, traffic) + rows
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+class _TeleFile:
+    """The request rows of one telemetry file inside the 7 d span, kept up to date by offset: a
+    build reads only the bytes added since the last one (TELE_STEP at most). A new inode, a shorter
+    file or a changed head = rotation or truncation: rebuild from a capped window read."""
+
+    def __init__(self):
+        self.ino = None
+        self.off = 0
+        self.head = b""
+        self.rows: list = []
+        self.buf = b""
+        self.since = None             # the oldest ts the rows cover
+
+    def update(self, path: Path, now: float, cap: int, traffic, since: float) -> list:
+        span_since = now - WINDOWS["7d"]
+        fd, st = _open_regular(path)
+        if fd is None:
+            self.__init__()
+            return []
+        try:
+            head = os.pread(fd, TELE_HEAD, 0)
+            sig = (st.st_dev, st.st_ino)
+            if sig != self.ino or st.st_size < self.off or head[:len(self.head)] != self.head \
+                    or self.since is None or since < self.since - 60:
+                self.rows = _rebuild(path, since, cap, traffic)
+                self.ino, self.off, self.head, self.buf, self.since = sig, st.st_size, head, b"", since
+            elif st.st_size > self.off:
+                data = os.pread(fd, min(TELE_STEP, st.st_size - self.off), self.off)
+                self.off += len(data)
+                lines = (self.buf + data).split(b"\n")
+                self.buf = lines.pop()
+                if len(self.buf) > 1024 * 1024:
+                    self.buf = b""
+                last = self.rows[-1][0] if self.rows else span_since
+                # rows a rebuild already read (the file grew during it) are not counted twice
+                self.rows.extend(r for r in _parse_requests(lines, span_since, traffic) if r[0] > last)
+                if len(self.head) < TELE_HEAD:
+                    self.head = head
+        except OSError:
+            return self.rows
+        finally:
+            os.close(fd)
+        if self.rows and self.rows[0][0] < span_since:
+            self.rows = [r for r in self.rows if r[0] >= span_since]
+            self.since = max(self.since or span_since, span_since)
+        return self.rows
+
+
+_tele_files: dict = {}
+_tele_lock = threading.Lock()
+
+
+def read_telemetry(paths: Paths, since: float, cap: int, now: float | None = None) -> Tele:
     from . import traffic          # late import: traffic imports this module for the stream
+    now = time.time() if now is None else now
     t = Tele()
     for proxy in ("main", "local"):
-        try:
-            rows, _ = live.rows_in_window(paths.telemetry(proxy), since, cap=cap, rotated=True)
-        except OSError:
-            continue
-        for r in rows:
-            if not traffic.is_request(r):
-                continue
-            try:
-                tok = traffic.tokens_of(r)
-            except (TypeError, ValueError):
-                continue
-            t.add(r, r["_ts"], tok)
+        path = paths.telemetry(proxy)
+        with _tele_lock:
+            tf = _tele_files.get(str(path))
+            if tf is None:
+                tf = _tele_files[str(path)] = _TeleFile()
+                if len(_tele_files) > 8:
+                    _tele_files.pop(next(iter(_tele_files)))
+            rows = list(tf.update(path, now, cap, traffic, since))
+        for ts, sid, aid, tok, row in rows:
+            if ts >= since:
+                t.add(row, ts, tok)
     return t
 
 
@@ -428,7 +547,7 @@ def _claude_parse(lines, sub: bool) -> dict:
         if isinstance(cwd, str) and len(cwd) <= 1024:
             out["cwd"] = cwd
         if isinstance(br, str) and 0 < len(br) <= 200:
-            out["branch"] = br
+            out["branch"] = mask(br)
         aid = r.get("agentId")
         if sub and isinstance(aid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", aid):
             out["agent_id"] = aid
@@ -653,7 +772,7 @@ def _read_job(root: Path, name: str, reads: Reads, skipped: Counter):
     j.parent_pid = m.get("parent_pid") if isinstance(m.get("parent_pid"), int) else None
     j.task = m.get("task") if isinstance(m.get("task"), str) else None
     br = m.get("branch")
-    j.branch = br if isinstance(br, str) and 0 < len(br) <= 200 else None
+    j.branch = mask(br) if isinstance(br, str) and 0 < len(br) <= 200 else None
     j.repo = None
     j.verdict = None
     if j.role in ("xval", "reviewer") and j.ended:
@@ -983,6 +1102,34 @@ def _group(nodes: list, sess: dict, manual: dict) -> list:
     return out
 
 
+SEED_S = 120.0
+
+
+def _seed_by_requests(jobs: dict, sess: dict, sess_pids: dict, tele: Tele) -> None:
+    """A pi process (``parent_pid``) whose spawns are all in the unread middle of its session file has
+    no exact link to start from. Each of its jobs votes for the top-level pi session with the nearest
+    request at most SEED_S before the job's ``created`` time (telemetry, by session id); the session
+    with the most votes runs that process. The pid rule then links the jobs by time."""
+    cands = {sid: sorted(t for t, _ in tele.by_sid[sid]["pts"]) for sid, s in sess.items()
+             if s.kind == "pi" and s.job is None and sid in tele.by_sid}
+    if not cands:
+        return
+    import bisect
+    votes: dict = {}
+    for j in jobs.values():
+        if j.parent is not None or j.parent_pid is None or j.created is None or j.parent_pid in sess_pids:
+            continue
+        best = None
+        for sid, ts in cands.items():
+            i = bisect.bisect_right(ts, j.created) - 1
+            if i >= 0 and j.created - ts[i] <= SEED_S and (best is None or ts[i] > best[0]):
+                best = (ts[i], sid)
+        if best is not None:
+            votes.setdefault(j.parent_pid, Counter())[best[1]] += 1
+    for pid, c in votes.items():
+        sess_pids[pid] = {c.most_common(1)[0][0]}
+
+
 def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict:
     if window not in WINDOWS:
         raise WorkflowError("window must be 24h or 7d")
@@ -997,7 +1144,8 @@ def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict
     skipped["sessions"] += max(0, len(listed) - SESSIONS_MAX)
     sess: dict = {}
     for m, sid, path, kind in listed[:SESSIONS_MAX]:
-        if sid in sess:
+        if sid in sess or not ID_RE.fullmatch(sid):
+            skipped["files"] += sid not in sess
             continue
         s = _read_session(kind, sid, path, m, reads, skipped)
         if s is not None:
@@ -1015,7 +1163,6 @@ def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict
     for s in sess.values():
         if s.id.startswith("apexjob-") and s.id[8:] in jobs:
             s.job = jobs[s.id[8:]]
-    owners: dict = {}                      # job id -> owner key ("s:<sid>" or "j:<job id>")
     for s in sess.values():
         for jid in s.spawns:
             j = jobs.get(jid)
@@ -1030,10 +1177,12 @@ def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict
     for j in jobs.values():
         if j.pid is not None:
             by_pid.setdefault(j.pid, []).append(j)
+    tele = read_telemetry(paths, since, TELEMETRY_CAP[window], now)
     sess_pids: dict = {}                   # pid of a pi process -> [session ids it ran]
     for j in jobs.values():
         if j.parent and j.parent[0] == "sess" and j.parent_pid is not None:
             sess_pids.setdefault(j.parent_pid, set()).add(j.parent[1])
+    _seed_by_requests(jobs, sess, sess_pids, tele)
     for j in sorted(jobs.values(), key=lambda x: x.created or 0):
         if j.parent is not None or j.parent_pid is None or j.created is None:
             continue
@@ -1082,8 +1231,6 @@ def collect(paths: Paths, window: str = "24h", now: float | None = None) -> dict
                 s.repo, s.branch = repo, s.branch or branch
             else:
                 s.repo = _repo_of(s.cwd, reads)[0]
-    cap = TELEMETRY_CAP[window]
-    tele = read_telemetry(paths, since, cap)
     routes = decisions_mod.route_index_cached(paths.router_home / "route_log.jsonl")
     nodes = [_session_node(s, tele, routes, now, since, skipped, reads) for s in top]
     manual = store_for(paths).state()
@@ -1127,6 +1274,8 @@ def clear_caches():
         _sess_cache.clear()
     with _git_lock:
         _git_cache.clear()
+    with _tele_lock:
+        _tele_files.clear()
 
 
 # ---- SSE: workflow events -------------------------------------------------------------------------------

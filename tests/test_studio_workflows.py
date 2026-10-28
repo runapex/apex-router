@@ -288,6 +288,32 @@ def test_a_spawn_in_the_middle_of_a_big_file_is_linked_by_the_parent_pid(home):
     assert doc["skipped"]["jobs_unlinked"] == 1
 
 
+def test_a_process_with_no_visible_spawn_is_found_by_its_requests(home):
+    """All spawns in the unread middle: each job votes for the session with the nearest request
+    (telemetry, by session id) at most 120 s before its created time."""
+    root, now = home
+    repo = make_repo(root, "avenger", "main")
+    s = PiSession(root, SID_A, repo, now - 5000)
+    s.user(now - 4990)
+    s.pad(now - 4000, 80 * 1024)
+    for i, c in enumerate((now - 3000, now - 2000)):
+        s.spawn(c, _job_name(c, f"mid{i}"))
+    s.pad(now - 1500, 80 * 1024)
+    s.assistant(now - 100)
+    s.write()
+    other = PiSession(root, SID_B, repo, now - 5000)
+    other.user(now - 4990); other.assistant(now - 50); other.write()
+    for i, c in enumerate((now - 3000, now - 2000)):
+        make_job(root, _job_name(c, f"mid{i}"), created=c, ended=c + 60, parent_pid=4040)
+    _write_rows(root / ".apex" / "telemetry.jsonl",
+                [_row(now - 3010, SID_A), _row(now - 2015, SID_A), _row(now - 2500, SID_B)])
+    doc = collect(now=now)
+    ids = [a["id"] for t in session(doc, SID_A)["tasks"] for a in t["agents"]]
+    assert sorted(ids) == sorted(_job_name(c, f"mid{i}") for i, c in enumerate((now - 3000, now - 2000)))
+    assert not [a for t in session(doc, SID_B)["tasks"] for a in t["agents"]]
+    assert doc["skipped"]["jobs_unlinked"] == 0
+
+
 def test_at_most_12_agents_per_task_plus_more(home):
     root, now = home
     repo = make_repo(root, "apex-router", "main")
