@@ -532,7 +532,7 @@ const RED = new Set(["failed", "killed", "killed(cost)"]), AMBER = new Set(["tim
 const ROLE_NAME = {worker: "Worker", xval: "Second opinion", scout: "Scout", reviewer: "Reviewer", coordinator: "Coordinator"};
 const AGENT_NAME = {pi: "pi", claude: "Claude Code", codex: "Codex"};
 const W = {doc: null, busy: false, err: "", ctl: null, timer: 0, refreshT: 0, again: 0, idx: new Map(),
-  pending: new Map(), pendT: 0, open: new Map(), sel: new Set(), lines: new Map(), loadedAt: 0};
+  pending: new Map(), pendT: 0, open: new Map(), sel: new Set(), lines: new Map(), lineSt: new Map(), loadedAt: 0};
 
 const str = (v, n) => typeof v === "string" ? v.slice(0, n || 200) : "";
 const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];
@@ -669,28 +669,46 @@ function liveLine(a){
   const train = REDUCE ? null : h("span", {class: "train", "aria-hidden": "true", hidden: true});
   if (train) ol.append(train);
   const sig = JSON.stringify(dec);
-  const old = W.lines.get(a.id);
-  W.lines.set(a.id, {ol, items, train, dec, sig, at: old && old.sig === sig ? old.at : (old ? 0 : STATIONS.length), t: 0});
+  // the same agent twice in one view: the second copy shows its verdicts at once (one train per state)
+  const st = W.lines.has(a.id) ? {sig, at: STATIONS.length} : keepLine(W.lineSt, a.id, sig);
+  W.lines.set(W.lines.has(a.id) ? a.id + "|" + W.lines.size : a.id, {ol, items, train, dec, st, t: 0});
   return h("div", {class: "live"}, ol);
+}
+/* line state lives across redraws (bounded): the same decisions keep the train where it is, a new set starts
+   it at the first station, an agent seen the first time shows its verdicts at once */
+const LINE_MAX = 200;
+function keepLine(map, id, sig){
+  let st = map.get(id);
+  if (!st) st = {sig, at: STATIONS.length};
+  else if (st.sig !== sig){ st.sig = sig; st.at = 0; }
+  map.delete(id); map.set(id, st);
+  while (map.size > LINE_MAX) map.delete(map.keys().next().value);
+  return st;
+}
+/* agents that left the view leave the map */
+function pruneLines(map, live){
+  for (const id of Array.from(map.keys())) if (!live.has(id)) map.delete(id);
 }
 /* a new verdict set runs the train station to station (STATION_MS each); no motion = the verdicts at once */
 function startLines(){
   for (const L of W.lines.values()){
-    if (REDUCE || document.hidden) L.at = STATIONS.length;
+    const st = L.st;
+    if (REDUCE || document.hidden) st.at = STATIONS.length;
     paintLine(L);
-    if (L.at < STATIONS.length){
-      const step = () => { L.at++; paintLine(L); if (L.at < STATIONS.length && L.ol.isConnected) L.t = setTimeout(step, STATION_MS); else L.t = 0; };
+    if (st.at < STATIONS.length){
+      const step = () => { st.at++; paintLine(L); if (st.at < STATIONS.length && L.ol.isConnected) L.t = setTimeout(step, STATION_MS); else L.t = 0; };
       L.t = setTimeout(step, STATION_MS);
     }
   }
 }
 function paintLine(L){
+  const at = Math.max(0, Math.min(STATIONS.length, L.st.at));
   L.items.forEach((li, i) => {
-    const d = L.dec[i], passed = i <= L.at;
-    li.className = (passed ? d.state : "wait") + (L.at < STATIONS.length && i === L.at ? " here" : "");
+    const d = L.dec[i], passed = i <= at;
+    li.className = (passed ? d.state : "wait") + (at < STATIONS.length && i === at ? " here" : "");
   });
-  if (L.train){ L.train.hidden = L.at >= STATIONS.length;
-    if (L.at < STATIONS.length) L.train.style.transform = `translateY(${L.items[L.at].offsetTop - L.items[0].offsetTop}px)`; }
+  if (L.train){ L.train.hidden = at >= STATIONS.length;
+    if (at < STATIONS.length) L.train.style.transform = `translateY(${L.items[at].offsetTop - L.items[0].offsetTop}px)`; }
 }
 /* every timer of every line stops when the view is drawn again, folds, or the page is hidden */
 function stopLines(){
@@ -814,6 +832,7 @@ function renderWorkflows(){
   box.replaceChildren(...kids);
   box.scrollTop = keep;
   if (actKey){ const e = Array.from(box.querySelectorAll("[data-k]")).find(x => x.getAttribute("data-k") === actKey); if (e) e.focus(); }
+  pruneLines(W.lineSt, new Set(W.lines.keys()));
   renderJoinBar();
   startLines();
 }
