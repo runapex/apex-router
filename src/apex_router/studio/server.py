@@ -15,6 +15,7 @@ API: GET /api/flow?proxy=  GET /api/live?window=&proxy=  POST /api/test  GET|PUT
      v2 (docs/design/studio-v2/API.md; token in the header only, never in the URL):
      GET /api/recent?n=  GET /api/tokens?window=  GET /api/experiments  GET /api/stream (SSE)
      GET /api/records (throughput, latency, disk, pipelines; launchd via an injectable runner)
+     GET /api/workflows?window=  POST /api/workflows/join  POST /api/workflows/split (studio/workflows.py)
 
 Streams: one handler thread per stream, at most ``stream_max`` (4) open; the 5th gets 429. A stream
 ends when the client goes away (a write error) or the server shuts down. ``last_request`` is set
@@ -44,7 +45,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import restart as restart_mod
-from . import drafts, experiments, flow, live, records, traffic
+from . import drafts, experiments, flow, live, records, traffic, workflows
 
 try:
     import fcntl
@@ -54,7 +55,8 @@ except ImportError:  # pragma: no cover — not POSIX: no lock, the check still 
 MAX_BODY = 64 * 1024
 PING_TIMEOUT_S = 1.0
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
-HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments", "/api/stream", "/api/records"})
+HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments", "/api/stream", "/api/records",
+                               "/api/workflows", "/api/workflows/join", "/api/workflows/split"})
 STREAM_MAX = 4
 STREAM_WRITE_TIMEOUT_S = 10.0
 UI_PATH = Path(__file__).with_name("ui.html")
@@ -87,6 +89,7 @@ class StudioServer(ThreadingHTTPServer):
         self.stream_max = STREAM_MAX
         self.streams_open = 0
         self.stream_poll_s, self.stream_snap_s, self.stream_hb_s = 0.5, 2.0, 15.0
+        self.stream_wf_s = 2.0                   # workflow diff per stream (events: <= 1 per node per s)
         self._snap_lock = threading.Lock()
         self._snap = (0.0, None)
 
@@ -222,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(e.status, str(e))
         except restart_mod.RestartError as e:
             return self._err(e.status, str(e))
+        except workflows.WorkflowError as e:
+            return self._err(e.status, str(e))
         except Exception as e:  # noqa: BLE001 — the page shows an error, the server keeps running
             return self._err(500, f"internal error: {type(e).__name__}")
 
@@ -342,6 +347,28 @@ class Handler(BaseHTTPRequestHandler):
     def api_records(self, q):
         self._json(200, records.collect_cached(self.server.get_paths(), self.server.records_run))
 
+    def api_workflows(self, q):
+        window = (q.get("window") or ["24h"])[0]
+        if window not in workflows.WINDOWS:
+            return self._err(400, "window must be 24h or 7d")
+        self._json(200, workflows.collect_cached(self.server.get_paths(), window))
+
+    def api_workflows_join(self, q):
+        body = self._body()
+        if not isinstance(body, dict):
+            raise drafts.DraftError("body must be a JSON object", 400)
+        with self.server.lock:
+            workflows.store_for(self.server.get_paths()).join(body.get("sessions"))
+        self._json(200, {"ok": True})
+
+    def api_workflows_split(self, q):
+        body = self._body()
+        if not isinstance(body, dict):
+            raise drafts.DraftError("body must be a JSON object", 400)
+        with self.server.lock:
+            workflows.store_for(self.server.get_paths()).split(body.get("session"))
+        self._json(200, {"ok": True})
+
     def api_stream(self, q):
         srv = self.server
         with srv.lock:
@@ -364,8 +391,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b)
                 self.wfile.flush()
             try:
-                traffic.stream(write, srv.get_paths(), srv.closing, srv.stream_snapshot,
-                               srv.stream_poll_s, srv.stream_snap_s, srv.stream_hb_s)
+                paths = srv.get_paths()
+                traffic.stream(write, paths, srv.closing, srv.stream_snapshot,
+                               srv.stream_poll_s, srv.stream_snap_s, srv.stream_hb_s,
+                               wf_fn=lambda: workflows.collect_cached(paths, "24h"), wf_s=srv.stream_wf_s)
             except OSError:
                 pass                                              # the client went away
             except Exception:  # noqa: BLE001 — headers are sent: end the stream, the client reconnects
@@ -393,6 +422,9 @@ ROUTES = {
     ("GET", "/api/experiments"): Handler.api_experiments,
     ("GET", "/api/records"): Handler.api_records,
     ("GET", "/api/stream"): Handler.api_stream,
+    ("GET", "/api/workflows"): Handler.api_workflows,
+    ("POST", "/api/workflows/join"): Handler.api_workflows_join,
+    ("POST", "/api/workflows/split"): Handler.api_workflows_split,
 }
 
 

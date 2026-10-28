@@ -518,11 +518,17 @@ def sse(event: str | None, data) -> bytes:
 
 
 def stream(write, paths: Paths, closing: threading.Event, snap_fn, poll_s: float = 0.5,
-           snap_s: float = 2.0, hb_s: float = 15.0) -> None:
+           snap_s: float = 2.0, hb_s: float = 15.0, wf_fn=None, wf_s: float = 2.0) -> None:
     """The SSE loop of one client: a snapshot at connect and every ``snap_s``, a ``request`` event
-    per new telemetry row, ``: hb`` every ``hb_s``. Returns when ``closing`` is set; a write error
-    (the client went away) propagates to the caller."""
+    per new telemetry row, ``: hb`` every ``hb_s``. With ``wf_fn`` (the /api/workflows document,
+    cached and shared): every ``wf_s`` a ``workflow`` event per changed task or agent node, at most
+    one per node per second (``workflows.node_events``; the first document is the baseline). A
+    failed build skips that round. Returns when ``closing`` is set; a write error (the client went
+    away) propagates to the caller."""
+    from . import workflows as workflows_mod       # late import: workflows imports this module
     kinds = kinds_for(paths)
+    wf_state = workflows_mod.EventState()
+    last_wf = None
     tails = {proxy: Tail(paths.telemetry(proxy)) for proxy in ("main", "local")}
     try:
         write(sse("snapshot", snap_fn()))
@@ -539,6 +545,14 @@ def stream(write, paths: Paths, closing: threading.Event, snap_fn, poll_s: float
             if m - last_snap >= snap_s:
                 write(sse("snapshot", snap_fn()))
                 last_snap = m
+            if wf_fn is not None and (last_wf is None or m - last_wf >= wf_s):
+                last_wf = m
+                try:
+                    events = workflows_mod.node_events(wf_state, wf_fn(), time.time())
+                except Exception:  # noqa: BLE001 — a bad build skips one round, the stream goes on
+                    events = []
+                for ev in events:
+                    write(sse("workflow", ev))
             if m - last_hb >= hb_s:
                 write(b": hb\n\n")
                 last_hb = m
