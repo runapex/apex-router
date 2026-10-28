@@ -8,7 +8,9 @@ Safety:
   - POST/PUT need ``Content-Type: application/json``, a same-origin ``Origin`` when one is sent,
     and a body of at most 64 KiB;
   - the page gets a CSP ``default-src 'none'`` with a fresh per-response nonce for its one inline
-    ``<style>`` and one inline ``<script>``; ``connect-src 'self'``; no frames, no forms, no base.
+    ``<style>`` and one inline ``<script>``; ``connect-src 'self'``; no frames, no forms, no base;
+  - the icon sprite (icons.svg) goes into the page one time, at start (``sprite_markup``: allow-lists
+    for tags, attributes and text; anything else gives a page without icons, never markup).
 
 API: GET /api/flow?proxy=  GET /api/live?window=&proxy=  POST /api/test  GET|PUT /api/draft
      POST /api/apply  POST /api/rollback  GET /api/ping (token check + pid, for single instance)
@@ -60,6 +62,79 @@ HEADER_TOKEN_ONLY = frozenset({"/api/recent", "/api/tokens", "/api/experiments",
 STREAM_MAX = 4
 STREAM_WRITE_TIMEOUT_S = 10.0
 UI_PATH = Path(__file__).with_name("ui.html")
+ICONS_PATH = Path(__file__).with_name("icons.svg")
+ICONS_MAX = 64 * 1024
+# the sprite goes into the page as markup: only these tags, attributes and characters (the same
+# allow-lists as tests/test_studio_icons.py). Anything else gives no sprite (fail closed).
+_ICON_TAGS = frozenset({"svg", "symbol", "title", "g", "path", "circle", "ellipse", "rect", "line", "polygon",
+                        "polyline"})
+_ICON_ATTRS = frozenset({
+    "xmlns", "aria-hidden", "id", "viewBox", "width", "height", "x", "y", "cx", "cy", "r", "rx", "ry",
+    "d", "points", "x1", "y1", "x2", "y2", "transform",
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
+    "stroke-dasharray", "stroke-opacity", "opacity"})
+_ICON_VALUE = re.compile(r"[A-Za-z0-9 #.,:\-()]*")
+_ICON_TITLE = re.compile(r"[A-Za-z0-9 .:,()/\-]*")
+_ICON_ID = re.compile(r"[a-z][a-z0-9-]{0,40}")
+_SVG_NS = "http://www.w3.org/2000/svg"
+_SPRITE_OPEN = (f'<svg id="sprite" xmlns="{_SVG_NS}" width="0" height="0" aria-hidden="true" '
+                'focusable="false">')
+
+
+def sprite_markup(raw: str) -> str:
+    """The icon sprite as page markup (``<svg id="sprite" ...>``), or "" when ``raw`` has anything
+    outside the allow-lists: no script, style, event handler, external reference, comment, PI,
+    CDATA, entity or text outside ``<title>``. Done one time, when the server starts."""
+    import xml.etree.ElementTree as ET
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > ICONS_MAX:
+        return ""
+    for bad in ("<?", "<!", "]]>", "&", "__NONCE__", "__ICONS__", "\\"):
+        if bad in raw:
+            return ""
+    for m in re.finditer(r"<(/?)([^\s/>]*)", raw):
+        if m.group(2) not in _ICON_TAGS:
+            return ""
+    try:
+        root = ET.fromstring(raw)
+    except (ET.ParseError, ValueError, RecursionError):
+        return ""
+    if root.tag != f"{{{_SVG_NS}}}svg":
+        return ""
+    ids = set()
+    for el in root.iter():
+        if not isinstance(el.tag, str) or not el.tag.startswith(f"{{{_SVG_NS}}}"):
+            return ""
+        tag = el.tag.split("}", 1)[1]
+        if tag not in _ICON_TAGS or (tag == "svg" and el is not root):
+            return ""
+        for k, v in el.attrib.items():
+            if k.startswith("{") or k not in _ICON_ATTRS or "url(" in v.lower() or not _ICON_VALUE.fullmatch(v):
+                return ""
+        if tag == "title":
+            if len(el) or not _ICON_TITLE.fullmatch(el.text or ""):
+                return ""
+        elif (el.text or "").strip():
+            return ""
+        if (el.tail or "").strip():
+            return ""
+        if tag == "symbol":
+            sid = el.get("id") or ""
+            if not _ICON_ID.fullmatch(sid) or sid in ids:
+                return ""
+            ids.add(sid)
+    if not ids:
+        return ""
+    body = raw[raw.index(">", raw.index("<svg")) + 1:]
+    return _SPRITE_OPEN + body.strip()
+
+
+def _load_ui() -> str:
+    """ui.html with the sprite in its ``__ICONS__`` slot (read one time, at start)."""
+    try:
+        raw = ICONS_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    return UI_PATH.read_text(encoding="utf-8").replace("__ICONS__", sprite_markup(raw), 1)
 
 
 def _csp(nonce: str) -> str:
@@ -79,7 +154,7 @@ class StudioServer(ThreadingHTTPServer):
         self.resolver = resolver
         self.lock = threading.Lock()
         self.last_request = time.time()
-        self.ui = UI_PATH.read_text(encoding="utf-8")
+        self.ui = _load_ui()
         self.waiter = restart_mod.Waiter()
         self.restart_run = restart_mod._run      # tests replace these (never the real launchctl)
         self.restart_fetch = restart_mod._fetch

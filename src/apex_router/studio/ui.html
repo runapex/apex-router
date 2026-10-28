@@ -22,6 +22,7 @@ body{display:grid;grid-template-rows:auto 1fr;overflow:hidden;min-width:1024px;m
 button,input,select{font:inherit;color:inherit}
 .num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#sprite{position:absolute;width:0;height:0;overflow:hidden}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* top bar: status sentence + 4 icons */
@@ -251,6 +252,7 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 </style>
 </head>
 <body>
+__ICONS__
 <header>
   <div id="status" class="lvl-wait" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="status-text">Connecting…</span></div>
   <nav aria-label="More views">
