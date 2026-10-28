@@ -321,7 +321,8 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         graph = {"nodes": [], "edges": []}
     px = _safe(proxy_fn) if proxy_fn else _safe(_default_proxy, dl)
     fl = _safe(flow_fn) if flow_fn else _safe(flow_block, telemetry, now, px, dl)
-    return {
+    jdir = jobs_dir or router_home() / "pi-jobs"
+    snap = {
         "schema": SCHEMA,
         "ts": now,
         "pressure": _safe(pressure_block, telemetry, now),
@@ -333,10 +334,34 @@ def collect(*, home=None, telemetry=None, observe_dir=None, adapters=None,
         "graph": graph,
         "proxy": px,
         "flow": fl,
-        "jobs": _safe(agent_runs.live_jobs, jobs_dir or router_home() / "pi-jobs", now),
+        "jobs": _safe(agent_runs.live_jobs, jdir, now),
+        "jobs_ended": _safe(jobs_ended_block, jdir, now, dl),
+        "decisions": _safe(decisions_block, dl),
         "quality": _safe(quality.collect, now, telemetry),
         "adapters": adapters_out if isinstance(adapters_out, list) else [adapters_out],
     }
+    snap["problems"] = _safe(problems, snap)
+    return snap
+
+
+_SKIPPED = {"skipped": True, "error": "skipped: deadline"}
+
+
+def jobs_ended_block(jobs_dir, now, dl=None) -> dict:
+    """Jobs that ended failed or capped (``agent_runs.ended_jobs``); skipped after the deadline."""
+    if dl is not None and dl.remaining() <= 0:
+        return dict(_SKIPPED)
+    return agent_runs.ended_jobs(jobs_dir, now, remaining=dl.remaining if dl is not None else None)
+
+
+def decisions_block(dl=None) -> dict:
+    """The count of open owner decisions (``decisions.read_rows``, bounded read); never the text.
+    Skipped after the deadline; a read error is an ``error`` (the menu says "not checked")."""
+    if dl is not None and dl.remaining() <= 0:
+        return dict(_SKIPPED)
+    from . import decisions
+    rows, bad = decisions.read_rows()
+    return {"open": sum(1 for r in rows if r.get("state") == "open"), "bad": bad}
 
 
 def proxy_activity(px: dict, dl=None) -> dict | None:
@@ -398,6 +423,162 @@ def flow_block(telemetry=None, now: float | None = None, px=None, dl=None) -> di
                   "activity": proxy_activity(px, dl)},
         "draft_changes": n_draft,
     }
+
+
+# ---- problems (owner decision D18: the menu bar tells the owner) ----------------------------
+# Fixed rules. Every row is fixed-map words plus our own numbers: no error text, no prompt text, no
+# label, no family name, no token. ``key`` is the dedupe key of the alert (``widget_alerts``).
+
+UPSTREAM_ERR_PCT = 5.0
+JOB_QUIET_S = 10 * 60
+JOB_ENDED_WINDOW_S = 60 * 60
+PROBLEM_ROWS_MAX = 5
+# kind: (severity, rank, studio target). Order: red before amber, then the rank.
+PROBLEM_KINDS = {
+    "proxy_down": ("red", 0, "node:detect"),
+    "worker_down": ("red", 1, "node:up.ollama"),
+    "pressure_red": ("red", 2, "node:sink.pressure"),
+    "upstream_502": ("red", 3, "node:upstream"),
+    "job_failed": ("red", 4, "node:agents"),
+    "upstream_errors": ("amber", 5, "node:upstream"),
+    "pressure_amber": ("amber", 6, "node:sink.pressure"),
+    "job_quiet": ("amber", 7, "node:agents"),
+    "job_capped": ("amber", 8, "node:agents"),
+    "decisions_open": ("amber", 9, "node:agents"),
+}
+_SEV_ORDER = {"red": 0, "amber": 1}
+# the order of the "not checked" names
+PROBLEM_SOURCES = ("proxy", "worker", "pressure", "upstream", "jobs", "decisions")
+_JOB_ROLES = {"worker", "judge", "engineer", "researcher", "reviewer", "scout"}
+_JOB_FAILED = {"failed": "it failed", "timed_out(idle)": "idle time limit",
+               "timed_out(wall)": "wall time limit"}
+_SAFE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+PROBLEM_TEXT_RE = re.compile(r"[a-z0-9 .·%]{1,100}")
+
+
+def _int(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _job_ref(it: dict) -> tuple:
+    """(``role tail`` words, key tag) for a job — a fixed role word and the last 4 id characters
+    only when the id is a plain token; the tag is the id or its hash (never shown)."""
+    import hashlib
+    role = it.get("role") if it.get("role") in _JOB_ROLES else "job"
+    jid = it.get("id") if isinstance(it.get("id"), str) else ""
+    plain = bool(_SAFE_ID_RE.fullmatch(jid)) and ".." not in jid
+    tail = re.sub(r"[^a-z0-9]", "", jid[-4:].lower()) if plain else ""
+    words = f"{role} {tail}".strip()
+    tag = jid.lower() if plain else hashlib.sha256(jid.encode("utf-8", "replace")).hexdigest()[:16]
+    return words, re.sub(r"[^a-z0-9_.-]", "-", tag)[:60]
+
+
+def _pressure_cause(p: dict) -> str:
+    c = p.get("causes") if isinstance(p.get("causes"), dict) else {}
+    if p.get("retry_after_recent"):
+        return "provider asked to back off"
+    if _int(c.get("rate_limited")):
+        return "rate limited"
+    if _int(c.get("transport_errors")):
+        return "transport errors"
+    if _int(c.get("upstream_rejected")):
+        return "rejected requests"
+    lvl = p.get("level")
+    fams = (p.get("families") or {}).values() if isinstance(p.get("families"), dict) else []
+    if lvl not in ("RED", "AMBER") and any(v in ("RED", "AMBER") for v in fams):
+        return "one model family"
+    return "see pressure"
+
+
+def problems(snap: dict) -> dict:
+    """``{n, items: [{key, kind, sev, text, target}], unchecked: [source]}``, worst first. A source
+    that was not read (missing, skipped by the deadline, an error) is named in ``unchecked`` and
+    adds no problem: the menu then says "not checked", never a wrong 0."""
+    items, unchecked = [], []
+
+    def add(kind, text, tag=""):
+        sev, rank, target = PROBLEM_KINDS[kind]
+        items.append({"key": f"{kind}:{tag}" if tag else kind, "kind": kind, "sev": sev,
+                      "rank": rank, "text": text, "target": target})
+
+    def block(name):
+        b = snap.get(name)
+        return b if isinstance(b, dict) else None
+
+    px = block("proxy")
+    if px is None or px.get("skipped"):
+        unchecked.append("proxy")
+    elif not px.get("up"):
+        add("proxy_down", "proxy down · health check got no answer")
+
+    w = block("worker")
+    if w is None or "DeadlineSkip" in str(w.get("error") or "") or (w.get("error") and "label" not in w):
+        unchecked.append("worker")
+    elif not w.get("pid") and w.get("error") != "not loaded":
+        # "not loaded" = the job is not installed on this Mac (an optional service): not a problem.
+        # A loaded job with no pid (crashed, exited) is one.
+        add("worker_down", "worker down · launchd job not running")
+
+    p = block("pressure")
+    if p is None or p.get("error"):
+        unchecked.append("pressure")
+    else:
+        d = dot(snap)
+        if d == "red":
+            add("pressure_red", "pressure red · " + _pressure_cause(p))
+        elif d == "orange":
+            add("pressure_amber", "pressure amber · " + _pressure_cause(p))
+
+    fl = block("flow")
+    if fl is None or fl.get("skipped") or fl.get("error"):
+        unchecked.append("upstream")
+    else:
+        un = _int(fl.get("unreachable"))
+        if un and un > 0:
+            add("upstream_502", f"upstream 502 · {un} in 15 min · upstream unreachable")
+        err = fl.get("error_pct")
+        if isinstance(err, (int, float)) and not isinstance(err, bool) and math.isfinite(err) \
+                and err >= UPSTREAM_ERR_PCT:
+            add("upstream_errors", f"upstream errors {err:.0f}% · 15 min · failed requests")
+
+    jb, je = block("jobs"), block("jobs_ended")
+    if jb is None or jb.get("error") or je is None or je.get("error") or je.get("skipped"):
+        unchecked.append("jobs")
+    live = jb.get("items") if jb and not jb.get("error") and isinstance(jb.get("items"), list) else []
+    ended = je.get("items") if je and not je.get("error") and isinstance(je.get("items"), list) else []
+    for it in live:
+        if not isinstance(it, dict):
+            continue
+        q = it.get("quiet_s")
+        if isinstance(q, (int, float)) and not isinstance(q, bool) and q > JOB_QUIET_S:
+            words, tag = _job_ref(it)
+            add("job_quiet", f"{words} quiet {fmt_age(q)} · no event", tag)
+    for it in ended:
+        if not isinstance(it, dict):
+            continue
+        ago = it.get("ended_ago_s")
+        if not isinstance(ago, (int, float)) or isinstance(ago, bool) or ago > JOB_ENDED_WINDOW_S:
+            continue
+        st = it.get("state")
+        words, tag = _job_ref(it)
+        if st in _JOB_FAILED:
+            add("job_failed", f"{words} failed {fmt_age(ago)} ago · {_JOB_FAILED[st]}", tag)
+        elif st == "killed(cost)" or (st == "done" and it.get("capped") is True):
+            cause = "cost limit" if st == "killed(cost)" else "soft cost cap"
+            add("job_capped", f"{words} capped {fmt_age(ago)} ago · {cause}", tag)
+
+    dc = block("decisions")
+    n_open = _int((dc or {}).get("open"))
+    if dc is None or dc.get("error") or dc.get("skipped") or n_open is None:
+        unchecked.append("decisions")
+    elif n_open > 0:
+        add("decisions_open", f"owner decisions open {n_open} · agent spawn waits")
+
+    items.sort(key=lambda it: (_SEV_ORDER[it["sev"]], it["rank"], it["key"]))
+    for it in items:
+        it.pop("rank")
+    return {"n": len(items), "items": items,
+            "unchecked": [s for s in PROBLEM_SOURCES if s in unchecked]}
 
 
 # ---- menubar formatter ----------------------------------------------------------------------
@@ -1297,6 +1478,39 @@ def _flow_lines(fl: dict, bin_path=None) -> list:
     return out
 
 
+def _problem_lines(snap: dict, bin_path=None) -> tuple:
+    """(lines, N) for the Problems section: ``Problems · N`` and one row per problem (worst first,
+    at most ``PROBLEM_ROWS_MAX`` plus ``+N more``), each opening the studio at its node; the sources
+    not read are named. N = 0 with a source not read: one "problems not checked" line. No key
+    (an older snapshot): nothing. Rows are fixed-map words only (``problems``)."""
+    if "problems" not in snap:
+        return [], 0
+    pb = snap.get("problems")
+    if not isinstance(pb, dict) or pb.get("error") or not isinstance(pb.get("items"), list):
+        return [f"problems not checked | color={INK['amber']}"], 0
+    items = [it for it in pb["items"] if isinstance(it, dict) and it.get("kind") in PROBLEM_KINDS]
+    unchecked = [s for s in PROBLEM_SOURCES if s in (pb.get("unchecked") or [])]
+    if not items:
+        if unchecked:
+            return [f"problems not checked · {', '.join(unchecked)} | color={INK['amber']}"], 0
+        return [], 0
+    worst = "red" if any(it.get("sev") == "red" for it in items) else "amber"
+    out = [f"Problems · {len(items)} | size=12 color={INK[worst]}"]
+    for it in items[:PROBLEM_ROWS_MAX]:
+        sev, _, target = PROBLEM_KINDS[it["kind"]]
+        act = studio_action(bin_path, target)
+        text = it.get("text")
+        if not (isinstance(text, str) and PROBLEM_TEXT_RE.fullmatch(text)):
+            text = it["kind"].replace("_", " ")         # never draw text this module did not make
+        out.append(f"{text} | color={INK[sev]}"
+                   + (f" {act}" if act else ""))
+    if len(items) > PROBLEM_ROWS_MAX:
+        out.append(f"+{len(items) - PROBLEM_ROWS_MAX} more | color={INK['muted']}")
+    if unchecked:
+        out.append(f"not checked · {', '.join(unchecked)} | color={INK['amber']}")
+    return out, len(items)
+
+
 JOBS_ROWS_MAX = 5
 
 
@@ -1328,8 +1542,12 @@ def menubar(snap: dict, history=None, bin_path=None) -> str:
     the Flow rows open the studio (``studio_action``)."""
     color = dot(snap)
     ags = [a for a in snap.get("agents") or [] if isinstance(a, dict)]
-    flag = " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
+    plines, n_prob = _problem_lines(snap, bin_path)
+    flag = f" ⚠ {n_prob}" if n_prob else \
+        " ⚠" if any(agent_resources.agent_flagged(a) for a in ags) else ""
     head = [_bar(color, f"● {_active(snap)}{flag}"), "---"]
+    if plines:
+        head += plines + ["---"]
     studio = studio_action(bin_path)
     if studio:
         head += [f"Flow studio ↗ | color={INK['accent']} {studio}", "---"]
@@ -1517,6 +1735,10 @@ def main(argv=None) -> int:
     ap.add_argument("--no-open", action="store_true", help="--detail: write the page, do not open it")
     ap.add_argument("--no-history", action="store_true",
                     help="--menubar: do not append this run to ~/.apex-router/widget/history.jsonl")
+    ap.add_argument("--alert", action="store_true",
+                    help="--menubar: after the menu, send one macOS notification for a NEW problem "
+                         "(widget_alerts: state ~/.apex-router/widget/alerts.json; "
+                         "APEX_ROUTER_NO_ALERTS=1 turns it off)")
     args = ap.parse_args(argv)
     if args.detail is not None:
         from . import widget_detail
@@ -1555,6 +1777,16 @@ def main(argv=None) -> int:
     _emit(out)
     if cur is not None:
         widget_history.append(cur)                 # only --menubar writes; fail-open
+    if args.menubar and args.alert:
+        try:
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+        try:                                       # after the menu: osascript is capped at 3 s
+            from . import widget_alerts
+            widget_alerts.run(snap.get("problems"))
+        except Exception:  # noqa: BLE001 — an alert must never blank the menu
+            pass
     return 0
 
 

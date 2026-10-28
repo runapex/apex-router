@@ -553,3 +553,52 @@ def live_jobs(jobs_dir: Path | None = None, now: float | None = None) -> dict:
             "quiet_s": round(now - last) if isinstance(last, (int, float)) else None,
         })
     return out
+
+
+ENDED_STATES = ("failed", "timed_out(idle)", "timed_out(wall)", "killed(cost)", "done")
+
+
+def ended_jobs(jobs_dir: Path | None = None, now: float | None = None, remaining=None) -> dict:
+    """Jobs in the newest ``JOBS_SCAN_MAX`` dirs that ended failed, timed out or capped (a hard
+    ``killed(cost)`` or a soft cap on a ``done`` job): ``{"items": [{id, role, state, capped,
+    ended_ago_s}]}``. Only fixed fields; never the task text. A missing dir is no jobs; any other
+    read error of the dir or of a meta.json raises (the caller shows "not checked"): a job that cannot
+    be read must not count as "no problem". A job folder without meta.json (just made), an oversized
+    meta.json or one that is not a JSON object is skipped. ``remaining`` (a callable, seconds left) is checked before
+    each read; at 0 the scan stops and returns ``{"skipped": True}`` (never a partial list as a full one)."""
+    now = time.time() if now is None else now
+    d = Path(jobs_dir) if jobs_dir else Path(os.environ.get("APEX_HOME", Path.home() / ".apex-router")) / "pi-jobs"
+    names = []
+    try:
+        with os.scandir(d) as it:
+            for i, e in enumerate(it):
+                if i >= JOBS_LIST_MAX:
+                    break
+                names.append(e.name)
+    except FileNotFoundError:
+        return {"items": []}
+    out = []
+    for name in sorted(names, reverse=True)[:JOBS_SCAN_MAX]:
+        if remaining is not None and remaining() <= 0:
+            return {"skipped": True, "error": "skipped: deadline"}
+        try:
+            with open(d / name / "meta.json", "rb") as f:
+                raw = f.read(META_MAX + 1)
+        except (FileNotFoundError, NotADirectoryError):
+            continue                                  # a folder being made, or a stray file
+        if len(raw) > META_MAX:
+            continue
+        m = json.loads(raw)       # meta.json is written by rename (atomic): a parse error is real damage
+                                  # and raises, so the menu says "not checked", not a wrong 0
+        if not isinstance(m, dict) or m.get("state") not in ENDED_STATES:
+            continue
+        capped = bool(m.get("capped")) or m.get("soft_cap_at") is not None
+        if m["state"] == "done" and not capped:
+            continue
+        ended = m.get("ended")
+        ended = ended / 1000.0 if isinstance(ended, (int, float)) and ended > 1e11 else ended
+        if not isinstance(ended, (int, float)) or isinstance(ended, bool):
+            continue
+        out.append({"id": str(m.get("id") or name), "role": _role(m), "state": m["state"],
+                    "capped": capped, "ended_ago_s": round(max(0.0, now - ended))})
+    return {"items": out}

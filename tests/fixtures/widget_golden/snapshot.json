@@ -883,6 +883,10 @@
       "state": "idle"
     }
   ],
+  "decisions": {
+    "bad": 0,
+    "open": 0
+  },
   "errors15m": {
     "by_cause": {
       "http_529": 1,
@@ -1387,6 +1391,9 @@
     "queued": 0,
     "running": 0
   },
+  "jobs_ended": {
+    "items": []
+  },
   "measure": {
     "age_s": 120.0,
     "cost_usd": 1.23,
@@ -1420,6 +1427,33 @@
     "retry_after_recent": false,
     "retry_after_s": null,
     "window_min": 15
+  },
+  "problems": {
+    "items": [
+      {
+        "key": "proxy_down",
+        "kind": "proxy_down",
+        "sev": "red",
+        "target": "node:detect",
+        "text": "proxy down \u00b7 health check got no answer"
+      },
+      {
+        "key": "upstream_errors",
+        "kind": "upstream_errors",
+        "sev": "amber",
+        "target": "node:upstream",
+        "text": "upstream errors 9% \u00b7 15 min \u00b7 failed requests"
+      },
+      {
+        "key": "pressure_amber",
+        "kind": "pressure_amber",
+        "sev": "amber",
+        "target": "node:sink.pressure",
+        "text": "pressure amber \u00b7 transport errors"
+      }
+    ],
+    "n": 3,
+    "unchecked": []
   },
   "proxy": {
     "error": "refused",
