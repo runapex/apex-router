@@ -133,3 +133,9 @@ def test_colours_only_from_palette(root):
 def test_colour_count_per_symbol(symbols, sid):
     used = {v for el in symbols[sid].iter() for _, v in _colours(el) if v in ALLOWED_COLOURS}
     assert len(used) <= MAX_COLOURS_PER_SYMBOL, f"{sid}: {sorted(used)}"
+
+
+def test_review_sheet_inlines_current_sprite(raw):
+    sheet = (ROOT / "docs" / "design" / "studio-v2" / "icons" / "sheet.html").read_text(encoding="utf-8")
+    assert raw.strip() in sheet, "sheet.html is out of date: inline the current icons.svg"
+    assert "<script" not in sheet.lower()
