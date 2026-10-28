@@ -490,11 +490,17 @@ function iconOr(id, big, ring){
 const agentIcon = (k, big, ring) => iconOr(AGENT_ICON[k] || null, big, ring);
 const roleIcon = (r, ring) => iconOr(ROLE_ICON[r] || "role-worker", false, ring);
 const procIcon = (k, ring) => iconOr(PROC_ICON[k] || "proc-serve", false, ring);
+/* GPT icons: a fixed map from version (traffic.model_family "GPT 6", "GPT 6.1") to icon. The words "sol" and
+   "astra" (model ids) name the icon too. An unknown GPT version shows model-gpt. */
+const GPT_ICON = {"6": "model-gpt", "6.1": "model-gpt-sol"};
 function modelId(text){
-  const t = String(text || "").toLowerCase();
+  const t = String(text || "").toLowerCase().slice(0, 200), words = t.split(/[^a-z0-9.]+/);
   if (/opus/.test(t)) return "model-opus";
   if (/sonnet|haiku|fable|claude/.test(t)) return "model-sonnet";
-  if (/\bsol\b/.test(t)) return "model-gpt-sol";
+  if (words.includes("sol")) return "model-gpt-sol";
+  if (words.includes("astra")) return "model-gpt";
+  const v = /gpt[\s-]*(\d+(?:\.\d+)?)/.exec(t);
+  if (v) return Object.prototype.hasOwnProperty.call(GPT_ICON, v[1]) ? GPT_ICON[v[1]] : "model-gpt";
   if (/gpt/.test(t)) return "model-gpt";
   if (/qwen|llama|gemma|mistral|deepseek|kimi|glm|phi|local/.test(t)) return "model-local";
   return null;
@@ -512,11 +518,11 @@ const SCREEN1 = {
   title: "Workflows",
   w24: "24 h",
   w7: "7 days",
-  more7: "Show 7 days",
-  less7: "Show 24 h",
+  show: "Show",
   empty: "No work yet.",
   slow: "Loading…",
-  more: "more"
+  more: "more",
+  older: "older"
 };
 const plusMore = n => "+" + Math.max(0, Math.round(+n || 0)) + " more";   // SCREEN1.more
 const WF_TIMEOUT_MS = 15000, WF_REFRESH_MS = 30000, WF_PENDING_MAX = 200, WF_OPEN_MAX = 2000, SEL_MAX = 20;
@@ -526,7 +532,7 @@ const RED = new Set(["failed", "killed", "killed(cost)"]), AMBER = new Set(["tim
 const ROLE_NAME = {worker: "Worker", xval: "Second opinion", scout: "Scout", reviewer: "Reviewer", coordinator: "Coordinator"};
 const AGENT_NAME = {pi: "pi", claude: "Claude Code", codex: "Codex"};
 const W = {doc: null, busy: false, err: "", ctl: null, timer: 0, refreshT: 0, again: 0, idx: new Map(),
-  pending: new Map(), pendT: 0, open: new Map(), sel: new Set(), lines: new Map(), loadedAt: 0};
+  pending: new Map(), pendT: 0, open: new Map(), sel: new Set(), lines: new Map(), lineSt: new Map(), loadedAt: 0};
 
 const str = (v, n) => typeof v === "string" ? v.slice(0, n || 200) : "";
 const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];
@@ -663,28 +669,46 @@ function liveLine(a){
   const train = REDUCE ? null : h("span", {class: "train", "aria-hidden": "true", hidden: true});
   if (train) ol.append(train);
   const sig = JSON.stringify(dec);
-  const old = W.lines.get(a.id);
-  W.lines.set(a.id, {ol, items, train, dec, sig, at: old && old.sig === sig ? old.at : (old ? 0 : STATIONS.length), t: 0});
+  // the same agent twice in one view: the second copy shows its verdicts at once (one train per state)
+  const st = W.lines.has(a.id) ? {sig, at: STATIONS.length} : keepLine(W.lineSt, a.id, sig);
+  W.lines.set(W.lines.has(a.id) ? a.id + "|" + W.lines.size : a.id, {ol, items, train, dec, st, t: 0});
   return h("div", {class: "live"}, ol);
+}
+/* line state lives across redraws (bounded): the same decisions keep the train where it is, a new set starts
+   it at the first station, an agent seen the first time shows its verdicts at once */
+const LINE_MAX = 200;
+function keepLine(map, id, sig){
+  let st = map.get(id);
+  if (!st) st = {sig, at: STATIONS.length};
+  else if (st.sig !== sig){ st.sig = sig; st.at = 0; }
+  map.delete(id); map.set(id, st);
+  while (map.size > LINE_MAX) map.delete(map.keys().next().value);
+  return st;
+}
+/* agents that left the view leave the map */
+function pruneLines(map, live){
+  for (const id of Array.from(map.keys())) if (!live.has(id)) map.delete(id);
 }
 /* a new verdict set runs the train station to station (STATION_MS each); no motion = the verdicts at once */
 function startLines(){
   for (const L of W.lines.values()){
-    if (REDUCE || document.hidden) L.at = STATIONS.length;
+    const st = L.st;
+    if (REDUCE || document.hidden) st.at = STATIONS.length;
     paintLine(L);
-    if (L.at < STATIONS.length){
-      const step = () => { L.at++; paintLine(L); if (L.at < STATIONS.length && L.ol.isConnected) L.t = setTimeout(step, STATION_MS); else L.t = 0; };
+    if (st.at < STATIONS.length){
+      const step = () => { st.at++; paintLine(L); if (st.at < STATIONS.length && L.ol.isConnected) L.t = setTimeout(step, STATION_MS); else L.t = 0; };
       L.t = setTimeout(step, STATION_MS);
     }
   }
 }
 function paintLine(L){
+  const at = Math.max(0, Math.min(STATIONS.length, L.st.at));
   L.items.forEach((li, i) => {
-    const d = L.dec[i], passed = i <= L.at;
-    li.className = (passed ? d.state : "wait") + (L.at < STATIONS.length && i === L.at ? " here" : "");
+    const d = L.dec[i], passed = i <= at;
+    li.className = (passed ? d.state : "wait") + (at < STATIONS.length && i === at ? " here" : "");
   });
-  if (L.train){ L.train.hidden = L.at >= STATIONS.length;
-    if (L.at < STATIONS.length) L.train.style.transform = `translateY(${L.items[L.at].offsetTop - L.items[0].offsetTop}px)`; }
+  if (L.train){ L.train.hidden = at >= STATIONS.length;
+    if (at < STATIONS.length) L.train.style.transform = `translateY(${L.items[at].offsetTop - L.items[0].offsetTop}px)`; }
 }
 /* every timer of every line stops when the view is drawn again, folds, or the page is hidden */
 function stopLines(){
@@ -733,6 +757,28 @@ function taskRow(t){
   }
   return li;
 }
+/* old tasks fold: a task with no running sub-agent and no activity in the last OLD_TASK_S goes under one
+   "+N older" row. Running tasks and the newest task always show. A task with no time stays shown. */
+const OLD_TASK_S = 7200;
+function lastActivity(t){
+  let last = Math.max(+t.end || 0, +t.start || 0);
+  for (const a of arr(t.agents, 50)) last = Math.max(last, +a.end || 0, +a.start || 0);
+  return last;
+}
+function splitOld(tasks, now){
+  const show = [], old = [];
+  tasks.forEach((t, i) => {
+    const last = lastActivity(t);
+    const keep = i === 0 || isRun(t.state) || treeRuns(arr(t.agents, 50)) || !last || now - last <= OLD_TASK_S;
+    (keep ? show : old).push(t);
+  });
+  return {show, old};
+}
+function olderRow(sid, old){
+  const key = "o|" + sid;
+  return h("li", {class: "mr"}, h("div", {class: "row1"}, h("span", {class: "stn"}, h("span", {class: "tstop", "aria-hidden": "true"})),
+    foldBtn(key, false, [h("span", {class: "more", text: "+" + old.length + " " + SCREEN1.older})])));
+}
 function sessionRow(s, multi){
   const k = AGENT_NAME[s.agent] ? s.agent : "other", tasks = arr(s.tasks, 200);
   const running = s.state === "running" || tasks.some(t => t.state === "running");
@@ -746,7 +792,12 @@ function sessionRow(s, multi){
         h("span", {class: "mt num", text: running ? ago(s.start) : ago(s.last) + " " + SCREEN1.ago})]),
       multi ? h("button", {type: "button", class: "mini", text: SCREEN1.split, "data-k": "sp" + s.id, "aria-label": "Split " + name,
         onclick: () => splitSession(s.id)}) : null, pick));
-  if (open && tasks.length) li.append(h("ul", {class: "mline " + hueOf(k)}, tasks.slice().reverse().map(taskRow)));
+  if (open && tasks.length){
+    const {show, old} = splitOld(tasks.slice().reverse(), nowS());
+    const rows = show.map(taskRow);
+    if (old.length){ rows.push(olderRow(s.id, old)); if (isOpen("o|" + s.id, false)) rows.push(...old.map(taskRow)); }
+    li.append(h("ul", {class: "mline " + hueOf(k)}, rows));
+  }
   return li;
 }
 function workflowBlock(w){
@@ -777,10 +828,11 @@ function renderWorkflows(){
   if (W.doc && !list.length) kids.push(h("p", {class: "empty", text: SCREEN1.empty}));
   kids.push(h("ul", {class: "wfs"}, list.map(workflowBlock)));
   kids.push(h("p", {class: "wfmore"}, h("button", {type: "button", class: "btn", "data-k": "win",
-    text: S.wfWin === "7d" ? SCREEN1.less7 : SCREEN1.more7, onclick: () => setWindow(S.wfWin === "7d" ? "24h" : "7d")})));
+    text: SCREEN1.show + " " + (S.wfWin === "7d" ? SCREEN1.w24 : SCREEN1.w7), onclick: () => setWindow(S.wfWin === "7d" ? "24h" : "7d")})));
   box.replaceChildren(...kids);
   box.scrollTop = keep;
   if (actKey){ const e = Array.from(box.querySelectorAll("[data-k]")).find(x => x.getAttribute("data-k") === actKey); if (e) e.focus(); }
+  pruneLines(W.lineSt, new Set(W.lines.keys()));
   renderJoinBar();
   startLines();
 }

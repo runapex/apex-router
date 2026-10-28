@@ -397,3 +397,119 @@ def test_status_sentence_is_capped_and_agent_rows_stop_at_the_depth_limit():
     assert re.search(r"String\(st\.sentence \|\| \"\"\)\.slice\(0, STATUS_MAX\)", SCRIPT)
     assert re.search(r"kids = depth < WF_DEPTH \? arr\(a\.agents, 12\) : \[\]", SCRIPT)
     assert "if (d > WF_DEPTH) return;" in _fn_src("wfIndex")
+
+
+# ---- round 2: old tasks fold, GPT icons, the live line keeps its place -----------------------------------
+
+def _const_src(name: str) -> str:
+    """One top-level `const NAME = ...;` statement of the page script (to the first `;` at line end)."""
+    SCRIPT = _script(_html())
+    m = re.search(rf"^const {name} = .*?;\s*$", SCRIPT, re.S | re.M)
+    assert m, f"const {name} is missing"
+    return m.group(0)
+
+
+def _node(js: str) -> str:
+    r = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-800:]
+    return r.stdout.strip()
+
+
+_NODE = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+
+
+@_NODE
+def test_old_tasks_fold_under_one_row_but_running_and_newest_stay():
+    SCRIPT = _script(_html())
+    m = re.search(r"const WF_DEPTH = (\d+)", SCRIPT)
+    js = "\n".join([
+        f"const WF_DEPTH = {m.group(1)};",
+        "const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];",
+        "const isRun = st => st === 'running' || st === 'queued';",
+        _fn_src("treeRuns"), _const_src("OLD_TASK_S"), _fn_src("lastActivity"), _fn_src("splitOld"),
+        "const now = 1e9, H = 3600;",
+        "const T = (id, end, st, ags) => ({id, start: end - 60, end, state: st || 'done', agents: ags || []});",
+        # newest first, as the view shows them
+        "const ts = [T('n', now - 5 * H), T('r', now - 9 * H, 'running'), T('q', now - 9 * H, 'done', [{state: 'queued'}]),",
+        "  T('fresh', now - 1 * H), T('o1', now - 3 * H), T('o2', now - 30 * H), T('late', now - 9 * H, 'done', [{end: now - 600, start: now - 900}])];",
+        "const r = splitOld(ts, now);",
+        "console.log(JSON.stringify({show: r.show.map(t => t.id), old: r.old.map(t => t.id)}));",
+        "console.log(OLD_TASK_S);",
+    ])
+    out = _node(js).splitlines()
+    import json
+    got = json.loads(out[0])
+    assert got == {"show": ["n", "r", "q", "fresh", "late"], "old": ["o1", "o2"]}, got
+    assert int(out[1]) == 7200
+
+
+def test_the_older_row_is_one_fold_button_with_its_count():
+    SCRIPT = _script(_html())
+    body = _fn_src("sessionRow")
+    assert "splitOld(" in body and "olderRow(" in body
+    row = _fn_src("olderRow")
+    assert "SCREEN1.older" in row and "foldBtn(" in row and "old.length" in row
+    assert "aria-expanded" in _fn_src("foldBtn")
+    assert re.search(r'older:\s*"older"', SCRIPT)
+
+
+@_NODE
+def test_gpt_icons_come_from_a_fixed_version_map():
+    js = "\n".join([_const_src("GPT_ICON"), _fn_src("modelId"), """
+const cases = [
+  ["GPT 6.1", "model-gpt-sol"], ["gpt 6.1", "model-gpt-sol"], ["it-entra-gpt-6.1-sol", "model-gpt-sol"],
+  ["gpt-6.1-sol", "model-gpt-sol"], ["sol", "model-gpt-sol"], ["GPT Sol", "model-gpt-sol"],
+  ["GPT 6", "model-gpt"], ["it-entra-gpt-6-astra", "model-gpt"], ["astra", "model-gpt"], ["gpt-6-astra", "model-gpt"],
+  ["GPT 7", "model-gpt"], ["GPT 5.4", "model-gpt"], ["gpt", "model-gpt"], ["GPT 61", "model-gpt"],
+  ["Claude Opus", "model-opus"], ["Claude Sonnet", "model-sonnet"], ["Qwen 3", "model-local"], ["Other", null],
+  ["solar", null], ["console", null]];
+const bad = cases.filter(([t, want]) => modelId(t) !== want).map(([t, want]) => t + " -> " + modelId(t) + " (want " + want + ")");
+console.log(bad.length ? bad.join("; ") : "ok");
+console.log(JSON.stringify(GPT_ICON));
+"""])
+    out = _node(js).splitlines()
+    assert out[0] == "ok", out[0]
+    import json
+    m = json.loads(out[1])
+    assert m["6"] == "model-gpt" and m["6.1"] == "model-gpt-sol"
+    assert set(m.values()) <= set(_ids())
+
+
+@_NODE
+def test_the_live_line_keeps_its_place_and_restarts_on_a_new_decision_set():
+    js = "\n".join([
+        "const STATIONS = [['task'],['model'],['safety'],['cache'],['send'],['answer']];",
+        _const_src("LINE_MAX"), _fn_src("keepLine"), _fn_src("pruneLines"), """
+const m = new Map();
+const a = keepLine(m, "a1", "S1");                   // first sight: no replay from the start
+const first = a.at;
+a.at = 3;                                            // the train is at station 3
+const b = keepLine(m, "a1", "S1");                   // a redraw with the same decisions
+const same = b === a && b.at;
+const c = keepLine(m, "a1", "S2");                   // a new decision set
+const restart = c.at;
+const d = keepLine(m, "a1", "S2"); d.at = 2; keepLine(m, "a1", "S2");
+const kept = m.get("a1").at;
+for (let i = 0; i < LINE_MAX * 3; i++) keepLine(m, "x" + i, "S");
+const capped = m.size;
+const live = new Set(["x" + (LINE_MAX * 3 - 1)]);
+pruneLines(m, live);
+console.log(JSON.stringify({first, same, restart, kept, capped, after: Array.from(m.keys()), max: LINE_MAX}));
+"""])
+    import json
+    got = json.loads(_node(js))
+    assert got["first"] == 6, "an agent seen the first time shows its verdicts at once"
+    assert got["same"] == 3, "the same decisions keep the train where it is"
+    assert got["restart"] == 0, "a new decision set starts the train at the first station"
+    assert got["kept"] == 2
+    assert 0 < got["max"] <= 500 and got["capped"] <= got["max"]
+    assert got["after"] == ["x" + str(got["max"] * 3 - 1)], "removed agents leave the map"
+
+
+def test_the_view_keeps_line_state_across_redraws_and_still_stops_timers():
+    body = _fn_src("renderWorkflows")
+    assert "stopLines(" in body and "pruneLines(" in body
+    live = _fn_src("liveLine")
+    assert "keepLine(" in live
+    start = _fn_src("startLines")
+    assert "STATION_MS" in start and "isConnected" in start
