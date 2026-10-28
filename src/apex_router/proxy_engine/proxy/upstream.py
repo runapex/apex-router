@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from asyncio import wait_for as _wait_for   # bound at import: tests swap the module's `asyncio` for a fake sleep
 import os
 import random
 import ssl
@@ -45,6 +46,21 @@ _BODY_SENT_ERRORS: tuple[type[BaseException], ...] = (
     ssl.SSLError,
 )
 _RETRYABLE_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = _PRE_WRITE_ERRORS + _BODY_SENT_ERRORS
+
+
+class HeaderTimeout(httpx.ReadTimeout):
+    """D2: no upstream response header within ``upstream_header_timeout_s``. A ReadTimeout subclass, so
+    every path that books a ReadTimeout (502, never retried here) treats it the same; the telemetry
+    ``error_cause`` is its own name, so the readout can tell it from the 600 s body-read timeout."""
+
+
+def _header_timeout_s(cfg) -> float | None:
+    """The header limit in seconds, or None (off). Clamped: at least 1 s, never above the read limit
+    (a bad or huge value can neither hang a request longer than before nor cut a normal one at once)."""
+    v = getattr(cfg, "upstream_header_timeout_s", 0)
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v <= 0:
+        return None
+    return max(1.0, min(float(v), float(cfg.upstream_read_timeout_s)))
 
 # Body-sent retry guard (review U1/U2). An attempt that failed only after this long is NOT a dead
 # pooled connection — the upstream was likely generating, so a replay would multiply tokens and
@@ -300,6 +316,18 @@ class Upstream:
         qs = query_string.decode("latin-1")
         return base + raw_path + (("?" + qs) if qs else "")
 
+    async def _send_with_header_limit(self, req: httpx.Request) -> httpx.Response:
+        """``send(stream=True)`` returns at the response headers. D2: bound that wait. On the limit the
+        send task is cancelled (httpx closes the connection) and HeaderTimeout is raised; the caller
+        books it like a ReadTimeout (502, not retried in the proxy)."""
+        limit = _header_timeout_s(self._cfg)
+        if limit is None:
+            return await self._client.send(req, stream=True)
+        try:
+            return await _wait_for(self._client.send(req, stream=True), timeout=limit)
+        except TimeoutError:                     # asyncio.TimeoutError is the builtin TimeoutError (3.11+)
+            raise HeaderTimeout(f"no response header in {limit:g}s", request=req) from None
+
     async def send_stream(
         self, method: str, url: str, *, headers: list[tuple[bytes, bytes]], content: bytes,
         stats: dict | None = None,
@@ -366,7 +394,7 @@ class Upstream:
             req.headers = httpx.Headers(scrubbed)
             attempt_t0 = _attempt_clock()
             try:
-                return await self._client.send(req, stream=True)
+                return await self._send_with_header_limit(req)
             except _RETRYABLE_TRANSPORT_ERRORS as exc:
                 if not isinstance(exc, _PRE_WRITE_ERRORS):
                     # body-sent class: retry only a fast-fail on a completion endpoint (U1/U2)

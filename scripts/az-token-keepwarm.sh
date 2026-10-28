@@ -30,6 +30,20 @@ UID_="$(id -u)"
 
 load() { [ "${AZ_KEEPWARM_NO_LOAD:-0}" = 1 ] || launchctl "$@"; }
 
+# power_state: dark-wake | awake | unknown, from the newest Sleep/Wake/DarkWake line of `pmset -g log`.
+# AZ_KEEPWARM_PMSET replaces the pmset command (tests). Any error gives "unknown", never a wrong word.
+power_state() {
+  local last
+  last=$(${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null | tail -n 400 \
+         | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} [+-][0-9]{4} (Sleep|Wake|DarkWake) ' | tail -n 1 \
+         | awk '{print $4}') || true
+  case "$last" in
+    DarkWake) echo dark-wake ;;
+    Wake) echo awake ;;
+    *) echo unknown ;;
+  esac
+}
+
 case "${1:-}" in
   run)
     # stdout of az-token-cached is the token: never print it. One stderr line only after the last try.
@@ -39,7 +53,11 @@ case "${1:-}" in
       [ "$i" -ge "$tries" ] && break
       sleep $(( i * 5 )); i=$((i + 1))
     done
-    echo "$(date '+%Y-%m-%dT%H:%M:%S%z') az-token-keepwarm: refresh failed after $tries tries" >&2
+    # D3 (2026-10-28): 40 of 43 such lines came in a DarkWake (the Mac wakes for maintenance, often with no
+    # network). The line names the power state, so a real failure (awake) is not lost in that noise.
+    # The state is the last Sleep/Wake/DarkWake line of `pmset -g log` (read only on a failure).
+    state=$(power_state)
+    echo "$(date '+%Y-%m-%dT%H:%M:%S%z') az-token-keepwarm: refresh failed after $tries tries (power: $state)" >&2
     exit 1
     ;;
   install)
