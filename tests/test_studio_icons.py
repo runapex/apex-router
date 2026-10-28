@@ -191,3 +191,34 @@ def test_a_duplicate_symbol_is_caught():
     doc = f'<svg xmlns="http://www.w3.org/2000/svg">{one}{one}</svg>'
     with pytest.raises(AssertionError):
         test_symbol_ids_unique_and_every_symbol_small(ET.fromstring(doc))
+
+
+# ---- raw text: only elements (xval: a processing instruction hid <img> from the XML checks; an HTML parser
+# reads it). The sprite has no comment, PI, DOCTYPE, CDATA or entity, and text only inside <title>. ----------
+
+_TITLE_TEXT = re.compile(r"[A-Za-z0-9 .:,()/\-]*")
+
+
+def test_raw_sprite_has_only_elements(raw):
+    for bad in ("<?", "<!", "]]>", "&"):
+        assert bad not in raw, f"{bad!r} in the sprite"
+    # every "<" opens one of the allowed tags (or closes one)
+    for m in re.finditer(r"<(/?)([^\s/>]+)", raw):
+        assert m.group(2) in ALLOWED_TAGS, f"<{m.group(1)}{m.group(2)}"
+
+
+def test_text_only_in_titles(root):
+    for el in root.iter():
+        tag = _local(el.tag)
+        if tag == "title":
+            assert _TITLE_TEXT.fullmatch(el.text or ""), el.text
+        else:
+            assert not (el.text or "").strip(), f"text in <{tag}>"
+        assert not (el.tail or "").strip(), f"text after <{tag}>"
+
+
+@pytest.mark.parametrize("bad", ['<?x ><img src="/x">?>', "<!-- <img src=/x> -->", "<![CDATA[<img src=/x>]]>"])
+def test_raw_check_catches_hidden_markup(bad):
+    doc = '<svg xmlns="http://www.w3.org/2000/svg">' + bad + '<symbol id="agent-pi" viewBox="0 0 32 32"></symbol></svg>'
+    with pytest.raises(AssertionError):
+        test_raw_sprite_has_only_elements(doc)
