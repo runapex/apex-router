@@ -157,3 +157,59 @@ map in that module plus numbers; an unknown value gives a fixed word ("other wor
 "cause unknown"). Cache share uses `fresh_input` + `_cache_read` + `_cache_write` (each token once
 on both wires). The UI animates only when `prefers-reduced-motion` is off; with it on, the verdicts
 show at once and no train is drawn.
+
+## Workflows (owner order 2026-10-27; replaces the Metro map as the main view)
+
+Owner answers: W1 retire the Metro map; Workflows keep the Metro look (lines, stations, trains).
+W2 automatic joins (same repo + overlap in time, or same git branch) plus manual join and split.
+W3 a task is the main long work of a session that spawns sub-agents. W4 pi and its
+sub-agents first; Claude Code sub-agents second; Codex later.
+
+### GET /api/workflows?window=24h|7d   (default 24h)
+
+```json
+{"ts": 1793140000.0, "window": "24h",
+ "workflows": [
+  {"id": "wf-3f9a…", "label": "apex-router · main", "repo": "apex-router", "branches": ["main"],
+   "state": "running|idle|done|problem", "cause": "1 sub-agent stopped at the cost limit" | null,
+   "joined_by": ["auto:repo-overlap", "auto:branch", "manual"],
+   "start": 1793100000.0, "end": null,
+   "sessions": [
+    {"id": "01a17a87-…", "agent": "pi|claude|codex", "short": "01a1", "state": "running|idle|done",
+     "start": …, "last": …,
+     "tasks": [
+      {"id": "01a17a87-…:t3", "label": "studio v2 decision flow", "label_from": "brief|repo",
+       "start": …, "end": null, "state": "running|done|problem", "cause": null,
+       "tokens": {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}, "requests": 120,
+       "agents": [
+        {"id": "20261027210826-4b2w", "role": "worker|xval|scout|reviewer|coordinator",
+         "state": "running|queued|done|failed|killed|killed(cost)|timed_out(idle)|timed_out(wall)",
+         "verdict": "GO|NO-GO|null", "cost": 16.79, "branch": "apexjob/mvr6gpkh",
+         "start": …, "end": …, "session_id": "apexjob-20261027210826-4b2w", "requests": 53,
+         "decisions_last": [ /* the 6-step decisions list of its newest request (Decision flow) */ ],
+         "agents": [ /* children, same shape, depth <= 2 */ ]}
+       ]}
+     ]}
+   ]}
+ ],
+ "manual": {"joins": 0, "splits": 0}}
+```
+
+Rules:
+1. Task (W3): a session's run of activity; a gap of more than 30 min without a request or a message
+   starts a new task. Sub-agents belong to the task in which their agent_spawn call ran.
+2. Task label: never the user's prompt text. Use the first line of the first sub-agent brief of the
+   task ("TASK: …", our own text, max 60 characters, secret mask), else "<repo> · <branch>".
+3. Auto join (W2): two sessions join when they have the same repo and their active times overlap, or
+   they have the same git branch (not main/master/dev). Sub-agent sessions always join their parent.
+4. Manual join and split: POST /api/workflows/join {"sessions": [id, id]} and
+   POST /api/workflows/split {"session": id}. Stored in ~/.apex-router/workflows.jsonl (ids and
+   timestamps only, append-only, latest row per session wins, flock on write). Header token, Origin
+   check, same as the other POST routes.
+5. Bounds: newest 200 sessions in the window, 2000 job dirs (names only), 64 KiB head and tail per
+   session file, 256 KiB per meta.json, depth 2, 12 agents shown per task (+N more).
+6. SSE: `workflow` events carry only the changed agent or task node (same shape), at most 1 per
+   second per node.
+7. The Metro view, its lines and its "apex" panel move inside Workflows: each agent row has the Metro
+   line look; the lowest station of an active agent is the live decision line (Task, Model, Safety, Cache,
+   Send, Answer). The Records, Tokens, Experiments and Changes panels stay.
