@@ -46,7 +46,6 @@ nav svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;st
 /* map + panel */
 main{display:grid;grid-template-columns:1fr;min-height:0;position:relative}
 body.panel-open main{grid-template-columns:1fr 410px}
-#map{width:100%;height:100%;display:block;min-height:0}
 @media (max-width:1199px){ body.panel-open main{grid-template-columns:1fr 350px} .pb{padding:0 18px 22px} .ph{padding:18px 18px 6px} }
 #panel{display:none;background:var(--card);border-left:1px solid var(--rule);overflow:auto;min-height:0}
 body.panel-open #panel{display:block}
@@ -190,64 +189,76 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 .chg{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0}
 .rm{background:transparent;border:1px solid var(--rule);border-radius:7px;color:var(--fg2);cursor:pointer;padding:1px 8px}
 
-/* svg map */
-.cap{fill:var(--soft);font:600 14px var(--sans);letter-spacing:.14em;text-transform:uppercase}
-.lbl{fill:var(--fg);font:600 21px var(--sans)}
-.idle .lbl{fill:var(--fg2)}
-.route{fill:none;stroke-linecap:round;stroke-linejoin:round;transition:opacity .25s}
-.route.ghost{stroke:var(--fg);stroke-dasharray:6 9}
-.hit{fill:none;stroke:transparent;stroke-linecap:round}
-.halo{fill:none;stroke:var(--focus);stroke-linecap:round;stroke-linejoin:round;opacity:0;transition:opacity .25s}
-.halo.lit{opacity:.32}
-.station{cursor:pointer;transition:opacity .25s}
-.station:focus{outline:none}
-.ring{fill:var(--bg);stroke:var(--fg);stroke-width:5}
-.idle .ring{stroke:var(--neutral)}
-.station:hover .ring,.station:focus-visible .ring{stroke:var(--focus)}
-.fring{fill:none;stroke:var(--focus);stroke-width:2;stroke-dasharray:4 4;display:none}
-.station:focus-visible .fring{display:inline}
-.st-slow .ring{stroke:var(--amber)} .st-problem .ring{stroke:var(--red)}
-.hub .ring{stroke-width:6}
-.hub .hubname{fill:var(--fg);font:650 30px var(--sans)}
-.hub .iline{stroke:var(--soft);stroke-width:3;stroke-linecap:round}
-.hub .idot{fill:var(--bg);stroke:var(--soft);stroke-width:2.5;transition:transform .2s}
-.hub .chev{fill:none;stroke:var(--soft);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;transition:transform .2s}
-.hub:hover .idot,.hub:focus-visible .idot{fill:var(--fg);stroke:var(--fg)}
-.hub:hover .iline,.hub:focus-visible .iline,.hub:hover .chev,.hub:focus-visible .chev{stroke:var(--fg)}
-.hub:hover .chev,.hub:focus-visible .chev{transform:translateX(5px)}
-.hub:hover .d0,.hub:focus-visible .d0{transform:translateX(-6px)} .hub:hover .d1,.hub:focus-visible .d1{transform:translateX(-3px)}
-.hub:hover .d3,.hub:focus-visible .d3{transform:translateX(3px)} .hub:hover .d4,.hub:focus-visible .d4{transform:translateX(6px)}
-.rec .ring{stroke:var(--neutral)} .rec .lbl{fill:var(--fg2)}
-.spur{fill:none;stroke:var(--neutral);stroke-width:5;stroke-dasharray:2 12;stroke-linecap:round}
-.mk-gap{fill:none}
-.mk-line{fill:none;stroke-dasharray:8 8}
-.mk-solid{fill:none;stroke:var(--amber);stroke-linecap:round}
-.mk.problem .mk-line,.mk.problem .mk-ring{stroke:var(--red)} .mk.problem .mk-t1{fill:var(--red)}
-.mk.slow .mk-line,.mk.slow .mk-ring{stroke:var(--amber)} .mk.slow .mk-t1{fill:var(--amber)}
-.mk-ring{fill:var(--bg);stroke-width:4}
-.mk-glyph{fill:none;stroke-width:3.5;stroke-linecap:round}
-.mk.problem .mk-glyph{stroke:var(--red)} .mk.slow .mk-glyph{stroke:var(--amber)}
-.mk-t1{font:600 18px var(--sans)} .mk-t2{fill:var(--fg);font:16px var(--sans)}
-.mk text,.hop{paint-order:stroke;stroke:var(--bg);stroke-width:6px;stroke-linejoin:round}
-.hop{fill:var(--fg);font:600 17px var(--sans)} .hop.bad{fill:var(--red)}
-.train{fill:var(--focus);stroke:var(--bg);stroke-width:1.5}
-.train.bad{fill:var(--red)}
-#map.focusing .dim{opacity:.15}
-#map.focusing .station.dim{opacity:.55}
-#trainpaths{visibility:hidden}
+/* workflows: the main view. Each workflow is a block; sessions, tasks and sub-agents are Metro lines
+   with stations (the icon is the station). Line hue = agent (identity). State = a ring colour, never the icon. */
+#wf{overflow:auto;min-height:0;padding:4px 26px 90px}
+#wf h1{margin:6px 0 12px;font-size:15px;letter-spacing:.12em;text-transform:uppercase;color:var(--soft);font-weight:600;
+  display:flex;gap:12px;align-items:baseline}
+#wf h1 .win{letter-spacing:0;text-transform:none;font-weight:400}
+.wfs{list-style:none;margin:0;padding:0;max-width:1180px}
+.wfb{background:var(--card);border:1px solid var(--rule);border-radius:14px;margin:0 0 12px;padding:6px 10px 6px}
+.wfb.run{border-color:var(--soft)}
+.fold{display:flex;align-items:center;gap:10px;width:100%;min-height:36px;background:transparent;border:0;padding:4px 6px;
+  cursor:pointer;color:var(--fg);text-align:left;border-radius:9px}
+.fold:hover{background:var(--card2)}
+.fold .chev{flex:0 0 auto;width:10px;height:10px;border-right:2px solid var(--soft);border-bottom:2px solid var(--soft);
+  transform:rotate(-45deg);margin:0 4px 0 2px;transition:transform .15s}
+.fold[aria-expanded="true"] .chev{transform:rotate(45deg)}
+.fold .nm{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fold .mt{color:var(--soft);font-size:13.5px;white-space:nowrap;margin-left:auto;padding-left:12px}
+.fold .cause{font-size:13.5px;white-space:nowrap}
+.wfh{font-size:17px}
+.icons{display:flex;gap:4px;flex:0 0 auto}
+.ico{width:20px;height:20px;flex:0 0 auto;display:block;border-radius:50%}
+.ico.big{width:32px;height:32px}
+.dot0{width:20px;height:20px;flex:0 0 auto;border-radius:50%;background:var(--card);border:3px solid var(--neutral)}
+/* state rings: amber = slow or stalled, red = failed or stopped; running = a white pulse */
+.ring-amber{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--amber)}
+.ring-red{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--red)}
+.ring-run{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--focus);animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.95)}
+  50%{box-shadow:0 0 0 2px var(--bg),0 0 0 6px rgba(255,255,255,.35)}}
+.amber{color:var(--amber)} .red{color:var(--red)}
+/* a Metro line: one segment per station, so the line ends at the last station */
+.mline{list-style:none;margin:0 0 4px;padding:0 0 0 18px}
+.mline>li{position:relative;padding:0 0 0 22px}
+.mline>li::before{content:"";position:absolute;left:8px;top:-4px;height:22px;width:4px;border-radius:2px;background:var(--hue,var(--rule))}
+.mline>li:not(:last-child)::after{content:"";position:absolute;left:8px;top:18px;bottom:-4px;width:4px;background:var(--hue,var(--rule))}
+.mline>li>.row1{position:relative;left:-22px;display:flex;align-items:center;gap:10px;min-height:36px}
+.mline>li>.row1>.fold{flex:1;min-width:0;padding-left:0}
+.mline>li>.row1>.stn{position:relative;z-index:1;flex:0 0 auto}
+.stn{display:block}
+.stn .tstop{display:block;width:20px;height:20px;border-radius:50%;background:var(--card);border:4px solid var(--hue,var(--fg2))}
+.hue-pi{--hue:var(--l-pi)} .hue-claude{--hue:var(--l-claude)} .hue-codex{--hue:var(--l-codex)} .hue-other{--hue:var(--l-other)}
+.sel{width:18px;height:18px;margin:0;accent-color:var(--fg);cursor:pointer;flex:0 0 auto}
+.mini{background:transparent;border:1px solid var(--rule);border-radius:8px;color:var(--fg2);cursor:pointer;padding:2px 10px;
+  font-size:13.5px;white-space:nowrap}
+.mini:hover{color:var(--fg);border-color:var(--soft)}
+.verd{font-size:12.5px;padding:0 8px;border-radius:999px;border:1px solid var(--rule);color:var(--fg2)}
+.verd.go{border-color:var(--fg);color:var(--fg)} .verd.nogo{border-color:var(--amber);color:var(--amber)}
+.more{color:var(--soft);font-size:13.5px;padding:4px 0 6px}
+.live{margin:0 0 6px 0}
+.live .dline li{padding:2px 0 4px 34px;min-height:20px}
+.live .dline .stop{top:5px;width:12px;height:12px}
+.live .dline .dn .ico{display:inline-block;vertical-align:-5px;margin-right:6px}
+.wfmore{margin:6px 0 0}
+.msg.inline{display:inline-block;margin:0 0 10px}
+#joinbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:30;display:flex;gap:10px;align-items:center;
+  padding:8px 12px;border-radius:12px;background:var(--card2);border:1px solid var(--soft);box-shadow:0 6px 20px rgba(0,0,0,.5)}
+#joinbar[hidden]{display:none}
+.branch .stn{position:absolute;left:5px;top:6px;z-index:1}
+.branch li.off .ico{opacity:.6}
+.req .ico{margin-left:-4px}
 
-/* tooltip + toast */
-#tip{position:fixed;z-index:50;max-width:360px;padding:7px 10px;border-radius:8px;background:var(--bg-dark);border:1px solid var(--rule);
-  color:var(--fg);font-size:13.5px;pointer-events:none;display:none;box-shadow:0 6px 20px rgba(0,0,0,.5)}
-#tip .lg{color:var(--soft);display:block;margin-top:2px}
+/* toast */
 #toast{position:fixed;left:18px;bottom:16px;z-index:40;max-width:620px;display:none;padding:8px 12px;border-radius:9px;background:var(--card);
   border:1px solid var(--rule);color:var(--fg2)}
 #toast.show{display:block} #toast.err{border-color:var(--red);color:var(--fg)}
 
 @media (prefers-reduced-motion: reduce){
-  #g-trains{display:none}
   .dline .train{display:none}
-  *{transition:none !important}
+  .ring-run{animation:none}
+  *{transition:none !important;animation:none !important}
 }
 </style>
 </head>
@@ -255,34 +266,23 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 __ICONS__
 <header>
   <div id="status" class="lvl-wait" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="status-text">Connecting…</span></div>
-  <nav aria-label="More views">
-    <button type="button" data-panel="recent" title="Recent requests" aria-label="Recent requests" aria-pressed="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
+  <nav aria-label="Panels">
+    <button type="button" data-panel="records" title="Records" aria-label="Records" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg></button>
+    <button type="button" data-panel="tokens" title="Tokens" aria-label="Tokens" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></button>
+    <button type="button" data-panel="experiments" title="Experiments" aria-label="Experiments" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2L14 9V3"/><path d="M7.5 15h9"/></svg></button>
     <button type="button" data-panel="changes" title="Changes" aria-label="Changes" aria-pressed="false" id="nav-changes">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
       <span class="badge" id="badge" hidden></span></button>
-    <button type="button" data-panel="experiments" title="Experiments" aria-label="Experiments" aria-pressed="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2L14 9V3"/><path d="M7.5 15h9"/></svg></button>
-    <button type="button" data-panel="tokens" title="Tokens" aria-label="Tokens" aria-pressed="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></button>
   </nav>
 </header>
 <main>
-  <svg id="map" viewBox="30 110 1390 640" preserveAspectRatio="xMidYMid meet" role="group"
-       aria-label="Metro map: your agents ride through apex to AI providers">
-    <g id="g-cap" aria-hidden="true"></g>
-    <g id="g-rec"></g>
-    <g id="g-halo" aria-hidden="true"></g>
-    <g id="g-lines"></g>
-    <g id="g-marks"></g>
-    <g id="trainpaths" aria-hidden="true"></g>
-    <g id="g-trains" aria-hidden="true"></g>
-    <g id="g-st"></g>
-    <g id="g-hops" aria-hidden="true"></g>
-  </svg>
+  <section id="wf" aria-labelledby="wf-title"></section>
   <aside id="panel" aria-labelledby="panel-title"></aside>
 </main>
-<div id="tip" role="tooltip"></div>
+<div id="joinbar" role="region" aria-label="Selected sessions" hidden></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script nonce="__NONCE__">
 "use strict";
@@ -353,8 +353,8 @@ const WHEN_CLS = {live: "now", restart: "restart", locked: "fixed"};
 /* ---------- state ---------- */
 const S = {snap: null, lastSnap: 0, stale: "", recent: [], seen: new Set(), flow: null, live: null,
   draft: null, review: null, proxy: "main", panel: null, arg: null, focus: null, selReq: null,
-  flowQ: [], flowRun: null, flowT: 0, fl: null, stepsOpen: false, tok: null, tokWin: "15m", exps: null, recs: null, geo: null, sig: "", trains: [], raf: 0,
-  pollMode: false};
+  flowQ: [], flowRun: null, flowT: 0, fl: null, stepsOpen: false, tok: null, tokWin: "15m", exps: null, recs: null,
+  pollMode: false, wfWin: "24h"};
 
 /* ---------- helpers (text only: textContent, never HTML) ---------- */
 function h(tag, attrs, ...kids){
@@ -368,15 +368,6 @@ function h(tag, attrs, ...kids){
   }
   for (const c of kids.flat()){ if (c === null || c === undefined || c === false) continue;
     e.append(c instanceof Node ? c : document.createTextNode(String(c))); }
-  return e;
-}
-function sv(tag, attrs, parent){
-  const e = document.createElementNS(NS, tag);
-  for (const [k, v] of Object.entries(attrs || {})){
-    if (v === null || v === undefined) continue;
-    if (k === "text") e.textContent = v; else e.setAttribute(k, v);
-  }
-  if (parent) parent.append(e);
   return e;
 }
 const $ = id => document.getElementById(id);
@@ -399,7 +390,7 @@ function pct(a, b){ return b > 0 ? Math.round(100 * a / b) : 0; }
 
 async function api(path, opts){
   opts = opts || {};
-  const init = {method: opts.method || "GET", headers: {"X-Studio-Token": TOKEN}, cache: "no-store"};
+  const init = {method: opts.method || "GET", headers: {"X-Studio-Token": TOKEN}, cache: "no-store", signal: opts.signal || null};
   if (opts.body !== undefined){ init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   const r = await fetch(path, init);
   let j = null; try { j = await r.json(); } catch (e) { j = null; }
@@ -439,15 +430,13 @@ function addRequests(items, live){
   S.recent.sort((x, y) => y.ts - x.ts);
   if (S.recent.length > 200){ for (const r of S.recent.splice(200)) S.seen.delete(r.id); }
   // the flow paints from S.recent: start it only after the sort, so the newest request and "Last 10" are right
-  if (live) for (const r of fresh){ spawnTrain(r); flowStart(r); }
+  if (live) for (const r of fresh) flowStart(r);
   if (S.panel === "recent" || S.panel === "agent" || S.panel === "provider") renderPanelSoon();
 }
 
 /* ---------- lines: one per agent -> provider ---------- */
-const SLOW_MS = 8000, MAXRPM = 12;
-// log scale, 3..16 px (12 or more requests a minute = full width)
-const width = rpm => 3 + 13 * Math.min(1, Math.log10(1 + Math.max(0, rpm || 0)) / Math.log10(1 + MAXRPM));
-const aIdx = k => AGENTS.findIndex(a => a.k === k), pIdx = k => PROVIDERS.findIndex(p => p.k === k);
+const SLOW_MS = 8000;
+const aIdx = k => AGENTS.findIndex(a => a.k === k);
 function judge(o){
   if (o.ghost) return {state: "ok"};
   const rs = S.recent.filter(r => r.key === o.key && nowS() - r.ts < 900);
@@ -474,231 +463,331 @@ function currentLines(){
   return out;
 }
 
-/* ---------- geometry (fixed octilinear layout, order kept so lines never cross) ---------- */
-const HUB = {x: 720, y: 400, w: 150, h: 150}, AX = 250, PX = 1150, PY = [215, 400, 585];
-function stack(items, cy, gap){
-  const tot = items.reduce((s, i) => s + i.w, 0) + gap * Math.max(0, items.length - 1);
-  let y = cy - tot / 2;
-  for (const i of items){ i.y = y + i.w / 2; y += i.w + gap; }
-  return tot;
+/* ---------- icons: one <use> of the sprite the server put in the page; the name comes from its <title> ---------- */
+const ROLE_ICON = {worker: "role-worker", xval: "role-xval", scout: "role-scout", reviewer: "role-reviewer", coordinator: "role-coordinator"};
+const AGENT_ICON = {pi: "agent-pi", claude: "agent-claude", codex: "agent-codex"};
+const PROC_ICON = {menubar: "proc-snapshot", daily: "proc-daily", archive: "proc-drain", pressure: "proc-mesh",
+  offload: "proc-local-proxy", worldmodel: "proc-collect", records: "proc-serve"};
+function icon(id, big, ring){
+  const sym = id ? document.getElementById(id) : null;
+  const t = sym && sym.querySelector("title");
+  if (!sym || !t) return null;                       // no sprite: the row keeps its text
+  const s = document.createElementNS(NS, "svg");
+  s.setAttribute("class", "ico" + (big ? " big" : "") + (ring ? " " + ring : ""));
+  s.setAttribute("viewBox", "0 0 32 32");
+  s.setAttribute("role", "img");
+  s.setAttribute("aria-label", t.textContent);
+  const u = document.createElementNS(NS, "use");
+  u.setAttribute("href", "#" + id);
+  s.append(u);
+  return s;
 }
-function geometry(lines){
-  const ags = AGENTS.filter(a => a.k !== "other" || lines.some(l => l.a === "other"));
-  const ays = ags.length === 4 ? [180, 320, 480, 620] : [210, 400, 590];
-  const G = {A: {}, P: {}, T: {}, L: {}, ags};
-  ags.forEach((a, i) => { G.A[a.k] = {x: AX, y: ays[i]}; });
-  PROVIDERS.forEach((p, i) => { G.P[p.k] = {x: PX, y: PY[i], h: 40, n: 0, i}; });
-  const xl = HUB.x - HUB.w / 2, xr = HUB.x + HUB.w / 2;
-  const tr = [];
-  for (const a of ags){
-    const ls = lines.filter(l => l.a === a.k); if (!ls.length) continue;
-    tr.push({k: a.k, w: width(ls.reduce((s, l) => s + l.rpm, 0)), keys: ls.map(l => l.key), ghost: ls.every(l => l.ghost)});
-  }
-  stack(tr, HUB.y, 8);
-  for (const t of tr){
-    const a = G.A[t.k], dy = Math.abs(t.y - a.y);
-    t.d = `M${a.x} ${a.y} H${600 - dy} L600 ${t.y.toFixed(1)} H${xl}`;
-    G.T[t.k] = t;
-  }
-  const rs = lines.filter(l => G.A[l.a]).sort((x, y) => pIdx(x.p) - pIdx(y.p) || aIdx(x.a) - aIdx(y.a));
-  for (const l of rs) l.w = width(l.rpm);
-  const exits = rs.map(l => ({l, w: l.w}));
-  stack(exits, HUB.y, 8);
-  exits.forEach(e => { e.l.y = e.y; });
-  for (const p of PROVIDERS){
-    const arr = rs.filter(l => l.p === p.k).map(l => ({l, w: l.w}));
-    const tot = stack(arr, G.P[p.k].y, 4);
-    arr.forEach(e => { e.l.py = e.y; });
-    G.P[p.k].h = Math.max(40, tot + 22); G.P[p.k].n = arr.length;
-  }
-  for (const l of rs){
-    const dy = Math.abs(l.py - l.y);
-    l.x2 = 840 + dy;
-    l.d = `M${xr} ${l.y.toFixed(1)} H840 L${l.x2.toFixed(1)} ${l.py.toFixed(1)} H${PX}`;
-    l.full = `${G.T[l.a].d} L${xr} ${l.y.toFixed(1)} H840 L${l.x2.toFixed(1)} ${l.py.toFixed(1)} H${PX}`;
-    G.L[l.key] = l;
-  }
-  return G;
+function iconOr(id, big, ring){
+  return icon(id, big, ring) || h("span", {class: "dot0" + (ring ? " " + ring : ""), "aria-hidden": "true"});
 }
+const agentIcon = (k, big, ring) => iconOr(AGENT_ICON[k] || null, big, ring);
+const roleIcon = (r, ring) => iconOr(ROLE_ICON[r] || "role-worker", false, ring);
+const procIcon = (k, ring) => iconOr(PROC_ICON[k] || "proc-serve", false, ring);
+function modelId(text){
+  const t = String(text || "").toLowerCase();
+  if (/opus/.test(t)) return "model-opus";
+  if (/sonnet|haiku|fable|claude/.test(t)) return "model-sonnet";
+  if (/\bsol\b/.test(t)) return "model-gpt-sol";
+  if (/gpt/.test(t)) return "model-gpt";
+  if (/qwen|llama|gemma|mistral|deepseek|kimi|glm|phi|local/.test(t)) return "model-local";
+  return null;
+}
+const modelIcon = text => { const id = modelId(text); return id ? icon(id, false) : null; };
 
-/* ---------- draw the map ---------- */
-function renderMap(force){
-  const lines = currentLines();
-  const sig = JSON.stringify(lines.map(l => [l.key, Math.round(width(l.rpm) * 2), l.state, l.cause || "", !!l.ghost]))
-    + "|" + (S.flow ? S.flow.nodes.length : 0);
-  if (!force && sig === S.sig){ applyFocus(); return; }
-  S.sig = sig;
-  const G = S.geo = geometry(lines);
-  const act = document.activeElement, fk = act && act.getAttribute && act.getAttribute("data-node");
-  const cap = $("g-cap"), rec = $("g-rec"), hl = $("g-halo"), gl = $("g-lines"), mk = $("g-marks"), st = $("g-st");
-  [cap, rec, hl, gl, mk, st].forEach(g => g.replaceChildren());
-  sv("text", {x: 205, y: 150, class: "cap", "text-anchor": "middle", text: "Your agents"}, cap);
-  sv("text", {x: 1235, y: 150, class: "cap", "text-anchor": "middle", text: "AI providers"}, cap);
-  // records: a small dotted spur (neutral)
-  sv("path", {d: `M${HUB.x} ${HUB.y + HUB.h / 2} V680`, class: "spur"}, rec);
-  // agent trunks, then routes; each has a halo (focus) and a wide hit path (hover)
-  const legend = S.legend = "Line colour = agent: " + AGENTS.filter(a => G.A[a.k]).map(a => a.shade + " " + a.name).join(", ") + ". Width = requests a minute.";
-  for (const t of Object.values(G.T)){
-    const a = agentOf(t.k), rpm = lines.filter(l => l.a === t.k).reduce((s, l) => s + l.rpm, 0);
-    sv("path", {d: t.d, class: "halo", "stroke-width": t.w + 10, "data-keys": t.keys.join(" ")}, hl);
-    sv("path", {d: t.d, class: "route" + (t.ghost ? " ghost" : ""), stroke: t.ghost ? null : a.color, "stroke-width": t.ghost ? 3 : t.w,
-      "data-keys": t.keys.join(" ")}, gl);
-    hoverable(sv("path", {d: t.d, class: "hit", tabindex: "-1", "stroke-width": Math.max(18, t.w + 8)}, gl),
-      () => [a.name + ": " + rpm.toFixed(1) + " requests a minute.", legend]);
+/* ---------- workflows (contract: API.md "Workflows") ---------- */
+// every fixed text of screen 1 (budget: 25 words or fewer, the 6 station names included)
+const SCREEN1 = {
+  title: "Workflows",
+  w24: "last 24 h",
+  w7: "last 7 days",
+  more7: "Show 7 days",
+  less7: "Show 24 h",
+  empty: "No work in this window.",
+  slow: "Still loading…",
+  more: "+N more"          // plusMore()
+};
+const plusMore = n => "+" + Math.max(0, Math.round(+n || 0)) + " more";
+const WF_TIMEOUT_MS = 15000, WF_REFRESH_MS = 30000, WF_PENDING_MAX = 200, WF_OPEN_MAX = 2000, SEL_MAX = 20;
+const AGENT_CAUSE = {failed: "failed", killed: "was stopped", "killed(cost)": "stopped at the cost limit",
+  "timed_out(idle)": "stopped: no progress", "timed_out(wall)": "ran out of time"};
+const RED = new Set(["failed", "killed", "killed(cost)"]), AMBER = new Set(["timed_out(idle)", "timed_out(wall)"]);
+const ROLE_NAME = {worker: "Worker", xval: "Second opinion", scout: "Scout", reviewer: "Reviewer", coordinator: "Coordinator"};
+const AGENT_NAME = {pi: "pi", claude: "Claude Code", codex: "Codex"};
+const W = {doc: null, busy: false, err: "", ctl: null, timer: 0, refreshT: 0, again: 0, idx: new Map(),
+  pending: new Map(), pendT: 0, open: new Map(), sel: new Set(), lines: new Map(), loadedAt: 0};
+
+const str = (v, n) => typeof v === "string" ? v.slice(0, n || 200) : "";
+const arr = (v, n) => Array.isArray(v) ? v.slice(0, n) : [];
+function ringOf(st){ return RED.has(st) ? "ring-red" : AMBER.has(st) ? "ring-amber" : st === "running" ? "ring-run" : ""; }
+function worstOf(nodes){
+  let w = "";
+  for (const n of nodes){
+    if (RED.has(n.state)) return "ring-red";
+    if (AMBER.has(n.state)) w = "ring-amber";
+    const k = worstOf(arr(n.agents, 50)); if (k === "ring-red") return k; if (k) w = k;
   }
-  for (const l of Object.values(G.L)){
-    const a = agentOf(l.a), p = provOf(l.p);
-    sv("path", {d: l.d, class: "halo", "stroke-width": l.w + 10, "data-keys": l.key}, hl);
-    sv("path", {d: l.d, class: "route" + (l.ghost ? " ghost" : ""), stroke: l.ghost ? null : a.color, "stroke-width": l.ghost ? 3 : l.w,
-      "data-keys": l.key}, gl);
-    const say = l.ghost ? "Test journey (no traffic now)." :
-      `${a.name} → ${p.name}: ${l.rpm.toFixed(1)} requests a minute, ` + (l.err_pct ? `${Math.round(l.err_pct)} % fail.` : "no failures.");
-    hoverable(sv("path", {d: l.d, class: "hit", tabindex: "-1", "stroke-width": Math.max(18, l.w + 8)}, gl), () => [say, legend]);
-  }
-  drawMarks(G, mk);
-  // stations
-  for (const a of G.ags){
-    const p = G.A[a.k], idle = !G.T[a.k];
-    const g = station(st, "a:" + a.k, a.name, idle ? " idle" : "", G.T[a.k] ? G.T[a.k].keys : []);
-    sv("circle", {cx: p.x, cy: p.y, r: 24, class: "fring"}, g);
-    sv("circle", {cx: p.x, cy: p.y, r: 15, class: "ring"}, g);
-    sv("text", {x: p.x - 30, y: p.y + 7, class: "lbl", "text-anchor": "end", text: a.name}, g);
-  }
-  // apex interchange: the small inner line reads as "open me"
-  const hub = station(st, "apex", "apex, open its live decisions", " hub", ["*"]);
-  sv("rect", {x: HUB.x - HUB.w / 2 - 8, y: HUB.y - HUB.h / 2 - 8, width: HUB.w + 16, height: HUB.h + 16, rx: 40, class: "fring"}, hub);
-  sv("rect", {x: HUB.x - HUB.w / 2, y: HUB.y - HUB.h / 2, width: HUB.w, height: HUB.h, rx: 34, class: "ring"}, hub);
-  sv("text", {x: HUB.x, y: HUB.y - 6, class: "hubname", "text-anchor": "middle", text: "apex"}, hub);
-  sv("path", {d: `M${HUB.x - 44} ${HUB.y + 36} H${HUB.x + 30}`, class: "iline"}, hub);
-  for (let i = 0; i < 5; i++) sv("circle", {cx: HUB.x - 44 + i * 18.5, cy: HUB.y + 36, r: 5, class: "idot d" + i}, hub);
-  sv("path", {d: `M${HUB.x + 42} ${HUB.y + 30} l6 6 l-6 6`, class: "chev"}, hub);
-  for (const pr of PROVIDERS){
-    const P = G.P[pr.k], ls = Object.values(G.L).filter(l => l.p === pr.k);
-    const worst = ls.some(l => l.state === "problem") ? " st-problem" : ls.some(l => l.state === "slow") ? " st-slow" : "";
-    const g = station(st, "p:" + pr.k, pr.name, (P.n ? "" : " idle") + worst, ls.map(l => l.key));
-    sv("rect", {x: P.x - 24, y: P.y - P.h / 2 - 8, width: 48, height: P.h + 16, rx: 24, class: "fring"}, g);
-    sv("rect", {x: P.x - 16, y: P.y - P.h / 2, width: 32, height: P.h, rx: 16, class: "ring"}, g);
-    sv("text", {x: P.x + 32, y: P.y + 7, class: "lbl", text: pr.name}, g);
-  }
-  const rg = station(st, "records", "Records", " rec", []);
-  sv("rect", {x: HUB.x - 20, y: 674, width: 40, height: 40, rx: 10, class: "fring"}, rg);
-  sv("rect", {x: HUB.x - 12, y: 682, width: 24, height: 24, rx: 6, class: "ring"}, rg);
-  sv("text", {x: HUB.x + 26, y: 702, class: "lbl", text: "Records"}, rg);
-  if (fk){ const e = qa("#g-st [data-node]").find(x => x.getAttribute("data-node") === fk); if (e) e.focus(); }
-  applyFocus();
+  return w;
 }
-const TIPS = {apex: () => ["Open apex: live decisions per request.", "The relay on this Mac. It passes and counts each request."],
-  records: () => ["Records: speed, wait, disk and the jobs that read them.", "What apex writes down on this Mac. No prompt text."]};
-function station(parent, key, label, cls, keys){
-  const g = sv("g", {class: "station" + cls, tabindex: 0, role: "button", "aria-label": label, "data-node": key,
-    "data-keys": keys.join(" ")}, parent);
-  g.addEventListener("click", () => openNode(key));
-  g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); openNode(key); } });
-  hoverable(g, () => TIPS[key] ? TIPS[key]() : key.startsWith("a:") ? ["Open " + agentOf(key.slice(2)).name + ".", S.legend]
-    : ["Open " + (provOf(key.slice(2)) ? provOf(key.slice(2)).name : label) + "."]);
-  return g;
+function agentsOfTask(t){ return arr(t.agents, 50); }
+function wfIndex(){
+  const idx = new Map();
+  const walk = (list, path) => list.forEach((a, i) => { if (a && a.id){ idx.set("agent|" + a.id, {list, i});
+    walk(arr(a.agents, 50), path); } });
+  for (const w of arr(W.doc && W.doc.workflows, 300)) for (const s of arr(w.sessions, 200)) {
+    const ts = arr(s.tasks, 200);
+    ts.forEach((t, i) => { if (t && t.id){ idx.set("task|" + t.id, {list: s.tasks, i}); walk(arr(t.agents, 50), t.id); } });
+  }
+  W.idx = idx;
 }
-function drawMarks(G, mk){
-  // one marker per provider: red dashed break = failing, solid amber = slow (a slow line still runs)
-  for (const pr of PROVIDERS){
-    const ls = Object.values(G.L).filter(l => l.p === pr.k && (l.state === "problem" || l.state === "slow"));
-    if (!ls.length) continue;
-    const worst = ls.find(l => l.state === "problem") || ls[0];
-    const x1 = Math.max(...ls.map(l => l.x2)) + 6, x2 = PX - 22, xm = (x1 + x2) / 2;
-    for (const l of ls){
-      const g = sv("g", {class: "mk " + l.state, "data-keys": l.key}, mk);
-      if (l.state === "problem"){
-        sv("path", {d: `M${l.x2 + 6} ${l.py} H${x2}`, class: "mk-gap", stroke: "#1a1b26", "stroke-width": l.w + 6}, g);
-        sv("path", {d: `M${l.x2 + 6} ${l.py} H${x2}`, class: "mk-line", "stroke-width": Math.max(4, l.w * .7)}, g);
-      } else sv("path", {d: `M${l.x2 + 6} ${l.py} H${x2}`, class: "mk-solid", "stroke-width": l.w}, g);
+/* a slow /api/workflows never freezes the page: the old view stays, the call has a deadline and an abort */
+async function loadWorkflows(force){
+  if (W.busy && !force) return;
+  if (W.ctl) W.ctl.abort();
+  const ctl = W.ctl = new AbortController(), win = S.wfWin;
+  const dead = setTimeout(() => ctl.abort(), WF_TIMEOUT_MS);
+  W.busy = true;
+  const slow = setTimeout(() => { if (W.ctl === ctl) renderWorkflows(); }, 1500);
+  clearTimeout(W.refreshT);
+  try {
+    const r = await api("/api/workflows?window=" + encodeURIComponent(win), {signal: ctl.signal});
+    if (W.ctl !== ctl) return;
+    W.doc = r && typeof r === "object" ? r : {workflows: []}; W.err = ""; W.loadedAt = Date.now();
+    wfIndex();
+  } catch (e) {
+    if (W.ctl !== ctl) return;
+    W.err = ctl.signal.aborted ? "Workflows did not answer in 15 s." : "Workflows not loaded: " + e.message;
+  } finally {
+    clearTimeout(dead); clearTimeout(slow);
+    if (W.ctl === ctl){ W.ctl = null; W.busy = false;
+      W.refreshT = setTimeout(() => { if (!document.hidden) loadWorkflows(); }, WF_REFRESH_MS);
+      renderWorkflows(); }
+  }
+}
+function setWindow(win){
+  S.wfWin = win === "7d" ? "7d" : "24h";
+  W.doc = null; W.idx = new Map(); W.pending.clear(); W.sel.clear();
+  loadWorkflows(true);
+}
+/* SSE "workflow" events: one changed task or agent node each. A burst is bounded: at most WF_PENDING_MAX
+   nodes wait (one per node; a newer event replaces the older), one timer paints them; more = one full reload. */
+function onWorkflowEvent(ev){
+  if (!ev || typeof ev !== "object" || !ev.node || typeof ev.node !== "object") return;
+  if (S.wfWin !== "24h") return;                       // the stream follows the 24 h document
+  const kind = ev.kind === "task" ? "task" : ev.kind === "agent" ? "agent" : null;
+  const id = str(ev.node.id, 160);
+  if (!kind || !id) return;
+  const key = kind + "|" + id;
+  if (!W.pending.has(key) && W.pending.size >= WF_PENDING_MAX){ W.pending.clear(); reloadSoon(); return; }
+  W.pending.set(key, ev.node);
+  wfRenderSoon();
+}
+function wfRenderSoon(){
+  if (W.pendT) return;
+  W.pendT = setTimeout(() => {
+    W.pendT = 0;
+    let miss = false;
+    for (const [key, node] of W.pending){
+      const at = W.idx.get(key);
+      if (at && at.list[at.i] && at.list[at.i].id === node.id) at.list[at.i] = node; else miss = true;
     }
-    const ys = ls.map(l => l.py), ym = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const g = sv("g", {class: "mk " + worst.state, "data-keys": ls.map(l => l.key).join(" ")}, mk);
-    sv("circle", {cx: xm, cy: ym, r: 17, class: "mk-ring"}, g);
-    sv("path", {d: worst.state === "problem" ? `M${xm} ${ym - 8} V${ym + 2} M${xm} ${ym + 7} V${ym + 8}`
-      : `M${xm} ${ym - 9} V${ym} L${xm + 6} ${ym + 5}`, class: "mk-glyph"}, g);
-    const P = G.P[pr.k], up = P.i === 0;
-    const y1 = up ? P.y - P.h / 2 - 40 : P.y + P.h / 2 + 30;
-    sv("text", {x: xm, y: y1, class: "mk-t1", "text-anchor": "middle", text: worst.state === "problem" ? "Service disruption" : "Slow line"}, g);
-    sv("text", {x: xm, y: y1 + 23, class: "mk-t2", "text-anchor": "middle", text: worst.cause || ""}, g);
+    W.pending.clear();
+    wfIndex();
+    renderWorkflows();
+    if (miss) reloadSoon();
+  }, 250);
+}
+function reloadSoon(){
+  if (W.again) return;
+  W.again = setTimeout(() => { W.again = 0; loadWorkflows(); }, 3000);
+}
+addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - W.loadedAt > WF_REFRESH_MS) loadWorkflows();
+  if (document.hidden) stopLines();
+});
+addEventListener("pagehide", () => { if (W.ctl) W.ctl.abort(); clearTimeout(W.refreshT); stopLines(); });
+
+/* fold: only running work is open at start; a click keeps the choice (bounded map) */
+function isOpen(key, running){
+  if (W.open.has(key)) return W.open.get(key);
+  return running === true;
+}
+function toggle(key, running){
+  const v = !isOpen(key, running);
+  W.open.delete(key); W.open.set(key, v);
+  if (W.open.size > WF_OPEN_MAX) W.open.delete(W.open.keys().next().value);
+  renderWorkflows();
+}
+function foldBtn(key, running, kids, extra){
+  const open = isOpen(key, running);
+  return h("button", {type: "button", class: "fold" + (extra ? " " + extra : ""), "aria-expanded": String(open), "data-k": "f" + key,
+    onclick: () => toggle(key, running)}, h("span", {class: "chev", "aria-hidden": "true"}), ...kids);
+}
+const hueOf = k => "hue-" + (AGENT_NAME[k] ? k : "other");
+const isRun = st => st === "running" || st === "queued";
+function treeRuns(nodes){ return nodes.some(n => isRun(n.state) || treeRuns(arr(n.agents, 50))); }
+
+/* the live decision line: the lowest station of a running sub-agent (Task, Model, Safety, Cache, Send, Answer) */
+function liveLine(a){
+  const dec = normDec(a.decisions_last);
+  const ol = h("ol", {class: "dline small", "aria-label": "Decisions of its newest request"});
+  const items = STATIONS.map(([k, name], i) => {
+    const d = dec[i];
+    return h("li", {class: d.state, "data-step": k, "aria-label": name + ": " + d.verdict},
+      h("span", {class: "stop", "aria-hidden": "true"}),
+      h("span", {class: "dn"}, k === "model" ? modelIcon(d.verdict) : null, name),
+      h("span", {class: "dv", text: d.verdict}));
+  });
+  ol.append(...items);
+  const train = REDUCE ? null : h("span", {class: "train", "aria-hidden": "true", hidden: true});
+  if (train) ol.append(train);
+  const sig = JSON.stringify(dec);
+  const old = W.lines.get(a.id);
+  W.lines.set(a.id, {ol, items, train, dec, sig, at: old && old.sig === sig ? old.at : (old ? 0 : STATIONS.length), t: 0});
+  return h("div", {class: "live"}, ol);
+}
+/* a new verdict set runs the train station to station (STATION_MS each); no motion = the verdicts at once */
+function startLines(){
+  for (const L of W.lines.values()){
+    if (REDUCE || document.hidden) L.at = STATIONS.length;
+    paintLine(L);
+    if (L.at < STATIONS.length){
+      const step = () => { L.at++; paintLine(L); if (L.at < STATIONS.length && L.ol.isConnected) L.t = setTimeout(step, STATION_MS); else L.t = 0; };
+      L.t = setTimeout(step, STATION_MS);
+    }
   }
 }
-
-/* ---------- focus: one journey lit, the rest dim ---------- */
-function setFocus(keys, req){
-  S.focus = keys && keys.size ? keys : null; S.selReq = req || null;
-  applyFocus();
-}
-function applyFocus(){
-  const F = S.focus;
-  $("map").classList.toggle("focusing", !!F);
-  qa("#map [data-keys]").forEach(e => {
-    const ks = (e.getAttribute("data-keys") || "").split(" ").filter(Boolean);
-    const on = !F || ks.includes("*") || ks.some(k => F.has(k));
-    e.classList.toggle("dim", !on);
-    if (e.classList.contains("halo")) e.classList.toggle("lit", !!F && on);
+function paintLine(L){
+  L.items.forEach((li, i) => {
+    const d = L.dec[i], passed = i <= L.at;
+    li.className = (passed ? d.state : "wait") + (L.at < STATIONS.length && i === L.at ? " here" : "");
   });
-  const rec = qa("#g-rec, #g-st [data-node=records]"); rec.forEach(e => e.classList.toggle("dim", !!F));
-  drawHops();
+  if (L.train){ L.train.hidden = L.at >= STATIONS.length;
+    if (L.at < STATIONS.length) L.train.style.transform = `translateY(${L.items[L.at].offsetTop - L.items[0].offsetTop}px)`; }
 }
-function drawHops(){
-  const g = $("g-hops"); g.replaceChildren();
-  const r = S.selReq && S.recent.find(x => x.id === S.selReq);
-  if (!r || !S.geo) return;
-  const l = S.geo.L[r.key], a = S.geo.A[r.a], P = S.geo.P[r.p];
-  if (!l || !a || !P) return;
-  const inp = r.tin + r.cr + r.cw;
-  sv("text", {x: a.x + 30, y: a.y - 18, class: "hop", text: big(inp) + " in" + (r.cr ? ", " + big(r.cr) + " from cache" : "")}, g);
-  // label on the diagonal from apex to the provider (free space; the disruption text sits at the terminus)
-  const mx = 840 + (l.x2 - 840) / 2, my = (l.y + l.py) / 2, up = l.py < l.y;
-  sv("text", {x: mx + (up ? -14 : 14), y: my + (up ? -6 : 0), class: "hop" + (r.status === "error" ? " bad" : ""), "text-anchor": up ? "end" : "start",
-    text: r.status === "error" ? "Stopped: " + (r.cause || "failed") : "first word " + secs(r.ttft)}, g);
-  if (r.status !== "error") sv("text", {x: P.x + 32, y: P.y + 32, class: "hop", text: (r.ms ? "done in " + secs(r.ms) + ", " : "") + big(r.tout) + " out"}, g);
+/* every timer of every line stops when the view is drawn again, folds, or the page is hidden */
+function stopLines(){
+  for (const L of W.lines.values()){ clearTimeout(L.t); L.t = 0; }
 }
 
-/* ---------- trains: one per real request event ---------- */
-function spawnTrain(r){
-  if (REDUCE || document.hidden || !S.geo) return;
-  const l = S.geo.L[r.key]; if (!l || S.trains.length > 40) return;
-  const p = sv("path", {d: l.full}, $("trainpaths"));
-  const len = p.getTotalLength();
-  const stopAt = r.status === "error" ? Math.max(0, len - (PX - (l.x2 + PX - 16) / 2) - 20) : len;
-  const c = sv("circle", {r: Math.max(4.5, l.w / 2 + 1.5), class: "train", "data-keys": r.key, cx: -50, cy: -50}, $("g-trains"));
-  if (S.focus && !S.focus.has(r.key)) c.classList.add("dim");
-  S.trains.push({p, c, len, stopAt, t0: performance.now(), bad: r.status === "error"});
-  if (!S.raf) S.raf = requestAnimationFrame(tick);
+function agentRow(a, depth){
+  const st = str(a.state, 30), role = ROLE_ICON[a.role] ? a.role : "worker", kids = arr(a.agents, 12);
+  const running = isRun(st) || treeRuns(kids);
+  const key = "a|" + a.id, open = isOpen(key, running);
+  const ring = st === "running" ? "ring-run" : ringOf(st);
+  const cause = AGENT_CAUSE[st] || "";
+  const verdict = a.verdict === "GO" || a.verdict === "NO-GO" ? a.verdict : "";
+  const meta = [st === "running" ? ago(a.start) : a.end ? ago(a.end) + " ago" : "",
+    typeof a.cost === "number" && isFinite(a.cost) ? "$" + a.cost.toFixed(2) : ""].filter(Boolean).join(" · ");
+  const li = h("li", {class: "ag"},
+    h("div", {class: "row1"}, h("span", {class: "stn"}, roleIcon(role, ring)),
+      foldBtn(key, running, [h("span", {class: "nm", text: ROLE_NAME[role] + " " + str(a.id, 80).slice(-4)}),
+        verdict ? h("span", {class: "verd " + (verdict === "GO" ? "go" : "nogo"), text: verdict}) : null,
+        cause ? h("span", {class: "cause " + (RED.has(st) ? "red" : "amber"), text: cause}) : null,
+        h("span", {class: "mt num", text: meta})])));
+  if (open){
+    if (st === "running") li.append(liveLine(a));
+    if (kids.length) li.append(h("ul", {class: "mline"}, kids.map(k => agentRow(k, depth + 1))));
+    if (+a.agents_more > 0) li.append(h("p", {class: "more", text: plusMore(a.agents_more)}));
+  }
+  return li;
 }
-function tick(ts){
-  const speed = 0.3;   // px per ms: a trip takes about 3.5 s
-  S.trains = S.trains.filter(t => {
-    const d = (ts - t.t0) * speed;
-    if (d >= t.stopAt){
-      if (!t.bad || d > t.stopAt + 400){ t.p.remove(); t.c.remove(); return false; }
-      if (!t.c.classList.contains("bad")){ const pt = t.p.getPointAtLength(t.stopAt);
-        t.c.setAttribute("cx", pt.x); t.c.setAttribute("cy", pt.y); t.c.classList.add("bad"); }
-      return true;
-    }
-    const pt = t.p.getPointAtLength(d); t.c.setAttribute("cx", pt.x); t.c.setAttribute("cy", pt.y);
-    return true;
-  });
-  S.raf = S.trains.length ? requestAnimationFrame(tick) : 0;
+function taskRow(t){
+  const ags = agentsOfTask(t), st = str(t.state, 20), running = st === "running" || treeRuns(ags);
+  const key = "t|" + t.id, open = isOpen(key, running);
+  const stop = h("span", {class: "tstop" + (st === "problem" ? " " + (worstOf(ags) || "ring-red") : ""), "aria-hidden": "true"});
+  const li = h("li", {class: "tk"},
+    h("div", {class: "row1"}, h("span", {class: "stn"}, stop),
+      foldBtn(key, running, [h("span", {class: "nm", text: str(t.label, 80) || "Task"}),
+        t.cause ? h("span", {class: "cause " + (worstOf(ags) === "ring-amber" ? "amber" : "red"), text: str(t.cause, 120)}) : null,
+        h("span", {class: "mt num", text: [ags.length ? String(ags.length + (+t.agents_more || 0)) + " sub-agents" : "",
+          t.end ? ago(t.end) + " ago" : ago(t.start)].filter(Boolean).join(" · ")})])));
+  if (open && ags.length){
+    li.append(h("ul", {class: "mline"}, ags.map(a => agentRow(a, 1))));
+    if (+t.agents_more > 0) li.append(h("p", {class: "more", text: plusMore(t.agents_more)}));
+  }
+  return li;
+}
+function sessionRow(s, multi){
+  const k = AGENT_NAME[s.agent] ? s.agent : "other", tasks = arr(s.tasks, 200);
+  const running = s.state === "running" || tasks.some(t => t.state === "running");
+  const key = "s|" + s.id, open = isOpen(key, running);
+  const name = (AGENT_NAME[k] || "Other") + " " + str(s.short, 12);
+  const pick = h("input", {type: "checkbox", class: "sel", "aria-label": "Select " + name, "data-k": "c" + s.id,
+    checked: W.sel.has(s.id), onchange: ev => pickSession(s.id, ev.target.checked)});
+  const li = h("li", {class: "ss " + hueOf(k)},
+    h("div", {class: "row1"}, h("span", {class: "stn"}, agentIcon(k, false, running ? "ring-run" : "")),
+      foldBtn(key, running, [h("span", {class: "nm", text: name}),
+        h("span", {class: "mt num", text: running ? ago(s.start) : ago(s.last) + " ago"})]),
+      multi ? h("button", {type: "button", class: "mini", text: "Split", "data-k": "sp" + s.id, "aria-label": "Split " + name,
+        onclick: () => splitSession(s.id)}) : null, pick));
+  if (open && tasks.length) li.append(h("ul", {class: "mline " + hueOf(k)}, tasks.slice().reverse().map(taskRow)));
+  return li;
+}
+function workflowBlock(w){
+  const ss = arr(w.sessions, 200), st = str(w.state, 20), running = st === "running";
+  const key = "w|" + w.id, open = isOpen(key, running);
+  const kinds = Array.from(new Set(ss.map(s => AGENT_NAME[s.agent] ? s.agent : "other"))).slice(0, 4);
+  const ags = ss.flatMap(s => arr(s.tasks, 200).flatMap(agentsOfTask));
+  const ring = st === "problem" ? (worstOf(ags) || "ring-red") : running ? "ring-run" : "";
+  const icons = h("span", {class: "icons"}, kinds.map((k, i) => agentIcon(k, true, i === 0 ? ring : "")));
+  const multi = ss.length > 1 || arr(w.joined_by, 5).includes("manual");
+  const li = h("li", {class: "wfb" + (running ? " run" : "")},
+    foldBtn(key, running, [icons, h("span", {class: "nm", text: str(w.label, 100) || "Workflow"}),
+      w.cause ? h("span", {class: "cause " + (ring === "ring-amber" ? "amber" : "red"), text: str(w.cause, 120)}) : null,
+      h("span", {class: "mt num", text: running ? ago(w.start) : ago(w.end || w.start) + " ago"})], "wfh"));
+  if (open) li.append(h("ul", {class: "mline"}, ss.map(s => sessionRow(s, multi))));
+  return li;
+}
+function renderWorkflows(){
+  const box = $("wf"); if (!box) return;
+  stopLines(); W.lines = new Map();
+  const keep = box.scrollTop, act = document.activeElement, actKey = act && box.contains(act) ? act.getAttribute("data-k") : null;
+  const list = arr(W.doc && W.doc.workflows, 300);
+  const title = h("h1", {id: "wf-title"}, SCREEN1.title, h("span", {class: "win", text: S.wfWin === "7d" ? SCREEN1.w7 : SCREEN1.w24}));
+  const kids = [title];
+  if (W.err) kids.push(h("div", {class: "msg err inline", role: "status", text: W.err}));
+  else if (!W.doc && W.busy) kids.push(h("p", {class: "muted", role: "status", text: SCREEN1.slow}));
+  if (W.doc && !list.length) kids.push(h("p", {class: "empty", text: SCREEN1.empty}));
+  kids.push(h("ul", {class: "wfs"}, list.map(workflowBlock)));
+  kids.push(h("p", {class: "wfmore"}, h("button", {type: "button", class: "btn", "data-k": "win",
+    text: S.wfWin === "7d" ? SCREEN1.less7 : SCREEN1.more7, onclick: () => setWindow(S.wfWin === "7d" ? "24h" : "7d")})));
+  box.replaceChildren(...kids);
+  box.scrollTop = keep;
+  if (actKey){ const e = Array.from(box.querySelectorAll("[data-k]")).find(x => x.getAttribute("data-k") === actKey); if (e) e.focus(); }
+  renderJoinBar();
+  startLines();
 }
 
-/* ---------- tooltip ---------- */
-const tip = $("tip");
-function hoverable(el, fn){
-  const show = ev => {
-    const [a, b] = fn(); tip.replaceChildren(document.createTextNode(a)); if (b) tip.append(h("span", {class: "lg", text: b}));
-    tip.style.display = "block";
-    let x, y;
-    if (ev && ev.clientX !== undefined){ x = ev.clientX + 14; y = ev.clientY + 16; }
-    else { const r = el.getBoundingClientRect(); x = r.left; y = r.bottom + 8; }
-    x = Math.min(x, innerWidth - tip.offsetWidth - 8); y = Math.min(y, innerHeight - tip.offsetHeight - 8);
-    tip.style.left = x + "px"; tip.style.top = y + "px";
-  };
-  el.addEventListener("pointermove", show); el.addEventListener("focus", () => show(null));
-  el.addEventListener("pointerleave", () => { tip.style.display = "none"; });
-  el.addEventListener("blur", () => { tip.style.display = "none"; });
+/* join and split (W2): POST with the header token, then the view loads again (no page reload) */
+function pickSession(id, on){
+  if (on && W.sel.size >= SEL_MAX){ toast("At most " + SEL_MAX + " sessions.", true); renderWorkflows(); return; }
+  if (on) W.sel.add(id); else W.sel.delete(id);
+  renderJoinBar();
+}
+function renderJoinBar(){
+  const bar = $("joinbar"); if (!bar) return;
+  const n = W.sel.size;
+  bar.hidden = !n;
+  bar.replaceChildren(...(n ? [h("span", {class: "num", text: n + " selected"}),
+    h("button", {type: "button", class: "btn main", text: "Join", disabled: n < 2, onclick: joinSelected}),
+    h("button", {type: "button", class: "btn", text: "Clear", onclick: () => { W.sel.clear(); renderWorkflows(); }})] : []));
+}
+async function joinSelected(){
+  const ids = Array.from(W.sel).slice(0, SEL_MAX);
+  if (ids.length < 2) return;
+  try { await api("/api/workflows/join", {method: "POST", body: {sessions: ids}}); W.sel.clear(); toast("Joined."); }
+  catch (e) { toast("Not joined: " + e.message, true); return; }
+  await loadWorkflows(true);
+}
+async function splitSession(id){
+  try { await api("/api/workflows/split", {method: "POST", body: {session: id}}); W.sel.delete(id); toast("Split."); }
+  catch (e) { toast("Not split: " + e.message, true); return; }
+  await loadWorkflows(true);
 }
 
 /* ---------- status sentence ---------- */
@@ -723,7 +812,7 @@ function renderBadge(){
 function onSnapshot(s){
   if (!s || typeof s !== "object") return;
   S.snap = s; S.lastSnap = Date.now(); S.stale = "";
-  renderStatus(); renderMap(false);
+  renderStatus();
   if (S.panel === "changes" || S.panel === "agent" || S.panel === "provider") renderPanelSoon();
 }
 function onBlock(block){
@@ -737,6 +826,7 @@ function onBlock(block){
   let obj; try { obj = JSON.parse(data.join("\n")); } catch (e) { return; }
   if (ev === "snapshot") onSnapshot(obj);
   else if (ev === "request") addRequests([obj], true);
+  else if (ev === "workflow") onWorkflowEvent(obj);
 }
 async function stream(){
   let back = 1000;
@@ -790,16 +880,12 @@ function openPanel(kind, arg){
   S.panel = kind; S.arg = arg === undefined ? null : arg;
   document.body.classList.add("panel-open");
   qa("nav button").forEach(b => b.setAttribute("aria-pressed", String(b.getAttribute("data-panel") === kind)));
-  if (kind === "agent") setFocus(new Set(Object.values(S.geo ? S.geo.L : {}).filter(l => l.a === arg).map(l => l.key)));
-  else if (kind === "provider") setFocus(new Set(Object.values(S.geo ? S.geo.L : {}).filter(l => l.p === arg).map(l => l.key)));
-  else setFocus(null);
   renderPanel(true);
 }
 function closePanel(){
   const was = S.panel; S.panel = null; S.arg = null; flowStop();
   document.body.classList.remove("panel-open");
   qa("nav button").forEach(b => b.setAttribute("aria-pressed", "false"));
-  setFocus(null); renderMap(true);
   const b = qa("nav button").find(x => x.getAttribute("data-panel") === was); if (b) b.focus();
 }
 function renderPanel(focusTitle){
@@ -831,7 +917,7 @@ function hopList(r){
 }
 function selectReq(r){
   const same = S.selReq === r.id;
-  setFocus(same ? null : new Set([r.key]), same ? null : r.id);
+  S.selReq = same ? null : r.id;
   renderPanel();
 }
 const VIEWS = {};
@@ -848,7 +934,7 @@ VIEWS.recent = () => {
       h("span", {class: "muted num", text: (r.ms ? secs(r.ms) + " · " : "") + ago(r.ts),
         title: r.ms ? "Whole answer in " + secs(r.ms) + ". Sent " + ago(r.ts) + " ago." : null});
     ul.append(h("li", {}, h("button", {type: "button", class: "req", "aria-pressed": String(sel), "data-k": "r" + r.id,
-      onclick: () => selectReq(r)}, swatch(r.a), h("span", {class: "way", text: `${agentOf(r.a).name} → ${p ? p.name : "?"}`}), right),
+      onclick: () => selectReq(r)}, swatch(r.a), modelIcon(r.family), h("span", {class: "way", text: `${agentOf(r.a).name} → ${p ? p.name : "?"}`}), right),
       sel ? hopList(r) : null));
   }
   return {title: "Recent requests", sub: "Pick one to light its journey.", body: [ul]};
@@ -1206,7 +1292,7 @@ function lineFacts(ls){
   return out;
 }
 VIEWS.agent = k => {
-  const a = agentOf(k), ls = Object.values(S.geo ? S.geo.L : {}).filter(l => l.a === k && !l.ghost);
+  const a = agentOf(k), ls = currentLines().filter(l => l.a === k && !l.ghost);
   const rpm = ls.reduce((s, l) => s + l.rpm, 0), rs = S.recent.filter(r => r.a === k);
   const med = median(rs.filter(r => r.status !== "error" && r.ttft > 0).slice(0, 30).map(r => r.ttft));
   const share = ls.length ? "Goes to " + ls.map(l => `${provOf(l.p).name} (${pct(l.rpm, rpm)} %)`).join(", ") + "." : "No traffic now.";
@@ -1220,7 +1306,7 @@ VIEWS.agent = k => {
   return {title: a.name, sub: `Your agent. Its line is ${a.shade}.`, body};
 };
 VIEWS.provider = k => {
-  const p = provOf(k), ls = Object.values(S.geo ? S.geo.L : {}).filter(l => l.p === k && !l.ghost);
+  const p = provOf(k), ls = currentLines().filter(l => l.p === k && !l.ghost);
   const rpm = ls.reduce((s, l) => s + l.rpm, 0), rs = S.recent.filter(r => r.p === k);
   const fams = Array.from(new Set(rs.map(r => r.family).filter(Boolean))).slice(0, 4);
   const med = median(rs.filter(r => r.status !== "error" && r.ttft > 0).slice(0, 30).map(r => r.ttft));
@@ -1307,28 +1393,25 @@ VIEWS.records = () => {
   // 4. the pipelines: a short branch from Records, one station per job
   const P = Array.isArray(R.pipelines) ? R.pipelines : [];
   body.push(h("h3", {text: "Jobs that read the records"}));
-  const ul = h("ul", {class: "branch"}, h("li", {class: "root"}, h("span", {class: "stop", "aria-hidden": "true"}),
+  const ul = h("ul", {class: "branch"}, h("li", {class: "root"}, h("span", {class: "stn"}, procIcon("records")),
     h("div", {class: "pn", text: "Records"})));
   for (const p of P){
     const cls = p.error || p.state === "failed" ? "bad" : p.state === "late" ? "late" : (p.state === "ok" ? "" : "off");
     ul.append(h("li", {class: cls, title: `Makes ${p.makes}. Runs ${p.schedule ? p.schedule.text : "?"}. Reads ${p.source}.`},
-      h("span", {class: "stop", "aria-hidden": "true"}), h("div", {class: "pn", text: String(p.name || p.id)}),
+      h("span", {class: "stn"}, procIcon(String(p.id || ""), cls === "bad" ? "ring-red" : cls === "late" ? "ring-amber" : "")),
+      h("div", {class: "pn", text: String(p.name || p.id)}),
       h("div", {class: "ps", text: pipeStatus(p)}), h("div", {class: "pm", text: pipeRead(p)})));
   }
   if (!P.length) ul.append(h("li", {class: "off"}, h("span", {class: "stop", "aria-hidden": "true"}), h("div", {class: "ps", text: "No jobs found."})));
   body.push(ul);
   if (R.complete === false) body.push(h("p", {class: "muted small", text: "Very busy: only the newest part of the log was read."}));
-  body.push(h("button", {class: "btn", type: "button", text: "Refresh", onclick: () => { S.recs = null; renderPanel(); }}));
+  body.push(h("div", {class: "row"}, h("button", {class: "btn", type: "button", text: "Refresh", onclick: () => { S.recs = null; renderPanel(); }}),
+    h("button", {class: "btn", type: "button", text: "Recent requests", onclick: () => openPanel("recent")}),
+    h("button", {class: "btn", type: "button", text: "apex decisions", onclick: () => openPanel("apex")})));
   return {title: "Records", sub: "Speed, wait and disk of the request log. No prompt text, no keys.", body};
 };
 
-/* ---------- open a node (map click or #node=<id>) ---------- */
-function openNode(key){
-  if (key === "apex") return openPanel("apex");
-  if (key === "records"){ S.recs = null; return openPanel("records"); }
-  if (key.startsWith("a:")) return openPanel("agent", key.slice(2));
-  if (key.startsWith("p:")) return openPanel("provider", key.slice(2));
-}
+/* ---------- open a node (#node=<id>) ---------- */
 function openFlowId(id){
   const a = AGENTS.find(x => x.node === id); if (a) return openPanel("agent", a.k);
   const p = PROVIDERS.find(x => x.node === id); if (p) return openPanel("provider", p.k);
@@ -1343,12 +1426,11 @@ async function loadFlow(){
 qa("nav button").forEach(b => b.addEventListener("click", () => {
   const k = b.getAttribute("data-panel");
   if (S.panel === k) closePanel(); else { if (k === "changes") S.review = null, S.msg = null; if (k === "experiments") S.exps = null;
-    if (k === "tokens") S.tok = null; openPanel(k); }
+    if (k === "tokens") S.tok = null; if (k === "records") S.recs = null; openPanel(k); }
 }));
 document.addEventListener("keydown", ev => {
   if (ev.key === "Escape"){
-    tip.style.display = "none";
-    if (S.selReq || (S.focus && S.panel === "recent")){ setFocus(null); renderPanel(); return; }
+    if (S.selReq){ S.selReq = null; renderPanel(); return; }
     if (S.panel){ ev.preventDefault(); closePanel(); }
   }
 });
@@ -1362,12 +1444,12 @@ function applyHash(){
 addEventListener("hashchange", applyHash);
 
 (async function init(){
-  renderStatus(); renderMap(true);
+  renderStatus(); renderWorkflows();
+  loadWorkflows();
   loadDraft();
   const flowP = loadFlow();
   try { const r = await api("/api/recent?n=50"); addRequests((r && r.requests) || [], false); }
   catch (e) { /* the stream or the poll fills the list */ }
-  renderMap(true);
   stream();
   await flowP;
   if (location.hash.length > 1){
