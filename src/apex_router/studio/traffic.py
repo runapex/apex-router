@@ -54,6 +54,7 @@ _CAUSES = {
     "ConnectTimeout": "Provider not reached in time.",
     "PoolTimeout": "Too many open requests to the provider.",
     "ReadTimeout": "The provider stopped answering.",
+    "HeaderTimeout": "The provider did not start its answer in time.",
     "WriteTimeout": "The request could not be sent in time.",
     "RemoteProtocolError": "The provider closed the connection.",
     "http_400": "The provider refused the request.",

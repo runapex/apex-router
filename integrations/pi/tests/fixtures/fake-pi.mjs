@@ -12,6 +12,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 out({ type: "agent_start" });
 if (mode === "normal") { await sleep(300); msg("FINAL ANSWER: 42"); out({ type: "agent_end" }); process.exit(0); }
+// key-fail / conn-fail: like pi when its apiKey command fails (or after its connection retries): one error message,
+// exit 0. A resume (argv has the resume task) answers normally. key-fail-always fails every run.
+if (mode === "key-fail" || mode === "conn-fail" || mode === "key-fail-always") {
+  const resumed = process.argv.some(a => a.startsWith("Task: Continue the task"));
+  if (resumed && mode !== "key-fail-always") { await sleep(100); msg("FINAL ANSWER: resumed"); out({ type: "agent_end" }); process.exit(0); }
+  msg("step one done");
+  const em = mode === "conn-fail" ? "Connection error." : 'API key auth failed for provider foundry: Failed to resolve API key for provider "foundry" from shell command: /x/az-token-cached';
+  msg("", { stopReason: "error", errorMessage: em }); out({ type: "agent_end" }); process.exit(0);
+}
 if (mode === "error") { msg("", { stopReason: "error", errorMessage: "upstream 500" }); out({ type: "agent_end" }); process.exit(0); }
 const E429 = '429 {"error":{"code":"RateLimitReached","message":"Rate limit of 3000000 per 60s exceeded for UserByModelByMinuteOutputTokens. Please wait 15 seconds before retrying."}}';
 if (mode === "recover-429") {

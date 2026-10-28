@@ -291,3 +291,74 @@ def test_refresh_that_returns_too_short_a_token_fails(env):
     rc, out, _ = run(env, FAKE_SLEEP="0", AZ_TOKEN_MIN_S="4000")   # fake az gives 3600 s
     assert rc == 1 and out == "" and calls(env) == 1
     assert tok.read_text().startswith("TOK")                     # stored for callers with a lower MIN_S
+
+
+# ---- D3 (2026-10-28): the failure line names the power state ---------------------------------------------
+
+@pytest.mark.parametrize("last,word", [("DarkWake", "dark-wake"), ("Wake", "awake"), ("Sleep", "unknown"), ("", "unknown")])
+def test_keepwarm_failure_line_names_the_power_state(env, tmp_path, last, word):
+    e = keepwarm_env(env, tmp_path)
+    fake = tmp_path / "fake-pmset"
+    lines = ["2026-10-28 02:11:00 -0700 Sleep                \tEntering Sleep"]
+    if last:
+        lines.append(f"2026-10-28 02:11:20 -0700 {last:<20}\tsomething")
+    fake.write_text("#!/bin/sh\nprintf '%s\\n' " + " ".join(f"'{l}'" for l in lines) + "\n")
+    fake.chmod(0o755)
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
+                       capture_output=True, text=True, timeout=60)
+    want = word if last != "Sleep" else "unknown"
+    assert p.returncode == 1 and p.stderr.strip().endswith(f"(power: {want})"), p.stderr
+    assert "TOK" not in p.stderr
+
+
+def test_keepwarm_failure_line_survives_a_missing_pmset(env, tmp_path):
+    e = keepwarm_env(env, tmp_path)
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(tmp_path / "nope")},
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 1 and p.stderr.strip().endswith("(power: unknown)")
+
+
+def test_keepwarm_power_state_finds_a_wake_far_back(env, tmp_path):
+    """Live check found the newest Wake 5 h and thousands of lines back: the state must not depend on a tail."""
+    e = keepwarm_env(env, tmp_path)
+    log = tmp_path / "pmset.log"
+    log.write_text("2026-10-28 09:44:15 -0700 Wake                \tDarkWake to FullWake\n"
+                   + "2026-10-28 10:00:00 -0700 Assertions          \tPID 1 noise\n" * 5000)
+    fake = tmp_path / "fake-pmset"
+    fake.write_text(f"#!/bin/sh\ncat '{log}'\n")
+    fake.chmod(0o755)
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
+                       capture_output=True, text=True, timeout=60)
+    assert p.stderr.strip().endswith("(power: awake)"), p.stderr
+
+
+def test_keepwarm_power_check_is_bounded(env, tmp_path):
+    """xval round 1: a stalled pmset held the failure line for ever. It now gives 'unknown' within ~5 s."""
+    e = keepwarm_env(env, tmp_path)
+    fake = tmp_path / "stall-pmset"
+    fake.write_text("#!/bin/sh\nexec sleep 600\n")
+    fake.chmod(0o755)
+    t = time.monotonic()
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
+                       capture_output=True, text=True, timeout=60)
+    assert time.monotonic() - t < 15
+    assert p.returncode == 1 and p.stderr.strip().endswith("(power: unknown)"), p.stderr
+
+
+def test_keepwarm_power_check_runs_no_shell(env, tmp_path):
+    """xval round 2: one-argument perl exec ran a shell; AZ_KEEPWARM_PMSET is now argv words only."""
+    e = keepwarm_env(env, tmp_path)
+    mark = tmp_path / "pwned"
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": f"touch${{IFS}}{mark};"},
+                       capture_output=True, text=True, timeout=60)
+    assert not mark.exists()
+    p2 = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                        "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": f"/bin/sh -c 'touch {mark}'"},
+                        capture_output=True, text=True, timeout=60)
+    # words only: sh gets "-c" and "'touch" as separate words, so the quoted command is not one script
+    assert p.returncode == 1 and p2.returncode == 1 and "(power: unknown)" in p.stderr

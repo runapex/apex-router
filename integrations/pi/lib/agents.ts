@@ -100,6 +100,14 @@ export type Meta = {
 	/** A2: time of the final turn (assistant message with stopReason "stop") after the soft cap. The report exists,
 	 *  so a hard cost stop must not kill the job: it ends by itself. */
 	final_turn_at?: number;
+	/** D1 (owner 2026-10-28): resumes after a transient start error (key lookup or connection); at most RESUME_MAX. */
+	resumes?: number;
+	/** The first start of a resumed job (the wall clock counts from it). */
+	first_started?: number;
+	/** A queued resume does not start before this time. */
+	resume_at?: number;
+	/** The error that caused the last resume (kept for the result). */
+	resumed_from?: string;
 	/** true on a "done" job that ended after the soft-cap message (the final report is a salvage report). */
 	capped?: boolean;
 	/** Spawn gates (owner order 2026-10-27): the override reason, if a refusal was passed. */
@@ -224,6 +232,8 @@ export type Options = {
 	/** Is the owner process of a job alive? Default: `kill -0 parent_pid`. */
 	ownerAlive?: (meta: Meta) => boolean;
 	now?: () => number;
+	/** D1 resume delay (default RESUME_DELAY_MS). Tests use a short one. */
+	resumeDelayMs?: number;
 };
 
 export const DEFAULT_ROOT = join(homedir(), ".apex-router", "pi-jobs");
@@ -231,6 +241,19 @@ export const RESULT_CAP = 50_000;
 export const RATE_LIMIT = /\b429\b|rate.?limit|RateLimitReached|overloaded/i;
 /** After a 429 in any job, new jobs start one at a time for this long. */
 export const RATE_LIMIT_COOLDOWN_MS = 120_000;
+/** D1 (owner 2026-10-28): pi does not retry a failed API-key lookup ("Failed to resolve API key", its 10 s shell
+ * command limit) and ends the job. 12 jobs in 7 days ended so ($59). Such a job is resumed ONCE in the same pi
+ * session after RESUME_DELAY_MS, so the work goes on instead of starting again. "Connection error" after pi's own
+ * retries is the same class. Nothing else is resumed (no 429, no 5xx: pi already retried those). */
+export const TRANSIENT_START = /Failed to resolve API key|\bConnection error\b/i;
+export const RESUME_MAX = 1;
+export const RESUME_DELAY_MS = 30_000;
+export const RESUME_TASK = "Task: Continue the task from where you stopped. The last request failed on a temporary API-key or connection error. Do not repeat finished steps.";
+/** The command line for a resume: the same argv, with the task line replaced (pi --session-id keeps the session). */
+export function resumeArgv(argv: string[]): string[] {
+	const i = argv.findIndex(a => a.startsWith("Task: "));
+	return i >= 0 ? [...argv.slice(0, i), RESUME_TASK, ...argv.slice(i + 1)] : [...argv, RESUME_TASK];
+}
 
 export function readPressure(path = join(homedir(), ".apex-router", "pressure.json"), now = Date.now()): "GREEN" | "AMBER" | "RED" | "UNKNOWN" {
 	try {
@@ -402,6 +425,7 @@ export class JobManager {
 			tickMs: opts.tickMs ?? 2000,
 			now: opts.now ?? Date.now,
 			onDone: opts.onDone,
+			resumeDelayMs: opts.resumeDelayMs ?? RESUME_DELAY_MS,
 			// the owner is gone when its process ended, or when it was a replaced manager in THIS process
 			// (pi /reload builds a new extension instance with a new token in the same pid)
 			ownerAlive: opts.ownerAlive ?? (m => alive(m.parent_pid) && !(m.parent_pid === process.pid && m.owner !== this.self && !JobManager.live.has(m.owner ?? ""))),
@@ -503,7 +527,13 @@ export class JobManager {
 		const throttled = this.list().some(x => x.rate_limited_at !== undefined && now - x.rate_limited_at < RATE_LIMIT_COOLDOWN_MS);
 		const cap = lvl === "RED" ? 0 : throttled ? 1 : lvl === "AMBER" ? Math.min(this.o.cap, 2) : this.o.cap;
 		let free = cap - this.running().length; // the cap counts every job on the machine
-		for (const m of this.managed().filter(x => x.state === "queued" || x.state === "queued(pressure)")) {
+		for (const m of this.managed().filter(x => (x.state === "queued" || x.state === "queued(pressure)") && !(x.resume_at !== undefined && x.resume_at > now))) {
+			// D1: a resume waits in the queue; its wall clock runs from the first start. Past it, the job ends here.
+			if (m.first_started !== undefined && now - m.first_started > m.timeout_s * 1000) {
+				this.write({ ...m, state: "timed_out(wall)", reason: `wall clock passed while the resume waited (after: ${m.resumed_from ?? "a temporary error"})`, ended: now });
+				writeFileSync(join(this.dir(m.id), "result.md"), this.renderResult(this.read(m.id)!));
+				continue;
+			}
 			if (free <= 0) {
 				const st: JobState = lvl === "RED" || ((lvl === "AMBER" || throttled) && this.running().length < this.o.cap) ? "queued(pressure)" : "queued";
 				if (m.state !== st) this.write({ ...m, state: st });
@@ -541,7 +571,7 @@ export class JobManager {
 			closeSync(err);
 		}
 		const now = this.o.now();
-		this.write({ ...m, state: pid ? "running" : "failed", reason: pid ? undefined : "spawn failed", pid, pid_start: startTime(pid), started: now, last_event: now, ...(pid ? {} : { ended: now }) });
+		this.write({ ...m, state: pid ? "running" : "failed", reason: pid ? undefined : "spawn failed", pid, pid_start: startTime(pid), started: m.first_started ?? now, last_event: now, ...(pid ? {} : { ended: now }) });
 		if (!pid) this.finish(this.read(m.id)!);
 	}
 
@@ -665,6 +695,7 @@ export class JobManager {
 	/** Decide the final state of a job whose process is gone, write result.md, notify. */
 	private finish(m0: Meta) {
 		const m = this.syncSteer(this.ingest(m0));
+		if (this.resumable(m)) return this.queueResume(m);
 		if (!FINAL.has(m.state)) {
 			const clean = m.kind === "pi" ? !m.model_error && m.final_preview !== undefined && (m.exit_code ?? 0) === 0 : m.exit_code === 0;
 			m.state = clean ? "done" : "failed";
@@ -682,6 +713,26 @@ export class JobManager {
 		writeFileSync(join(this.dir(m.id), "result.md"), this.renderResult(m)); // before the terminal meta: a crash between leaves a re-finishable job
 		this.write(m);
 		this.notifyPending();
+	}
+
+	/** D1: a pi job that ended on a transient start error, not cancelled, under its budget, not resumed yet. */
+	private resumable(m: Meta): boolean {
+		if (m.kind !== "pi" || FINAL.has(m.state) || this.cancelling.has(m.id)) return false;
+		if ((m.resumes ?? 0) >= RESUME_MAX || !m.model_error || !TRANSIENT_START.test(m.model_error)) return false;
+		if (m.soft_cap_at !== undefined) return false;
+		if (m.max_cost !== undefined && m.usage.cost >= m.max_cost) return false;
+		// the wall clock counts from the first start: a resume never extends it
+		if (m.started !== undefined && this.o.now() + this.o.resumeDelayMs - (m.first_started ?? m.started) > m.timeout_s * 1000) return false;
+		return true;
+	}
+	/** Put the job back in the queue for one resume in the same session. Usage and the event offset stay. */
+	private queueResume(m: Meta) {
+		const now = this.o.now();
+		const n: Meta = { ...m, state: "queued", argv: resumeArgv(m.argv), resumes: (m.resumes ?? 0) + 1, resume_at: now + this.o.resumeDelayMs,
+			resumed_from: m.model_error!.slice(0, 200), first_started: m.first_started ?? m.started };
+		for (const k of ["pid", "pid_start", "exit_code", "model_error", "final_preview", "ended", "reason"] as const) delete n[k];
+		this.write(n);
+		this.ensureTimer();
 	}
 
 	/** Notify the owner's ended jobs. `notified` is written after a successful delivery; a failed delivery is
@@ -736,6 +787,7 @@ export class JobManager {
 			`# job ${m.id} — ${m.state}${m.reason ? ` (${m.reason})` : ""}`,
 			`agent ${m.agent} · ${secs} s · ${m.usage.turns} turns · $${m.usage.cost.toFixed(4)}${m.last_tool ? ` · last tool ${m.last_tool}` : ""}`,
 			m.resume ? `resume: ${m.resume}` : "",
+			m.resumes ? `resumed ${m.resumes}x in the same session after: ${m.resumed_from ?? "a temporary error"}` : "",
 			"",
 			this.finalText(m) || "(no final answer)",
 			m.state !== "done" && err ? `\n## stderr (tail)\n${err}` : "",

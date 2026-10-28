@@ -253,7 +253,7 @@ def _answer(row: dict) -> dict:
             return _d("answer", "no answer", "none")
         if cause.startswith("midstream_"):
             return _d("answer", "stopped in the middle" + took, "error")
-        if cause == "ReadTimeout":
+        if cause in ("ReadTimeout", "HeaderTimeout"):
             return _d("answer", "no answer in time" + took, "error")
         if cause == "RemoteProtocolError":
             return _d("answer", "connection closed" + took, "error")

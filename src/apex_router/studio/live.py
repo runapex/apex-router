@@ -29,7 +29,8 @@ TAIL_BYTES = 64 * 1024 * 1024
 SMALL_TAIL_BYTES = 8 * 1024 * 1024
 HB_ALIVE_S = 90
 _TS_RE = re.compile(rb'"ts"\s*:\s*(-?[0-9][0-9.eE+-]*)')
-_UNREACHABLE = {"ConnectError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "RemoteProtocolError"}
+_UNREACHABLE = {"ConnectError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "HeaderTimeout",
+                "RemoteProtocolError"}
 
 _cache: dict = {}
 _lock = threading.Lock()

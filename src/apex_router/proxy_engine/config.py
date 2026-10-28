@@ -36,6 +36,12 @@ class Config:
     openai_upstream: str = _env("APEX_OPENAI_UPSTREAM", DEFAULT_OPENAI_UPSTREAM)
     upstream_connect_timeout_s: float = float(_env("APEX_CONNECT_TIMEOUT", "10"))
     upstream_read_timeout_s: float = float(_env("APEX_READ_TIMEOUT", "600"))
+    # D2 (owner 2026-10-28): a limit on the time to the upstream RESPONSE HEADERS, separate from the 600 s
+    # read limit between body bytes. Measured on 7 days (17.2k requests): 56 requests got no header for
+    # 600 s (0.35-0.52 %); successful requests: header p99 11 s, max 122 s; after a stall the next request
+    # in the same session succeeded 49 of 55 times. At this limit the proxy answers 502 (the client
+    # retries at once). 0 = off.
+    upstream_header_timeout_s: float = float(_env("APEX_HEADER_TIMEOUT", "180"))
     # Connect-only retry: a ConnectError/ConnectTimeout means the TCP connection was NEVER
     # established, so the upstream never received the request — retry is provably safe (no
     # double-submission of a non-idempotent POST). A ReadError is deliberately NOT retried: the

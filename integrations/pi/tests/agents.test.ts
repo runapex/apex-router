@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { JobManager, killTargets, type Meta, type Proc, type Spec } from "../lib/agents.ts";
+import { JobManager, killTargets, resumeArgv, RESUME_TASK, TRANSIENT_START, type Meta, type Proc, type Spec } from "../lib/agents.ts";
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-pi.mjs");
 
@@ -85,6 +85,84 @@ test("after a 429, new jobs start one at a time for the cooldown", async () => {
 	assert.deepEqual(ids.map(id => m.read(id)!.state), ["running", "queued(pressure)"]);
 	for (const id of ids) await m.cancel(id);
 	m.stop();
+});
+
+// ---- D1 (owner 2026-10-28): one resume after a transient start error ----------------------------------------
+for (const mode of ["key-fail", "conn-fail"]) {
+	test(`${mode}: the job is resumed once in the same session after the delay, and ends done; usage is kept`, async () => {
+		const { m, done } = mgr({ resumeDelayMs: 600 });
+		const j = m.spawn({ task: `mode:${mode}` });
+		const t0 = Date.now();
+		// while it waits for the resume it is queued, not final, and not notified
+		for (let i = 0; i < 40 && m.read(j.id)!.state !== "queued"; i++) await new Promise(r => setTimeout(r, 50));
+		const q = m.read(j.id)!;
+		assert.equal(q.state, "queued");
+		assert.equal(q.resumes, 1);
+		assert.equal(done.length, 0);
+		const [r] = await m.wait([j.id], 10_000);
+		assert.equal(r!.state, "done");
+		assert.ok(Date.now() - t0 >= 600, "the resume waits for the delay");
+		assert.equal(r!.resumes, 1);
+		assert.match(r!.resumed_from ?? "", mode === "key-fail" ? /resolve API key/ : /Connection error/);
+		assert.equal(r!.usage.turns, 3, "turns of both runs are counted once each");
+		assert.ok(r!.argv.includes(RESUME_TASK));
+		assert.match(m.result(j.id)!.text, /FINAL ANSWER: resumed/);
+		assert.match(m.result(j.id)!.text, /resumed 1x in the same session/);
+		assert.equal(done.length, 1, "one notification, for the final state only");
+		m.stop();
+	});
+}
+
+test("a transient error again after the one resume: failed (no second resume)", async () => {
+	const { m } = mgr({ resumeDelayMs: 200 });
+	const j = m.spawn({ task: "mode:key-fail-always" });
+	const [r] = await m.wait([j.id], 10_000);
+	assert.equal(r!.state, "failed");
+	assert.equal(r!.resumes, 1);
+	assert.match(r!.reason ?? "", /resolve API key/);
+	m.stop();
+});
+
+test("no resume for other errors, a cancelled job, or a job at its cost limit", async () => {
+	const { m } = mgr({ resumeDelayMs: 200 });
+	const a = m.spawn({ task: "mode:error" });
+	const b = m.spawn({ task: "mode:key-fail", max_cost: 0.001 });   // spends 0.002 (over the hard limit)
+	const c = m.spawn({ task: "mode:key-fail", max_cost: 0.0021 });  // 0.002 is past the 85 % soft cap, under the hard limit
+	const [ra, rb, rc] = await m.wait([a.id, b.id, c.id], 10_000);
+	assert.equal(ra!.state, "failed");
+	assert.equal(ra!.resumes, undefined);
+	assert.ok(rb!.state === "failed" || rb!.state === "killed(cost)", rb!.state);
+	assert.equal(rb!.resumes, undefined);
+	assert.equal(rc!.state, "failed");
+	assert.equal(rc!.resumes, undefined, "no resume after the soft cap");
+	m.stop();
+});
+
+test("a resume that waits past the wall clock (pressure RED) ends timed_out(wall), not started late", async () => {
+	let lvl: "GREEN" | "RED" = "GREEN";
+	const { m, done } = mgr({ resumeDelayMs: 100, pressure: () => lvl, defaultTimeoutS: 2 });
+	const j = m.spawn({ task: "mode:key-fail" });
+	for (let i = 0; i < 60 && m.read(j.id)!.state === "running"; i++) await new Promise(r => setTimeout(r, 50));
+	lvl = "RED";                                          // the resume cannot start
+	assert.equal(m.read(j.id)!.resumes, 1);
+	await new Promise(r => setTimeout(r, 2300));          // past the 2 s wall clock from the first start
+	lvl = "GREEN";
+	const [r] = await m.wait([j.id], 5_000);
+	assert.equal(r!.state, "timed_out(wall)");
+	assert.match(r!.reason ?? "", /wall clock passed while the resume waited/);
+	assert.equal(r!.pid, undefined, "never started again");
+	assert.equal(done.length, 1);
+	m.stop();
+});
+
+test("resumeArgv replaces only the task line; TRANSIENT_START matches only the two transient errors", () => {
+	assert.deepEqual(resumeArgv(["pi", "-p", "--session-id", "s", "Task: do X"]), ["pi", "-p", "--session-id", "s", RESUME_TASK]);
+	assert.deepEqual(resumeArgv(["fake", "mode"]), ["fake", "mode", RESUME_TASK]);
+	assert.ok(TRANSIENT_START.test('Failed to resolve API key for provider "foundry" from shell command: x'));
+	assert.ok(TRANSIENT_START.test("Connection error."));
+	for (const e of ["upstream 500", '429 {"error":"RateLimitReached"}', "context_length_exceeded", "Connection errors are bad words in a task"]) {
+		assert.equal(TRANSIENT_START.test(e) && !/errors/.test(e), false, e);
+	}
 });
 
 test("crash: failed with exit code and stderr in the result", async () => {
