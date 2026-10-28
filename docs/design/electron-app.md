@@ -1,6 +1,6 @@
 # Design: apex-router as a standalone macOS app (Electron)
 
-Status: proposal, not built. Owner goal: "move to an Electron app, and ship apex-router as a
+Status: **parked** (owner decision D18, 2026-10-28, row `D1028-adea5df5`). See section 11. Original owner goal: "move to an Electron app, and ship apex-router as a
 standalone app, with installer, debugger, updater, uninstaller".
 Scope: macOS (Apple Silicon) and Linux (D13). All data stays on the machine, except an opt-in crash upload (D14, D17).
 Marks: **[check before build]** = a version, policy or API claim from memory. Confirm it before Phase 1.
@@ -336,3 +336,24 @@ Start: hold Option at app start, or `--safe-mode`.
    3. The user sees the full issue text and must press "Open issue". The app opens a prefilled GitHub
       page in the browser; it holds no GitHub token.
    4. The local zip holds the full report and stays on the machine until the user sends it.
+
+## 11. Parked (D18, 2026-10-28)
+
+The owner parked this design. The P0 spike does not start.
+
+| Item | Decision |
+|---|---|
+| Owner view and control | The HTML studio, opened on demand. |
+| Menu bar | SwiftBar stays. D10 (remove SwiftBar) does not apply. |
+| Problem signal | Problem alerts in the menu bar, so the owner does not need to visit the studio. |
+| Install for teammates | `install.sh` stays. CLI commands (`install`, `update`, `uninstall`, `bundle`) come first if a need starts. |
+| D1-D17 | Kept as a record. They apply again only if the design starts again. |
+
+Start again on one of these triggers:
+
+1. Three or more teammates ask to install apex-router.
+2. `install.sh` fails for a teammate.
+3. A signed app is necessary for a macOS security rule.
+
+Reason: the owner opens a control view only when there is a problem. A desktop window is one more place to visit. A menu bar alert and an HTML view on demand meet the same need at a lower cost.
+
