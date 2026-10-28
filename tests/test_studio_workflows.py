@@ -391,7 +391,7 @@ def test_manual_join_and_split_in_the_store(home):
     root, now = home
     r1 = make_repo(root, "one", "main")
     r2 = make_repo(root, "two", "main")
-    a = PiSession(root, SID_A, r1, now - 3600); a.user(now - 3590); a.write()
+    a = PiSession(root, SID_A, r1, now - 3600); a.user(now - 3590); a.assistant(now - 60); a.write()
     b = PiSession(root, SID_B, r2, now - 1800); b.user(now - 1790); b.write()
     c = PiSession(root, SID_C, r1, now - 3000); c.user(now - 2990); c.assistant(now - 100); c.write()
     doc = collect(now=now)
