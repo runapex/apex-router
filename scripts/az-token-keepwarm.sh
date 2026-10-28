@@ -35,7 +35,8 @@ load() { [ "${AZ_KEEPWARM_NO_LOAD:-0}" = 1 ] || launchctl "$@"; }
 power_state() {
   local last
   # the whole log (about 17k lines, < 1 s, only on a failure): a Wake can be hours of other lines back
-  last=$(${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null \
+  # bounded: perl alarm stops the command after 5 s (a stalled pmset must not hold the failure line)
+  last=$(perl -e 'alarm 5; exec @ARGV' ${AZ_KEEPWARM_PMSET:-pmset -g log} 2>/dev/null \
          | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} [+-][0-9]{4} (Sleep|Wake|DarkWake) ' | tail -n 1 \
          | awk '{print $4}') || true
   case "$last" in

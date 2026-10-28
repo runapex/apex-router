@@ -333,3 +333,17 @@ def test_keepwarm_power_state_finds_a_wake_far_back(env, tmp_path):
                        "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
                        capture_output=True, text=True, timeout=60)
     assert p.stderr.strip().endswith("(power: awake)"), p.stderr
+
+
+def test_keepwarm_power_check_is_bounded(env, tmp_path):
+    """xval round 1: a stalled pmset held the failure line for ever. It now gives 'unknown' within ~5 s."""
+    e = keepwarm_env(env, tmp_path)
+    fake = tmp_path / "stall-pmset"
+    fake.write_text("#!/bin/sh\nexec sleep 600\n")
+    fake.chmod(0o755)
+    t = time.monotonic()
+    p = subprocess.run(["bash", str(KEEPWARM), "run"], env={**e, "FAKE_SLEEP": "0", "FAKE_FAIL": "1",
+                       "AZ_KEEPWARM_TRIES": "1", "AZ_KEEPWARM_PMSET": str(fake)},
+                       capture_output=True, text=True, timeout=60)
+    assert time.monotonic() - t < 15
+    assert p.returncode == 1 and p.stderr.strip().endswith("(power: unknown)"), p.stderr
