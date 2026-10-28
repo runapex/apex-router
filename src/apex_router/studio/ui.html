@@ -222,8 +222,9 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 /* a Metro line: one segment per station, so the line ends at the last station */
 .mline{list-style:none;margin:0 0 4px;padding:0 0 0 18px}
 .mline>li{position:relative;padding:0 0 0 22px}
-.mline>li::before{content:"";position:absolute;left:8px;top:-4px;height:22px;width:4px;border-radius:2px;background:var(--hue,var(--rule))}
-.mline>li:not(:last-child)::after{content:"";position:absolute;left:8px;top:18px;bottom:-4px;width:4px;background:var(--hue,var(--rule))}
+.mline>li::before{content:"";position:absolute;left:7.5px;top:0;height:18px;width:5px;background:var(--hue,var(--rule))}
+.mline>li:first-child::before{display:none}
+.mline>li:not(:last-child)::after{content:"";position:absolute;left:7.5px;top:18px;bottom:0;width:5px;background:var(--hue,var(--rule))}
 .mline>li>.row1{position:relative;left:-22px;display:flex;align-items:center;gap:10px;min-height:36px}
 .mline>li>.row1>.fold{flex:1;min-width:0;padding-left:0}
 .mline>li>.row1>.stn{position:relative;z-index:1;flex:0 0 auto}
@@ -236,7 +237,8 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 .mini:hover{color:var(--fg);border-color:var(--soft)}
 .verd{font-size:12.5px;padding:0 8px;border-radius:999px;border:1px solid var(--rule);color:var(--fg2)}
 .verd.go{border-color:var(--fg);color:var(--fg)} .verd.nogo{border-color:var(--amber);color:var(--amber)}
-.more{color:var(--soft);font-size:13.5px;padding:4px 0 6px}
+.more{color:var(--soft);font-size:13.5px;margin:0;padding:6px 0 8px 0}
+.mline>li.mr>.row1 .tstop{border-style:dashed;border-color:var(--neutral)}
 .live{margin:0 0 6px 0}
 .live .dline li{padding:2px 0 4px 34px;min-height:20px}
 .live .dline .stop{top:5px;width:12px;height:12px}
@@ -251,7 +253,7 @@ pre.diff .p{color:var(--fg)} pre.diff .m{color:var(--soft);text-decoration:line-
 .req .ico{margin-left:-4px}
 
 /* toast */
-#toast{position:fixed;left:18px;bottom:16px;z-index:40;max-width:620px;display:none;padding:8px 12px;border-radius:9px;background:var(--card);
+#toast{position:fixed;right:26px;top:72px;z-index:40;max-width:620px;display:none;padding:8px 12px;border-radius:9px;background:var(--card);
   border:1px solid var(--rule);color:var(--fg2)}
 #toast.show{display:block} #toast.err{border-color:var(--red);color:var(--fg)}
 
@@ -500,18 +502,23 @@ function modelId(text){
 const modelIcon = text => { const id = modelId(text); return id ? icon(id, false) : null; };
 
 /* ---------- workflows (contract: API.md "Workflows") ---------- */
-// every fixed text of screen 1 (budget: 25 words or fewer, the 6 station names included)
+// every fixed text of screen 1 (budget: 25 words or fewer, the 6 station names included; names, causes and
+// numbers are data). The test counts the words of these strings.
 const SCREEN1 = {
+  stations: "Task Model Safety Cache Send Answer",
+  subs: "sub-agents",
+  ago: "ago",
+  split: "Split",
   title: "Workflows",
-  w24: "last 24 h",
-  w7: "last 7 days",
+  w24: "24 h",
+  w7: "7 days",
   more7: "Show 7 days",
   less7: "Show 24 h",
-  empty: "No work in this window.",
-  slow: "Still loading…",
-  more: "+N more"          // plusMore()
+  empty: "No work yet.",
+  slow: "Loading…",
+  more: "more"
 };
-const plusMore = n => "+" + Math.max(0, Math.round(+n || 0)) + " more";
+const plusMore = n => "+" + Math.max(0, Math.round(+n || 0)) + " more";   // SCREEN1.more
 const WF_TIMEOUT_MS = 15000, WF_REFRESH_MS = 30000, WF_PENDING_MAX = 200, WF_OPEN_MAX = 2000, SEL_MAX = 20;
 const AGENT_CAUSE = {failed: "failed", killed: "was stopped", "killed(cost)": "stopped at the cost limit",
   "timed_out(idle)": "stopped: no progress", "timed_out(wall)": "ran out of time"};
@@ -532,6 +539,13 @@ function worstOf(nodes){
     const k = worstOf(arr(n.agents, 50)); if (k === "ring-red") return k; if (k) w = k;
   }
   return w;
+}
+// the ring and the cause text take one colour from the cause: amber = stalled or out of time, red = failed or stopped
+function causeRing(cause, nodes){
+  const c = String(cause || "");
+  if (/no progress|ran out of time/.test(c)) return "ring-amber";
+  if (c) return "ring-red";
+  return worstOf(nodes || []);
 }
 function agentsOfTask(t){ return arr(t.agents, 50); }
 function wfIndex(){
@@ -681,7 +695,7 @@ function agentRow(a, depth){
   const ring = st === "running" ? "ring-run" : ringOf(st);
   const cause = AGENT_CAUSE[st] || "";
   const verdict = a.verdict === "GO" || a.verdict === "NO-GO" ? a.verdict : "";
-  const meta = [st === "running" ? ago(a.start) : a.end ? ago(a.end) + " ago" : "",
+  const meta = [st === "running" ? ago(a.start) : a.end ? ago(a.end) + " " + SCREEN1.ago : "",
     typeof a.cost === "number" && isFinite(a.cost) ? "$" + a.cost.toFixed(2) : ""].filter(Boolean).join(" · ");
   const li = h("li", {class: "ag"},
     h("div", {class: "row1"}, h("span", {class: "stn"}, roleIcon(role, ring)),
@@ -691,24 +705,28 @@ function agentRow(a, depth){
         h("span", {class: "mt num", text: meta})])));
   if (open){
     if (st === "running") li.append(liveLine(a));
-    if (kids.length) li.append(h("ul", {class: "mline"}, kids.map(k => agentRow(k, depth + 1))));
-    if (+a.agents_more > 0) li.append(h("p", {class: "more", text: plusMore(a.agents_more)}));
+    if (kids.length) li.append(h("ul", {class: "mline"}, kids.map(k => agentRow(k, depth + 1)), moreRow(a.agents_more)));
   }
   return li;
+}
+function moreRow(n){
+  if (!(+n > 0)) return null;
+  return h("li", {class: "mr"}, h("div", {class: "row1"}, h("span", {class: "stn"}, h("span", {class: "tstop", "aria-hidden": "true"})),
+    h("p", {class: "more", text: plusMore(n)})));
 }
 function taskRow(t){
   const ags = agentsOfTask(t), st = str(t.state, 20), running = st === "running" || treeRuns(ags);
   const key = "t|" + t.id, open = isOpen(key, running);
-  const stop = h("span", {class: "tstop" + (st === "problem" ? " " + (worstOf(ags) || "ring-red") : ""), "aria-hidden": "true"});
+  const tring = st === "problem" ? (causeRing(t.cause, ags) || "ring-red") : "";
+  const stop = h("span", {class: "tstop" + (tring ? " " + tring : ""), "aria-hidden": "true"});
   const li = h("li", {class: "tk"},
     h("div", {class: "row1"}, h("span", {class: "stn"}, stop),
       foldBtn(key, running, [h("span", {class: "nm", text: str(t.label, 80) || "Task"}),
-        t.cause ? h("span", {class: "cause " + (worstOf(ags) === "ring-amber" ? "amber" : "red"), text: str(t.cause, 120)}) : null,
-        h("span", {class: "mt num", text: [ags.length ? String(ags.length + (+t.agents_more || 0)) + " sub-agents" : "",
-          t.end ? ago(t.end) + " ago" : ago(t.start)].filter(Boolean).join(" · ")})])));
+        t.cause ? h("span", {class: "cause " + (tring === "ring-amber" ? "amber" : "red"), text: str(t.cause, 120)}) : null,
+        h("span", {class: "mt num", text: [ags.length ? String(ags.length + (+t.agents_more || 0)) + " " + SCREEN1.subs : "",
+          t.end ? ago(t.end) + " " + SCREEN1.ago : ago(t.start)].filter(Boolean).join(" · ")})])));
   if (open && ags.length){
-    li.append(h("ul", {class: "mline"}, ags.map(a => agentRow(a, 1))));
-    if (+t.agents_more > 0) li.append(h("p", {class: "more", text: plusMore(t.agents_more)}));
+    li.append(h("ul", {class: "mline"}, ags.map(a => agentRow(a, 1)), moreRow(t.agents_more)));
   }
   return li;
 }
@@ -722,24 +740,25 @@ function sessionRow(s, multi){
   const li = h("li", {class: "ss " + hueOf(k)},
     h("div", {class: "row1"}, h("span", {class: "stn"}, agentIcon(k, false, running ? "ring-run" : "")),
       foldBtn(key, running, [h("span", {class: "nm", text: name}),
-        h("span", {class: "mt num", text: running ? ago(s.start) : ago(s.last) + " ago"})]),
-      multi ? h("button", {type: "button", class: "mini", text: "Split", "data-k": "sp" + s.id, "aria-label": "Split " + name,
+        h("span", {class: "mt num", text: running ? ago(s.start) : ago(s.last) + " " + SCREEN1.ago})]),
+      multi ? h("button", {type: "button", class: "mini", text: SCREEN1.split, "data-k": "sp" + s.id, "aria-label": "Split " + name,
         onclick: () => splitSession(s.id)}) : null, pick));
   if (open && tasks.length) li.append(h("ul", {class: "mline " + hueOf(k)}, tasks.slice().reverse().map(taskRow)));
   return li;
 }
 function workflowBlock(w){
-  const ss = arr(w.sessions, 200), st = str(w.state, 20), running = st === "running";
+  const ss = arr(w.sessions, 200), st = str(w.state, 20);
+  const running = st === "running" || ss.some(s => s.state === "running");   // a problem block can still run
   const key = "w|" + w.id, open = isOpen(key, running);
   const kinds = Array.from(new Set(ss.map(s => AGENT_NAME[s.agent] ? s.agent : "other"))).slice(0, 4);
   const ags = ss.flatMap(s => arr(s.tasks, 200).flatMap(agentsOfTask));
-  const ring = st === "problem" ? (worstOf(ags) || "ring-red") : running ? "ring-run" : "";
+  const ring = st === "problem" ? (causeRing(w.cause, ags) || "ring-red") : running ? "ring-run" : "";
   const icons = h("span", {class: "icons"}, kinds.map((k, i) => agentIcon(k, true, i === 0 ? ring : "")));
   const multi = ss.length > 1 || arr(w.joined_by, 5).includes("manual");
   const li = h("li", {class: "wfb" + (running ? " run" : "")},
     foldBtn(key, running, [icons, h("span", {class: "nm", text: str(w.label, 100) || "Workflow"}),
       w.cause ? h("span", {class: "cause " + (ring === "ring-amber" ? "amber" : "red"), text: str(w.cause, 120)}) : null,
-      h("span", {class: "mt num", text: running ? ago(w.start) : ago(w.end || w.start) + " ago"})], "wfh"));
+      h("span", {class: "mt num", text: running ? ago(w.start) : ago(w.end || w.start) + " " + SCREEN1.ago})], "wfh"));
   if (open) li.append(h("ul", {class: "mline"}, ss.map(s => sessionRow(s, multi))));
   return li;
 }
