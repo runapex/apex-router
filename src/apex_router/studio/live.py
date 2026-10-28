@@ -74,7 +74,7 @@ def _parse_lines(lines: list, since: float) -> tuple[list, float | None]:
             continue
         try:
             row = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             continue
         if isinstance(row, dict):
             row["_ts"] = ts
@@ -261,7 +261,7 @@ def collect(window: str = "15m", proxy: str = "main", paths: Paths | None = None
             pressure = {"level": str(p.get("level") or "UNKNOWN"),
                         "age_s": round(now - gen) if gen else None,
                         "insufficient": bool(p.get("insufficient_sample"))}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         pressure = None
     xval = None
     try:
@@ -275,7 +275,7 @@ def collect(window: str = "15m", proxy: str = "main", paths: Paths | None = None
                         pulls += int(a["n"])
             xval = {"categories": len(cats), "pulls": pulls,
                     "age_s": round(now - (rh / "xval_bandit.json").stat().st_mtime)}
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, RecursionError):
         xval = None
 
     metrics = {

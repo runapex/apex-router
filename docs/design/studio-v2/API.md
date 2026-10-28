@@ -213,3 +213,37 @@ Rules:
 7. The Metro view, its lines and its "apex" panel move inside Workflows: each agent row has the Metro
    line look; the lowest station of an active agent is the live decision line (Task, Model, Safety, Cache,
    Send, Answer). The Records, Tokens, Experiments and Changes panels stay.
+
+Implementation notes (added 2026-10-28, `studio/workflows.py`; choices the contract left open):
+- Added response keys: `counts` (`sessions`, `job_dirs`, `jobs`, `bytes_read`, `files_read`),
+  `skipped` (`sessions` over 200, `files` bad or not regular, `jobs` over 2000, `jobs_bad`
+  meta.json bad or over 256 KiB, `jobs_unlinked` no parent found, `depth` below depth 2, `listing`
+  a cut directory listing) and `complete` (false when a skip cut data). Agent nodes add
+  `linked_by` (`spawn` | `pid` | `file`). A task or agent with more than 12 agents adds `agents_more` (the N of "+N more").
+- Job to parent link: exact when the parent's 64 KiB head or tail shows the agent_spawn result
+  (`details.id`) or the job's own session is `apexjob-<parent job>`. Else by process: the job's
+  `parent_pid` is the `pid` of a parent job and `created` falls in its run time (depth 2), or the `parent_pid` of a job the
+  session links exactly, and `created` falls in the session span (+2 h). A pi process with no exact
+  link gets one by requests: each job votes for the pi session with the nearest request (telemetry,
+  same `session_id`) at most 120 s before `created`. meta.json has no parent session field.
+- A sub-agent sits in the task that holds its spawn time (the toolResult time; else `created`).
+  Task points: message/compaction times from the head and tail, telemetry request times of the
+  session, and the spawn times. A task id is `<session>:t<n>`, n counted over these points.
+- Label: only a first line that starts with `TASK:` (the prefix is cut); secret-like words become
+  `<secret>`. Claude Code sub-agent descriptions are user text: never a label (repo · branch).
+- Roles and states outside the contract lists map to `worker` and to `done` / `running` / `failed`.
+  Verdict: `GO` or `NO-GO` in the last 3 non-empty lines of `result.md` (4 KiB tail), xval and
+  reviewer only. Claude Code sub-agents: role from `agentType`, state `running` when written in the
+  last 5 min, cost and verdict null. Branch: `.git/HEAD` (or a worktree `gitdir`), 4 KiB reads.
+- Manual store: a join row holds each member that has no later split. A session whose latest row
+  is a split takes no auto join. `manual.joins` = join rows with 2 or more live members;
+  `manual.splits` = sessions whose latest row is a split. Only the last 1 MiB of the file is read.
+  Ids: `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`, 2..20 per join. Bad ids give 400.
+- `workflow` SSE event data: `{"kind": "task|agent", "workflow", "session", "task", "parent"
+  (parent agent id or null), "node"}`. A task node in an event carries its `agents` too, but only
+  a change of its own fields sends it. The first build of a stream is the baseline (no events).
+  The stream builds the 24h document at most every 2 s (shared cache).
+- Telemetry: an in-memory index per file, kept by offset (8 MiB of new bytes per build). Heartbeat
+  rows are skipped before JSON parsing. The response is cached 2 s; a join or split clears it.
+- Measured on the owner's Mac (2026-10-28, HTTP): 24h 307 ms cold, 80-95 ms warm; 7d 766 ms cold,
+  about 300 ms warm.

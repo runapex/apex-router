@@ -126,7 +126,7 @@ def route_index(path: Path) -> RouteIndex:
     for ln in lines:
         try:
             r = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             continue
         if not isinstance(r, dict):
             continue

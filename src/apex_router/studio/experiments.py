@@ -119,7 +119,7 @@ def _text(path: Path) -> str:
 def _json(path: Path):
     try:
         return json.loads(_read(path, whole=True))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         raise ReadError("bad format") from None
 
 
@@ -134,7 +134,7 @@ def _jsonl(path: Path, tail: bool = True) -> list:
             continue
         try:
             r = json.loads(ln)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             continue
         if isinstance(r, dict):
             out.append(r)
