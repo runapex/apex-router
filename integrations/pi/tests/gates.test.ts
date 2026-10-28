@@ -51,9 +51,9 @@ function decisions(rows: unknown[]): string {
 const open = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `D${i + 1}`, ts: 1, topic: `t${i + 1}`, text: `question ${i + 1}`, state: "open" }));
 
 /** An xval job dir with meta.json (repo, branch) and a result.md whose last line is `verdict`. */
-function xvalJob(root: string, id: string, repoDir: string, branch: string, verdict: string, kind = "xval", created = Date.now()) {
+function xvalJob(root: string, id: string, repoDir: string, branch: string, verdict: string, kind = "xval", created = Date.now(), head?: string) {
 	mkdirSync(join(root, id), { recursive: true });
-	writeFileSync(join(root, id, "meta.json"), JSON.stringify({ id, state: "done", agent: kind, kind, task: "x".repeat(3000), cwd: "/x", argv: [], repo: repoDir, branch, head: "abc", created }, null, 1));
+	writeFileSync(join(root, id, "meta.json"), JSON.stringify({ id, state: "done", agent: kind, kind, task: "x".repeat(3000), cwd: "/x", argv: [], repo: repoDir, branch, head: head ?? `${id.replace(/\D/g, "").slice(-12)}abcdef`, created }, null, 1));
 	writeFileSync(join(root, id, "result.md"), `# job ${id}\n\nfindings...\n\n${verdict}\n\n`);
 }
 
@@ -320,4 +320,24 @@ test("gate 3: a cut decisions file gives a warning, not a silent pass", () => {
 	writeFileSync(p, rows.map(r => JSON.stringify(r)).join("\n") + "\n");
 	const g = spawnGate({ agent: "worker", kind: "pi", cwd: tmp("gate-norepo-"), decisionsPath: p, jobsRoot: tmp("gate-jobs-") });
 	assert.ok(g.warnings.some(w => /bad row/.test(w)), JSON.stringify(g.warnings));
+});
+
+test("gate 6: parallel part-reviews of one commit count as ONE round (owner 2026-10-28)", () => {
+	const root = tmp("gate-jobs-");
+	const now = Date.now();
+	const H1 = "1111111111111111111111111111111111111111", H2 = "2222222222222222222222222222222222222222";
+	for (const p of ["a", "b", "c"]) xvalJob(root, `20261028022600-${p}`, "/r/.git", "apexjob/x", "NO-GO", "xval", now - 5000, H1);
+	assert.equal(reviewRounds(root, "/r/.git", "apexjob/x", FS_IO, now + 5000, now).nogo.length, 1);
+	xvalJob(root, "20261028024100-d", "/r/.git", "apexjob/x", "NO-GO", "xval", now - 3000, H2);
+	assert.equal(reviewRounds(root, "/r/.git", "apexjob/x", FS_IO, now + 5000, now).nogo.length, 2);
+});
+
+test("gate 6: a GO on a commit cancels the NO-GO parts of that same commit", () => {
+	const root = tmp("gate-jobs-");
+	const now = Date.now();
+	const H0 = "0000000000000000000000000000000000000000", H1 = "1111111111111111111111111111111111111111";
+	xvalJob(root, "20261028020000-z", "/r/.git", "apexjob/x", "NO-GO", "xval", now - 9000, H0);
+	xvalJob(root, "20261028021000-a", "/r/.git", "apexjob/x", "GO", "xval", now - 6000, H1);
+	xvalJob(root, "20261028021001-b", "/r/.git", "apexjob/x", "NO-GO", "xval", now - 5900, H1);
+	assert.equal(reviewRounds(root, "/r/.git", "apexjob/x", FS_IO, now + 5000, now).nogo.length, 0);
 });
