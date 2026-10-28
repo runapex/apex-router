@@ -490,11 +490,17 @@ function iconOr(id, big, ring){
 const agentIcon = (k, big, ring) => iconOr(AGENT_ICON[k] || null, big, ring);
 const roleIcon = (r, ring) => iconOr(ROLE_ICON[r] || "role-worker", false, ring);
 const procIcon = (k, ring) => iconOr(PROC_ICON[k] || "proc-serve", false, ring);
+/* GPT icons: a fixed map from version (traffic.model_family "GPT 6", "GPT 6.1") to icon. The words "sol" and
+   "astra" (model ids) name the icon too. An unknown GPT version shows model-gpt. */
+const GPT_ICON = {"6": "model-gpt", "6.1": "model-gpt-sol"};
 function modelId(text){
-  const t = String(text || "").toLowerCase();
+  const t = String(text || "").toLowerCase().slice(0, 200), words = t.split(/[^a-z0-9.]+/);
   if (/opus/.test(t)) return "model-opus";
   if (/sonnet|haiku|fable|claude/.test(t)) return "model-sonnet";
-  if (/\bsol\b/.test(t)) return "model-gpt-sol";
+  if (words.includes("sol")) return "model-gpt-sol";
+  if (words.includes("astra")) return "model-gpt";
+  const v = /gpt[\s-]*(\d+(?:\.\d+)?)/.exec(t);
+  if (v) return Object.prototype.hasOwnProperty.call(GPT_ICON, v[1]) ? GPT_ICON[v[1]] : "model-gpt";
   if (/gpt/.test(t)) return "model-gpt";
   if (/qwen|llama|gemma|mistral|deepseek|kimi|glm|phi|local/.test(t)) return "model-local";
   return null;
