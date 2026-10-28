@@ -313,10 +313,26 @@ Start: hold Option at app start, or `--safe-mode`.
 6. D10: SwiftBar goes at P2, so the app menu bar must reach parity with `snapshot --menubar` in P2.
 7. D14 opt-in upload needs a destination (see D17).
 
-### New open decisions (from the answers above)
+### Second round (answered 2026-10-27)
 
-15. D15: Unsigned Mac app shell update: (a) a new DMG download when the shell changes (runtime updates
-    stay in-app), or (b) sign the app later so Squirrel can update it?
-16. D16: Linux package and scope: AppImage, .deb, or both? Same phases, or Linux after the Mac beta?
-17. D17: Crash upload destination: GitHub issue on the public repo (scrubbed), a private endpoint, or
-    a local zip the user sends by hand?
+| ID | Question | Answer |
+|---|---|---|
+| D15 | Unsigned Mac shell update | **(a)** a new DMG download when the shell changes; runtime updates stay in the app |
+| D16 | Linux package | **openSUSE**: an `.rpm` (zypper), systemd user units, after the Mac beta (suggested timing; owner did not set it) |
+| D17 | Crash report destination | **A cleaned GitHub issue on the public repo + a local zip** |
+
+### Effects of the second round
+
+1. D15: the app checks the GitHub Releases feed for a new shell version and shows "Download the new
+   app". It does not replace the `.app` by itself.
+2. D16: electron-builder target `rpm`. Test on openSUSE Tumbleweed and Leap. Tray: the KDE system tray
+   (StatusNotifierItem). **[check before build]** the GNOME tray needs an extension.
+3. D17: the public issue is the riskier path. Rules:
+   1. The app makes the report from an allow-list of fields (app version, OS, crash type, stack frames of our
+      own code with repo-relative paths). Nothing else goes in: no hostnames, model ids, usernames, home
+      paths, telemetry rows, prompt text or env values.
+   2. The cleaner runs the `test_public_hygiene` digest list and a secret pattern scan. Any hit blocks
+      the upload; the local zip is still made.
+   3. The user sees the full issue text and must press "Open issue". The app opens a prefilled GitHub
+      page in the browser; it holds no GitHub token.
+   4. The local zip holds the full report and stays on the machine until the user sends it.
