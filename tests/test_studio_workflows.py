@@ -924,3 +924,26 @@ def test_a_slow_workflow_build_does_not_block_stream_events(tmp_path, monkeypatc
     t.join(2)
     block.set()
     assert closing.is_set() and time.monotonic() - t0 < 1.5
+
+
+def test_git_place_refuses_a_gitdir_through_a_symlinked_ancestor(tmp_path):
+    outside = tmp_path / "outside" / "a" / "b" / "worktree"
+    outside.mkdir(parents=True)
+    (outside / "HEAD").write_text("ref: refs/heads/private\n")
+    (tmp_path / "link").symlink_to(tmp_path / "outside")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {tmp_path}/link/a/b/worktree\n")
+    workflows.clear_caches()
+    assert workflows.git_place(str(wt), workflows.Reads())[1] is None
+
+
+def test_git_place_reads_a_real_worktree(tmp_path):
+    gd = tmp_path / "repo" / ".git" / "worktrees" / "w1"
+    gd.mkdir(parents=True)
+    (gd / "HEAD").write_text("ref: refs/heads/feature-x\n")
+    wt = tmp_path / "w1"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {gd}\n")
+    workflows.clear_caches()
+    assert workflows.git_place(str(wt), workflows.Reads()) == ("repo", "feature-x")

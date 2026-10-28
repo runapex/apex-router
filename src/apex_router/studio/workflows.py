@@ -249,14 +249,16 @@ def _git_place(cwd: Path, reads: Reads):
                 gd = Path(m.group(1).decode("utf-8", "replace"))
                 if not gd.is_absolute():
                     gd = (p / gd)
+                # A worktree gitdir is <repo>/.git/worktrees/<name>, and nothing on that path is a link:
+                # its real path must equal its written path (xval: a symlinked ancestor led outside).
                 try:
-                    if any(q.is_symlink() for q in (gd, gd.parent, gd.parent.parent)):
-                        return p.name or None, None
-                except OSError:
+                    real = Path(os.path.realpath(gd))
+                except (OSError, ValueError):
                     return p.name or None, None
-                main = gd.parent.parent if gd.parent.name == "worktrees" else None
-                repo = main.parent.name if main is not None and main.name == ".git" else p.name
-                return repo or None, _head_branch(gd / "HEAD", reads)
+                if (real != Path(os.path.normpath(gd)) or real.parent.name != "worktrees"
+                        or real.parent.parent.name != ".git"):
+                    return p.name or None, None
+                return real.parent.parent.parent.name or None, _head_branch(real / "HEAD", reads)
             return p.name or None, None
         if p.parent == p:
             break
