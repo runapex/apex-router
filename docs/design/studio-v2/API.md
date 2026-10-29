@@ -306,7 +306,7 @@ Rules:
 
 ### Menu bar (Q3)
 
-Each running pi sub-agent and each active Claude Code session in the Agents and Jobs sections adds
+Each pi sub-agent that runs now and each active Claude Code session in the Agents and Jobs sections adds
 one row: `now: <short>  <age>`. It uses `commands.mask_short` with a 40-character limit. A
 command older than 10 min is amber. The row opens the studio at the agent.
 
