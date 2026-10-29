@@ -247,3 +247,71 @@ Implementation notes (added 2026-10-28, `studio/workflows.py`; choices the contr
   rows are skipped before JSON parsing. The response is cached 2 s; a join or split clears it.
 - Measured on the owner's Mac (2026-10-28, HTTP): 24h 307 ms cold, 80-95 ms warm; 7d 766 ms cold,
   about 300 ms warm.
+
+## Commands (owner decision D19, 2026-10-28)
+
+Owner answers: Q1 show masked short text, plus the full command after a click. Q2 pi sub-agents and
+Claude Code sessions and sub-agents. Q3 the menu bar shows the command that runs now (masked, short).
+
+### GET /api/commands?agent=<id>   (header token only)
+
+`<id>` is an agent node id from /api/workflows (a pi job id, a pi session id, a Claude Code session
+id or a Claude Code sub-agent id).
+
+```json
+{"agent": "20261028175027-2r4o", "kind": "pi-job|pi|claude|claude-sub",
+ "calls": [
+  {"call": "c-7f3a…", "tool": "bash|read|edit|write|Bash|Read|Edit|Write|other",
+   "short": "pytest tests/test_menubar_problems.py -q", "masked": false,
+   "start": 1793212000.1, "end": 1793212012.4, "state": "running|ok|error"}
+ ],
+ "calls_more": 0,
+ "procs": {"pid": 54053, "name": "pi", "cpu": 3.1, "rss_mb": 160,
+           "children": [{"pid": 54100, "name": "bash", "label": "pytest", "cpu": 80.2, "rss_mb": 340,
+                         "age_s": 12, "children": []}]} | null,
+ "complete": true}
+```
+
+Rules:
+1. `calls`: the newest 20 tool calls, newest first. pi: `tool_execution_start` and
+   `tool_execution_end` events of the job's `events.jsonl`. Claude Code: `tool_use` and
+   `tool_result` blocks of the session or sub-agent `.jsonl`. Read at most the last 256 KiB.
+2. `short` (Q1): one line, at most 80 characters, made by `commands.mask_short` only:
+   a. a read, edit or write call shows the tool and the file name (no folder);
+   b. a bash call shows the first command words. A heredoc body, a `-c` or `-e` script and a quoted
+      string over 40 characters become `<script>` or `<text>`;
+   c. secret-like text becomes `[hidden]`: `NAME=value` where NAME holds KEY, TOKEN, SECRET,
+      PASSWORD or AUTH; `Bearer …`; `sk-…`, `ghp_…`, `xox?-…`, `AKIA…`, `eyJ…`; any run of 32 or
+      more base64 or hex characters;
+   d. `masked` is true when step b or c changed the text.
+3. `call` is an opaque id: the HMAC-SHA256 of (agent id, event file, byte offset) with the studio
+   token as key, 16 hex characters. It is valid only for this studio process.
+4. `procs` (Q2): the live process tree of the agent: pi job = `meta.pid` and its descendants; pi or
+   Claude Code session = the process that `agent_resources` matched to it. `label` is
+   `procs.script_label` (never argv). null when the studio knows no live process.
+5. Bounds: 2000 job dirs (names only), 256 KiB per events file tail, 20 calls, 3 levels and 40
+   processes in `procs`. A cut read sets `complete` false.
+
+### GET /api/commands/full?agent=<id>&call=<call>   (header token only)
+
+```json
+{"call": "c-7f3a…", "tool": "bash", "text": "<the full command, max 64 KiB>", "cut": false}
+```
+
+1. The server finds the call again by its HMAC and returns the full arguments (bash `command`;
+   read/edit/write `path`; other tools: the arguments as JSON). The secret mask of rule 2c applies
+   to the full text too.
+2. A wrong or old `call` id gives 404. No `call` from another agent works.
+3. The full text is never stored, cached, logged or sent in an SSE event.
+
+### Menu bar (Q3)
+
+Each running pi sub-agent and each active Claude Code session in the Agents and Jobs sections adds
+one row: `now: <short>  <age>`. It uses `commands.mask_short` with a 40-character limit. A
+command older than 10 min is amber. The row opens the studio at the agent.
+
+### Code layout
+
+- `src/apex_router/commands.py`: `mask_short`, `mask_full`, the readers for pi and Claude Code,
+  `running_now(agent)` for the menu bar. Shared by the studio and the menu bar.
+- `studio/server.py`: the two routes. `studio/ui.html`: a "Commands" line under each agent row.
