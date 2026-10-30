@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	DEFAULT_TIMEOUT_MS, InboxOverlay, InboxStore, makeCliRunner, MAX_STDOUT, osc52, overlayOptionsFor, parseInbox,
-	readResultTail, startPoller, widgetText, type CliRunner, type TuiFns,
+	readResultTail, startPoller, widgetLine, widgetText, type CliRunner, type TuiFns,
 } from "../lib/inbox.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -394,6 +394,22 @@ test("every rendered line fits the width (40, 60, 80, 120, 200; wide characters,
 			}
 		}
 	}
+});
+
+test("widget line fits the width (1, 10, 40, 60, 80, 120, 200) and is one line", async () => {
+	const s = new InboxStore({ run: fake("ok").run });
+	await s.refresh();
+	const long = { text: `Inbox not loaded: ${"中".repeat(300)}`, tone: "muted" as const };
+	for (const theme of [plainTheme, colorTheme]) {
+		for (const width of [1, 10, 40, 60, 80, 120, 200]) {
+			for (const w of [widgetText(s), long]) {
+				const lines = widgetLine(w, theme, TUI, width);
+				assert.equal(lines.length, 1);
+				assert.ok(TUI.visibleWidth(lines[0]!) <= width, `${width}: ${JSON.stringify(lines[0])}`);
+			}
+		}
+	}
+	assert.deepEqual(widgetLine(undefined, plainTheme, TUI, 80), []);
 });
 
 // ---- result.md tail, OSC 52 ----------------------------------------------------------------------------------
