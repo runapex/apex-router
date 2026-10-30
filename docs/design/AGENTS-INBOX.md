@@ -128,6 +128,9 @@ Short text: one line, at most 80 characters, made by `commands.mask_short` only:
       secret-like name, the mask hides the rest of the word. `NAME = value` hides the next word. A value that
       is not one plain word hides the rest of the text.
 
+Boundary: only the short text (rules a, b) is a security boundary. Rule c on free text (blocker lines,
+`needs`) is best effort. There is no full-text output (D24).
+
 ## 9. Security
 
 - No prompt text, no full commands and no tokens appear in any output.
