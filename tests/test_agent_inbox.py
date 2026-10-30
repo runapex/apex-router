@@ -182,6 +182,19 @@ def test_open_plain_label_list():                                # 0t8z form
     assert len(got) == 2
 
 
+def test_bare_open_line_with_a_list():                            # ak9j, 6co5, j1j8 forms
+    got = ai.parse_blockers("body\n\nOPEN\n- `DEMO/script.md` still says the old name.\n- Step 11 shot was not retaken.\n")
+    assert len(got) == 2
+    assert len(ai.parse_blockers("x\nOPEN\n1. The UI still has the row.\n2. Jest count is 872.\n")) == 2
+    assert ai.parse_blockers("x\nBLOCKED\n") == [] and ai.parse_verdict("x\nBLOCKED\n") == "BLOCKED"
+
+
+def test_nested_sub_items_belong_to_the_parent():                # j9fa form
+    got = ai.parse_blockers("## OPEN\n\n1. **bench_ objects are still in org 1:**\n   - 60 simulated VENs.\n"
+                            "   - Rule sets.\n2. **Bundles are not deleted.**\n6. **Plan:**\n   1. Deploy B1.\n")
+    assert [b["text"] for b in got] == ["bench_ objects are still in org 1:", "Bundles are not deleted.", "Plan:"]
+
+
 def test_open_questions_heading():                               # aveo form
     got = ai.parse_blockers("## Open questions\n1. Which branch merges first?\n")
     assert [b["text"] for b in got] == ["Which branch merges first?"]
@@ -360,6 +373,17 @@ def test_3000_job_dirs_stay_in_bounds(homes):
     assert sum(doc["counts"].values()) == 2000          # the 2000 newest dirs only
     assert doc["items"][0]["id"] == job_name(2999, "j2999")
     assert took < 15, took
+
+
+def test_running_items_stay_when_needs_fill_the_200(homes):
+    home, rh = homes
+    for i in range(250):
+        mk_job(rh, job_name(i, f"f{i}"), state="failed", result="x\n")
+    mk_job(rh, job_name(300, "run"), state="running", pid=os.getpid())
+    doc = collect(home, rh)
+    assert len(doc["items"]) == 200 and doc["counts"] == {"running": 1, "needs": 250, "done": 0}
+    assert [i["group"] for i in doc["items"]][-1] == "running"
+    assert doc["items"][-1]["id"] == job_name(300, "run")
 
 
 def test_50mb_result_reads_only_the_tail(homes):
@@ -601,11 +625,18 @@ def test_new_blockers_state_file_and_max_5(homes):
     for i in range(8):
         mk_job(rh, job_name(i, f"b{i}"), result=f"## OPEN\n- [P1] item {i}\n")
     lines = ai.new_blockers(home=home, router_home=rh, now=NOW)
-    assert 1 <= len(lines) <= 5 and (rh / "agent-inbox-seen.json").exists()
+    assert len(lines) == 5 and "4 more agents" in lines[-1] and (rh / "agent-inbox-seen.json").exists()
     assert ai.new_blockers(home=home, router_home=rh, now=NOW + 1) == []
     (rh / "pi-jobs" / job_name(3, "b3") / "result.md").write_text("## OPEN\n- [P1] item 3\n- [P2] brand new\n")
     lines = ai.new_blockers(home=home, router_home=rh, now=NOW + 2)
     assert len(lines) == 1 and "brand new" in lines[0]
+
+
+def test_new_blockers_one_line_per_item(homes):
+    home, rh = homes
+    mk_job(rh, job_name(1), result="## OPEN\n- [P1] a\n- [P2] b\n- [P2] c\nVERDICT: NO-GO\n")
+    lines = ai.new_blockers(home=home, router_home=rh, now=NOW)
+    assert len(lines) == 1 and lines[0].endswith("(+3)")
 
 
 def test_new_blockers_skips_resolved(homes):
@@ -652,3 +683,41 @@ def test_no_secret_or_prompt_text_in_any_output(homes):
     for it in json.loads(outs[0])["items"]:
         assert "PROMPTBODYSENTINEL" not in it["label"]
         assert "PROMPTBODYSENTINEL" not in (it["resume"] or "")
+    for f in rh.iterdir():                                       # state and cache files hold no secret
+        if f.is_file():
+            body = f.read_text(errors="replace")
+            for sec in SECRETS[:4]:
+                assert sec not in body, (f.name, sec)
+
+
+# ---- parse cache (stat is cheap, open is not) ------------------------------------------------------------
+
+def test_cache_hit_skips_reads_and_a_change_invalidates(homes, monkeypatch):
+    home, rh = homes
+    name = job_name(1)
+    mk_job(rh, name, result="## OPEN\n- [P1] a\n")
+    assert item(collect(home, rh), name)["open"][0]["text"] == "a"
+    assert (rh / "agent-inbox-cache.json").exists()
+    reads = []
+    real = ai._read_tail
+    monkeypatch.setattr(ai, "_read_tail", lambda *a, **kw: reads.append(a[0]) or real(*a, **kw))
+    assert item(collect(home, rh), name)["open"][0]["text"] == "a" and reads == []
+    (rh / "pi-jobs" / name / "result.md").write_text("## OPEN\n- [P1] a changed\n")
+    assert item(collect(home, rh), name)["open"][0]["text"] == "a changed" and len(reads) == 1
+
+
+def test_running_items_are_not_cached(homes):
+    home, rh = homes
+    name = job_name(1)
+    mk_job(rh, name, state="running", pid=os.getpid())
+    collect(home, rh)
+    c = rh / "agent-inbox-cache.json"
+    assert not c.exists() or ("p:" + name) not in json.loads(c.read_text())["e"]
+
+
+def test_corrupt_cache_is_ignored(homes):
+    home, rh = homes
+    name = job_name(1)
+    mk_job(rh, name, result="x\nNO-GO\n")
+    (rh / "agent-inbox-cache.json").write_text("{bad")
+    assert item(collect(home, rh), name)["verdict"] == "NO-GO"

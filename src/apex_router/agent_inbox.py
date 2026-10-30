@@ -41,7 +41,7 @@ from pathlib import Path
 
 from . import commands
 
-DEADLINE_S = 2.6               # whole call <= 3 s: the collect deadline + join grace + start-up
+DEADLINE_S = 2.4               # whole call <= 3 s: the collect deadline + join grace + start-up
 LINE_DEADLINE_S = 1.0
 LINE_CACHE_S = 5.0
 JOIN_GRACE_S = 0.2
@@ -61,6 +61,8 @@ ACKS_MAX_IDS = 2000
 ACK_KEYS_MAX = 200
 ACKS_FILE_MAX = 4 * 1024 * 1024
 SEEN_MAX = 5000
+CACHE_MAX = 3000
+CACHE_FILE_MAX = 8 * 1024 * 1024
 OPEN_MAX = 20
 LABEL_MAX = 60
 TEXT_MAX = 160
@@ -177,6 +179,77 @@ def _json(raw):
     except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     return v
+
+
+# ---- parse cache ------------------------------------------------------------------------------------------
+# An open() costs ~0.2-0.4 ms on a Mac with endpoint security; a stat ~2 us. 2000 jobs x 2 opens did not fit in
+# 3 s. The cache keeps the OUTPUT fields of an ended item (already masked: the same text the CLI prints), keyed by
+# (inode, size, mtime_ns) of its files and a hash of this module + commands.py (a new mask rule drops the cache).
+# A running item is never cached. The file is disposable: corrupt or old -> empty.
+
+_CODE_TAG = None
+
+
+def _code_tag() -> str:
+    global _CODE_TAG
+    if _CODE_TAG is None:
+        h = hashlib.sha256()
+        for f in (__file__, commands.__file__):
+            try:
+                h.update(Path(f).read_bytes())
+            except OSError:
+                h.update(b"?")
+        _CODE_TAG = h.hexdigest()[:16]
+    return _CODE_TAG
+
+
+def _sig(*paths):
+    out = []
+    for p in paths:
+        try:
+            st = os.lstat(p)
+            out.append([st.st_ino, st.st_size, st.st_mtime_ns] if stat.S_ISREG(st.st_mode) else None)
+        except OSError:
+            out.append(None)
+    return out
+
+
+class _Cache:
+    def __init__(self, path: Path):
+        self.path = path
+        self.old: dict = {}
+        self.new: dict = {}
+        self.dirty = False
+        self.lock = threading.Lock()
+        d = _json(_read_small(path, CACHE_FILE_MAX))
+        if isinstance(d, dict) and d.get("v") == _code_tag() and isinstance(d.get("e"), dict):
+            self.old = d["e"]
+
+    def get(self, key: str, sig):
+        e = self.old.get(key)
+        if isinstance(e, dict) and e.get("s") == sig and isinstance(e.get("i"), dict):
+            with self.lock:
+                self.new[key] = e
+            return json.loads(json.dumps(e["i"]))
+        return None
+
+    def put(self, key: str, sig, item: dict) -> None:
+        with self.lock:
+            self.new[key] = {"s": sig, "i": json.loads(json.dumps(item))}
+            self.dirty = True
+
+    def save(self) -> None:
+        with self.lock:
+            if not self.dirty:
+                return
+            # entries not looked at in this run stay (a deadline stop must not drop them); the ones looked at go
+            # last, so the cut at CACHE_MAX drops the oldest unseen first
+            merged = {k: v for k, v in self.old.items() if k not in self.new}
+            merged.update(self.new)
+            ent = dict(list(merged.items())[-CACHE_MAX:])
+        with contextlib.suppress(OSError, TimeoutError, ValueError):
+            with _locked(self.path):
+                _atomic_write(self.path, {"v": _code_tag(), "e": ent})
 
 
 # ---- text: masking and cutting ----------------------------------------------------------------------------
@@ -303,7 +376,7 @@ _HEADING_RE = re.compile(r"^#{1,6}[ \t]")
 _BOLD_LABEL_RE = re.compile(r"^(?:\*\*|__)[^*_\n]{1,60}?(?:\*\*|__)[ \t]*(?::|$)|^(?:\*\*|__)[^*_\n]{1,60}?:[ \t]*(?:\*\*|__)")
 _CAPS_LABEL_RE = re.compile(r"^[A-Z][A-Z0-9 _/-]{1,30}(?:\([^)]{0,40}\))?[ \t]*:")
 _HR_RE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})[ \t]*$")
-_LIST_RE = re.compile(r"^[ ]{0,3}(?:[-*+]|\d{1,3}[.)])[ \t]+(.*)$")
+_LIST_RE = re.compile(r"^[ ]?(?:[-*+]|\d{1,3}[.)])[ \t]+(.*)$")        # indent >= 2: a sub-item (part of the item)
 _PRI_RE = re.compile(r"^\[?(P[0-3])\]?(?:[ \t]*[:\-–—)][ \t]*|[ \t]+|$)")
 _NONE_RE = re.compile(r"^(?:none|n/?a|nothing|-+|no(?:ne)?[ \t]+(?:open[ \t]+)?(?:items?|blockers?|issues?|"
                       r"questions?|open))(?:[ \t]*(?:open|left|remain(?:s|ing)?))?[ \t.!]*$", re.I)
@@ -392,10 +465,17 @@ def _section(lines, i: int, inline: str):
     return items, j
 
 
-def _start(line: str):
-    """The inline text when ``line`` starts an OPEN, BLOCKED, WARNING or CAUTION section, else None."""
+_SEC_BARE_RE = re.compile(r"^" + _LABELS + r"[ \t]*$")
+
+
+def _start(line: str, nxt: str = ""):
+    """The inline text when ``line`` starts an OPEN, BLOCKED, WARNING or CAUTION section, else None. A bare
+    upper-case label line ("OPEN") counts only when a list item or a table row follows it: a lone "BLOCKED"
+    line is a verdict, not a section."""
     s = line.strip()
     if _SEC_HEAD_RE.match(s):
+        return ""
+    if _SEC_BARE_RE.match(s) and (_LIST_RE.match(nxt) or nxt.strip().startswith("|")):
         return ""
     m = _SEC_BOLD_RE.match(s) or _SEC_CAPS_RE.match(s)
     if m:
@@ -417,7 +497,7 @@ def parse_blockers(text, labels: str = "all") -> list[dict]:
     else:
         k = 0
         while k < len(lines) and len(found) < OPEN_MAX:
-            inline = _start(lines[k])
+            inline = _start(lines[k], lines[k + 1] if k + 1 < len(lines) else "")
             if inline is None or (labels == "open" and not lines[k].strip().strip("#*_ ").upper().startswith("OPEN")):
                 k += 1
                 continue
@@ -530,7 +610,17 @@ def _pi_items(rh: Path, dl, box) -> None:
         if not dl.ok() or box.closed:
             box.incomplete()
             return
-        it = _pi_item(rh / "pi-jobs" / name, name, dl)
+        d = rh / "pi-jobs" / name
+        sig = _sig(d / "meta.json", d / "result.md")
+        if sig[0] is None:
+            continue
+        it = box.cache.get("p:" + name, sig) if box.cache else None
+        if it is None:
+            it = _pi_item(d, name, dl)
+            if it is not None and it["state"] != "running" and box.cache:
+                box.cache.put("p:" + name, sig, it)
+        elif it["state"] == "running":
+            it = _pi_item(d, name, dl)
         if it is None and not dl.ok():
             box.incomplete()
             return
@@ -610,7 +700,12 @@ def _bg_items(home: Path, dl, box) -> None:
         if not dl.ok() or box.closed:
             box.incomplete()
             return
-        it = _bg_item(root / name, name, dl)
+        sig = _sig(root / name / "state.json")
+        it = box.cache.get("b:" + name, sig) if box.cache else None
+        if it is None:
+            it = _bg_item(root / name, name, dl)
+            if it is not None and it["state"] != "running" and box.cache:
+                box.cache.put("b:" + name, sig, it)
         if it is not None:
             if it["state"] == "running" and it.get("_sid"):
                 _add_now(it, "claude", dl, box, agent=it["_sid"])
@@ -744,19 +839,25 @@ def _sub_items(home: Path, now: float, dl, box) -> None:
             except OSError:
                 continue
             if stat.S_ISREG(st.st_mode):
-                files.append((st.st_mtime, m.group(1), Path(f.path)))
+                files.append((st.st_mtime, m.group(1), Path(f.path), [st.st_ino, st.st_size, st.st_mtime_ns]))
     files.sort(reverse=True)
     if len(files) > SUB_FILES_MAX:
         box.incomplete()
     seen = set()
-    for _, aid, p in files[:SUB_FILES_MAX]:
+    for mt, aid, p, sig in files[:SUB_FILES_MAX]:
         if aid in seen:
             continue
         seen.add(aid)
         if not dl.ok() or box.closed:
             box.incomplete()
             return
-        it = _sub_item(p, aid, now)
+        it = None
+        if now - mt >= SUB_RUNNING_S and box.cache:
+            it = box.cache.get("s:" + aid, sig)
+        if it is None:
+            it = _sub_item(p, aid, now)
+            if it["state"] != "running" and box.cache:
+                box.cache.put("s:" + aid, sig, it)
         if it["state"] == "running":
             _add_now(it, "claude-sub", dl, box)
         box.add(it)
@@ -798,6 +899,7 @@ class _Box:
         self.items: list = []
         self.complete = True
         self.closed = False
+        self.cache: _Cache | None = None
         self.lock = threading.Lock()
 
     def add(self, it):
@@ -821,8 +923,12 @@ def _homes(home=None, router_home=None):
 
 
 def _work(box: _Box, dl: _Deadline) -> None:
-    for fn in (lambda: _pi_items(box.rh, dl, box), lambda: _bg_items(box.home, dl, box),
-               lambda: _sub_items(box.home, box.now, dl, box)):
+    try:
+        box.cache = _Cache(Path(box.rh) / "agent-inbox-cache.json")      # read here: inside the deadline
+    except Exception:  # noqa: BLE001
+        box.cache = None
+    for fn in (lambda: _bg_items(box.home, dl, box), lambda: _sub_items(box.home, box.now, dl, box),
+               lambda: _pi_items(box.rh, dl, box)):
         if box.closed:
             return
         try:
@@ -877,6 +983,8 @@ def _gather(home, rh, now, deadline_s):
         box.closed = True
         items = list(box.items)
     complete = box.complete and not t.is_alive()
+    if box.cache is not None:
+        box.cache.save()
     acks = ack_read(rh)
     for it in items:
         _apply_acks(it, acks if isinstance(acks, dict) else None)
@@ -892,7 +1000,17 @@ def collect(*, home=None, router_home=None, now: float | None = None, deadline_s
     for it in items:
         counts[it["group"]] += 1
     return {"now": round(now, 3), "complete": complete, "counts": counts,
-            "items": [_public(i) for i in items[:ITEMS_MAX]]}
+            "items": [_public(i) for i in _cap(items)]}
+
+
+def _cap(items: list) -> list:
+    """At most ITEMS_MAX items in the section 4 order. Running items are kept first (482 old needs items on the
+    real home pushed all running items out of the list); needs, then done fill the rest."""
+    run = [i for i in items if i["group"] == "running"][:ITEMS_MAX]
+    rest = ITEMS_MAX - len(run)
+    needs = [i for i in items if i["group"] == "needs"][:rest]
+    done = [i for i in items if i["group"] == "done"][:rest - len(needs)]
+    return needs + run + done
 
 
 def _find(iid: str, home, rh, now, deadline_s=DEADLINE_S):
@@ -1143,12 +1261,17 @@ def new_blockers(*, home=None, router_home=None, now: float | None = None) -> li
             _atomic_write(p, {"at": now, "seen": keep[-SEEN_MAX:]})
     except (OSError, TimeoutError):
         return []
-    lines = []
+    by_item: dict = {}                                  # one line per item: its first new blocker + a count
     for tok, it, text in new:
-        if len(lines) >= NEW_LINES_MAX - 1 and len(new) > NEW_LINES_MAX:
-            lines.append(f"⚠ {len(new) - len(lines)} more: apex-router agents")
+        by_item.setdefault(it["id"], (it, text, []))[2].append(tok)
+    rows = list(by_item.values())
+    lines = []
+    for k, (it, text, toks) in enumerate(rows):
+        if k == NEW_LINES_MAX - 1 and len(rows) > NEW_LINES_MAX:
+            lines.append(f"⚠ {len(rows) - k} more agents need you: apex-router agents")
             break
-        lines.append(_cut(f"⚠ {it['id']} {it['label']}: {text}", 200))
+        more = f" (+{len(toks) - 1})" if len(toks) > 1 else ""
+        lines.append(_cut(f"⚠ {it['id']} {it['label']}: {text}{more}", 200))
     return lines
 
 
