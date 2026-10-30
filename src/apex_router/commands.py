@@ -252,7 +252,7 @@ _TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 def _tool_name(tool) -> str:
     """An allow-list name (xval 066s: a tool name with blanks or a secret showed): else "other"."""
     return tool if isinstance(tool, str) and _TOOL_NAME_RE.fullmatch(tool) and not _SECRET_NAME_RE.search(tool) \
-        else "other"
+        and not mask_secrets(tool)[1] else "other"            # xval jtao: a ghp_ token as a tool name showed
 
 
 def tool_out(tool) -> str:

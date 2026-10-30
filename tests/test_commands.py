@@ -843,7 +843,9 @@ def test_a_file_path_with_a_secret_or_non_plain_part_shows_no_name(path):
         assert short == "read <path>" and masked is True
 
 
-@pytest.mark.parametrize("tool", ["X=1 TOKEN=private_body", "a b", "my_TOKEN_tool", "x" * 41, "\u2028private_body"])
+@pytest.mark.parametrize("tool", ["X=1 TOKEN=private_body", "a b", "my_TOKEN_tool", "x" * 41, "\u2028private_body",
+                                  "ghp_AbCdEf0123456789AbCdEf0123456789ABCD", "sk-AbCdEf0123456789", "AKIAIOSFODNN7EXAMPLE",
+                                  "eyJhbGciOiJIUzI1NiJ9", "0123456789abcdef0123456789abcdef"])
 def test_a_tool_name_outside_the_allow_list_shows_other(tool):
     short, masked = commands.mask_short(tool, {})
     assert short == "other" and masked is True and "private_body" not in short
