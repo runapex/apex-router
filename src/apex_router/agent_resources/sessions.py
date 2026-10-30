@@ -15,6 +15,7 @@ from .base import _LSTART_FMT, run_cmd
 LSOF_PIDS_MAX = 40                # pi / codex pids whose cwd one lsof call looks up
 QUIET_PROCS_MAX = 8               # live pi / codex processes with no recent session log, listed
 SESSION_BYTES_MAX = 64 * 1024
+SESSION_FILES_MAX = 2000                   # live Claude processes: a few; the cap bounds the listing
 START_TOLERANCE_S = 2.0
 
 
@@ -39,8 +40,14 @@ def claude_sessions(home: Path, table: dict) -> dict:
     """sessionId -> {pid, status, name, verified} for LIVE Claude processes only."""
     out = {}
     d = Path(home) / ".claude" / "sessions"
-    try:
-        files = list(d.glob("*.json"))
+    files = []
+    try:                                       # bounded listing (xval dt3i): at most SESSION_FILES_MAX names
+        with os.scandir(d) as it:
+            for k, e in enumerate(it):          # every entry counts (xval 45zb: 100000 .tmp files)
+                if k >= SESSION_FILES_MAX:
+                    break
+                if e.name.endswith(".json"):
+                    files.append(Path(e.path))
     except OSError:
         return out
     for f in files:
