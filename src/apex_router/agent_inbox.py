@@ -77,6 +77,7 @@ SUB_NAME_RE = re.compile(r"agent-([A-Za-z0-9_-]{1,64})\.jsonl")
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ROLES = ("xval", "worker", "reviewer", "scout")
 NEEDS_STATES = ("failed", "capped", "blocked", "cancelled", "timed_out")
+NEEDS_MAX_AGE_S = 48 * 3600   # D27 (open): an ended item older than this is "done" with stale=true, not "needs"
 BAD_VERDICTS = ("NO-GO", "BLOCKED")
 
 
@@ -937,7 +938,7 @@ def _work(box: _Box, dl: _Deadline) -> None:
             box.incomplete()
 
 
-def _apply_acks(it: dict, acks: dict | None) -> None:
+def _apply_acks(it: dict, acks: dict | None, now: float | None = None) -> None:
     e = (acks or {}).get(it["id"])
     keys = set(e.get("keys", ())) if isinstance(e, dict) else set()
     all_ = isinstance(e, dict) and e.get("all") is True
@@ -947,8 +948,13 @@ def _apply_acks(it: dict, acks: dict | None) -> None:
     s_ok = all_ and e.get("state") == it["state"]
     it["_bad_state"] = it["state"] in NEEDS_STATES and not s_ok
     it["_bad_verdict"] = it["verdict"] in BAD_VERDICTS and not v_ok
+    it["stale"] = False
     if it["_bad_state"] or it["_bad_verdict"] or any(not o["resolved"] for o in it["open"]):
-        it["group"] = "needs"
+        t = it.get("end") or it.get("start")
+        if it["state"] != "running" and now is not None and isinstance(t, (int, float)) and now - t > NEEDS_MAX_AGE_S:
+            it["group"], it["stale"] = "done", True     # 522 old items on the real home hid the new ones
+        else:
+            it["group"] = "needs"
     elif it["state"] == "running":
         it["group"] = "running"
     else:
@@ -987,7 +993,7 @@ def _gather(home, rh, now, deadline_s):
         box.cache.save()
     acks = ack_read(rh)
     for it in items:
-        _apply_acks(it, acks if isinstance(acks, dict) else None)
+        _apply_acks(it, acks if isinstance(acks, dict) else None, now)
     return _order(items), complete
 
 

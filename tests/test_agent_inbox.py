@@ -236,7 +236,7 @@ def test_stderr_tail_is_not_a_section():
 # ---- 1. sources and the contract shape --------------------------------------------------------------------
 
 ITEM_KEYS = {"id", "kind", "role", "group", "state", "verdict", "label", "cwd_short", "branch", "ahead",
-             "start", "end", "cost", "open", "resume"}
+             "start", "end", "cost", "open", "resume", "stale"}
 
 
 def test_contract_shape_for_each_kind(homes):
@@ -721,3 +721,22 @@ def test_corrupt_cache_is_ignored(homes):
     mk_job(rh, name, result="x\nNO-GO\n")
     (rh / "agent-inbox-cache.json").write_text("{bad")
     assert item(collect(home, rh), name)["verdict"] == "NO-GO"
+
+
+# ---- D27 (open decision): an ended item with blockers older than 48 h is "done" with stale=true ------------
+
+def test_an_old_item_with_blockers_is_done_and_stale(homes):
+    home, rh = homes
+    old = mk_job(rh, job_name(1), result="## OPEN\n- [P1] fix it\nVERDICT: NO-GO\n", agent="xval",
+                 started=NOW - 50 * 3600, ended=NOW - 49 * 3600)
+    new = mk_job(rh, job_name(2), result="## OPEN\n- [P1] fix it\nVERDICT: NO-GO\n", agent="xval",
+                 started=NOW - 3 * 3600, ended=NOW - 2 * 3600)
+    failed_old = mk_job(rh, job_name(3), state="failed", started=NOW - 80 * 3600, ended=NOW - 79 * 3600)
+    doc = ai.collect(home=home, router_home=rh, now=NOW)
+    by = {i["id"]: i for i in doc["items"]}
+    assert by[old.name]["group"] == "done" and by[old.name]["stale"] is True
+    assert by[old.name]["open"] and by[old.name]["verdict"] == "NO-GO"        # blockers stay visible
+    assert by[failed_old.name]["group"] == "done" and by[failed_old.name]["stale"] is True
+    assert by[new.name]["group"] == "needs" and by[new.name]["stale"] is False
+    assert doc["counts"]["needs"] == 1
+

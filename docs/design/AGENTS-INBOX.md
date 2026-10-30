@@ -35,7 +35,7 @@ VERDICT: GO | NO-GO | BLOCKED | DONE
  "counts": {"running": 2, "needs": 3, "done": 41},
  "items": [
   {"id": "20261030224430-o41s", "kind": "pi-job|claude-sub|claude-bg", "role": "xval|worker|reviewer|scout|claude|other",
-   "group": "needs|running|done", "state": "running|done|failed|capped|blocked|cancelled|timed_out",
+   "group": "needs|running|done", "stale": false, "state": "running|done|failed|capped|blocked|cancelled|timed_out",
    "verdict": "GO|NO-GO|BLOCKED|DONE|null", "label": "<masked task label, max 60>",
    "cwd_short": "apex-router", "branch": "apexjob/mvtuzw5r|null", "ahead": 3,
    "start": 1793299000.0, "end": 1793299500.0, "cost": 1.23,
@@ -50,6 +50,8 @@ Rules:
    - **needs** if the state is failed, capped, blocked, cancelled or timed_out;
    - **needs** if the item has an unresolved `open` item;
    - **needs** if the verdict is NO-GO or BLOCKED and the owner did not resolve it;
+   - an ended item with one of these needs reasons and an end older than 48 hours is **done** with
+     `"stale": true` (decision D27). Its blockers stay in `open`;
    - **running** if it runs;
    - **done** in all other cases.
 2. `label` is the first `TASK:` line, masked with `commands.mask_short`, or "repo · branch". It never holds prompt text.
