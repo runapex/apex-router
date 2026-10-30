@@ -407,7 +407,7 @@ def test_a_stuck_read_never_hangs(homes, monkeypatch):
     home, rh = homes
     mk_job(rh, job_name(1), result="ok\n")
     ev = threading.Event()
-    monkeypatch.setattr(ai, "_read_tail", lambda *a, **kw: ev.wait(5))
+    monkeypatch.setattr(ai, "_read_tail", lambda *a, **kw: ev.wait(5) and None)
     t0 = time.monotonic()
     doc = collect(home, rh, deadline_s=0.3)
     ev.set()
