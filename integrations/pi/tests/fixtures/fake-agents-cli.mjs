@@ -15,8 +15,9 @@ if (argv[1] === "resolve") {
   process.stdout.write("resolved\n"); process.exit(0);
 }
 if (mode === "slow") { await new Promise(r => setTimeout(r, 30_000)); }
-if (mode === "huge") { const chunk = "x".repeat(64 * 1024); for (let i = 0; i < 64; i++) process.stdout.write(chunk); process.exit(0); }
+// huge: 4 MiB in one write; no process.exit, so the pipe gets all of it (macOS pipes are async).
+if (mode === "huge") { process.stdout.write("x".repeat(4 * 1024 * 1024)); }
 if (mode === "badjson") { process.stdout.write("{not json"); process.exit(0); }
 if (mode === "fail") { process.stderr.write("Traceback: \u001b[31mboom\u001b[0m\nsecond line\n"); process.exit(1); }
 if (mode === "empty") { process.stdout.write(JSON.stringify({ now: 1793300000, complete: true, counts: { running: 0, needs: 0, done: 5 }, items: [] })); process.exit(0); }
-process.stdout.write(fixture());
+else if (mode !== "huge") process.stdout.write(fixture());

@@ -388,7 +388,8 @@ test("every rendered line fits the width (40, 60, 80, 120, 200; wide characters,
 				for (const l of lines) {
 					assert.ok(TUI.visibleWidth(l) <= width, `${name}@${width}: ${TUI.visibleWidth(l)} > ${width}: ${JSON.stringify(l)}`);
 					assert.ok(!/[\n\r\t]/.test(l), `${name}@${width}: no line breaks or tabs`);
-					if (theme === plainTheme) assert.ok(!l.includes("\x1b"), `${name}@${width}: CLI text cannot inject escapes`);
+					// pi-tui truncateToWidth adds only an SGR reset (\x1b[0m) at a cut; every other escape is an injection.
+					if (theme === plainTheme) assert.ok(!l.replaceAll("\x1b[0m", "").includes("\x1b"), `${name}@${width}: CLI text cannot inject escapes`);
 				}
 			}
 		}
