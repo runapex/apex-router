@@ -385,6 +385,9 @@ def main(argv=None) -> int:
                                 "ladder|frontier`", add_help=False)
     sub.add_parser("agent-runs", help="routing + band-alert data from this machine, no text; "
                                       "`agent-runs collect|report [--json]`", add_help=False)
+    sub.add_parser("agents", help="agent inbox: pi jobs, Claude Code sub-agents and background agents; "
+                                  "`agents [--json|--line|--new-blockers]`, `agents show <id>`, "
+                                  "`agents resolve <id> [<key>|--all|--undo]`", add_help=False)
     sub.add_parser("preflight", help="pre-analysis before a build: earlier fault types, jobs, review rounds "
                                      "and tests to write first for the given files (read only)", add_help=False)
     sub.add_parser("review-gate", help="advisory review gate (ACCEPT/HOLD) + review-loop records, no text; "
@@ -596,6 +599,9 @@ def main(argv=None) -> int:
     if args.cmd == "pressure":
         from .pressure import main as _pressure
         return _pressure(extra)
+    if args.cmd == "agents":
+        from . import agent_inbox
+        return agent_inbox.main(extra)
     if args.cmd == "mail":
         from .mail import main as _mail
         return _mail(extra)
