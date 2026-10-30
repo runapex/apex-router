@@ -19,9 +19,11 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import { loadAgents, THINKING, type AgentDef } from "./lib/agentdefs.ts";
 import { childCostCap, childSelfSteer, codeHash, costAdviceLine, effectiveMaxCost, FINAL, JobManager, softCapGate, spawnGate, STALE_CODE_NOTE, withEvidence, type Meta } from "./lib/agents.ts";
+import { InboxOverlay, InboxStore, makeCliRunner, overlayOptionsFor, REFRESH_MS, startPoller, TOGGLE_KEY, widgetLine, widgetText, type TuiFns } from "./lib/inbox.ts";
 import { briefText, rulesText, steEnabled } from "./lib/ste.ts";
 
 const MAX_WAIT_S = 600;
@@ -263,9 +265,93 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ---- Agent inbox (docs/design/AGENTS-INBOX.md section 6): overlay, shortcut, widget ----
+	// Data only from `apex-router agents --json` (execFile, no shell, 3 s, 2 MiB). One CLI call in flight at most.
+	const TUI: TuiFns = { matchesKey: (d, k) => matchesKey(d, k as Parameters<typeof matchesKey>[1]), truncateToWidth, visibleWidth };
+	const inbox = new InboxStore({ run: makeCliRunner() });
+	let uiCtx: ExtensionContext | undefined;
+	let stopPoll: (() => void) | undefined;
+	let widgetKey = "";
+	let closeOverlay: (() => void) | undefined;
+	const paintWidget = () => {
+		const ui = uiCtx?.ui;
+		if (!ui) return;
+		const w = widgetText(inbox);
+		const k = w ? `${w.tone}|${w.text}` : "";
+		if (k === widgetKey) return;
+		widgetKey = k;
+		try {
+			ui.setWidget("apex-inbox", w ? (_tui, theme) => ({ render: (width: number) => widgetLine(w, theme, TUI, width), invalidate: () => {} }) : undefined);
+		} catch {
+			/* a stale ctx after a session change: the next session_start sets a new one */
+		}
+	};
+	pi.on("session_start", async (_e, ctx) => {
+		if (!ctx.hasUI) return;
+		uiCtx = ctx;
+		widgetKey = "";
+		stopPoll?.();
+		// Refresh every 5 s; no call while pi streams (isIdle false). The poller never starts a second call.
+		stopPoll = startPoller({ store: inbox, intervalMs: REFRESH_MS, isBusy: () => !ctx.isIdle(), onUpdate: paintWidget });
+	});
+	pi.on("session_shutdown", async () => {
+		stopPoll?.();
+		stopPoll = undefined;
+		closeOverlay?.();
+		try {
+			uiCtx?.ui.setWidget("apex-inbox", undefined);
+		} catch {
+			/* ignore */
+		}
+		uiCtx = undefined;
+		widgetKey = "";
+	});
+
+	/** Open the inbox overlay; the same key (or /agents) closes it. Never throws into pi. */
+	const openInbox = async (ctx: ExtensionContext): Promise<void> => {
+		if (closeOverlay) return closeOverlay();
+		void inbox.refresh().then(paintWidget);
+		let overlayTimer: ReturnType<typeof setInterval> | undefined;
+		try {
+			await ctx.ui.custom<void>(
+				(tui, theme, _kb, done) => {
+					const o = new InboxOverlay({
+						store: inbox, theme, tui: TUI, toggleKey: TOGGLE_KEY,
+						rows: () => tui.terminal.rows,
+						requestRender: () => tui.requestRender(),
+						onClose: () => done(undefined),
+					});
+					closeOverlay = () => done(undefined);
+					// While open: refresh every 5 s also during streaming (one bounded call; the chat does not wait).
+					overlayTimer = setInterval(() => void inbox.refresh().then(() => (paintWidget(), tui.requestRender())), REFRESH_MS);
+					overlayTimer.unref?.();
+					void inbox.refresh().then(() => tui.requestRender());
+					return o;
+				},
+				{ overlay: true, overlayOptions: overlayOptionsFor(process.stdout.columns || 80) },
+			);
+		} catch (e) {
+			ctx.ui.notify(`Inbox not loaded: ${(e as Error)?.message ?? e}`, "warning");
+		} finally {
+			if (overlayTimer) clearInterval(overlayTimer);
+			closeOverlay = undefined;
+		}
+	};
+
+	pi.registerShortcut(TOGGLE_KEY, {
+		description: "Agent inbox (open / close)",
+		handler: ctx => {
+			void openInbox(ctx); // do not wait: the overlay stays open until Esc or the same key
+		},
+	});
+
 	pi.registerCommand("agents", {
-		description: "List sub-agent jobs (apex-agents)",
+		description: "Agent inbox: running / needs you / done (ctrl+shift+a). Without a UI: list sub-agent jobs",
 		handler: async (_a, ctx) => {
+			if (ctx.hasUI) {
+				void openInbox(ctx);
+				return;
+			}
 			const ms = manager().status();
 			ctx.ui.notify(ms.length ? ms.slice(-20).map(line).join("\n") : "No jobs.", "info");
 		},
