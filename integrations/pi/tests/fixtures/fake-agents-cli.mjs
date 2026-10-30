@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// Fake `apex-router` for the inbox tests. argv[2] = mode; the rest is the real CLI argv ("agents", "--json", ...).
+// Modes: ok | empty | slow | huge | badjson | fail | resolve-fail. FAKE_AGENTS_LOG: append one JSON line of argv per call.
+import { appendFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const [mode = "ok", ...argv] = process.argv.slice(2);
+if (process.env.FAKE_AGENTS_LOG) appendFileSync(process.env.FAKE_AGENTS_LOG, JSON.stringify(argv) + "\n");
+const fixture = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "inbox.json"), "utf8");
+
+if (argv[0] !== "agents") { process.stderr.write("usage: apex-router agents ...\n"); process.exit(2); }
+if (argv[1] === "resolve") {
+  if (mode === "resolve-fail") { process.stderr.write("no such item\n"); process.exit(1); }
+  process.stdout.write("resolved\n"); process.exit(0);
+}
+if (mode === "slow") { await new Promise(r => setTimeout(r, 30_000)); }
+if (mode === "huge") { const chunk = "x".repeat(64 * 1024); for (let i = 0; i < 64; i++) process.stdout.write(chunk); process.exit(0); }
+if (mode === "badjson") { process.stdout.write("{not json"); process.exit(0); }
+if (mode === "fail") { process.stderr.write("Traceback: \u001b[31mboom\u001b[0m\nsecond line\n"); process.exit(1); }
+if (mode === "empty") { process.stdout.write(JSON.stringify({ now: 1793300000, complete: true, counts: { running: 0, needs: 0, done: 5 }, items: [] })); process.exit(0); }
+process.stdout.write(fixture());
