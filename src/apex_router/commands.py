@@ -17,16 +17,12 @@ Sources (read-only, every read capped, no write):
                 one script name, never argv); one ``lsof`` cwd call for a pi session. All through
                 ``safe_proc.run_capped`` (time and output caps).
 
-Masking (rule 2): ``mask_short`` makes the one-line text (<= 80 characters; 40 in the menu bar):
-heredoc bodies and ``-c`` / ``-e`` scripts become ``<script>``, quoted text over 40 characters becomes
-``<text>``, secret-like text becomes ``[hidden]``. ``mask_full`` applies the secret rule to the full
-arguments (<= 64 KiB). A leading ``cd <dir> &&`` is not shown in the short text (the first command
-words are the ones after it).
-
-Call ids (rule 3): ``c-`` + 16 hex of HMAC-SHA256(studio token, agent id, event file, byte offset,
-block index). ``full_call`` reads the tail again and finds the call among the newest 20 by its id;
-an id of another agent, another studio or an older call finds nothing. The full text is made per
-request and returned; this module keeps no command text (the only cache holds file paths).
+Masking (AGENTS-INBOX.md section 8): ``mask_short`` makes the one-line text (<= 80 characters; 40 in
+the overlay status) as an allow-list: plain words of the first line up to the first non-plain word
+(``<text>``) or script flag (``<script>``); file tools show the file name only when the whole path is
+plain. This is the security boundary. ``mask_secrets`` on free text (blocker lines) is best effort
+(defense in depth), not a boundary. There is no full-text output (owner decision D24: the studio
+click-through retired). Call ids (``call_id``) stay as stable row keys only.
 """
 from __future__ import annotations
 
@@ -124,6 +120,7 @@ def _cut_input(s: str, cap: int = MASK_IN_MAX) -> str:
 
 # A word ends at a blank or at a bash control character (xval o41s: X=1;TOKEN=x was one word). A quote or
 # a backslash stays inside the word: a non-plain value hides the rest of the text anyway.
+_SEP_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 _TOKEN_RE = re.compile(r"[^ \t\n;&|()<>`]+")
 _NEXT_EQ_RE = re.compile(r"[ \t]+=")
 
@@ -168,8 +165,11 @@ def _name_values(s: str) -> tuple[str, int]:
 
 
 def mask_secrets(s: str) -> tuple[str, bool]:
-    """Rule 2c: secret-like text becomes ``[hidden]``. Returns (text, changed)."""
+    """Rule 2c: secret-like text becomes ``[hidden]``. Returns (text, changed). Best effort on free text.
+    Every control or line-break character becomes a newline first, so it ends a word (xval 066s:
+    X=1<U+2028>TOKEN=x joined two words)."""
     n_all = 0
+    s = _SEP_RE.sub("\n", s)
 
     def json_pair(m):
         nonlocal n_all
@@ -246,9 +246,13 @@ def _cut(s: str, limit: int) -> str:
     return head.rstrip() + "…"
 
 
+_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
+
+
 def _tool_name(tool) -> str:
-    name = _WS_RE.sub("", _clean(tool)) if isinstance(tool, str) else ""
-    return name[:40] or "?"
+    """An allow-list name (xval 066s: a tool name with blanks or a secret showed): else "other"."""
+    return tool if isinstance(tool, str) and _TOOL_NAME_RE.fullmatch(tool) and not _SECRET_NAME_RE.search(tool) \
+        else "other"
 
 
 def tool_out(tool) -> str:
@@ -280,12 +284,16 @@ def mask_short(tool, args, limit: int = SHORT_MAX) -> tuple[str, bool]:
     """Rule 2: (one line of at most ``limit`` characters, masked)."""
     name, kind = _tool_name(tool), _kind(tool)
     if kind == "file":
-        p = _cut_input(_clean(_path_arg(args)).replace("\n", " "), 4096).rstrip("/")
-        base, masked = mask_secrets(os.path.basename(p) or p)
-        return _cut(_one_line(f"{name} {base}"), limit), masked
+        # the file name only, and only when the whole path is plain and holds no secret-like part (xval 066s:
+        # /tmp/TOKEN=x/private showed "private")
+        p = _path_arg(args)
+        base = os.path.basename(p.rstrip("/")) if isinstance(p, str) else ""
+        if not p or len(p) > 4096 or not _PLAIN_WORD_RE.fullmatch(p) or mask_secrets(p)[1] \
+                or not _PLAIN_WORD_RE.fullmatch(base or "x"):
+            return _cut(f"{name} <path>", limit), True
+        return _cut(f"{name} {base}", limit), False
     if kind == "other":
-        text, masked = mask_secrets(name)
-        return _cut(text, limit), masked
+        return _cut(name, limit), name == "other" and tool != "other"
     s = _cut_input(_command_arg(args))
     s, cut = _bash_short(s)
     s, sec = mask_secrets(s)
@@ -294,29 +302,6 @@ def mask_short(tool, args, limit: int = SHORT_MAX) -> tuple[str, bool]:
     if m and m.end() < len(s):
         s = s[m.end():]
     return _cut(s, limit), bool(cut or sec)
-
-
-def mask_full(tool, args) -> dict:
-    """Rule 2c on the full arguments: bash ``command``; read/edit/write ``path``; other tools the
-    arguments as JSON. ``{"text", "cut"}``, text <= 64 KiB (UTF-8)."""
-    kind = _kind(tool)
-    if kind == "bash":
-        raw = _command_arg(args)
-    elif kind == "file":
-        raw = _path_arg(args)
-    else:
-        try:
-            raw = json.dumps(args, sort_keys=True, ensure_ascii=False)
-        except (TypeError, ValueError, RecursionError):
-            raw = ""
-    raw = _clean(raw)
-    cut = len(raw) > MASK_IN_MAX
-    text, _ = mask_secrets(_cut_input(raw))
-    b = text.encode("utf-8")
-    if len(b) > FULL_MAX:
-        text = b[:FULL_MAX].decode("utf-8", "ignore")
-        cut = True
-    return {"text": text, "cut": cut}
 
 
 # ---- capped reads -------------------------------------------------------------------------------------
@@ -699,21 +684,6 @@ def list_calls(home, router_home, agent: str, key: bytes, now: float | None = No
     procs, pcomplete = procs_of(target, Path(home), now, run)
     return {"agent": agent, "kind": target["kind"], "calls": out, "calls_more": max(0, total - CALLS_MAX),
             "procs": procs, "complete": not cut and pcomplete}
-
-
-def full_call(home, router_home, agent: str, call: str, key: bytes) -> dict | None:
-    """The /api/commands/full document, or None (404) for a wrong, old or other-agent call id."""
-    if not isinstance(call, str) or not CALL_RE.fullmatch(call):
-        return None
-    target = resolve(Path(home), Path(router_home) / "pi-jobs", agent)
-    if target is None:
-        return None
-    calls, _, _ = _calls(target, time.time())
-    for c in calls[:CALLS_MAX]:
-        if hmac.compare_digest(call_id(key, agent, target["path"], c["off"], c["i"]), call):
-            full = mask_full(c["tool"], c["args"])
-            return {"call": call, "tool": tool_out(c["tool"]), "text": full["text"], "cut": full["cut"]}
-    return None
 
 
 def running_now(agent: str, *, home=None, router_home=None, jobs_dir=None, now: float | None = None,

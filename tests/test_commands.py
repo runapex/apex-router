@@ -1,5 +1,5 @@
 """Commands backend (contract: docs/design/studio-v2/API.md, section "Commands", owner decision D19):
-``commands.mask_short`` / ``mask_full`` (rule 2), the pi and Claude Code readers (rule 1), call ids
+``commands.mask_short`` / ``mask_secrets`` (rule 2), the pi and Claude Code readers (rule 1), call ids
 (rule 3), ``procs`` (rule 4), the bounds (rule 5), ``running_now`` and the menu bar row (Q3).
 Every test uses a fixture home in tmp_path; nothing reads the real ~/.pi, ~/.claude or ~/.apex-router."""
 from __future__ import annotations
@@ -60,8 +60,8 @@ def test_each_secret_form_becomes_hidden(name):
     short, masked = commands.mask_short("bash", {"command": cmd})
     # allow-list (round 4): the secret goes as [hidden] or with the cut (<text>) of a non-plain word
     assert secret not in short and ("[hidden]" in short or short.endswith("<text>")) and masked is True
-    full = commands.mask_full("bash", {"command": cmd})
-    assert secret not in full["text"] and "[hidden]" in full["text"]
+    text = commands.mask_secrets(cmd)[0]
+    assert secret not in text and "[hidden]" in text
 
 
 def test_name_value_keeps_the_name():
@@ -132,7 +132,9 @@ def test_masked_is_false_when_nothing_changed():
 def test_other_tools_show_the_tool_name_only():
     short, masked = commands.mask_short("agent_spawn", {"task": "TASK: private brief ghp_AAAAAAAAAAAAAAAA"})
     assert short == "agent_spawn" and masked is False
-    assert commands.mask_short("mcp__x\n__y", {}) == ("mcp__x__y", False)
+    # round 8 allow-list: a tool name with a control character is not shown (stricter than before)
+    assert commands.mask_short("mcp__x\n__y", {}) == ("other", True)
+    assert commands.mask_short("mcp__x__y", {}) == ("mcp__x__y", False)
 
 
 def test_a_31883_character_command_stays_bounded_and_fast():
@@ -143,25 +145,11 @@ def test_a_31883_character_command_stays_bounded_and_fast():
     short, masked = commands.mask_short("bash", {"command": cmd})
     assert time.monotonic() - t < 0.5
     assert len(short) <= 80 and masked and "abc" not in short
-    full = commands.mask_full("bash", {"command": cmd})
-    assert full["cut"] is False and "GH_TOKEN=[hidden]" in full["text"] and "GH_TOKEN=abc" not in full["text"]
+    text = commands.mask_secrets(cmd)[0]
+    assert "GH_TOKEN=[hidden]" in text and "GH_TOKEN=abc" not in text
 
 
 # ---- rule 2c on the full text ---------------------------------------------------------------------
-
-def test_mask_full_keeps_the_text_and_hides_secrets():
-    cmd = "cat <<EOF\nbody line\nEOF\nGH_TOKEN=abc12345 gh pr list"
-    full = commands.mask_full("bash", {"command": cmd})
-    assert full["text"] == "cat <<EOF\nbody line\nEOF\nGH_TOKEN=[hidden] gh pr list" and full["cut"] is False
-    assert commands.mask_full("read", {"path": "/a/b/c.py"}) == {"text": "/a/b/c.py", "cut": False}
-    other = commands.mask_full("other_tool", {"api_key": "abcdef", "q": "x"})
-    assert "abcdef" not in other["text"] and '"q": "x"' in other["text"]
-
-
-def test_mask_full_cuts_at_64_kib():
-    full = commands.mask_full("bash", {"command": "echo " + "é" * 100_000})
-    assert full["cut"] is True and len(full["text"].encode("utf-8")) <= 64 * 1024
-
 
 # ---- fixtures ---------------------------------------------------------------------------------------
 
@@ -344,26 +332,6 @@ def test_unknown_or_bad_agent_gives_none(homes, bad):
 
 # ---- rule 3: call ids and the full text ----------------------------------------------------------
 
-def test_full_finds_the_call_by_its_id_only(homes):
-    home, rh = homes
-    now = time.time()
-    job = _job_name(now - 600, "ab14")
-    make_pi_job(rh, job, now, state="done")
-    sid = "5b0c1d2e-3f40-4a5b-8c6d-7e8f90a1b2c5"
-    make_claude(home, sid, now)
-    doc = commands.list_calls(home, rh, job, KEY, now=now, run=no_ps)
-    call = doc["calls"][0]["call"]
-    full = commands.full_call(home, rh, job, call, KEY)
-    assert full == {"call": call, "tool": "bash", "text": "GH_TOKEN=[hidden] gh pr list", "cut": False}
-    assert commands.full_call(home, rh, sid, call, KEY) is None             # another agent
-    assert commands.full_call(home, rh, job, call, b"other-key" * 4) is None  # an old studio
-    assert commands.full_call(home, rh, job, "c-0000000000000000", KEY) is None
-    assert commands.full_call(home, rh, job, "not a call", KEY) is None
-    cdoc = commands.list_calls(home, rh, sid, KEY, now=now, run=lambda a, timeout=1.0: "")
-    f2 = commands.full_call(home, rh, sid, cdoc["calls"][1]["call"], KEY)
-    assert f2["tool"] == "Read" and f2["text"] == "/tmp/repo/README.md"
-
-
 def test_ids_are_unique_per_block_and_stable(homes):
     home, rh = homes
     now = time.time()
@@ -373,49 +341,6 @@ def test_ids_are_unique_per_block_and_stable(homes):
     b = commands.list_calls(home, rh, sid, KEY, now=now, run=lambda a, timeout=1.0: "")
     assert [x["call"] for x in a["calls"]] == [x["call"] for x in b["calls"]]
     assert len({x["call"] for x in a["calls"]}) == 3
-
-
-def test_a_call_out_of_the_newest_20_is_old(homes):
-    home, rh = homes
-    now = time.time()
-    job = _job_name(now - 600, "ab15")
-    calls = [("bash", {"command": f"echo {i}"}, False, now - 500 + i) for i in range(25)]
-    make_pi_job(rh, job, now, state="done", calls=calls)
-    doc = commands.list_calls(home, rh, job, KEY, now=now, run=no_ps)
-    assert len(doc["calls"]) == 20 and doc["calls_more"] == 5
-    assert doc["calls"][0]["short"] == "echo 24" and doc["calls"][-1]["short"] == "echo 5"
-    oldest_shown = doc["calls"][-1]["call"]
-    assert commands.full_call(home, rh, job, oldest_shown, KEY) is not None
-    calls += [("bash", {"command": "echo new"}, False, now - 10)]
-    make_pi_job(rh, job, now, state="done", calls=calls)
-    assert commands.full_call(home, rh, job, oldest_shown, KEY) is None
-
-
-def test_no_full_text_stays_in_the_module(homes):
-    home, rh = homes
-    now = time.time()
-    job = _job_name(now - 600, "ab16")
-    marker = "UNIQUE FULL MARKER " + "qz. " * 15   # no 32-character run: not a secret
-    make_pi_job(rh, job, now, state="done", calls=[("bash", {"command": "echo '" + marker + "'"}, False, now - 50)])
-    doc = commands.list_calls(home, rh, job, KEY, now=now, run=no_ps)
-    full = commands.full_call(home, rh, job, doc["calls"][0]["call"], KEY)
-    assert marker in full["text"] and marker not in json.dumps(doc)
-
-    def walk(x, depth=0):
-        if depth > 6:
-            return
-        if isinstance(x, str):
-            assert marker not in x
-        elif isinstance(x, dict):
-            for k, v in list(x.items()):
-                walk(k, depth + 1)
-                walk(v, depth + 1)
-        elif isinstance(x, (list, tuple, set)):
-            for v in list(x):
-                walk(v, depth + 1)
-    for name, v in vars(commands).items():
-        if not callable(v) and not name.startswith("__"):
-            walk(v)
 
 
 # ---- rule 5: bounds ------------------------------------------------------------------------------
@@ -579,49 +504,12 @@ def _menu_snap(now, items, jobs=None, agents=None):
             "commands_now": {"items": items}}
 
 
-def test_a_long_path_is_not_hidden():
-    p = "/home/u/.apex-router/pi-jobs-wt/mvtuzw5r/src/apex_router/studio/commands_reader_long_name.py"
-    short, masked = commands.mask_short("bash", {"command": f"python3 {p}"})
-    assert "[hidden]" not in short and masked in (True, False)
-    full = commands.mask_full("bash", {"command": f"cat {p}"})
-    assert p in full["text"]
-
-
 @pytest.mark.parametrize("secret", ["0123456789abcdef0123456789abcdef", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3",
                                     "a/QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3/b"])
 def test_a_long_token_is_still_hidden(secret):
     short, masked = commands.mask_short("bash", {"command": f"echo {secret}"})
     assert "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3" not in short and "0123456789abcdef0123456789abcdef" not in short
     assert masked is True
-
-
-def test_a_pi_job_with_many_update_lines_still_shows_20_calls(homes):
-    home, rh = homes
-    now = time.time()
-    job = _job_name(now - 600, "big1")
-    calls = []
-    for i in range(30):
-        calls.append(("bash", {"command": f"echo step{i}"}, False, now - 500 + i))
-    d = make_pi_job(rh, job, now, state="done", calls=[])
-    # 30 calls, each followed by 40 KiB of message_update lines (the real pi pattern)
-    rows = []
-    for i, (tool, args, err, ts) in enumerate(calls):
-        cid = f"tc{i}"
-        rows.append({"type": "message_end", "message": {"role": "assistant", "timestamp": int(ts * 1000)}})
-        rows.append({"type": "tool_execution_start", "toolCallId": cid, "toolName": tool, "args": args})
-        rows.append({"type": "tool_execution_end", "toolCallId": cid, "toolName": tool, "isError": False})
-        for _ in range(10):
-            rows.append({"type": "message_update", "x": "u" * 4000})
-    with open(d / "events.jsonl", "a", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r) + "\n")
-    doc = commands.list_calls(home, rh, job, KEY, now=now, run=no_ps)
-    assert len(doc["calls"]) == 20 and doc["calls_more"] >= 1
-    assert doc["calls"][0]["short"] == "echo step29"
-    # the full text of the oldest shown call is still found by its id (the same read)
-    last = doc["calls"][-1]
-    full = commands.full_call(home, rh, job, last["call"], KEY)
-    assert full and full["text"] == "echo step10"
 
 
 def test_the_read_never_passes_the_grow_cap(homes, monkeypatch):
@@ -646,7 +534,7 @@ def test_ansi_c_and_locale_quoted_values_are_hidden(cmd, secret):
     for limit in (commands.SHORT_MAX, commands.MENU_MAX):
         short, masked = commands.mask_short("bash", {"command": cmd}, limit)
         assert secret not in short and masked is True
-    assert secret not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert secret not in commands.mask_secrets(cmd)[0]
 
 
 @pytest.mark.parametrize("cmd,gone", [
@@ -710,7 +598,7 @@ def test_a_joined_or_escaped_value_is_one_word(cmd, secret):
     for limit in (commands.SHORT_MAX, commands.MENU_MAX):
         short, masked = commands.mask_short("bash", {"command": cmd}, limit)
         assert secret not in short and masked is True
-    assert secret not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert secret not in commands.mask_secrets(cmd)[0]
 
 
 @pytest.mark.parametrize("cmd", [
@@ -742,7 +630,7 @@ def test_masking_a_64_kib_input_is_fast():
     t = time.monotonic()
     for w in worst:
         commands.mask_short("bash", {"command": w})
-        commands.mask_full("bash", {"command": w})
+        commands.mask_secrets(w)
     assert time.monotonic() - t < 1.0
 
 
@@ -789,7 +677,7 @@ def test_round3_inputs_are_hidden(cmd, secret):
 @pytest.mark.parametrize("cmd", ["TOKEN=$:topsecret run", "TOKEN=x$(printf topsecret) run", "TOKEN=$x\\ topsecret",
                                  "A_KEY='a b topsecret' c", "TOKEN=\"$(cat x) topsecret\""])
 def test_a_non_plain_secret_value_hides_to_the_line_end_in_the_full_text(cmd):
-    assert "topsecret" not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert "topsecret" not in commands.mask_secrets(cmd)[0]
 
 
 def test_short_text_shows_only_allowed_characters():
@@ -807,7 +695,7 @@ def test_masking_64_kib_of_repeated_names_is_fast():
     t = time.monotonic()
     for w in [("TOKEN=$x\\ " * 6554)[:65536], ("A=1 TOKEN=" * 7000)[:65536], ("TOKEN=a " * 8000)[:65536]]:
         commands.mask_short("bash", {"command": w})
-        commands.mask_full("bash", {"command": w})
+        commands.mask_secrets(w)
     assert time.monotonic() - t < 1.0
 
 
@@ -815,7 +703,7 @@ def test_masking_64_kib_of_repeated_names_is_fast():
 
 def test_a_quoted_secret_value_over_lines_is_hidden_in_the_full_text():
     for cmd in ('TOKEN="first\nprivate_body" run', "A_KEY='x\r\nprivate_body'", 'TOKEN=$(cat\nprivate_body)'):
-        assert "private_body" not in commands.mask_full("bash", {"command": cmd})["text"]
+        assert "private_body" not in commands.mask_secrets(cmd)[0]
 
 
 @pytest.mark.parametrize("cmd,gone", [("python -cpass", "pass"), ("perl -epayload", "payload"),
@@ -838,7 +726,7 @@ def test_script_word_check_is_linear():
     t = time.monotonic()
     for w in ["-" + "c" * 65534 + "!", "-" + "x" * 65534 + "!", "-" + "a" * 65535, "--" + "c" * 65534]:
         commands.mask_short("bash", {"command": w})
-        commands.mask_full("bash", {"command": w})
+        commands.mask_secrets(w)
     assert time.monotonic() - t < 0.5
 
 
@@ -858,11 +746,11 @@ def test_any_secret_name_before_an_equals_sign_hides_the_value(cmd, secret):
     for limit in (commands.SHORT_MAX, commands.MENU_MAX):
         short, masked = commands.mask_short("bash", {"command": cmd}, limit)
         assert secret not in short and masked is True
-    assert secret not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert secret not in commands.mask_secrets(cmd)[0]
 
 
 def test_a_secret_name_without_equals_hides_nothing():
-    assert commands.mask_full("bash", {"command": "grep KEY file && echo TOKEN done"})["text"] == \
+    assert commands.mask_secrets("grep KEY file && echo TOKEN done")[0] == \
         "grep KEY file && echo TOKEN done"
 
 
@@ -879,7 +767,7 @@ def test_the_word_check_is_linear_on_64_kib():
     for w in ["a." * 32768, ("A" * 100 + "=") * 600, "TOKEN " * 10000, "TOKEN = " * 8000, "=" * 65536,
               "x=TOKEN= " * 7000, "-" + "0" * 65535]:
         commands.mask_short("bash", {"command": w})
-        commands.mask_full("bash", {"command": w})
+        commands.mask_secrets(w)
     assert time.monotonic() - t < 1.0
 
 
@@ -891,7 +779,7 @@ def test_a_control_character_ends_the_word_before_a_secret_name(cmd):
     for limit in (commands.SHORT_MAX, commands.MENU_MAX):
         short, masked = commands.mask_short("bash", {"command": cmd}, limit)
         assert "private_body" not in short and masked is True
-    assert "private_body" not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert "private_body" not in commands.mask_secrets(cmd)[0]
 
 
 @pytest.mark.parametrize("cmd", ["perl${IFS}-e${IFS}print+42", "perl$IFS-e$IFS'print+42'", "IFS=x; perlx-exprint+42"])
@@ -906,6 +794,60 @@ def test_ifs_ends_the_short_text(cmd):
 @pytest.mark.parametrize("cc", ["\r", "\x00", "\x07", "\x1b", "\x7f", "\x85", "\x9b"])
 def test_a_control_character_between_words_keeps_them_apart(cc):
     cmd = f'printf "X=1{cc}TOKEN=private_body"'
-    assert "private_body" not in commands.mask_full("bash", {"command": cmd})["text"]
+    assert "private_body" not in commands.mask_secrets(cmd)[0]
     for limit in (commands.SHORT_MAX, commands.MENU_MAX):
         assert "private_body" not in commands.mask_short("bash", {"command": cmd}, limit)[0]
+
+
+def test_a_pi_job_with_many_update_lines_still_shows_20_calls(homes):
+    home, rh = homes
+    now = time.time()
+    job = _job_name(now - 600, "big1")
+    d = make_pi_job(rh, job, now, state="done", calls=[])
+    # 30 calls, each followed by 40 KiB of message_update lines (the real pi pattern)
+    rows = []
+    for i in range(30):
+        ts = now - 500 + i
+        cid = f"tc{i}"
+        rows.append({"type": "message_end", "message": {"role": "assistant", "timestamp": int(ts * 1000)}})
+        rows.append({"type": "tool_execution_start", "toolCallId": cid, "toolName": "bash",
+                     "args": {"command": f"echo step{i}"}})
+        rows.append({"type": "tool_execution_end", "toolCallId": cid, "toolName": "bash", "isError": False})
+        for _ in range(10):
+            rows.append({"type": "message_update", "x": "u" * 4000})
+    with open(d / "events.jsonl", "a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    doc = commands.list_calls(home, rh, job, KEY, now=now, run=no_ps)
+    assert len(doc["calls"]) == 20 and doc["calls_more"] >= 1
+    assert doc["calls"][0]["short"] == "echo step29"
+    assert doc["calls"][-1]["short"] == "echo step10"
+
+
+def test_a_long_path_is_not_hidden():
+    p = "/home/u/.apex-router/pi-jobs-wt/mvtuzw5r/src/apex_router/studio/commands_reader_long_name.py"
+    short, masked = commands.mask_short("bash", {"command": f"python3 {p}"})
+    assert "[hidden]" not in short and ("python3 " + p).startswith(short.rstrip("…"))
+    assert p in commands.mask_secrets(f"cat {p}")[0]
+    assert commands.mask_short("read", {"path": p}) == ("read commands_reader_long_name.py", False)
+
+
+# ---- xval 066s (round 8): file paths and tool names as an allow-list; no full-text output ----------------
+
+@pytest.mark.parametrize("path", ["/tmp/TOKEN=prefix/private_body", "/tmp/a b/private_body", "/tmp/$(x)/private_body",
+                                  "/tmp/x\nprivate_body", "/tmp/sk-AbCdEf0123456789/private_body",
+                                  "/tmp/x\u2028/private_body", "/tmp/'q'/private_body"])
+def test_a_file_path_with_a_secret_or_non_plain_part_shows_no_name(path):
+    for limit in (commands.SHORT_MAX, commands.MENU_MAX):
+        short, masked = commands.mask_short("read", {"path": path}, limit)
+        assert short == "read <path>" and masked is True
+
+
+@pytest.mark.parametrize("tool", ["X=1 TOKEN=private_body", "a b", "my_TOKEN_tool", "x" * 41, "\u2028private_body"])
+def test_a_tool_name_outside_the_allow_list_shows_other(tool):
+    short, masked = commands.mask_short(tool, {})
+    assert short == "other" and masked is True and "private_body" not in short
+
+
+def test_there_is_no_full_text_output():
+    assert not hasattr(commands, "mask_full") and not hasattr(commands, "full_call")
