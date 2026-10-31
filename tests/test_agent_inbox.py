@@ -839,7 +839,7 @@ def test_the_cache_save_waits_at_most_the_cache_lock_wait(homes, monkeypatch):
                                   "- ```curl REPRO_COMMAND```", "- ok `" + "a" * 500 + " REPRO_COMMAND`",
                                   "- `a` and ``b REPRO_COMMAND`` and `d`",
                                   "# ``a` curl --data REPRO_COMMAND https://x `b``",          # xval 68mv
-                                  "- `a` x `b` REPRO_COMMAND `", "- `a``REPRO_COMMAND`",
+                                  "- `a` x `b` REPRO_COMMAND `", "- `a``curl REPRO_COMMAND`",
                                   "- ````` REPRO_COMMAND ``", "- `a` `` REPRO_COMMAND `` `b`"])
 def test_inline_code_fails_closed(homes, line):           # xval yyi4
     home, rh = homes
