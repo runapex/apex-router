@@ -46,6 +46,7 @@ cross-client proxy telemetry, nightly learning. The plugin works without it.
 - [SKILL.state execution state (measured, default-off)](#skillstate-execution-state-measured-default-off)
 - [Background watchers](#background-watchers)
 - [Proxy client setup](#proxy-client-setup)
+  - [Agent inbox (terminal)](#agent-inbox-terminal)
 - [Team skills (private marketplace)](#team-skills-private-marketplace)
 - [Telemetry — reading and sharing it](#telemetry--reading-and-sharing-it)
 - [Pressure gate, review pre-read, and the route-label hook](#pressure-gate-review-pre-read-and-the-route-label-hook)
@@ -441,12 +442,30 @@ pi install integrations/pi/apex-hangguard.ts                # bash timeout, < /d
 pi install integrations/pi/apex-agents.ts                   # sub-agents: agent_spawn / wait / cancel
 ```
 
-Agent inbox in the terminal: `apex-router agents` lists pi jobs and Claude Code agents (needs you,
-running, done). In pi, `/agents` or ctrl+shift+a opens the overlay. For Claude Code, run
-`install.sh --agents-hooks`. Contract: [`docs/design/AGENTS-INBOX.md`](docs/design/AGENTS-INBOX.md).
-
 Full instructions, the family table, and testing steps:
 [`docs/RUNBOOK-pi-integration.md`](docs/RUNBOOK-pi-integration.md).
+
+#### Agent inbox (terminal)
+
+One list of all sub-agents: pi jobs, Claude Code sub-agents and Claude Code background agents. Each item
+is **running**, **needs you** (a failed or capped run, a NO-GO or BLOCKED verdict, or an open blocker) or
+**done**. The blockers of a done agent stay in the list until you resolve them.
+
+| Where | How |
+|---|---|
+| pi | `/agents` or ctrl+shift+a opens the overlay on the right half; the chat stays on the left. A widget line above the editor shows `● 2 running  ⚠ 4 need you`. |
+| Claude Code | `install.sh --agents-hooks` adds a Stop-hook alert for new blockers and an `/agents` command. Add `hooks/agents-statusline.sh` to your status line for `● 2 ⚠ 4`. |
+| Any shell | `apex-router agents` (table), `show <id>`, `result <id>`, `resolve <id> [key\|--all]`, `resolve-needs [--older-than 6h] [--role xval] [--yes]` |
+
+![pi agent inbox overlay](docs/img/agent-inbox-overlay.png)
+
+![apex-router agents in a shell](docs/img/agent-inbox-cli.png)
+
+![Claude Code Stop-hook alert and status line](docs/img/agent-inbox-claude.png)
+
+The screenshots use a fictional demo home (`scripts/inbox_demo_home.py`). The Claude Code frame is drawn
+around the real output of `hooks/agents-stop-alert.sh` and `hooks/agents-statusline.sh`.
+Contract: [`docs/design/AGENTS-INBOX.md`](docs/design/AGENTS-INBOX.md).
 
 ### Local book references (booksearch)
 
