@@ -14,6 +14,9 @@ if (argv[1] === "resolve") {
   if (mode === "resolve-fail") { process.stderr.write("no such item\n"); process.exit(1); }
   process.stdout.write("resolved\n"); process.exit(0);
 }
+if (argv[1] === "show" && argv[3] === "--json") {
+  process.stdout.write(JSON.stringify({ id: argv[2], branch: "apexjob/fake1", ahead: 4 })); process.exit(0);
+}
 if (argv[1] === "result" && mode !== "slow") {
   if (mode === "result-fail") { process.stderr.write("agents result: no result.md for this id\n"); process.exit(1); }
   process.stdout.write("line one\nAPI_TOKEN=[hidden]\n\u001b[31mred\u001b[0m\n"); process.exit(0);

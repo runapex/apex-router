@@ -248,8 +248,16 @@ test("widget: one line only while an item runs or needs you", async () => {
 // ---- 6. overlay: size and keys -------------------------------------------------------------------------------
 
 test("overlay options: right half, minWidth 60; full width under 120 columns", () => {
-	assert.deepEqual(overlayOptionsFor(200), { width: "50%", minWidth: 60, anchor: "right-center", maxHeight: "100%" });
-	assert.deepEqual(overlayOptionsFor(120), { width: "50%", minWidth: 60, anchor: "right-center", maxHeight: "100%" });
+	const pick = (o: ReturnType<typeof overlayOptionsFor>) => ({ width: o.width, minWidth: o.minWidth, anchor: o.anchor, maxHeight: o.maxHeight });
+	assert.deepEqual(pick(overlayOptionsFor(200)), { width: "50%", minWidth: 60, anchor: "right-center", maxHeight: "100%" });
+	assert.deepEqual(pick(overlayOptionsFor(120)), { width: "50%", minWidth: 60, anchor: "right-center", maxHeight: "100%" });
+	// polish: the options follow a resize (pi-tui reads them on every render)
+	let cols = 200;
+	const live = overlayOptionsFor(() => cols);
+	assert.equal(live.width, "50%");
+	cols = 100;
+	assert.equal(live.width, "100%");
+	assert.equal(live.minWidth, undefined);
 	assert.equal(overlayOptionsFor(119).width, "100%");
 	assert.equal(overlayOptionsFor(40).width, "100%");
 });
@@ -463,4 +471,45 @@ test("osc52: base64 of one clean line", () => {
 	assert.equal(osc52("abc"), "\x1b]52;c;YWJj\x07");
 	assert.equal(osc52("a\nb\x1b"), osc52("ab"), "no line break or escape reaches the clipboard");
 	assert.equal(osc52("x".repeat(200_000)), undefined, "too long for OSC 52");
+});
+
+// ---- polish -------------------------------------------------------------------------------------------------
+
+test("overlay: framed view has a left edge and still fits the width", async () => {
+	const s = new InboxStore({ run: fake("ok").run });
+	await s.refresh();
+	const { o } = overlay(s);
+	for (const width of [20, 60, 100, 200]) {
+		const lines = o.renderFramed(width, true);
+		for (const l of lines) {
+			assert.ok(TUI.visibleWidth(l) <= width, `${width}: ${TUI.visibleWidth(l)}`);
+			assert.ok(l.startsWith("│ "), "left edge on every line");
+		}
+	}
+	assert.ok(!o.renderFramed(100, false)[0].startsWith("│"), "no edge at full width");
+});
+
+test("overlay: rows show the role; a blocker with no priority shows a bullet", async () => {
+	const s = new InboxStore({ run: fake("ok").run });
+	await s.refresh();
+	const { o } = overlay(s);
+	const out = text(o.render(120));
+	assert.match(out, /⚠ xval {3}/);
+	assert.ok(!/ -- /.test(out));
+});
+
+test("overlay: enter on a pi job loads branch and ahead once through agents show --json", async () => {
+	const { run, calls } = fake("ok");
+	const s = new InboxStore({ run });
+	await s.refresh();
+	Object.assign(s.data!.items[0], { branch: null, ahead: null });     // as the real list: no git
+	const { o } = overlay(s);
+	o.handleInput(KEY.enter);
+	await o.idle();
+	assert.deepEqual(calls().filter(c => c[1] === "show"), [["agents", "show", "20261030224430-o41s", "--json"]]);
+	assert.match(text(o.render(120)), /branch apexjob\/fake1 · ahead 4/);
+	o.handleInput(KEY.enter);
+	o.handleInput(KEY.enter);
+	await o.idle();
+	assert.equal(calls().filter(c => c[1] === "show").length, 1, "one call per item");
 });

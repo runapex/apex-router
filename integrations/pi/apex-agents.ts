@@ -326,9 +326,14 @@ export default function (pi: ExtensionAPI) {
 					overlayTimer = setInterval(() => void inbox.refresh().then(() => (paintWidget(), tui.requestRender())), REFRESH_MS);
 					overlayTimer.unref?.();
 					void inbox.refresh().then(() => tui.requestRender());
-					return o;
+					// The left edge only when the panel does not take the whole terminal width.
+					return {
+						render: (width: number) => o.renderFramed(width, width < (tui.terminal.columns || process.stdout.columns || width)),
+						handleInput: (data: string) => o.handleInput(data),
+						invalidate: () => o.invalidate(),
+					};
 				},
-				{ overlay: true, overlayOptions: overlayOptionsFor(process.stdout.columns || 80) },
+				{ overlay: true, overlayOptions: overlayOptionsFor(() => process.stdout.columns || 80) },
 			);
 		} catch (e) {
 			ctx.ui.notify(`Inbox not loaded: ${(e as Error)?.message ?? e}`, "warning");

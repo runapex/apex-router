@@ -58,7 +58,7 @@ export type Group = "needs" | "running" | "done";
 export interface Blocker { key: string; pri: string | null; text: string; resolved: boolean }
 export interface Item {
 	id: string; kind: string; role: string; group: Group; state: string; verdict: string | null;
-	label: string; cwd_short: string; branch: string | null; ahead: number | null;
+	label: string; cwd_short: string; branch: string | null; ahead: number | null; stale: boolean;
 	start: number | null; end: number | null; cost: number | null;
 	open: Blocker[]; now: { tool: string; short: string } | null; resume: string | null;
 }
@@ -87,7 +87,7 @@ function parseItem(r: unknown): Item | null {
 		id: r.id, kind: clean(r.kind, 16), role: clean(r.role, 16), group: r.group as Group,
 		state: clean(r.state, 16), verdict: clean(r.verdict, 16) || null,
 		label: clean(r.label, 60) || r.id, cwd_short: clean(r.cwd_short, 60), branch: clean(r.branch, 80) || null,
-		ahead: num(r.ahead), start: num(r.start), end: num(r.end), cost: num(r.cost),
+		ahead: num(r.ahead), start: num(r.start), end: num(r.end), cost: num(r.cost), stale: r.stale === true,
 		open, now: now && (now.tool || now.short) ? now : null, resume: clean(r.resume, 1000) || null,
 	};
 }
@@ -221,6 +221,20 @@ export class InboxStore {
 		return { ok: true, lines: lines.slice(-RESULT_LINES) };
 	}
 
+	/** Branch and commits ahead of main for one pi job, from `apex-router agents show <id> --json` (the list runs
+	 *  no git). One call at a time; undefined on any failure. */
+	async place(id: string): Promise<{ branch: string | null; ahead: number | null } | undefined> {
+		if (!ID_RE.test(id) || this.inflight || this.loading) return undefined;
+		const r = await this.track(this.run(["agents", "show", id, "--json"]));
+		if (!r.ok) return undefined;
+		try {
+			const j = JSON.parse(r.stdout) as Record<string, unknown>;
+			return { branch: clean(j.branch, 80) || null, ahead: num(j.ahead) };
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Resolve one blocker (key) or all (--all). Refuses unsafe input and a call while another call runs. */
 	async resolve(id: string, key: string): Promise<{ ok: boolean; reason?: string }> {
 		if (!ID_RE.test(id)) return { ok: false, reason: "bad item id" };
@@ -289,10 +303,20 @@ export function startPoller(o: { store: InboxStore; intervalMs?: number; isBusy?
 
 // ---- overlay helpers ---------------------------------------------------------------------------------------------
 
-/** Right half (minWidth 60); full width under 120 columns. */
-export function overlayOptionsFor(columns: number) {
-	if (columns < 120) return { width: "100%" as const, anchor: "right-center" as const, maxHeight: "100%" as const };
-	return { width: "50%" as const, minWidth: 60, anchor: "right-center" as const, maxHeight: "100%" as const };
+/** Right half (minWidth 60); full width under 120 columns. pi-tui reads width on every render, so the getter
+ *  follows a terminal resize (polish: the width was fixed when the overlay opened). */
+export function overlayOptionsFor(columns: number | (() => number)) {
+	const cols = typeof columns === "function" ? columns : () => columns;
+	return {
+		anchor: "right-center" as const,
+		maxHeight: "100%" as const,
+		get width() {
+			return cols() < 120 ? ("100%" as const) : ("50%" as const);
+		},
+		get minWidth() {
+			return cols() < 120 ? undefined : 60;
+		},
+	};
 }
 
 /** OSC 52 copy sequence for one clean line, or undefined when the text is too long. */
@@ -363,6 +387,7 @@ export class InboxOverlay {
 	private result: string[] = [];
 	private resultTitle = "";
 	private scroll = 0;
+	private readonly placed = new Set<string>();
 	private msg: { text: string; tone: "muted" | "error" } | undefined;
 	private pending: Promise<void> = Promise.resolve();
 	private closed = false;
@@ -471,6 +496,19 @@ export class InboxOverlay {
 			if (!it) return;
 			this.expanded = !this.expanded;
 			this.blocker = 0;
+			if (this.expanded && it.kind === "pi-job" && it.ahead === null && !this.placed.has(it.id)) {
+				this.placed.add(it.id);
+				const id = it.id;
+				this.pending = this.o.store.place(id).then(
+					p => {
+						if (!p) return;
+						const cur = this.o.store.data?.items.find(x => x.id === id);
+						if (cur) Object.assign(cur, { branch: cur.branch ?? p.branch, ahead: cur.ahead ?? p.ahead });
+						if (!this.closed) this.o.requestRender();
+					},
+					() => undefined,
+				);
+			}
 			return;
 		}
 		if (data === "r" || data === "R" || this.key(data, "shift+r")) {
@@ -582,6 +620,13 @@ export class InboxOverlay {
 		return lines.slice(0, rows).map(l => this.o.tui.truncateToWidth(l, w, "…", true));
 	}
 
+	/** The overlay with a dim left edge (polish: at 200 columns the panel ran into the chat text). */
+	renderFramed(width: number, framed: boolean): string[] {
+		if (!framed || width < 20) return this.render(width);
+		const edge = this.o.theme.fg("dim", "│ ");
+		return this.render(width - 2).map(l => edge + l);
+	}
+
 	private hr(w: number) {
 		return this.o.theme.fg("dim", "─".repeat(w));
 	}
@@ -643,10 +688,11 @@ export class InboxOverlay {
 	private row(x: Item, sel: boolean, w: number): string {
 		const { theme: t, tui } = this.o;
 		const tone = this.tone(x);
-		const right = ` ${x.verdict ? `${x.verdict} ` : ""}${x.state} ${this.ageOf(x)}`;
+		const right = ` ${x.verdict ? `${x.verdict} ` : ""}${x.state}${x.stale ? " (old)" : ""} ${this.ageOf(x)}`;
 		const rightW = tui.visibleWidth(right);
 		const leftW = Math.max(1, w - rightW);
-		const left = tui.truncateToWidth(`${sel ? "›" : " "} ${tone.glyph} ${x.label}`, leftW, "…", true);
+		const role = x.role && x.role !== "other" ? t.fg("muted", `${x.role.slice(0, 6).padEnd(6)} `) : "";
+		const left = tui.truncateToWidth(`${sel ? "›" : " "} ${tone.glyph} ${role}${x.label}`, leftW, "…", true);
 		const line = rightW < w ? `${left}${t.fg(tone.color, right)}` : left;
 		const fitted = tui.truncateToWidth(line, w, "…", true);
 		return sel ? t.bg("selectedBg", fitted) : fitted;
@@ -668,7 +714,7 @@ export class InboxOverlay {
 			const shown = this.expanded ? open : open.slice(0, 3);
 			shown.forEach((b, i) => {
 				const cur = this.expanded && i === this.blocker;
-				const pri = b.pri ? t.fg(b.pri === "P1" ? "error" : "warning", b.pri) : t.fg("muted", "--");
+				const pri = b.pri ? t.fg(b.pri === "P1" ? "error" : "warning", b.pri) : t.fg("muted", "•");
 				const line = `${cur ? "›" : " "} ${pri} ${b.text}`;
 				L.push(cur ? t.bg("selectedBg", this.fit(line, w)) : line);
 			});

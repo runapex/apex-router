@@ -75,6 +75,7 @@ CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u206
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 KEY_RE = re.compile(r"[0-9a-f]{16}")
 SUB_NAME_RE = re.compile(r"agent-([A-Za-z0-9_-]{1,64})\.jsonl")
+BG_SHORT_RE = re.compile(r"[0-9a-f]{8}")     # the short id that `claude attach` takes (= the ~/.claude/jobs dir)
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ROLES = ("xval", "worker", "reviewer", "scout")
 NEEDS_STATES = ("failed", "capped", "blocked", "cancelled", "timed_out")
@@ -684,7 +685,8 @@ def _bg_item(d: Path, name: str, dl) -> dict | None:
     return {"id": name, "kind": "claude-bg", "role": "claude", "group": None, "state": state, "verdict": verdict,
             "label": _repo_branch(cs, None), "cwd_short": cs, "branch": None, "ahead": None,
             "start": _iso(st.get("createdAt")), "end": None if state == "running" else _iso(st.get("updatedAt")),
-            "cost": None, "open": _keyed(name, blockers), "resume": _resume(cwd, "claude --resume", sid),
+            "cost": None, "open": _keyed(name, blockers),
+            "resume": _resume(cwd, "claude attach", name) if BG_SHORT_RE.fullmatch(name) else None,
             "_sid": sid if isinstance(sid, str) and UUID_RE.fullmatch(sid) else None}
 
 
@@ -1307,6 +1309,88 @@ def new_blockers(*, home=None, router_home=None, now: float | None = None) -> li
 
 # ---- CLI --------------------------------------------------------------------------------------------------
 
+GIT_TIMEOUT_S = 1.5
+_GIT_BRANCH_RE = re.compile(r"[A-Za-z0-9._/-]{1,200}")
+
+
+def _git(cwd: str, *args) -> str | None:
+    from .safe_proc import run_capped
+    try:
+        rc, out = run_capped(["git", "-C", cwd, *args], GIT_TIMEOUT_S, 4096)
+    except (OSError, ValueError):
+        return None
+    return out.decode("utf-8", "replace").strip() if rc == 0 else None
+
+
+def _git_place(it: dict, cwd) -> None:
+    """Branch and commits ahead of main for one pi job worktree (``show`` only; the list stays git-free).
+    Fails open: any error leaves the fields as they are."""
+    if it.get("kind") != "pi-job" or not isinstance(cwd, str) or not cwd.startswith("/") or not _real_dir(cwd):
+        return
+    br = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+    if br and br != "HEAD" and _GIT_BRANCH_RE.fullmatch(br):
+        it["branch"] = it.get("branch") or _branch(br)
+        if br not in ("main", "master"):
+            for base in ("main", "master"):
+                n = _git(cwd, "rev-list", "--count", f"{base}..HEAD")
+                if n is not None and n.isdigit():
+                    it["ahead"] = int(n)
+                    break
+
+
+_AGE_RE = re.compile(r"([0-9]{1,5})([mhd])")
+
+
+def _age_s(text) -> float | None:
+    m = _AGE_RE.fullmatch(text or "")
+    return int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)] if m else None
+
+
+def _resolve_needs_cli(a, home, rh, now) -> int:
+    """Bulk resolve (polish: 43 needs items took 43 presses). Running items never match. Lists by default."""
+    age = None
+    if a.older_than is not None:
+        age = _age_s(a.older_than)
+        if age is None:
+            print("agents resolve-needs: AGE is a number and m, h or d (for example 6h)", file=sys.stderr)
+            return 2
+    items, complete = _gather(home, rh, now, DEADLINE_S)
+    hit = []
+    for it in items:
+        if it["group"] != "needs" or it["state"] == "running":
+            continue
+        if a.role and it["role"] != a.role:
+            continue
+        if a.verdict and it["verdict"] != a.verdict:
+            continue
+        t = it.get("end") or it.get("start")
+        if age is not None and not (isinstance(t, (int, float)) and now - t >= age):
+            continue
+        hit.append(it)
+    for it in hit[:20]:
+        print(f"  {it['id']:<24} {it['role']:<8} {it['verdict'] or it['state']:<8} {_cut(it['label'], 60)}")
+    if len(hit) > 20:
+        print(f"  … {len(hit) - 20} more")
+    if not a.yes:
+        print(f"{len(hit)} item(s) match" + ("" if complete else " (not complete: deadline)")
+              + ". Add --yes to resolve them.")
+        return 0
+    done = 0
+    for it in hit:
+        try:
+            ok = ack_write(rh, it["id"], keys=[o["key"] for o in it["open"]], all_=True, verdict=it["verdict"],
+                           state=it["state"], now=now)
+        except (OSError, TimeoutError) as e:
+            print(f"agents resolve-needs: stopped after {done} ({type(e).__name__})", file=sys.stderr)
+            return 1
+        if not ok:
+            print(f"agents resolve-needs: stopped after {done} (agent-acks.json is corrupt)", file=sys.stderr)
+            return 1
+        done += 1
+    print(f"resolved: {done} item(s). Undo one with: apex-router agents resolve <id> --undo")
+    return 0
+
+
 def _resolve_cli(a, home, rh, now) -> int:
     iid = a.id
     if not ID_RE.fullmatch(iid or ""):
@@ -1409,6 +1493,12 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
     g = rp.add_mutually_exclusive_group()
     g.add_argument("--all", action="store_true")
     g.add_argument("--undo", action="store_true")
+    bp = sub.add_parser("resolve-needs", help="resolve every needs item that matches the filters; without --yes "
+                        "it only lists them")
+    bp.add_argument("--older-than", metavar="AGE", help="ended at least AGE ago: 30m, 6h, 2d")
+    bp.add_argument("--role", choices=sorted((*ROLES, "other", "claude")), help="only this role (for example xval)")
+    bp.add_argument("--verdict", choices=("NO-GO", "BLOCKED"), help="only this verdict")
+    bp.add_argument("--yes", action="store_true", help="write the acks (default: list only)")
     a = ap.parse_args(argv)
     home, rh = _homes(home, router_home)
     now = time.time() if now is None else now
@@ -1417,6 +1507,8 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
             print("agents resolve: a key is 16 hex characters", file=sys.stderr)
             return 2
         return _resolve_cli(a, home, rh, now)
+    if a.cmd == "resolve-needs":
+        return _resolve_needs_cli(a, home, rh, now)
     if a.cmd == "result":
         lines = result_lines(rh, a.id)
         if lines is None:
@@ -1433,6 +1525,9 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
         if it is None:
             print("agents show: id not found" + ("" if complete else " (deadline)"), file=sys.stderr)
             return 1
+        if it.get("kind") == "pi-job":
+            meta = _json(_read_small(Path(rh) / "pi-jobs" / it["id"] / "meta.json", META_MAX))
+            _git_place(it, meta.get("cwd") if isinstance(meta, dict) else None)
         print(json.dumps(_public(it), ensure_ascii=False) if a.show_json else _show(_public(it), now))
         return 0
     if a.line:

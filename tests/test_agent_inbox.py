@@ -846,3 +846,54 @@ def test_inline_code_fails_closed(homes, line):           # xval yyi4
     d = mk_job(rh, job_name(1), result=line + "\n- fix `commands.py:113`\n")
     out = ai.result_lines(rh, d.name)
     assert "REPRO_COMMAND" not in "\n".join(out) and "- fix `commands.py:113`" in out
+
+
+# ---- polish: claude attach, git place in show, resolve-needs ------------------------------------------------
+
+def test_a_background_agent_resumes_with_claude_attach(homes):
+    home, rh = homes
+    mk_bg(home, "7da8ec27")
+    mk_bg(home, "not-a-short-id")
+    by = {i["id"]: i for i in collect(home, rh)["items"]}
+    assert by["7da8ec27"]["resume"] == "cd /Users/x/dev/headroom && claude attach 7da8ec27"
+    assert by["not-a-short-id"]["resume"] is None
+
+
+def test_show_adds_branch_and_ahead_from_the_job_worktree(homes, tmp_path):
+    import subprocess
+    home, rh = homes
+    wt = tmp_path / "wt"
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x", "GIT_CONFIG_GLOBAL": "/dev/null"}
+    for cmd in (["init", "-q", "-b", "main", str(wt)], ["-C", str(wt), "commit", "-q", "--allow-empty", "-m", "a"],
+                ["-C", str(wt), "checkout", "-q", "-b", "apexjob/x1"],
+                ["-C", str(wt), "commit", "-q", "--allow-empty", "-m", "b"],
+                ["-C", str(wt), "commit", "-q", "--allow-empty", "-m", "c"]):
+        subprocess.run(["git", *cmd], check=True, env=env, capture_output=True)
+    d = mk_job(rh, job_name(1), result="VERDICT: DONE\n")
+    meta = json.loads((d / "meta.json").read_text())
+    meta["cwd"] = str(wt)
+    (d / "meta.json").write_text(json.dumps(meta))
+    rc, out = run_cli(["show", d.name, "--json"], home, rh)
+    doc = json.loads(out)
+    assert rc == 0 and doc["branch"] == "apexjob/x1" and doc["ahead"] == 2
+    lst = collect(home, rh)["items"]
+    assert [i for i in lst if i["id"] == d.name][0]["ahead"] is None          # the list runs no git
+
+
+def test_resolve_needs_lists_by_default_and_writes_with_yes(homes):
+    home, rh = homes
+    old = mk_job(rh, job_name(1), agent="xval", result="VERDICT: NO-GO\n", started=NOW - 9 * 3600, ended=NOW - 8 * 3600)
+    new = mk_job(rh, job_name(2), agent="xval", result="VERDICT: NO-GO\n", started=NOW - 600, ended=NOW - 300)
+    wrk = mk_job(rh, job_name(3), agent="worker", result="## OPEN\n- [P1] x\n", ended=NOW - 9 * 3600)
+    run = mk_job(rh, job_name(4), agent="xval", state="running", pid=os.getpid())
+    rc, out = run_cli(["resolve-needs", "--role", "xval", "--older-than", "6h"], home, rh)
+    assert rc == 0 and old.name in out and new.name not in out and wrk.name not in out and "1 item(s) match" in out
+    assert not (rh / "agent-acks.json").exists()                                  # list only
+    rc, out = run_cli(["resolve-needs", "--role", "xval", "--older-than", "6h", "--yes"], home, rh)
+    assert rc == 0 and "resolved: 1" in out
+    by = {i["id"]: i for i in collect(home, rh)["items"]}
+    assert by[old.name]["group"] == "done" and by[new.name]["group"] == "needs"
+    assert by[wrk.name]["group"] == "needs" and by[run.name]["group"] == "running"
+    rc, _ = run_cli(["resolve-needs", "--older-than", "6x"], home, rh)
+    assert rc == 2
