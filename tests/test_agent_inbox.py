@@ -911,3 +911,26 @@ def test_a_failing_git_leaves_branch_and_ahead_empty(monkeypatch, tmp_path, exc)
     it = {"kind": "pi-job", "branch": None, "ahead": None}
     ai._git_place(it, str(tmp_path))
     assert it == {"kind": "pi-job", "branch": None, "ahead": None}
+
+
+def test_show_survives_odd_git_data(homes, monkeypatch):                     # xval gz8e
+    from apex_router import safe_proc
+    home, rh = homes
+    d = mk_job(rh, job_name(1), result="VERDICT: DONE\n")
+    meta = json.loads((d / "meta.json").read_text())
+    meta["cwd"] = "/\u0000"
+    (d / "meta.json").write_text(json.dumps(meta))
+    rc, out = run_cli(["show", d.name, "--json"], home, rh)
+    assert rc == 0 and json.loads(out)["ahead"] is None
+    meta["cwd"] = str(rh)
+    (d / "meta.json").write_text(json.dumps(meta))
+    answers = iter([(0, b"topic"), (0, "\u00b2".encode()), (0, b"x")])
+    monkeypatch.setattr(safe_proc, "run_capped", lambda *a, **k: next(answers))
+    rc, out = run_cli(["show", d.name, "--json"], home, rh)
+    assert rc == 0 and json.loads(out)["ahead"] is None
+
+    def gen_exit(*a, **k):
+        raise GeneratorExit()
+    monkeypatch.setattr(safe_proc, "run_capped", gen_exit)
+    rc, out = run_cli(["show", d.name, "--json"], home, rh)
+    assert rc == 0 and json.loads(out)["id"] == d.name

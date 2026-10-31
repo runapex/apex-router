@@ -170,7 +170,7 @@ def _scan(d, cap: int = NAMES_MAX):
 def _real_dir(p) -> bool:
     try:
         return stat.S_ISDIR(os.lstat(p).st_mode)
-    except OSError:
+    except (OSError, ValueError):                     # xval gz8e: a NUL in a path raises ValueError
         return False
 
 
@@ -1333,7 +1333,7 @@ def _git_place(it: dict, cwd) -> None:
         if br not in ("main", "master"):
             for base in ("main", "master"):
                 n = _git(cwd, "rev-list", "--count", f"{base}..HEAD")
-                if n is not None and n.isdigit():
+                if n is not None and re.fullmatch(r"[0-9]{1,9}", n):     # xval gz8e: "²".isdigit()
                     it["ahead"] = int(n)
                     break
 
@@ -1527,7 +1527,11 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
             return 1
         if it.get("kind") == "pi-job":
             meta = _json(_read_small(Path(rh) / "pi-jobs" / it["id"] / "meta.json", META_MAX))
-            _git_place(it, meta.get("cwd") if isinstance(meta, dict) else None)
+            try:                                     # optional data never stops show (xval gz8e)
+                _git_place(it, meta.get("cwd") if isinstance(meta, dict) else None)
+            except BaseException as e:               # noqa: BLE001
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
         print(json.dumps(_public(it), ensure_ascii=False) if a.show_json else _show(_public(it), now))
         return 0
     if a.line:
