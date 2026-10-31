@@ -934,3 +934,26 @@ def test_show_survives_odd_git_data(homes, monkeypatch):                     # x
     monkeypatch.setattr(safe_proc, "run_capped", gen_exit)
     rc, out = run_cli(["show", d.name, "--json"], home, rh)
     assert rc == 0 and json.loads(out)["id"] == d.name
+
+
+def test_show_stops_only_on_a_real_interrupt(homes, monkeypatch):            # xval jpnl
+    from apex_router import safe_proc
+    home, rh = homes
+    d = mk_job(rh, job_name(1), result="VERDICT: DONE\n")
+    meta = json.loads((d / "meta.json").read_text())
+    meta["cwd"] = str(rh)
+    (d / "meta.json").write_text(json.dumps(meta))
+
+    class Spoof(BaseException):
+        __class__ = KeyboardInterrupt
+
+    def raise_(e):
+        def f(*a, **k):
+            raise e
+        return f
+    monkeypatch.setattr(safe_proc, "run_capped", raise_(Spoof()))
+    rc, out = run_cli(["show", d.name, "--json"], home, rh)
+    assert rc == 0
+    monkeypatch.setattr(safe_proc, "run_capped", raise_(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        run_cli(["show", d.name, "--json"], home, rh)

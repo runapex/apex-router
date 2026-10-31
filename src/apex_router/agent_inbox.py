@@ -1530,7 +1530,7 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
             try:                                     # optional data never stops show (xval gz8e)
                 _git_place(it, meta.get("cwd") if isinstance(meta, dict) else None)
             except BaseException as e:               # noqa: BLE001
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                if issubclass(type(e), (KeyboardInterrupt, SystemExit)):     # the real type (xval jpnl)
                     raise
         print(json.dumps(_public(it), ensure_ascii=False) if a.show_json else _show(_public(it), now))
         return 0
