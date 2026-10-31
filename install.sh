@@ -32,6 +32,7 @@
 #         --install-hooks "R1 R2"  install the review post-commit hook into these git repos
 #         --cache-handoff-hook  DEPRECATED (retired in 0.4.2): the datapce plugin's handoff toast and /apex handoff replace it
 #         --memory-compact-hook  wire the project-memory compaction Stop hook into ~/.claude/settings.json
+#         --agents-hooks  agent inbox in Claude Code: Stop-hook alert for new blockers + /agents command
 #         --agent-route-log-hook  DEPRECATED (retired in 0.4.2): the datapce plugin logs every Agent and Workflow dispatch
 #         --pi-integration  install the pi per-task router extension + models.json wiring (needs `pi`),
 #                       plus apex-ste (STE format), apex-hangguard (bash hang guard), apex-compact (compaction
@@ -69,6 +70,7 @@ KEEPWARM_MODEL=""    # optional explicit model tag; empty => resolve the active 
 DO_AZ_KEEPWARM=0     # --az-keepwarm: az-token-cached + launchd agent that keeps the Azure token warm
 DO_CACHE_HANDOFF=0   # --cache-handoff-hook: wire the cache-cost session-handoff Stop hook
 DO_MEMORY_COMPACT=0  # --memory-compact-hook: wire the project-memory compaction Stop hook
+DO_AGENTS_HOOKS=0    # --agents-hooks: agent inbox Stop-hook alert + claude /agents command
 DO_AGENT_ROUTE_LOG=0 # --agent-route-log-hook: wire the Agent-dispatch label PostToolUse hook
 DO_PI=0              # --pi-integration: install the pi per-task router extension + models.json wiring
 DO_STE=1             # --no-ste: do not add the ASD-STE100 format block to ~/.claude/CLAUDE.md
@@ -114,6 +116,7 @@ while [ $# -gt 0 ]; do
     --proxy)     DO_PROXY=1 ;;
     --cache-handoff-hook) DO_CACHE_HANDOFF=1 ;;   # wire the cache-cost Stop hook into settings.json
     --memory-compact-hook) DO_MEMORY_COMPACT=1 ;; # wire the project-memory compaction Stop hook
+    --agents-hooks) DO_AGENTS_HOOKS=1 ;; # agent inbox Stop-hook alert + claude /agents command
     --agent-route-log-hook) DO_AGENT_ROUTE_LOG=1 ;; # wire the Agent-dispatch label PostToolUse hook
     --pi-integration) DO_PI=1 ;;                   # install the pi per-task router + models.json wiring
     --no-ste) DO_STE=0 ;;                          # keep ~/.claude/CLAUDE.md free of the STE block
@@ -614,6 +617,29 @@ install_memory_compact_hook() {
   fi
 }
 
+install_agents_hooks() {
+  # Agent inbox in Claude Code (docs/design/AGENTS-INBOX.md section 6). Opt-in, advisory, idempotent.
+  [ "$DO_AGENTS_HOOKS" = "1" ] || {
+    echo "  agent inbox Stop hook NOT wired (pass --agents-hooks to enable)."
+    return 0
+  }
+  say "wiring the agent inbox Stop hook and the claude /agents command"
+  if _wire_stop_hook "$INSTALL_DIR/hooks/agents-stop-alert.sh" "agents-stop-alert.sh"; then
+    ok "agents Stop hook wired (new blockers show after each reply)"
+  else
+    warn "settings.json merge failed — add $INSTALL_DIR/hooks/agents-stop-alert.sh as a Stop hook by hand"
+  fi
+  local cmddir="$HOME/.claude/commands"
+  if mkdir -p "$cmddir" 2>/dev/null; then
+    if [ -e "$cmddir/agents.md" ]; then
+      echo "     claude /agents exists at $cmddir/agents.md — not overwritten"
+    elif cp "$INSTALL_DIR/integrations/claude/agents.md" "$cmddir/agents.md" 2>/dev/null; then
+      ok "claude /agents command installed"
+    fi
+  fi
+  echo "     status line: add  seg=\"\$(bash $INSTALL_DIR/hooks/agents-statusline.sh)\"  to your statusLine command"
+}
+
 install_agent_route_log_hook() {
   # Wire the Agent-dispatch outcome-label hook (PostToolUse, matcher "Agent") into
   # ~/.claude/settings.json. Opt-in, fail-safe (never blocks, prints nothing, exit 0).
@@ -861,6 +887,7 @@ main() {
   install_hooks
   install_cache_handoff_hook
   install_memory_compact_hook
+  install_agents_hooks
   install_agent_route_log_hook
   install_proxy
   setup_proxy
