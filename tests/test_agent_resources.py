@@ -1079,3 +1079,21 @@ def test_package_reexports_and_one_implementation_per_helper(monkeypatch):
     monkeypatch.setattr(ar, "_clock", lambda: 100.0)            # the package attribute is used
     assert ar.Deadline(1.0).remaining() == pytest.approx(1.0)
     assert ar.Deadline(1.0).end == pytest.approx(101.0)
+
+
+def test_telemetry_buckets():
+    # moved from test_widget.py with telemetry.buckets (was widget_history.buckets, D25)
+    from apex_router.agent_resources import telemetry
+    rows = [{"session_id": "s", "ts": NOW - 10, "tokens_out": 5, "tokens_in": 1,
+             "cache_read_tokens": 100, "cache_write_tokens": 2},
+            {"session_id": "s", "ts": NOW - 301, "tokens_out": 7, "is_error": True},
+            {"session_id": "s", "ts": NOW - 3601},                # outside 60 min
+            {"session_id": None, "ts": NOW - 5}, {"ts": NOW}, "junk",
+            {"session_id": "t", "ts": float("nan")}]
+    b = telemetry.buckets(rows, NOW)
+    assert set(b) == {"s"}
+    s = b["s"]
+    assert len(s["req"]) == 12 and s["req"][-1] == 1 and s["req"][-2] == 1 and sum(s["req"]) == 2
+    assert s["out"][-1] == 5 and s["out"][-2] == 7 and s["err"][-2] == 1
+    assert s["cached"][-1] == 100 and s["write"][-1] == 2 and s["in"][-1] == 1
+    assert ar._buckets is telemetry._buckets and ar._buckets(rows, NOW) == b

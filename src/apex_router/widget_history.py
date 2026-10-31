@@ -293,32 +293,9 @@ def sparkline(values, zero: bool = True, width: int | None = SPARK_POINTS) -> st
 # ---- telemetry buckets -----------------------------------------------------------------------
 
 def buckets(rows, now: float, n: int = 12, size_s: float = 300.0) -> dict:
-    """Per session_id: {"req": [n], "out": [n], "in": [n], "cached": [n], "write": [n],
-    "err": [n]} — counts / token sums per ``size_s`` bucket, oldest first, the last bucket ending
-    at ``now``. Rows outside the span or without a session are skipped."""
-    from . import agent_resources as ar
-    start = now - n * size_s
-    out: dict = {}
-    for r in rows or []:
-        if not isinstance(r, dict):
-            continue
-        sid = r.get("session_id")
-        ts = _num(r.get("ts"))
-        if not isinstance(sid, str) or ts is None or ts < start or ts > now:
-            continue
-        i = min(n - 1, int((ts - start) // size_s))
-        b = out.get(sid)
-        if b is None:
-            b = out[sid] = {k: [0] * n for k in ("req", "out", "in", "cached", "write", "err",
-                                                 "net")}
-        b["req"][i] += 1
-        b["out"][i] += int(_num(r.get("tokens_out")) or 0)
-        b["in"][i] += ar.fresh_input(r)
-        b["cached"][i] += ar._cache_read(r)
-        b["write"][i] += ar._cache_write(r)
-        b["err"][i] += 1 if r.get("is_error") else 0
-        b["net"][i] += int(_num(r.get("bytes_up")) or 0) + int(_num(r.get("bytes_down")) or 0)
-    return out
+    """Moved to ``agent_resources.telemetry.buckets``."""
+    from .agent_resources.telemetry import buckets as _b
+    return _b(rows, now, n, size_s)
 
 
 NET_GAP_MAX_S = 10 * 60          # a longer gap between samples is not one rate (sleep, plugin off)

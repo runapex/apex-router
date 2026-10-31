@@ -854,9 +854,9 @@ Each dataset is an aggregate (numbers and enums only). No prompt text, no file p
 
 | Name | Source | Contents |
 |---|---|---|
-| `pressure` | `snapshot.pressure_block()` | Level (GREEN/AMBER/RED), causes, families. |
-| `errors15m` | `snapshot.errors_block()` | Error counts by cause (last 15 min). |
-| `measure` | `snapshot.measure_block()` | Limit %, cost, context %. |
+| `pressure` | `status_blocks.pressure_block()` | Level (GREEN/AMBER/RED), causes, families. |
+| `errors15m` | `status_blocks.errors_block()` | Error counts by cause (last 15 min). |
+| `measure` | `status_blocks.measure_block()` | Limit %, cost, context %. |
 | `route_rates` | `route_log.read_rates()` | Per–task-type: n, escalated, rate, null_ts?. |
 | `route_advice` | `route_advise.advise()` | Local route verdicts. |
 | `worker` | `agents.worker()` | Job counts only; error and label keys dropped. |
