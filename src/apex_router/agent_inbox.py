@@ -69,6 +69,7 @@ TEXT_MAX = 160
 NEW_LINES_MAX = 5
 SUB_RUNNING_S = 120.0
 LOCK_WAIT_S = 2.0
+CACHE_LOCK_WAIT_S = 0.2        # the parse cache is optional: skip the save when another run holds it
 CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -165,6 +166,13 @@ def _scan(d, cap: int = NAMES_MAX):
     return out, False
 
 
+def _real_dir(p) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(p).st_mode)
+    except OSError:
+        return False
+
+
 def _is_dir(e) -> bool:
     try:
         return e.is_dir(follow_symlinks=False)
@@ -249,7 +257,7 @@ class _Cache:
             merged.update(self.new)
             ent = dict(list(merged.items())[-CACHE_MAX:])
         with contextlib.suppress(OSError, TimeoutError, ValueError):
-            with _locked(self.path):
+            with _locked(self.path, CACHE_LOCK_WAIT_S):     # xval x2e6: a 2 s wait broke the 3 s deadline
                 _atomic_write(self.path, {"v": _code_tag(), "e": ent})
 
 
@@ -612,6 +620,8 @@ def _pi_items(rh: Path, dl, box) -> None:
             box.incomplete()
             return
         d = rh / "pi-jobs" / name
+        if not _real_dir(d):                                # xval x2e6: a symlinked job dir left the tree
+            continue
         sig = _sig(d / "meta.json", d / "result.md")
         if sig[0] is None:
             continue
@@ -817,9 +827,12 @@ def _sub_items(home: Path, now: float, dl, box) -> None:
                 continue
             stats += 1
             try:
-                mt = os.lstat(os.path.join(k.path, "subagents")).st_mtime
+                st_sub = os.lstat(os.path.join(k.path, "subagents"))
             except OSError:
                 continue
+            if not stat.S_ISDIR(st_sub.st_mode):              # xval x2e6: a symlinked subagents dir
+                continue
+            mt = st_sub.st_mtime
             sess.append((mt, os.path.join(k.path, "subagents")))
     slugs = None
     sess.sort(reverse=True)
@@ -1034,11 +1047,11 @@ def clear_caches() -> None:
 # ---- writes: lock + atomic replace ------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def _locked(path: Path):
+def _locked(path: Path, wait: float = LOCK_WAIT_S):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path) + ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        end = time.monotonic() + LOCK_WAIT_S
+        end = time.monotonic() + wait
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1138,6 +1151,17 @@ def ack_write(rh, iid: str, *, keys=(), all_: bool = False, verdict=None, state=
                 if iid not in keep:
                     keep = keep[1:] + [iid]
                 cur = {k: cur[k] for k in keep}
+            # xval x2e6: 1092 ids x 200 keys passed ACKS_FILE_MAX, then every read failed. Drop the oldest ids
+            # (never the one just written) until the file fits in 3/4 of the read cap.
+            size = len(json.dumps(cur, separators=(",", ":"), sort_keys=True))
+            if size > ACKS_FILE_MAX * 3 // 4:
+                for k in sorted(cur, key=lambda k: (cur[k].get("at") or 0, k)):
+                    if size <= ACKS_FILE_MAX * 3 // 4:
+                        break
+                    if k == iid:
+                        continue
+                    size -= len(json.dumps({k: cur[k]}, separators=(",", ":"), sort_keys=True)) - 1
+                    del cur[k]
         _atomic_write(p, cur)
     return True
 
@@ -1314,6 +1338,41 @@ def _resolve_cli(a, home, rh, now) -> int:
     return 0
 
 
+RESULT_LINES = 200
+RESULT_BYTES = 64 * 1024
+RESULT_LINE_MAX = 400
+_PROMPT_LINE_RE = re.compile(r"^[ \t>*#_-]*(?:TASK|PROMPT|BRIEF|CONTEXT|STEPS|LIMITS)\b", re.I)
+
+
+def result_lines(rh, iid: str) -> list[str] | None:
+    """The ``o`` view (xval x2e6: the overlay showed result.md unmasked): the last RESULT_LINES lines of a pi
+    job result.md (at most RESULT_BYTES), each through ``mask_line``. Code block lines show as ``<code>`` and
+    brief lines (TASK:, PROMPT: ...) as ``<text>``. None when there is no such job or file."""
+    if not ID_RE.fullmatch(iid) or not commands.JOB_NAME_RE.fullmatch(iid):
+        return None
+    d = Path(rh) / "pi-jobs" / iid
+    if not _real_dir(d):
+        return None
+    got = _read_tail(d / "result.md", RESULT_BYTES)
+    if got is None:
+        return None
+    out, code = [], False
+    for ln in _tail_text(got).split("\n"):
+        if ln.lstrip().startswith("```"):
+            code = not code
+            out.append("```")
+            continue
+        if code:
+            out.append("<code>")
+        elif _PROMPT_LINE_RE.match(ln):
+            out.append("<text>")
+        else:
+            out.append(mask_line(ln, RESULT_LINE_MAX) if ln.strip() else "")
+    while out and out[-1] == "":
+        out.pop()
+    return out[-RESULT_LINES:]
+
+
 def main(argv=None, *, home=None, router_home=None, now: float | None = None) -> int:
     ap = argparse.ArgumentParser(prog="apex-router agents", description="agent inbox: pi jobs, Claude Code "
                                  "sub-agents and background agents (needs you, running, done)")
@@ -1324,6 +1383,8 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
     sp = sub.add_parser("show", help="blockers, verdict, label, branch, cost and resume command of one item")
     sp.add_argument("id")
     sp.add_argument("--json", action="store_true", dest="show_json")
+    xp = sub.add_parser("result", help="the last 200 lines of a pi job result.md, masked")
+    xp.add_argument("id")
     rp = sub.add_parser("resolve", help="resolve one blocker key, or all (--all), or undo (--undo)")
     rp.add_argument("id")
     rp.add_argument("key", nargs="?")
@@ -1338,6 +1399,14 @@ def main(argv=None, *, home=None, router_home=None, now: float | None = None) ->
             print("agents resolve: a key is 16 hex characters", file=sys.stderr)
             return 2
         return _resolve_cli(a, home, rh, now)
+    if a.cmd == "result":
+        lines = result_lines(rh, a.id)
+        if lines is None:
+            print("agents result: no result.md for this id", file=sys.stderr)
+            return 1
+        for ln in lines:
+            print(ln)
+        return 0
     if a.cmd == "show":
         if not ID_RE.fullmatch(a.id):
             print("agents show: bad id", file=sys.stderr)

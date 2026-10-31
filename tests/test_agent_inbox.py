@@ -740,3 +740,79 @@ def test_an_old_item_with_blockers_is_done_and_stale(homes):
     assert by[new.name]["group"] == "needs" and by[new.name]["stale"] is False
     assert doc["counts"]["needs"] == 1
 
+
+
+# ---- xval x2e6 ----------------------------------------------------------------------------------------------
+
+def test_result_lines_are_masked_and_hide_briefs_and_code(homes):
+    home, rh = homes
+    d = mk_job(rh, job_name(1), result="Prompt: PRIVATE_PROMPT_SENTINEL\nTASK: secret brief\nAPI_TOKEN=abc123\n"
+               "```\ncurl -H 'Authorization: Bearer abc' https://x\n```\nplain line\n")
+    out = ai.result_lines(rh, d.name)
+    text = "\n".join(out)
+    assert "PRIVATE_PROMPT_SENTINEL" not in text and "secret brief" not in text and "abc123" not in text
+    assert "Bearer abc" not in text and "<code>" in out and "plain line" in out
+    assert ai.result_lines(rh, "../../etc") is None and ai.result_lines(rh, job_name(9)) is None
+
+
+def test_result_lines_refuse_a_symlinked_job_dir_and_a_fifo(homes, tmp_path):
+    home, rh = homes
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "result.md").write_text("OUTSIDE_SENTINEL\n")
+    (rh / "pi-jobs").mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, rh / "pi-jobs" / job_name(2))
+    assert ai.result_lines(rh, job_name(2)) is None
+    d = rh / "pi-jobs" / job_name(3)
+    d.mkdir()
+    os.mkfifo(d / "result.md")
+    t = time.monotonic()
+    assert ai.result_lines(rh, job_name(3)) is None and time.monotonic() - t < 1
+
+
+def test_a_symlinked_pi_job_dir_is_not_listed(homes, tmp_path):
+    home, rh = homes
+    src = mk_job(tmp_path / "elsewhere", job_name(4), result="## OPEN\n- [P1] OUTSIDE\nVERDICT: NO-GO\n")
+    (rh / "pi-jobs").mkdir(parents=True, exist_ok=True)
+    os.symlink(src, rh / "pi-jobs" / job_name(4))
+    doc = ai.collect(home=home, router_home=rh, now=NOW)
+    assert all(i["id"] != job_name(4) for i in doc["items"])
+
+
+def test_a_symlinked_subagents_dir_is_not_read(homes, tmp_path):
+    home, rh = homes
+    real = tmp_path / "real-subagents"
+    real.mkdir()
+    (real / "agent-a1b2c3d4e5f6a7b8c.jsonl").write_text("{}\n")
+    sess = home / ".claude" / "projects" / "-x" / "11111111-2222-3333-4444-555555555555"
+    sess.mkdir(parents=True)
+    os.symlink(real, sess / "subagents")
+    doc = ai.collect(home=home, router_home=rh, now=NOW)
+    assert not [i for i in doc["items"] if i["kind"] == "claude-sub"]
+
+
+def test_the_acks_file_stays_under_the_read_cap(homes):
+    home, rh = homes
+    keys = [f"{i:016x}" for i in range(ai.ACK_KEYS_MAX)]
+    for n in range(1100):
+        assert ai.ack_write(rh, job_name(n, f"{n:04d}"), keys=keys, now=NOW + n)
+    assert os.path.getsize(rh / "agent-acks.json") <= ai.ACKS_FILE_MAX
+    acks = ai.ack_read(rh)
+    assert isinstance(acks, dict) and job_name(1099, "1099") in acks and job_name(0, "0000") not in acks
+    assert ai.ack_write(rh, job_name(5000, "zzzz"), keys=keys[:1], now=NOW + 5000)
+    assert job_name(5000, "zzzz") in ai.ack_read(rh)
+
+
+def test_the_cache_save_waits_at_most_the_cache_lock_wait(homes, monkeypatch):
+    home, rh = homes
+    mk_job(rh, job_name(1), result="VERDICT: GO\n")
+    import fcntl
+    rh.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(rh / "agent-inbox-cache.json") + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        t = time.monotonic()
+        ai.collect(home=home, router_home=rh, now=NOW)
+        assert time.monotonic() - t < 1.0          # old code: the save waited LOCK_WAIT_S (2 s) here
+    finally:
+        os.close(fd)

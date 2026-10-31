@@ -107,3 +107,13 @@ def test_install_flag_wires_the_stop_hook_and_the_command(tmp_path):
     off = subprocess.run(["bash", "-c", stubs + fn + f"\nINSTALL_DIR={ROOT}\nDO_AGENTS_HOOKS=0\ninstall_agents_hooks\n"],
                          capture_output=True, text=True, env=env, timeout=10)
     assert "WIRED" not in off.stdout
+
+
+def test_status_line_does_not_block_on_a_fifo_cache(tmp_path):
+    rh = tmp_path / "rh"
+    rh.mkdir()
+    os.mkfifo(rh / "agent-inbox-line.json")
+    t = time.monotonic()
+    r = subprocess.run(["bash", str(LINE)], capture_output=True, text=True,
+                       env=_env(tmp_path, _fake_bin(tmp_path, "exit 0")), timeout=10)
+    assert r.returncode == 0 and r.stdout == "" and time.monotonic() - t < 3

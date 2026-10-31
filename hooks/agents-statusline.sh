@@ -6,13 +6,23 @@ rh="${APEX_HOME:-$HOME/.apex-router}"
 bin="${APEX_ROUTER_BIN:-apex-router}"
 cache="$rh/agent-inbox-line.json"
 stamp="$rh/agent-inbox-line.spawn"
-if [ -r "$cache" ]; then
-  line="$(head -c 4096 "$cache" 2>/dev/null | python3 -c 'import json,re,sys
-try: l=json.load(sys.stdin).get("line","")
-except Exception: l=""
-print(l if isinstance(l,str) and re.fullmatch(r"● [0-9]{1,6} ⚠ [0-9]{1,6}", l) else "")' 2>/dev/null)"
-  [ -n "$line" ] && printf '%s' "$line"
-fi
+# xval x2e6: "head" blocked on a FIFO. Open non-blocking, no symlink, regular files only.
+line="$(python3 - "$cache" <<'PY' 2>/dev/null
+import json, os, re, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        st = os.fstat(fd)
+        raw = os.read(fd, 4096) if stat.S_ISREG(st.st_mode) and st.st_size <= 4096 else b""
+    finally:
+        os.close(fd)
+    l = json.loads(raw).get("line", "")
+except Exception:
+    l = ""
+print(l if isinstance(l, str) and re.fullmatch(r"● [0-9]{1,6} ⚠ [0-9]{1,6}", l) else "")
+PY
+)"
+[ -n "$line" ] && printf '%s' "$line"
 now=$(date +%s)
 last=$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null || echo 0)
 if [ $((now - last)) -ge 5 ] && command -v "$bin" >/dev/null 2>&1; then

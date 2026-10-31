@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	DEFAULT_TIMEOUT_MS, InboxOverlay, InboxStore, makeCliRunner, MAX_STDOUT, osc52, overlayOptionsFor, parseInbox,
-	readResultTail, startPoller, widgetLine, widgetText, type CliRunner, type TuiFns,
+	startPoller, widgetLine, widgetText, type CliRunner, type TuiFns,
 } from "../lib/inbox.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -317,6 +317,7 @@ test("overlay: r resolves the selected blocker, R all, c copies resume, o shows 
 	assert.deepEqual(ev.copied, ["cd /Users/x/dev/apex-router && pi --session-id 1234"]);
 	assert.match(text(o.render(100)), /Copied/);
 	o.handleInput("o");
+	await o.idle();
 	assert.deepEqual(ev.results, ["20261030224430-o41s"]);
 	const out = text(o.render(100));
 	assert.match(out, /中文 result line/);
@@ -381,6 +382,7 @@ test("every rendered line fits the width (40, 60, 80, 120, 200; wide characters,
 			o.handleInput("c");
 			views.push(["copy", o.render(width)]);
 			o.handleInput("o");
+			await o.idle();
 			views.push(["result", o.render(width)]);
 			views.push(["fail", overlay(failStore, theme).o.render(width)]);
 			for (const [name, lines] of views) {
@@ -414,29 +416,32 @@ test("widget line fits the width (1, 10, 40, 60, 80, 120, 200) and is one line",
 
 // ---- result.md tail, OSC 52 ----------------------------------------------------------------------------------
 
-test("readResultTail: last 200 lines of a pi job, bounded read, refuses FIFOs and bad ids", () => {
-	const root = mkdtempSync(join(tmpdir(), "inbox-jobs-"));
-	const id = "20261030224430-o41s";
-	mkdirSync(join(root, id));
-	writeFileSync(join(root, id, "result.md"), Array.from({ length: 500 }, (_, i) => `line ${i} \x1b[31mx\x1b[0m`).join("\n"));
-	const r = readResultTail({ id, kind: "pi-job" }, root);
-	assert.ok(r.ok);
-	assert.equal(r.lines.length, 200);
-	assert.equal(r.lines.at(-1), "line 499 x");
-	const big = "20261030224430-big1";
-	mkdirSync(join(root, big));
-	writeFileSync(join(root, big, "result.md"), "y".repeat(10 * 1024 * 1024) + "\nlast");
-	const rb = readResultTail({ id: big, kind: "pi-job" }, root);
-	assert.ok(rb.ok && rb.lines.at(-1) === "last" && rb.lines.join("").length <= 128 * 1024);
-	const fifo = "20261030224430-fifo";
-	mkdirSync(join(root, fifo));
-	execFileSync("mkfifo", [join(root, fifo, "result.md")]);
+test("store.result: the masked text comes from apex-router agents result (xval x2e6), never from the file", async () => {
+	const { run, calls } = fake("ok");
+	const s = new InboxStore({ run });
+	const r = await s.result({ id: "20261030224430-o41s", kind: "pi-job" });
+	assert.ok(r.ok && r.lines.includes("API_TOKEN=[hidden]"));
+	assert.deepEqual(calls().at(-1), ["agents", "result", "20261030224430-o41s"]);
+	assert.equal((await s.result({ id: "../../etc", kind: "pi-job" })).ok, false);
+	assert.equal((await s.result({ id: "agent-abc123", kind: "claude-bg" })).ok, false);
+	assert.equal(calls().length, 1, "no CLI call for a bad id or another kind");
+	const f = await new InboxStore({ run: fake("result-fail").run }).result({ id: "20261030224430-o41s", kind: "pi-job" });
+	assert.deepEqual(f, { ok: false, reason: "No result.md yet" });
 	const t0 = Date.now();
-	assert.equal(readResultTail({ id: fifo, kind: "pi-job" }, root).ok, false);
-	assert.ok(Date.now() - t0 < 1000, "a FIFO does not block");
-	assert.equal(readResultTail({ id: "../../etc", kind: "pi-job" }, root).ok, false);
-	assert.equal(readResultTail({ id: "agent-abc123", kind: "claude-bg" }, root).ok, false);
-	assert.equal(readResultTail({ id: "20991231000000-none", kind: "pi-job" }, root).ok, false);
+	const slow = await new InboxStore({ run: fake("slow", { timeoutMs: 300 }).run }).result({ id: "20261030224430-o41s", kind: "pi-job" });
+	assert.ok(!slow.ok && Date.now() - t0 < 3000);
+});
+
+test("overlay: o uses store.result when no reader is given", async () => {
+	const { run } = fake("ok");
+	const s = new InboxStore({ run });
+	await s.refresh();
+	const { o } = overlay(s, plainTheme, { readResult: undefined });
+	o.handleInput("o");
+	await o.idle();
+	const out = text(o.render(100));
+	assert.match(out, /API_TOKEN=\[hidden\]/);
+	assert.ok(!out.includes("\x1b[31m"));
 });
 
 test("osc52: base64 of one clean line", () => {

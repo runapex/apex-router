@@ -10,20 +10,15 @@
  * Every text from the CLI is cleaned (no control or escape characters) and capped before it reaches a line.
  */
 import { execFile } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 export const DEFAULT_TIMEOUT_MS = 3000;
 export const MAX_STDOUT = 2 * 1024 * 1024;
 export const MAX_ITEMS = 200;
 export const MAX_OPEN = 50;
 export const RESULT_LINES = 200;
-export const RESULT_BYTES = 64 * 1024;
 export const REFRESH_MS = 5000;
 export const TOGGLE_KEY = "ctrl+shift+a";
 const OSC52_MAX = 100_000;
-const DEFAULT_JOBS = join(homedir(), ".apex-router", "pi-jobs");
 
 /** A safe item id: one argv word that is not an option and not a path. */
 export const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -213,6 +208,18 @@ export class InboxStore {
 		return p;
 	}
 
+	/** The masked result.md tail of a pi job from `apex-router agents result <id>` (xval x2e6: a direct read of
+	 *  result.md showed secrets and prompt text). Never rejects. */
+	async result(it: { id: string; kind: string }): Promise<ResultTail> {
+		if (it.kind !== "pi-job") return { ok: false, reason: "No result.md for this kind of agent" };
+		if (!ID_RE.test(it.id) || it.id.includes("..")) return { ok: false, reason: "bad item id" };
+		const r = await this.run(["agents", "result", it.id]);
+		if (!r.ok) return { ok: false, reason: r.reason.includes("no result.md") ? "No result.md yet" : r.reason };
+		const lines = r.stdout.split("\n");
+		while (lines.length && lines.at(-1) === "") lines.pop();
+		return { ok: true, lines: lines.slice(-RESULT_LINES) };
+	}
+
 	/** Resolve one blocker (key) or all (--all). Refuses unsafe input and a call while another call runs. */
 	async resolve(id: string, key: string): Promise<{ ok: boolean; reason?: string }> {
 		if (!ID_RE.test(id)) return { ok: false, reason: "bad item id" };
@@ -308,36 +315,6 @@ export function copyOrShow(text: string, out: NodeJS.WriteStream = process.stdou
 
 export type ResultTail = { ok: true; lines: string[] } | { ok: false; reason: string };
 
-/** Last RESULT_LINES lines of a pi job result.md. Reads at most RESULT_BYTES; refuses a non-file; never blocks. */
-export function readResultTail(it: { id: string; kind: string }, root = DEFAULT_JOBS, maxLines = RESULT_LINES, maxBytes = RESULT_BYTES): ResultTail {
-	if (it.kind !== "pi-job") return { ok: false, reason: "No result.md for this kind of agent" };
-	if (!ID_RE.test(it.id) || it.id.includes("..")) return { ok: false, reason: "bad item id" };
-	const path = join(root, it.id, "result.md");
-	let fd: number | undefined;
-	try {
-		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-		const st = fstatSync(fd);
-		if (!st.isFile()) return { ok: false, reason: "result.md is not a file" };
-		const len = Math.min(st.size, maxBytes);
-		const buf = Buffer.alloc(len);
-		let got = 0;
-		while (got < len) {
-			const n = readSync(fd, buf, got, len - got, st.size - len + got);
-			if (n <= 0) break;
-			got += n;
-		}
-		let lines = buf.subarray(0, got).toString("utf8").split("\n");
-		if (st.size > len) lines = lines.slice(1); // the first line is cut
-		while (lines.length && lines.at(-1) === "") lines.pop();
-		return { ok: true, lines: lines.slice(-maxLines).map(l => cleanLine(l, 2000)) };
-	} catch (e) {
-		const code = (e as NodeJS.ErrnoException).code;
-		return { ok: false, reason: code === "ENOENT" ? "No result.md yet" : `result.md not read (${clean(code ?? "error", 20)})` };
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-	}
-}
-
 // ---- overlay component ---------------------------------------------------------------------------------------------
 
 export interface TuiFns {
@@ -371,7 +348,7 @@ export interface OverlayOpts {
 	onClose: () => void;
 	requestRender: () => void;
 	copy?: (text: string) => "copied" | "shown";
-	readResult?: (it: Item) => ResultTail;
+	readResult?: (it: Item) => ResultTail | Promise<ResultTail>;
 	toggleKey?: string;
 }
 
@@ -526,12 +503,23 @@ export class InboxOverlay {
 		}
 		if (data === "o") {
 			if (!it) return this.say("Nothing selected");
-			const r = (this.o.readResult ?? readResultTail)(it);
-			if (!r.ok) return this.say(r.reason);
-			this.result = r.lines.slice(-RESULT_LINES).map(l => cleanLine(l, 2000));
-			this.resultTitle = `result.md · ${it.id}`;
-			this.scroll = Number.MAX_SAFE_INTEGER;
-			this.view = "result";
+			const id = it.id;
+			this.say("Loading result…");
+			this.pending = Promise.resolve((this.o.readResult ?? (x => this.o.store.result(x)))(it)).then(
+				r => {
+					if (this.closed) return;
+					if (!r.ok) this.say(r.reason);
+					else {
+						this.msg = undefined;
+						this.result = r.lines.slice(-RESULT_LINES).map(l => cleanLine(l, 2000));
+						this.resultTitle = `result.md · ${id}`;
+						this.scroll = Number.MAX_SAFE_INTEGER;
+						this.view = "result";
+					}
+					this.o.requestRender();
+				},
+				() => undefined,
+			);
 			return;
 		}
 	}
