@@ -897,3 +897,15 @@ def test_resolve_needs_lists_by_default_and_writes_with_yes(homes):
     assert by[wrk.name]["group"] == "needs" and by[run.name]["group"] == "running"
     rc, _ = run_cli(["resolve-needs", "--older-than", "6x"], home, rh)
     assert rc == 2
+
+
+def test_a_slow_git_leaves_branch_and_ahead_empty(monkeypatch, tmp_path):     # xval 7vxt
+    import subprocess
+    from apex_router import safe_proc
+
+    def slow(argv, timeout, out_max, **kw):
+        raise subprocess.TimeoutExpired(argv, timeout)
+    monkeypatch.setattr(safe_proc, "run_capped", slow)
+    it = {"kind": "pi-job", "branch": None, "ahead": None}
+    ai._git_place(it, str(tmp_path))
+    assert it == {"kind": "pi-job", "branch": None, "ahead": None}

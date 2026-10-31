@@ -1314,10 +1314,11 @@ _GIT_BRANCH_RE = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 
 
 def _git(cwd: str, *args) -> str | None:
+    import subprocess
     from .safe_proc import run_capped
     try:
         rc, out = run_capped(["git", "-C", cwd, *args], GIT_TIMEOUT_S, 4096)
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):    # xval 7vxt: a slow git raised TimeoutExpired
         return None
     return out.decode("utf-8", "replace").strip() if rc == 0 else None
 
