@@ -205,6 +205,40 @@ def telemetry_split(rows, now: float | None = None) -> dict:
     return out
 
 
+def _finite(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return v
+
+
+def buckets(rows, now: float, n: int = 12, size_s: float = 300.0) -> dict:
+    """Per session_id: {"req": [n], "out": [n], "in": [n], "cached": [n], "write": [n],
+    "err": [n]} — counts / token sums per ``size_s`` bucket, oldest first, the last bucket ending
+    at ``now``. Rows outside the span or without a session are skipped. (Moved from
+    ``widget_history``, the retired menu-bar widget, D25.)"""
+    start = now - n * size_s
+    out: dict = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        sid = r.get("session_id")
+        ts = _finite(r.get("ts"))
+        if not isinstance(sid, str) or ts is None or ts < start or ts > now:
+            continue
+        i = min(n - 1, int((ts - start) // size_s))
+        b = out.get(sid)
+        if b is None:
+            b = out[sid] = {k: [0] * n for k in ("req", "out", "in", "cached", "write", "err",
+                                                 "net")}
+        b["req"][i] += 1
+        b["out"][i] += int(_finite(r.get("tokens_out")) or 0)
+        b["in"][i] += fresh_input(r)
+        b["cached"][i] += _cache_read(r)
+        b["write"][i] += _cache_write(r)
+        b["err"][i] += 1 if r.get("is_error") else 0
+        b["net"][i] += int(_finite(r.get("bytes_up")) or 0) + int(_finite(r.get("bytes_down")) or 0)
+    return out
+
+
 def _buckets(rows, now):
-    from ..widget_history import buckets
     return buckets(rows, now)

@@ -441,6 +441,10 @@ pi install integrations/pi/apex-hangguard.ts                # bash timeout, < /d
 pi install integrations/pi/apex-agents.ts                   # sub-agents: agent_spawn / wait / cancel
 ```
 
+Agent inbox in the terminal: `apex-router agents` lists pi jobs and Claude Code agents (needs you,
+running, done). In pi, `/agents` or ctrl+shift+a opens the overlay. For Claude Code, run
+`install.sh --agents-hooks`. Contract: [`docs/design/AGENTS-INBOX.md`](docs/design/AGENTS-INBOX.md).
+
 Full instructions, the family table, and testing steps:
 [`docs/RUNBOOK-pi-integration.md`](docs/RUNBOOK-pi-integration.md).
 
@@ -610,9 +614,9 @@ as `__`) and `in/_all.jsonl` for yours, a cursor per agent; appends are locked, 
 per file and a torn line from a crashed writer never swallows the next one. Text is one line of
 at most 400 characters, control and bidi characters stripped; ids, times and names only besides
 the text. A question stays open until your next line to that agent or to `*`. Every post or send
-rewrites the menu-bar adapter `~/.apex-router/adapters/mail.json` for the run last written to, so
-the widget shows open questions, unread lines and the last few messages, dollar amounts masked
-(see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)). `mail digest --to ADDR`
+rewrites the adapter file `~/.apex-router/adapters/mail.json` for the run last written to (open
+questions, unread lines and the last few messages, dollar amounts masked; the menu-bar widget that
+showed it is retired, D25). `mail digest --to ADDR`
 e-mails a short digest (what waits for you, where each agent is, and the decisions, questions and
 finishes since the last digest, never start lines or routine chatter) through Mail.app on macOS,
 falling back to `/usr/sbin/sendmail`; it sends nothing when there is nothing new, so it is safe
@@ -854,9 +858,9 @@ Each dataset is an aggregate (numbers and enums only). No prompt text, no file p
 
 | Name | Source | Contents |
 |---|---|---|
-| `pressure` | `snapshot.pressure_block()` | Level (GREEN/AMBER/RED), causes, families. |
-| `errors15m` | `snapshot.errors_block()` | Error counts by cause (last 15 min). |
-| `measure` | `snapshot.measure_block()` | Limit %, cost, context %. |
+| `pressure` | `status_blocks.pressure_block()` | Level (GREEN/AMBER/RED), causes, families. |
+| `errors15m` | `status_blocks.errors_block()` | Error counts by cause (last 15 min). |
+| `measure` | `status_blocks.measure_block()` | Limit %, cost, context %. |
 | `route_rates` | `route_log.read_rates()` | Per–task-type: n, escalated, rate, null_ts?. |
 | `route_advice` | `route_advise.advise()` | Local route verdicts. |
 | `worker` | `agents.worker()` | Job counts only; error and label keys dropped. |

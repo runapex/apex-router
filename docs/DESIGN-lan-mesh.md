@@ -194,9 +194,9 @@ Only these names are served. Each is an aggregate: numbers and enums, no free te
 
 | Name | Source | Notes |
 |---|---|---|
-| `pressure` | `snapshot.pressure_block()` | level, causes, families. No telemetry path. |
-| `errors15m` | `snapshot.errors_block()` | counts by cause |
-| `measure` | `snapshot.measure_block()` | limit %, cost, ctx % |
+| `pressure` | `status_blocks.pressure_block()` | level, causes, families. No telemetry path. |
+| `errors15m` | `status_blocks.errors_block()` | counts by cause |
+| `measure` | `status_blocks.measure_block()` | limit %, cost, ctx % |
 | `route_rates` | `route_log.read_rates()` | `{task_type: {n, escalated, rate, null_ts?}}` |
 | `route_advice` | `route_advise.advise()` | local verdicts |
 | `worker` | `agents.worker()` | counts only; drop `error`, `label` |

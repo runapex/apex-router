@@ -888,6 +888,7 @@ main() {
   install_cache_handoff_hook
   install_memory_compact_hook
   install_agents_hooks
+  echo "  SwiftBar menu bar retired (D25): if you installed it, delete apex.1m.sh from your SwiftBar plugin folder by hand."
   install_agent_route_log_hook
   install_proxy
   setup_proxy

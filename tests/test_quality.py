@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from apex_router import quality, snapshot
+from apex_router import quality
 
 NOW = 1_791_396_000.0
 
@@ -70,42 +70,8 @@ def test_collect_counts_each_source(tmp_path, monkeypatch):
     assert v["codeqa"] == {"missing": True}
 
 
-def test_quality_lines_and_colours(tmp_path, monkeypatch):
-    home, tel = _fixture(tmp_path)
-    monkeypatch.setattr(quality.Path, "home", lambda: tmp_path)
-    lines = snapshot._quality_lines(quality.collect(NOW, tel, home))
-    plain = [ln.split(" | ")[0] for ln in lines]
-    assert plain == ["routing 2 tasks · debug 1 review 1 · escalated 0 (0%)",
-                     "tier match 1/2 (50%)",
-                     "requests 200 · ok 98% · retries 2 · failed 3",
-                     "verify xval 1/2 verdict"]
-    assert "escalated because:" not in lines[0]
-    assert "explore: sonnet → kimi ×1" in lines[1]
-    assert "no cause recorded 1" in lines[2]
-    assert all("color=" in ln for ln in lines)
-    assert snapshot.INK["amber"] in lines[1] and snapshot.INK["amber"] in lines[3]
-
-
-def test_pct_never_rounds_a_shortfall_to_100():
-    assert snapshot._pct(1865, 1874) == "99.5%"          # live: 9 failures must not read 100%
-    assert snapshot._pct(9999, 10000) == "99.9%"
-    assert snapshot._pct(10, 10) == "100%" and snapshot._pct(1, 2) == "50%"
-    assert snapshot._pct(1, 10000) == "0.1%" and snapshot._pct(0, 5) == "0%"
-    assert snapshot._pct(0, 0) == "–"
-
-
 def test_missing_sources_say_so(tmp_path, monkeypatch):
     monkeypatch.setattr(quality.Path, "home", lambda: tmp_path)
     q = quality.collect(NOW, tmp_path / "none.jsonl", tmp_path / "empty")
-    plain = [ln.split(" | ")[0] for ln in snapshot._quality_lines(q)]
-    assert plain == ["routing ?", "tier match ?", "requests ?"]       # no fake zeros
-
-
-def test_menu_has_quality_section():
-    snap = {"pressure": {}, "quality": {"classification": {"n": 0, "types": {}},
-                                       "conformance": {"n": 0, "observed": 0},
-                                       "reliability": {"requests": 4, "failed": 0, "retries": 0},
-                                       "verification": {}}}
-    out = snapshot.menubar(snap)
-    assert "Quality · 24h |" in out
-    assert "requests 4 · ok 100% · retries 0" in out
+    for k in ("classification", "conformance", "reliability"):         # no fake zeros (the menu read "?")
+        assert q[k] == {"missing": True}

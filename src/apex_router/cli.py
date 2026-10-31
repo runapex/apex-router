@@ -114,36 +114,6 @@ def _skill_bench(args) -> int:
     return 0
 
 
-def _studio(argv) -> int:
-    ap = argparse.ArgumentParser(prog="apex-router studio",
-                                 description="apex flow studio: the request flow from source to sink, "
-                                             "a dry-run prompt test, and a reviewed draft of settings. "
-                                             "Binds 127.0.0.1; the printed URL carries a random token.")
-    ap.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: a free port)")
-    ap.add_argument("--no-open", action="store_true", help="print the URL, do not open a browser")
-    ap.add_argument("--idle-exit", type=int, default=0, metavar="S",
-                    help="stop after S seconds without a request (0 = never; the menu uses 1800)")
-    ap.add_argument("--open", nargs="?", const="", default=None, metavar="TARGET",
-                    help="reuse the running studio (~/.apex-router/studio/instance.json) when it answers, "
-                         "else start one; open the page at TARGET: node:<id>, review or branches "
-                         "(or #node=<id>, #review, #branches); no TARGET = the flow")
-    ap.add_argument("--opens", action="store_true",
-                    help="print how often the studio page was opened (today, 7 days, 30 days) and exit")
-    args = ap.parse_args(argv)
-    if args.opens:
-        from .studio import flow, opens
-        import json as _json
-        print(_json.dumps(opens.summary(flow.resolve_paths().studio)))
-        return 0
-    if not 0 <= args.port <= 65535 or args.idle_exit < 0:
-        ap.error("bad --port or --idle-exit")
-    from .studio import server
-    if args.open is not None and server.target_hash(args.open) is None:
-        ap.error("bad --open target (use node:<id>, review or branches)")
-    return server.serve(port=args.port, open_browser=not args.no_open, idle_exit_s=args.idle_exit,
-                        open_target=args.open)
-
-
 def main(argv=None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw[:1] == ["xval"]:
@@ -206,9 +176,6 @@ def main(argv=None) -> int:
         # Discovery harness (docs/research/2026-10-27-p99-discovery-harness.md). Own subcommands.
         from .explore.cli import main as _explore
         return _explore(raw[1:])
-    if raw[:1] == ["studio"]:
-        # apex flow studio: local web UI of the request flow (docs/STUDIO.md). Own parser.
-        return _studio(raw[1:])
     if raw[:1] == ["worldmodel"]:
         # P6 world model (docs/DESIGN-worldmodel-P6.md): one dispatcher; numpy/mlx load lazily inside commands.
         from .worldmodel.cli import main as _worldmodel
@@ -365,10 +332,6 @@ def main(argv=None) -> int:
     # a recommendation; `--check` exits 0/1/2/3 (UNKNOWN=3, usage=4) to gate a fan-out. Args forwarded to pressure.main.
     sub.add_parser("pressure", help="upstream rate-limit pressure (GREEN/AMBER/RED) before a "
                                     "fan-out; --check exits 0/1/2/3 (4=usage)", add_help=False)
-    # Menu-bar widget readout: pressure + errors + meters + running agents + worker/proxy +
-    # adapter sections, read-only (never writes pressure.json). Args forwarded to snapshot.main.
-    sub.add_parser("snapshot", help="read-only snapshot for the menu-bar widget "
-                                    "(--json | --menubar for SwiftBar | --graph)", add_help=False)
     sub.add_parser("xval", help="adaptive `codex exec` for cross-validation (per-category P2C over "
                                 "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
                    add_help=False)
@@ -402,8 +365,6 @@ def main(argv=None) -> int:
                    add_help=False)
     sub.add_parser("explore", help="discovery harness: `explore run --task DIR --arm explore|baseline "
                                    "--budget B`, `explore table RESULTS.jsonl`", add_help=False)
-    sub.add_parser("studio", help="apex flow studio: local web UI of the request flow, a dry-run prompt "
-                                   "test and a reviewed draft of settings (127.0.0.1 only)", add_help=False)
     sub.add_parser("worldmodel", help="P6 world model: `worldmodel build|stats|snapshot|baseline|chains|progress|"
                                       "train|probe|evaluate` (needs [worldmodel])",
                    add_help=False)
@@ -605,9 +566,6 @@ def main(argv=None) -> int:
     if args.cmd == "mail":
         from .mail import main as _mail
         return _mail(extra)
-    if args.cmd == "snapshot":
-        from .snapshot import main as _snapshot
-        return _snapshot(extra)
     if args.cmd == "ornith-tier":
         from .ornith import tier_switch
         if args.unload:

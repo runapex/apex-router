@@ -20,18 +20,18 @@ _KEY_RE = re.compile(r"\A[A-Za-z0-9 _.:+#@(),-]{1,128}\Z")
 
 
 def _pressure() -> Any:
-    from .. import snapshot
-    return snapshot.pressure_block()
+    from .. import status_blocks
+    return status_blocks.pressure_block()
 
 
 def _errors15m() -> Any:
-    from .. import snapshot
-    return snapshot.errors_block()
+    from .. import status_blocks
+    return status_blocks.errors_block()
 
 
 def _measure() -> Any:
-    from .. import snapshot
-    return snapshot.measure_block()
+    from .. import status_blocks
+    return status_blocks.measure_block()
 
 
 def _route_rates() -> Any:
