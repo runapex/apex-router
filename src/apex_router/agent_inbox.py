@@ -1346,13 +1346,26 @@ RESULT_LINE_MAX = 400
 # list items, table rows, the VERDICT line. Every other line (prose, code, indented text) is dropped, never
 # shown. Inline `code` spans show only when they are one plain word (a file name), else <code>.
 _RESULT_KEEP_RE = re.compile(r"^(?:#{1,6} |[-*+] |[0-9]{1,3}[.)] |\|)|^\**VERDICT\b", re.I)
-_SPAN_RE = re.compile(r"`([^`\n]{0,400})`")
+_TICKS_RE = re.compile(r"`+")
 _PROMPT_LINE_RE = re.compile(r"^[ \t>*#_|-]*(?:TASK|PROMPT|BRIEF|CONTEXT|STEPS|LIMITS)\b", re.I)
 
 
-def _result_span(m) -> str:
-    t = m.group(1)
-    return f"`{t}`" if len(t) <= 80 and commands._PLAIN_WORD_RE.fullmatch(t) else "<code>"
+def _result_spans(ln: str) -> str:
+    """Inline code, fail closed (xval yyi4: ``x`` double backticks and spans over 400 characters showed):
+    split at every backtick run; odd parts are code. A code part shows only as one plain word of at most 80
+    characters; any other code part, and an unclosed one, becomes <code>."""
+    parts = _TICKS_RE.split(ln)
+    out = []
+    for k, part in enumerate(parts):
+        if k % 2 == 0:
+            out.append(part)
+        elif k == len(parts) - 1:
+            out.append("<code>")                                   # unclosed: the rest of the line is code
+        elif len(part) <= 80 and commands._PLAIN_WORD_RE.fullmatch(part):
+            out.append(f"`{part}`")
+        else:
+            out.append("<code>")
+    return "".join(out)
 
 
 def result_lines(rh, iid: str) -> list[str] | None:
@@ -1378,7 +1391,7 @@ def result_lines(rh, iid: str) -> list[str] | None:
         if _PROMPT_LINE_RE.match(ln):
             out.append("<text>")
             continue
-        out.append(mask_line(_SPAN_RE.sub(_result_span, ln), RESULT_LINE_MAX))
+        out.append(mask_line(_result_spans(ln), RESULT_LINE_MAX))
     if dropped:
         out.append(f"… {dropped} line(s) not shown")
     return out[-RESULT_LINES:]

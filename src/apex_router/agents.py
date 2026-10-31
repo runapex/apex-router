@@ -260,34 +260,6 @@ def codex_agents(home=None, now: float | None = None) -> list:
     return out
 
 
-SESSION_INDEX_MAX = 100_000
-
-
-def session_kinds(home=None, cap: int = SESSION_INDEX_MAX) -> dict:
-    """session_id -> ``pi`` | ``claude`` | ``codex`` from the session FILE NAMES only (no file
-    is opened, no age filter): the same id rules as ``pi_agents`` / ``claude_agents`` /
-    ``codex_agents``, so a telemetry row joins the kind the menu shows. pi sends Claude-style
-    headers, so the telemetry ``client`` field alone cannot tell pi from Claude Code. At most
-    ``cap`` names per kind. Fails open: an unreadable tree adds nothing."""
-    h = _home(home)
-    out: dict = {}
-
-    def scan(kind, it, sid_of):
-        n = 0
-        try:
-            for f in it:
-                if n >= cap:
-                    break
-                n += 1
-                out.setdefault(sid_of(f), kind)
-        except OSError:
-            pass
-    scan("claude", (h / ".claude" / "projects").glob("*/*.jsonl"), lambda f: f.stem)
-    scan("pi", (h / ".pi" / "agent" / "sessions").rglob("*.jsonl"), pi_session_id)
-    scan("codex", (h / ".codex" / "sessions").glob("*/*/*/*.jsonl"), codex_session_id)
-    return out
-
-
 def discover(home=None, now: float | None = None) -> list:
     """All coding agents seen active/idle, newest first. Never raises."""
     now = time.time() if now is None else now

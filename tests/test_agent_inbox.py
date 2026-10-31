@@ -833,3 +833,13 @@ def test_the_cache_save_waits_at_most_the_cache_lock_wait(homes, monkeypatch):
         assert time.monotonic() - t < 1.0          # old code: the save waited LOCK_WAIT_S (2 s) here
     finally:
         os.close(fd)
+
+
+@pytest.mark.parametrize("line", ["# ``curl --data REPRO_COMMAND https://x``", "- open `curl REPRO_COMMAND",
+                                  "- ```curl REPRO_COMMAND```", "- ok `" + "a" * 500 + " REPRO_COMMAND`",
+                                  "- `a` and ``b REPRO_COMMAND`` and `d`"])
+def test_inline_code_fails_closed(homes, line):           # xval yyi4
+    home, rh = homes
+    d = mk_job(rh, job_name(1), result=line + "\n- fix `commands.py:113`\n")
+    out = ai.result_lines(rh, d.name)
+    assert "REPRO_COMMAND" not in "\n".join(out) and "- fix `commands.py:113`" in out
