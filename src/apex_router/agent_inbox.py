@@ -1346,26 +1346,20 @@ RESULT_LINE_MAX = 400
 # list items, table rows, the VERDICT line. Every other line (prose, code, indented text) is dropped, never
 # shown. Inline `code` spans show only when they are one plain word (a file name), else <code>.
 _RESULT_KEEP_RE = re.compile(r"^(?:#{1,6} |[-*+] |[0-9]{1,3}[.)] |\|)|^\**VERDICT\b", re.I)
-_TICKS_RE = re.compile(r"`+")
+_PLAIN_SPAN_RE = re.compile(r"`(" + commands._PLAIN_PART + r"+)`")
+_PLAIN_SPANS_LINE_RE = re.compile(r"[^`]*(?:`" + commands._PLAIN_PART + r"+`[^`]*)*")
 _PROMPT_LINE_RE = re.compile(r"^[ \t>*#_|-]*(?:TASK|PROMPT|BRIEF|CONTEXT|STEPS|LIMITS)\b", re.I)
 
 
 def _result_spans(ln: str) -> str:
-    """Inline code, fail closed (xval yyi4: ``x`` double backticks and spans over 400 characters showed):
-    split at every backtick run; odd parts are code. A code part shows only as one plain word of at most 80
-    characters; any other code part, and an unclosed one, becomes <code>."""
-    parts = _TICKS_RE.split(ln)
-    out = []
-    for k, part in enumerate(parts):
-        if k % 2 == 0:
-            out.append(part)
-        elif k == len(parts) - 1:
-            out.append("<code>")                                   # unclosed: the rest of the line is code
-        elif len(part) <= 80 and commands._PLAIN_WORD_RE.fullmatch(part):
-            out.append(f"`{part}`")
-        else:
-            out.append("<code>")
-    return "".join(out)
+    """Inline code, fail closed without parsing (xval yyi4, 68mv: span parsers showed commands through
+    mixed backtick runs). The line keeps its backticks only when every backtick is part of a `word` pair
+    with one plain word of at most 80 characters inside. Any other line is cut at its first backtick."""
+    if "`" not in ln:
+        return ln
+    if _PLAIN_SPANS_LINE_RE.fullmatch(ln) and all(len(w) <= 80 for w in _PLAIN_SPAN_RE.findall(ln)):
+        return ln
+    return ln[:ln.index("`")] + "<code>"
 
 
 def result_lines(rh, iid: str) -> list[str] | None:
