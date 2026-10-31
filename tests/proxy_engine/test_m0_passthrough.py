@@ -121,6 +121,37 @@ def test_codex_routes_to_openai_upstream(app_with_mock_upstream):
     assert "api.openai.com" in captured["url"]
 
 
+def test_grok_model_on_openai_wire_routes_to_xai(app_with_mock_upstream):
+    app, captured, cfg = app_with_mock_upstream
+    body = json.dumps({"model": "grok-4", "messages": []}).encode()
+    with TestClient(app) as client:
+        r = client.post("/v1/chat/completions", content=body,
+                        headers={"user-agent": "Cursor/1.0", "authorization": "Bearer test-key"})
+    assert r.status_code == 200
+    assert captured["url"].startswith(cfg.xai_upstream.rstrip("/") + "/v1/chat/completions")
+    assert "api.openai.com" not in captured["url"]
+
+
+def test_cursor_gpt_stays_on_openai(app_with_mock_upstream):
+    app, captured, _ = app_with_mock_upstream
+    with TestClient(app) as client:
+        r = client.post("/v1/chat/completions", content=b'{"model":"gpt-4o"}',
+                        headers={"user-agent": "Cursor/1.0"})
+    assert r.status_code == 200
+    assert "api.openai.com" in captured["url"]
+    assert "api.x.ai" not in captured["url"]
+
+
+def test_anthropic_wire_ignores_a_grok_model_name(app_with_mock_upstream):
+    app, captured, _ = app_with_mock_upstream
+    with TestClient(app) as client:
+        r = client.post("/v1/messages", content=b'{"model":"grok-4","messages":[]}',
+                        headers={"anthropic-version": "2023-06-01"})
+    assert r.status_code == 200
+    assert "api.anthropic.com" in captured["url"]
+    assert "api.x.ai" not in captured["url"]
+
+
 def test_healthz_and_stats_not_forwarded(app_with_mock_upstream):
     app, captured, _ = app_with_mock_upstream
     with TestClient(app) as client:

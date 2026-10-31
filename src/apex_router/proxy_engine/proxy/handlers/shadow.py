@@ -30,9 +30,21 @@ from starlette.responses import Response, StreamingResponse
 from apex_router.proxy_engine.config import APEX_VERSION
 from apex_router.proxy_engine.pipeline.shadow import run_shadow
 from apex_router.proxy_engine.policy import PolicyVersion
-from apex_router.proxy_engine.proxy.handlers.passthrough import _session_id, detect_client
-from apex_router.proxy_engine.proxy.upstream import Upstream, filter_request_headers, filter_response_headers
-from apex_router.proxy_engine.proxy.usage import ErrorBodyScanner, UsageScanner, capture_error_headers
+from apex_router.proxy_engine.proxy.handlers.passthrough import (
+    _session_id,
+    detect_client,
+)
+from apex_router.proxy_engine.proxy.upstream import (
+    Upstream,
+    filter_request_headers,
+    filter_response_headers,
+    route_call,
+)
+from apex_router.proxy_engine.proxy.usage import (
+    ErrorBodyScanner,
+    UsageScanner,
+    capture_error_headers,
+)
 from apex_router.proxy_engine.telemetry.events import TelemetryEvent, TelemetryWriter
 
 
@@ -49,7 +61,6 @@ async def handle(
     event.session_id = _session_id(request)
     event.agent_id = request.headers.get("x-claude-code-agent-id")  # sub-agent attribution (P0.2)
     event.request_id = request.headers.get("x-request-id")
-    event.endpoint_id = upstream.endpoint_id(client_kind)  # where the wire is reached (not a const)
 
     body = await request.body()  # raw inbound bytes — forwarded UNCHANGED (shadow = passthrough)
 
@@ -60,6 +71,8 @@ async def handle(
     # (a routing decision IS requested≠resolved; data not logged now is a study you can't run).
     # Read-only over a copy: the bytes forwarded upstream are still the untouched original.
     event.model_requested = _requested_model(body)
+    # After the model is known: a grok id on the OpenAI wire is endpoint xai, not openai.
+    event.endpoint_id = route_call(upstream.endpoint_id, client_kind, model=event.model_requested)
 
     # §4 matcher wiring (same contract as the passthrough handler — telemetry contract: no
     # field is handler-exclusive): content-derived identity for header-less traffic; the
@@ -97,7 +110,10 @@ async def handle(
     raw_path = request.scope.get("raw_path") or request.url.path.encode("latin-1")
     if isinstance(raw_path, bytes):
         raw_path = raw_path.split(b"?", 1)[0].decode("latin-1")
-    url = upstream.build_url(client_kind, raw_path, request.scope.get("query_string", b""))
+    url = route_call(
+        upstream.build_url, client_kind, raw_path, request.scope.get("query_string", b""),
+        model=event.model_requested,
+    )
     # Opt-in stable Codex cache key (identity unless APEX_CODEX_CACHE_KEY=1). Measurement above ran
     # on the client's original bytes; only the forwarded copy carries the edit (proxy.cache_key).
     prepare = getattr(upstream, "prepare_body", None)  # duck-typed upstreams (tests) forward as-is

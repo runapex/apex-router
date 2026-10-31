@@ -74,3 +74,11 @@ def test_embeddings_is_a_known_latent_gap():
     # If an embeddings client is ever added, THIS test flips to `== "codex"` and the suffix list
     # gains "/embeddings". Pinned so the gap is visible, not silent.
     assert detect_client(_Req("/v1/embeddings")) == "claude-code"  # latent: not yet codex
+
+
+def test_chat_completions_with_cursor_ua_is_cursor():
+    assert detect_client(_Req("/v1/chat/completions", {"user-agent": "Cursor/1.0"})) == "cursor"
+
+
+def test_chat_completions_without_cursor_ua_stays_codex():
+    assert detect_client(_Req("/v1/chat/completions", {"user-agent": "codex-cli"})) == "codex"

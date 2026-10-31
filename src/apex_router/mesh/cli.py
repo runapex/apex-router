@@ -1228,6 +1228,40 @@ def _cmd_launchd(args) -> int:
     return _submodule("launchd").cmd(args.action, dry_run=args.dry_run, as_json=args.json)
 
 
+def _cmd_units(args) -> int:
+    """Write systemd --user units for `up` (and `worker`); print the commands, run none."""
+    import os
+    from pathlib import Path
+
+    from . import units
+    up_args = list(args.up_args or [])
+    try:
+        units.check_up_args(up_args)
+        env = dict(os.environ)
+        files = {units.UP_UNIT: units.render_up(up_args, py=sys.executable, env=env)}
+        if args.worker:
+            files[units.WORKER_UNIT] = units.render_worker(py=sys.executable, env=env)
+    except ValueError as e:
+        print(f"mesh units: {e}", file=sys.stderr)
+        return 2
+    if args.print:
+        for name, body in files.items():
+            print(f"# {name}\n{body}")
+        return 0
+    d = Path(args.dir).expanduser() if args.dir else Path.home() / ".config/systemd/user"
+    d.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        verb = "overwrote" if (d / name).exists() else "wrote"
+        (d / name).write_text(body)
+        print(f"{verb} {d / name}")
+    print("next (run them yourself):")
+    print("  systemctl --user daemon-reload")
+    for name in files:
+        print(f"  systemctl --user enable --now {name}")
+    print("  sudo loginctl enable-linger $USER   # keep user units running after logout")
+    return 0
+
+
 # ---- parser ---------------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1387,6 +1421,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="status as JSON")
     p.set_defaults(fn=_cmd_launchd)
 
+    p = sub.add_parser("units", help="write systemd --user units for `up` (and `worker`, opt-in) "
+                                     "on a Linux node; args after -- go to `up`. Runs no systemctl")
+    p.add_argument("--dir", help="unit directory (default ~/.config/systemd/user)")
+    p.add_argument("--worker", action="store_true", help="also write the worker unit")
+    p.add_argument("--print", action="store_true", help="print the units, write nothing")
+    p.set_defaults(fn=_cmd_units, up_args=[])
+
     p = sub.add_parser("worker", help="run the job worker (all args go to the worker)",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -1400,7 +1441,14 @@ def main(argv: list[str] | None = None) -> int:
         # argparse REMAINDER drops a first token that starts with "-" (e.g. `worker --pause`).
         # So hand every argument after "worker" to worker.main unchanged.
         return _run_worker(argv[1:])
+    up_args = []
+    if argv[:1] == ["units"] and "--" in argv:
+        # Everything after "--" is a `mesh up` argument list, checked by the up parser itself.
+        cut = argv.index("--")
+        argv, up_args = argv[:cut], argv[cut + 1:]
     args = build_parser().parse_args(argv)
+    if argv[:1] == ["units"]:
+        args.up_args = up_args
     return int(args.fn(args) or 0)
 
 

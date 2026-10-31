@@ -8,6 +8,8 @@ import statistics
 import time
 from collections import Counter
 
+from apex_router.proxy_engine.config import OPENAI_COMPAT_ENDPOINTS
+
 from .base import GRAPH_MODELS_MAX, _num
 
 
@@ -33,7 +35,7 @@ def fresh_input(r: dict) -> int:
     Anthropic wire ``tokens_in`` is already the uncached remainder."""
     u = r.get("usage") if isinstance(r.get("usage"), dict) else {}
     ti = _num(r.get("tokens_in")) or _num(u.get("input_tokens")) or 0
-    if str(r.get("endpoint_id") or "").lower() == "openai":
+    if str(r.get("endpoint_id") or "").lower() in OPENAI_COMPAT_ENDPOINTS:
         return max(0, int(ti - _cache_read(r)))   # the same cache count the totals use
     return int(ti)
 

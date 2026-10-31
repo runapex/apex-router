@@ -112,8 +112,8 @@ MatcherEvent = Literal["unwired", "extend", "new", "client_edit", "compaction", 
 # written before v13 (the key is absent there), never 0 on a v13 row.
 TELEMETRY_SCHEMA_VERSION = 13
 
-# Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client)`
-# (anthropic for the Anthropic wire, openai for codex) — this default is only the fallback for an
+# Default endpoint label. The handlers OVERRIDE this per request from `Upstream.endpoint_id(client, model)`
+# (anthropic, openai, or xai for a grok model id) — this default is only the fallback for an
 # event constructed without a handler (e.g. `start()` before routing). A real endpoints table
 # (A-Proto) replaces the derivation with a lookup on the resolved endpoint profile.
 ENDPOINT_ID = "anthropic"
@@ -143,7 +143,7 @@ class TelemetryEvent:
     model_resolved: str | None
     stratum: str
     # endpoint the wire was reached through — set per request by the handler from the resolved
-    # upstream (anthropic | openai). Attribution substrate: shadow-era data is endpoint-labeled from
+    # upstream (anthropic | openai | xai). Attribution substrate: shadow-era data is endpoint-labeled from
     # line one, so a later multi-endpoint world can bucket it without re-collecting. See ENDPOINT_ID
     # for the derivation.
     endpoint_id: str = ENDPOINT_ID

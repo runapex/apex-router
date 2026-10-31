@@ -83,15 +83,60 @@ def _is_tunnel(name: str) -> bool:
 _LAN_PREFIXES = ("en", "eth", "wl")
 
 
+# Linux hosts without net-tools (openSUSE, minimal images) have only iproute2 ``ip``.
+_IP_PATHS = ("/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip")
+
+
+def _ip_bin() -> str | None:
+    import os
+    return next((p for p in _IP_PATHS if os.access(p, os.X_OK)), None)
+
+
+def _ip_addrs(addr_text: str, link_text: str) -> list[tuple[str, str, bool]]:
+    """[(interface, IPv4 address, status active)] from ``ip -o -4 addr`` and ``ip -o link``.
+
+    Active = the link flags hold UP and LOWER_UP (carrier), the ``ip`` form of UP + RUNNING. An
+    interface missing from ``link_text`` counts as active, as ``ifconfig`` output without flags.
+    """
+    active = {}
+    for line in link_text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 3 or "<" not in parts[2]:
+            continue
+        name = parts[1].strip().split("@", 1)[0]          # "veth1a2b@if2" -> "veth1a2b"
+        flags = parts[2].split("<", 1)[1].split(">", 1)[0].split(",")
+        active[name] = "UP" in flags and "LOWER_UP" in flags
+    out = []
+    for line in addr_text.splitlines():
+        parts = line.split()
+        # "2: wlp1s0    inet 10.0.0.221/24 brd ... scope global wlp1s0\ ..."
+        if len(parts) >= 4 and parts[2] == "inet":
+            name = parts[1].split("@", 1)[0]
+            out.append((name, parts[3].split("/", 1)[0], active.get(name, True)))
+    return out
+
+
 def _iface_addrs(text: str | None = None) -> list[tuple[str, str, bool]]:
-    """[(interface, IPv4 address, status active)] from ``ifconfig``. [] on any error."""
+    """[(interface, IPv4 address, status active)] from ``ifconfig``, else from ``ip``. [] on any error."""
     import subprocess
     if text is None:
         try:
             text = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=3,
                                   check=False).stdout
         except (OSError, subprocess.SubprocessError):
-            return []
+            text = ""
+        if not text.strip():
+            ip = _ip_bin()
+            if ip is None:
+                return []
+            try:
+                addr = subprocess.run([ip, "-o", "-4", "addr", "show"], capture_output=True,
+                                      text=True, timeout=3, check=False).stdout
+                link = subprocess.run([ip, "-o", "link", "show"], capture_output=True,
+                                      text=True, timeout=3, check=False).stdout
+            except (OSError, subprocess.SubprocessError):
+                return []
+            return _ip_addrs(addr, link)
     out, name, addrs, active = [], None, [], True
 
     def flush():
