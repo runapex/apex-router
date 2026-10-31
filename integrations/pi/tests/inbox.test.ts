@@ -1,4 +1,4 @@
-// node --test integrations/pi/tests/   — agent inbox overlay and widget (docs/design/AGENTS-INBOX.md sections 4-7, 9)
+// node --test integrations/pi/tests/*.test.ts   — agent inbox overlay and widget (docs/design/AGENTS-INBOX.md sections 4-7, 9)
 // against a fake `apex-router` CLI (fixtures/fake-agents-cli.mjs). No pi, no model.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
