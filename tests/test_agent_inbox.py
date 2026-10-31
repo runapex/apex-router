@@ -899,13 +899,15 @@ def test_resolve_needs_lists_by_default_and_writes_with_yes(homes):
     assert rc == 2
 
 
-def test_a_slow_git_leaves_branch_and_ahead_empty(monkeypatch, tmp_path):     # xval 7vxt
+@pytest.mark.parametrize("exc", ["timeout", "runtime", "oserror"])
+def test_a_failing_git_leaves_branch_and_ahead_empty(monkeypatch, tmp_path, exc):   # xval 7vxt, p003
     import subprocess
     from apex_router import safe_proc
 
-    def slow(argv, timeout, out_max, **kw):
-        raise subprocess.TimeoutExpired(argv, timeout)
-    monkeypatch.setattr(safe_proc, "run_capped", slow)
+    def bad(argv, timeout, out_max, **kw):
+        raise {"timeout": subprocess.TimeoutExpired(argv, timeout), "runtime": RuntimeError("can't start new thread"),
+               "oserror": OSError("x")}[exc]
+    monkeypatch.setattr(safe_proc, "run_capped", bad)
     it = {"kind": "pi-job", "branch": None, "ahead": None}
     ai._git_place(it, str(tmp_path))
     assert it == {"kind": "pi-job", "branch": None, "ahead": None}
