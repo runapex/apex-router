@@ -1341,13 +1341,24 @@ def _resolve_cli(a, home, rh, now) -> int:
 RESULT_LINES = 200
 RESULT_BYTES = 64 * 1024
 RESULT_LINE_MAX = 400
-_PROMPT_LINE_RE = re.compile(r"^[ \t>*#_-]*(?:TASK|PROMPT|BRIEF|CONTEXT|STEPS|LIMITS)\b", re.I)
+# xval x2e6 / e2tw: a block list (brief headings, ``` fences) missed multi-line prompts, ~~~ fences and a fence
+# opened before the tail. Allow-list instead: only report STRUCTURE is shown, one line each, masked: headings,
+# list items, table rows, the VERDICT line. Every other line (prose, code, indented text) is dropped, never
+# shown. Inline `code` spans show only when they are one plain word (a file name), else <code>.
+_RESULT_KEEP_RE = re.compile(r"^(?:#{1,6} |[-*+] |[0-9]{1,3}[.)] |\|)|^\**VERDICT\b", re.I)
+_SPAN_RE = re.compile(r"`([^`\n]{0,400})`")
+_PROMPT_LINE_RE = re.compile(r"^[ \t>*#_|-]*(?:TASK|PROMPT|BRIEF|CONTEXT|STEPS|LIMITS)\b", re.I)
+
+
+def _result_span(m) -> str:
+    t = m.group(1)
+    return f"`{t}`" if len(t) <= 80 and commands._PLAIN_WORD_RE.fullmatch(t) else "<code>"
 
 
 def result_lines(rh, iid: str) -> list[str] | None:
-    """The ``o`` view (xval x2e6: the overlay showed result.md unmasked): the last RESULT_LINES lines of a pi
-    job result.md (at most RESULT_BYTES), each through ``mask_line``. Code block lines show as ``<code>`` and
-    brief lines (TASK:, PROMPT: ...) as ``<text>``. None when there is no such job or file."""
+    """The ``o`` view: the structure of a pi job result.md (last RESULT_BYTES), at most RESULT_LINES lines.
+    A line shows only when it starts (with no indent) as a heading, a list item, a table row or VERDICT;
+    brief lines (TASK:, PROMPT: ...) show as <text>. None when there is no such job or file."""
     if not ID_RE.fullmatch(iid) or not commands.JOB_NAME_RE.fullmatch(iid):
         return None
     d = Path(rh) / "pi-jobs" / iid
@@ -1356,20 +1367,20 @@ def result_lines(rh, iid: str) -> list[str] | None:
     got = _read_tail(d / "result.md", RESULT_BYTES)
     if got is None:
         return None
-    out, code = [], False
+    out, dropped = [], 0
     for ln in _tail_text(got).split("\n"):
-        if ln.lstrip().startswith("```"):
-            code = not code
-            out.append("```")
+        if not _RESULT_KEEP_RE.match(ln):
+            dropped += bool(ln.strip())
             continue
-        if code:
-            out.append("<code>")
-        elif _PROMPT_LINE_RE.match(ln):
+        if dropped:
+            out.append(f"… {dropped} line(s) not shown")
+            dropped = 0
+        if _PROMPT_LINE_RE.match(ln):
             out.append("<text>")
-        else:
-            out.append(mask_line(ln, RESULT_LINE_MAX) if ln.strip() else "")
-    while out and out[-1] == "":
-        out.pop()
+            continue
+        out.append(mask_line(_SPAN_RE.sub(_result_span, ln), RESULT_LINE_MAX))
+    if dropped:
+        out.append(f"… {dropped} line(s) not shown")
     return out[-RESULT_LINES:]
 
 

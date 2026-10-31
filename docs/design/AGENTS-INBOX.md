@@ -133,6 +133,12 @@ Short text: one line, at most 80 characters, made by `commands.mask_short` only:
 Boundary: only the short text (rules a, b) is a security boundary. Rule c on free text (blocker lines,
 `needs`) is best effort. There is no full-text output (D24).
 
+Result view (`apex-router agents result <id>`, overlay key `o`): an allow-list of report structure only.
+A line shows when it starts with no indent as a heading, a list item, a table row or `VERDICT`. Each line
+is masked and cut to 400 characters. Inline code shows only as one plain word; other inline code becomes
+`<code>`. Prose, code blocks and indented text never show. Residual risk (accepted): a list line inside a
+code block shows, masked.
+
 ## 9. Security
 
 - No prompt text, no full commands and no tokens appear in any output.

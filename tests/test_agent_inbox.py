@@ -751,7 +751,24 @@ def test_result_lines_are_masked_and_hide_briefs_and_code(homes):
     out = ai.result_lines(rh, d.name)
     text = "\n".join(out)
     assert "PRIVATE_PROMPT_SENTINEL" not in text and "secret brief" not in text and "abc123" not in text
-    assert "Bearer abc" not in text and "<code>" in out and "plain line" in out
+    assert "Bearer abc" not in text and "plain line" not in text
+
+
+@pytest.mark.parametrize("body,secret", [
+    ("PROMPT:\nPRIVATE_PROMPT_SENTINEL\n", "PRIVATE_PROMPT_SENTINEL"),            # xval e2tw: multi-line prompt
+    ("~~~sh\nprintf REPRO_COMMAND\n~~~\n", "REPRO_COMMAND"),                     # xval e2tw: tilde fence
+    ("x" * 70000 + "\n```\n- REPRO_COMMAND in a list line of a code block\n```\n", None),
+    ("- run `curl -H x https://h/REPRO_COMMAND`\n", "REPRO_COMMAND"),              # inline code with blanks
+    ("    - indented REPRO_COMMAND\n", "REPRO_COMMAND"),
+])
+def test_result_lines_show_only_report_structure(homes, body, secret):
+    home, rh = homes
+    d = mk_job(rh, job_name(1), result=body + "## OPEN\n- [P1] fix `commands.py:113`\n| a | b |\nVERDICT: NO-GO\n")
+    out = ai.result_lines(rh, d.name)
+    text = "\n".join(out)
+    if secret:
+        assert secret not in text
+    assert "- [P1] fix `commands.py:113`" in out and "| a | b |" in out and "VERDICT: NO-GO" in out
     assert ai.result_lines(rh, "../../etc") is None and ai.result_lines(rh, job_name(9)) is None
 
 

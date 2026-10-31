@@ -213,7 +213,8 @@ export class InboxStore {
 	async result(it: { id: string; kind: string }): Promise<ResultTail> {
 		if (it.kind !== "pi-job") return { ok: false, reason: "No result.md for this kind of agent" };
 		if (!ID_RE.test(it.id) || it.id.includes("..")) return { ok: false, reason: "bad item id" };
-		const r = await this.run(["agents", "result", it.id]);
+		if (this.inflight || this.loading) return { ok: false, reason: "busy, try again" }; // xval e2tw: one call at a time
+		const r = await this.track(this.run(["agents", "result", it.id]));
 		if (!r.ok) return { ok: false, reason: r.reason.includes("no result.md") ? "No result.md yet" : r.reason };
 		const lines = r.stdout.split("\n");
 		while (lines.length && lines.at(-1) === "") lines.pop();

@@ -432,6 +432,21 @@ test("store.result: the masked text comes from apex-router agents result (xval x
 	assert.ok(!slow.ok && Date.now() - t0 < 3000);
 });
 
+test("store.result: one CLI call at a time (xval e2tw: 100 presses started 100 calls)", async () => {
+	let n = 0;
+	let release!: () => void;
+	const gate = new Promise<void>(r => (release = r));
+	const run: CliRunner = async () => (n++, await gate, { ok: true, stdout: "x\n" });
+	const s = new InboxStore({ run });
+	const all = Array.from({ length: 100 }, () => s.result({ id: "20261030224430-o41s", kind: "pi-job" }));
+	assert.equal(n, 1);
+	assert.equal(s.busy, true);
+	release();
+	const rs = await Promise.all(all);
+	assert.equal(rs.filter(r => r.ok).length, 1);
+	assert.equal(rs.filter(r => !r.ok && r.reason === "busy, try again").length, 99);
+});
+
 test("overlay: o uses store.result when no reader is given", async () => {
 	const { run } = fake("ok");
 	const s = new InboxStore({ run });
