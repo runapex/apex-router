@@ -143,8 +143,8 @@ Polish (2026-10-31):
 - A claude-bg item resumes with `claude attach <short id>`. It works while the agent runs and after a stop.
 - `apex-router agents show <id>` adds `branch` and `ahead` (commits ahead of `main`) for a pi job. It runs
   two git calls, each with a 1.5 s limit. The list runs no git, so `ahead` stays `null` there.
-- `apex-router agents resolve-needs [--older-than AGE] [--role R] [--verdict V]` lists the matching needs
-  match. `--yes` resolves them. An item in the running state never matches.
+- `apex-router agents resolve-needs [--older-than AGE] [--role R] [--verdict V]` lists the needs items
+  that match. `--yes` resolves them. An item in the running state never matches.
 - The overlay has a dim left edge when it does not take the whole width. It follows a terminal resize.
 
 ## 9. Security
