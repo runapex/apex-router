@@ -633,7 +633,7 @@ install_agents_hooks() {
   if mkdir -p "$cmddir" 2>/dev/null; then
     if [ -e "$cmddir/agents.md" ]; then
       echo "     claude /agents exists at $cmddir/agents.md — not overwritten"
-    elif cp "$INSTALL_DIR/integrations/claude/agents.md" "$cmddir/agents.md" 2>/dev/null; then
+    elif cp "$INSTALL_DIR/integrations/claude/agents-inbox.md" "$cmddir/agents.md" 2>/dev/null; then
       ok "claude /agents command installed"
     fi
   fi

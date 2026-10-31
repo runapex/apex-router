@@ -90,7 +90,7 @@ def test_status_line_is_empty_with_no_cache_or_a_bad_cache(tmp_path):
 
 
 def test_agents_command_passes_no_user_arguments_to_the_shell():
-    text = (ROOT / "integrations" / "claude" / "agents.md").read_text()
+    text = (ROOT / "integrations" / "claude" / "agents-inbox.md").read_text()
     assert "!`apex-router agents`" in text and "$ARGUMENTS" not in text
 
 
