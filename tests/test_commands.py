@@ -853,3 +853,31 @@ def test_a_tool_name_outside_the_allow_list_shows_other(tool):
 
 def test_there_is_no_full_text_output():
     assert not hasattr(commands, "mask_full") and not hasattr(commands, "full_call")
+
+
+# ---- xval 8267 (round 10, owner D26: fix, then stop the masking rounds) -------------------------------------
+
+@pytest.mark.parametrize("tool,args,secret", [
+    ("--sk-AbCdEf0123456789", {}, "AbCdEf0123456789"),
+    ("bash", {"command": "echo --sk-AbCdEf0123456789"}, "AbCdEf0123456789"),
+    ("read", {"path": "/a/--sk-AbCdEf0123456789"}, "AbCdEf0123456789"),
+    ("bash", "Bearer " + "a/" * 2048 + "private_body", "private_body"),
+    ("bash", {"command": "echo AbCdEfGhIjKlMnOp/QrStUvWxYz01234"}, "QrStUv"),
+    ("bash", {"command": "awk /private_body/"}, "private_body"),
+    ("bash", {"command": "cat x | /usr/bin/awk private_body"}, "private_body"),
+    ("bash", {"command": "node -p private_body"}, "private_body"),
+    ("bash", {"command": "sed s/a/private_body/"}, "private_body"),
+    ("bash", {"command": "sed -n /private_body/p f"}, "private_body"),
+    ("bash", {"command": "jq .private_body f"}, "private_body"),
+])
+def test_round_10_inputs_do_not_show(tool, args, secret):
+    for limit in (commands.SHORT_MAX, commands.MENU_MAX):
+        short, masked = commands.mask_short(tool, args, limit)
+        assert secret not in short and masked is True
+
+
+def test_a_sed_line_range_and_a_plain_path_still_show():
+    assert commands.mask_short("bash", {"command": "sed -n 10,30p f.py; grep x"}) == ("sed -n 10,30p f.py; grep x", False)
+    p = "ls /home/u/dev/ml/rsi/2026-10-20_pd_po/thor24437_r2/A_report.md"
+    assert commands.mask_short("bash", {"command": p}) == (p, False)
+    assert "[hidden]" in commands.mask_secrets("Bearer " + "x" * 70000)[0] and "xxxx" not in commands.mask_secrets("Bearer " + "x" * 70000)[0]

@@ -77,9 +77,9 @@ _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")         # keeps \t and \
 _SECRET_NAME_RE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|AUTH", re.I)
 # NAME=value with a secret-like NAME: a plain value hides as one word; any other value hides to the line end.
 _JSON_PAIR_RE = re.compile(r"\"([A-Za-z0-9_.-]{1,128})\"(\s{0,3}:\s{0,3})\"((?:[^\"\\\n]|\\.){0,4096})\"")
-_BEARER_RE = re.compile(r"\b(Bearer)\s+[^\s'\"]{1,4096}", re.I)
+_BEARER_RE = re.compile(r"\b(Bearer)\s+[^\s'\"]+", re.I)        # no cap (xval 8267: a cap showed the tail)
 _PREFIX_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{8,}"
+    r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{8,}"          # xval 8267: --sk-... showed
     r"|(?<![A-Za-z0-9_])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}"
     r"|(?<![A-Za-z0-9])xox[a-z]-[A-Za-z0-9-]{4,}"
     r"|(?<![A-Za-z0-9])AKIA[A-Z0-9]{8,}"
@@ -88,6 +88,10 @@ _PREFIX_RE = re.compile(
 # commands had a long PATH hidden (owner review 2026-10-29). Tokens with "/" are still caught by the
 # NAME=value, Bearer and prefix rules; a long run between two "/" is still caught here.
 _RUN_RE = re.compile(r"[A-Za-z0-9+_-]{32,}={0,2}")
+# xval 8267: std base64 with "/" (AbCd.../QrSt...) showed. A run with "/" hides when it has an upper, a lower
+# and a digit; a plain path of lowercase words does not.
+# Standard base64 has no "-", "_" or "."; real paths almost always do (D=~/.apex-router, 2026-10-20_pd_po).
+_RUN_SLASH_RE = re.compile(r"(?<![A-Za-z0-9+/_.-])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/_.-])")
 # Allow-list (xval dt3i, 45zb, lm3c found blocklist bypasses in 3 rounds): a short text shows only PLAIN words,
 # from the start of the first line to the first word that is not plain. A plain word has no quote, backslash,
 # "#", "(", ")", backtick or "$" (except a $NAME or ${NAME} reference: it holds no value).
@@ -186,7 +190,16 @@ def mask_secrets(s: str) -> tuple[str, bool]:
     n_all += n
     s, n = _RUN_RE.subn("[hidden]", s)
     n_all += n
+    t = _RUN_SLASH_RE.sub(_slash_run, s)
+    n_all += t != s
+    s = t
     return s, n_all > 0
+
+
+def _slash_run(m) -> str:
+    t = m.group(0)
+    hide = "/" in t and any(c.isupper() for c in t) and any(c.islower() for c in t) and any(c.isdigit() for c in t)
+    return "[hidden]" if hide else t
 
 
 def _script_flag(w: str):
@@ -204,12 +217,25 @@ def _script_flag(w: str):
     return None
 
 
+# xval 8267: "awk /x/" showed the program. A word that names one of these commands ends the short text with
+# <script> (the program is a positional argument). node/deno/bun -p and --print count as a script flag.
+_PROG_CMDS = frozenset({"awk", "gawk", "mawk", "nawk", "sed", "gsed", "jq", "yq", "gojq", "perl", "ruby", "php",
+                        "lua", "tclsh", "dc", "bc"})
+_SED_CMDS = frozenset({"sed", "gsed"})
+_SED_RANGE_RE = re.compile(r"(?:[0-9]{1,9}|\$)(?:,(?:[0-9]{1,9}|\$))?p")
+_PRINT_CMDS = frozenset({"node", "nodejs", "deno", "bun"})
+
+
+def _cmd_base(w: str) -> str:
+    return w.lstrip("|&;!{").rsplit("/", 1)[-1]
+
+
 def _bash_short(raw: str) -> tuple[str, bool]:
     """Rule 2a/2b as an allow-list: the plain words of the first line, up to the first word that is not plain
     (<text>), a script flag (<script>) or the end of the line (<script> when more lines follow)."""
     m = _BREAK_RE.search(raw)
     line, more = (raw, False) if m is None else (raw[:m.start()], bool(raw[m.start():].strip()))
-    out, mark = [], " <script>" if more else ""
+    out, mark, prog = [], " <script>" if more else "", ""
     for w in re.split(r"[ \t]+", line):
         if not w:
             continue
@@ -222,11 +248,30 @@ def _bash_short(raw: str) -> tuple[str, bool]:
                 out.append(flag)
             mark = " <script>"
             break
+        if prog:                                      # the word after awk, sed, jq ... is the program
+            if w in ("-n", "--quiet", "--silent", "-r"):
+                out.append(w)
+                continue
+            cmd, prog = prog, ""
+            if cmd in _SED_CMDS and _SED_RANGE_RE.fullmatch(w[:-1] if w.endswith(";") else w):
+                out.append(w)                         # sed -n 10,30p: a line range holds no text
+                continue
+            mark = " <script>"
+            break
+        if _PLAIN_WORD_RE.fullmatch(w) and _cmd_base(w) in _PROG_CMDS:
+            out.append(w)
+            prog = _cmd_base(w)
+            continue
+        if (w in ("-p", "--print") or w.startswith("--print=")) and any(_cmd_base(x) in _PRINT_CMDS for x in out):
+            mark = " <script>"
+            break
         if not _PLAIN_WORD_RE.fullmatch(w):
             script = more or "<<" in w or any("<<" in x for x in out)
             mark = " <script>" if script else " <text>"
             break
         out.append(w)
+    if prog and not mark:
+        mark = " <script>"                            # "awk" with no program word: nothing more to show
     return " ".join(out) + mark, bool(mark)
 
 
