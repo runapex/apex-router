@@ -196,7 +196,11 @@ def create_app(cfg: Config | None = None) -> Starlette:
                     "counts": store.counts(),
                     "gc_removed": state.get("gc_removed", 0),
                 },
-                "upstream": {"anthropic": cfg.anthropic_upstream, "openai": cfg.openai_upstream},
+                "upstream": {
+                    "anthropic": cfg.anthropic_upstream,
+                    "openai": cfg.openai_upstream,
+                    "xai": cfg.xai_upstream,
+                },
                 # proxied requests in progress (stream end counted) and seconds since the last one
                 # started or ended; idle_s is 0 while one is in progress
                 "activity": {

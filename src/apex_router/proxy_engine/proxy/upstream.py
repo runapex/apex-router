@@ -6,12 +6,16 @@ and this client. Kept separate so the wire code never re-creates connections (TT
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
-from asyncio import wait_for as _wait_for   # bound at import: tests swap the module's `asyncio` for a fake sleep
 import os
 import random
+import re
 import ssl
 import time
+from asyncio import (
+    wait_for as _wait_for,  # bound at import: tests swap the module's `asyncio` for a fake sleep
+)
 
 import httpx
 
@@ -159,7 +163,10 @@ _HOP_BY_HOP = frozenset({
 
 
 # Public provider endpoints an Azure-AD gateway token must never be sent to (credential disclosure).
-_PUBLIC_PROVIDER_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
+_PUBLIC_PROVIDER_HOSTS = frozenset({"api.anthropic.com", "api.openai.com", "api.x.ai"})
+_OPENAI_WIRE_CLIENTS = frozenset({"codex", "cursor"})
+# A grok model id, or the last segment of a prefixed id (xai/grok-4). Not a substring (notgrok).
+_GROK_MODEL = re.compile(r"grok(?:[-.][A-Za-z0-9._-]+)?\Z", re.IGNORECASE)
 
 # Header names that mean "the client already authenticated itself" — Authorization/x-api-key plus the
 # Azure APIM alternatives. Checked against RAW inbound headers so a `Connection:`-stripped auth header
@@ -167,6 +174,33 @@ _PUBLIC_PROVIDER_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
 _CLIENT_AUTH_HEADERS = frozenset({
     b"authorization", b"x-api-key", b"ocp-apim-subscription-key", b"api-key",
 })
+
+
+def is_grok_model(model: str | None) -> bool:
+    """True when the requested model id is an xAI Grok id.
+
+    The match is the last path segment, so ``xai/grok-4`` counts and ``notgrok`` does not.
+    """
+    if not isinstance(model, str):
+        return False
+    return bool(_GROK_MODEL.fullmatch(model.strip().rsplit("/", 1)[-1]))
+
+
+def route_call(fn, *args, model: str | None = None):
+    """Call ``fn(*args, model=model)`` when ``fn`` accepts ``model``.
+
+    Handlers pass the requested model so a grok id selects the xAI upstream. A test double
+    written before that argument stays valid.
+    """
+    if not model:
+        return fn(*args)
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(*args)
+    if "model" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return fn(*args, model=model)
+    return fn(*args)
 
 
 def _client_has_auth(raw_headers: list[tuple[bytes, bytes]]) -> bool:
@@ -226,8 +260,14 @@ class Upstream:
             headers={},
         )
 
-    def base_for(self, client_kind: str) -> str:
-        return self._cfg.openai_upstream if client_kind == "codex" else self._cfg.anthropic_upstream
+    def base_for(self, client_kind: str, model: str | None = None) -> str:
+        # OpenAI-wire clients share openai_upstream, except a grok model id, which goes to xAI.
+        # Codex stays on OpenAI. Do not point APEX_OPENAI_UPSTREAM at api.x.ai.
+        if client_kind in _OPENAI_WIRE_CLIENTS:
+            if is_grok_model(model):
+                return self._cfg.xai_upstream
+            return self._cfg.openai_upstream
+        return self._cfg.anthropic_upstream
 
     async def inject_auth(
         self,
@@ -242,11 +282,12 @@ class Upstream:
         `Authorization: Bearer` appended, so an already-authed request is byte-identical to before:
 
           1. injection is enabled (`cfg.inject_azure_token`);
-          2. this is the Anthropic wire (the codex/OpenAI wire has its own auth);
+          2. this is the Anthropic wire (OpenAI-wire clients — codex/cursor — have their own auth);
           3. the target upstream is NOT a public provider endpoint — an Azure AD token minted for
-             `cognitiveservices.azure.com` must NEVER be sent to api.anthropic.com/api.openai.com
-             (that would DISCLOSE the credential to an unrelated host — the whole feature only makes
-             sense in front of an internal gateway, so we refuse to attach it to the public default);
+             `cognitiveservices.azure.com` must NEVER be sent to api.anthropic.com/api.openai.com/
+             api.x.ai (that would DISCLOSE the credential to an unrelated host — the whole feature
+             only makes sense in front of an internal gateway, so we refuse to attach it to the
+             public default);
           4. the client sent NO auth of its own. This is checked against the RAW inbound headers, not
              the hop-by-hop-filtered set: a client that sends `Connection: authorization` + its own
              `Authorization` would have that stripped by `filter_request_headers`, and a post-filter
@@ -258,7 +299,7 @@ class Upstream:
         its own 401, never a proxy-invented 500. The appended header lands in the raw list BEFORE
         `send_stream`'s scrub, so it survives (send_stream keeps the client-provided keys + host/len).
         """
-        if not self._cfg.inject_azure_token or client_kind == "codex":
+        if not self._cfg.inject_azure_token or client_kind in _OPENAI_WIRE_CLIENTS:
             return headers
         # (3) never attach the Azure bearer to a public provider host. Parse DEFENSIVELY: a malformed
         # configured upstream must not become a 500 (this runs before the handler's upstream try), and
@@ -287,16 +328,15 @@ class Upstream:
             return headers
         return [*headers, (b"authorization", auth_value)]
 
-    def endpoint_id(self, client_kind: str) -> str:
+    def endpoint_id(self, client_kind: str, model: str | None = None) -> str:
         """A stable telemetry label for the endpoint a wire is reached through — derived from the
         SAME client→upstream routing as `base_for`, so a row's endpoint attribution matches where
         the request actually went (Codex cross-validation: a static "anthropic" mislabels codex rows,
-        which route to `openai_upstream`, not the anthropic wire). Two endpoints exist today — that this is no
-        longer a single constant is itself the A-Proto "second endpoint" re-activation trigger; the
-        degenerate-constant assumption was wrong, so the label is derived, not hard-coded. Anthropic
-        traffic → `anthropic` ; codex traffic → `openai`. When a real
-        endpoints table lands (A-Proto), this becomes a lookup on the resolved endpoint profile."""
-        return "openai" if client_kind == "codex" else "anthropic"
+        which route to `openai_upstream`, not the anthropic wire). Anthropic traffic → `anthropic`;
+        OpenAI-wire traffic → `openai`; a grok model id on that wire → `xai`."""
+        if client_kind in _OPENAI_WIRE_CLIENTS:
+            return "xai" if is_grok_model(model) else "openai"
+        return "anthropic"
 
     def prepare_body(self, client_kind: str, raw_path: str, body: bytes) -> tuple[bytes, dict | None]:
         """The body to forward, plus a telemetry note when it was edited. Identity unless the
@@ -309,10 +349,11 @@ class Upstream:
         except Exception:  # noqa: BLE001 — fail-open: never break a request over a cache hint
             return body, None
 
-    def build_url(self, client_kind: str, raw_path: str, query_string: bytes) -> str:
+    def build_url(self, client_kind: str, raw_path: str, query_string: bytes,
+                  model: str | None = None) -> str:
         """Preserve the raw path AND query string (xval #1/#2). `?beta=…`, pagination, and
-        signed params must reach the upstream verbatim."""
-        base = self.base_for(client_kind).rstrip("/")
+        signed params must reach the upstream verbatim. A grok model id selects the xAI base."""
+        base = self.base_for(client_kind, model).rstrip("/")
         qs = query_string.decode("latin-1")
         return base + raw_path + (("?" + qs) if qs else "")
 

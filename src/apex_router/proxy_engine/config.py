@@ -14,6 +14,9 @@ from pathlib import Path
 # Upstream endpoints — default to the providers directly; override via env for a gateway/proxy.
 DEFAULT_ANTHROPIC_UPSTREAM = os.environ.get("APEX_ANTHROPIC_UPSTREAM", "https://api.anthropic.com")
 DEFAULT_OPENAI_UPSTREAM = "https://api.openai.com"
+DEFAULT_XAI_UPSTREAM = "https://api.x.ai"
+# OpenAI-compatible usage: input_tokens is the whole prompt. xAI speaks that wire.
+OPENAI_COMPAT_ENDPOINTS = frozenset({"openai", "xai"})
 
 
 def _env(name: str, default: str) -> str:
@@ -34,6 +37,7 @@ class Config:
     port: int = int(_env("APEX_PORT", "8788"))
     anthropic_upstream: str = _env("APEX_ANTHROPIC_UPSTREAM", DEFAULT_ANTHROPIC_UPSTREAM)
     openai_upstream: str = _env("APEX_OPENAI_UPSTREAM", DEFAULT_OPENAI_UPSTREAM)
+    xai_upstream: str = _env("APEX_XAI_UPSTREAM", DEFAULT_XAI_UPSTREAM)
     upstream_connect_timeout_s: float = float(_env("APEX_CONNECT_TIMEOUT", "10"))
     upstream_read_timeout_s: float = float(_env("APEX_READ_TIMEOUT", "600"))
     # D2 (owner 2026-10-28): a limit on the time to the upstream RESPONSE HEADERS, separate from the 600 s

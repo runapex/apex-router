@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+from apex_router.proxy_engine.config import OPENAI_COMPAT_ENDPOINTS
+
 _SCRIPTS = Path(__file__).resolve().parent.parent.parent / "scripts"
 
 
@@ -127,9 +129,9 @@ def _request_context_tokens(row: dict) -> int:
         usage = {}
     total_or_fresh = _token_count(row.get("tokens_in"), usage.get("input_tokens"))
     endpoint = (row.get("endpoint_id") or "").lower()
-    # Codex telemetry is the OpenAI-compatible wire. Older rows can lack endpoint_id,
-    # so client=codex preserves inclusive-input semantics rather than double-counting cache.
-    if endpoint == "openai" or (not endpoint and row.get("client") == "codex"):
+    # OpenAI-compatible wires (openai, xai) report input as the whole prompt. Older rows can
+    # lack endpoint_id, so client=codex or cursor keeps that rule.
+    if endpoint in OPENAI_COMPAT_ENDPOINTS or (not endpoint and row.get("client") in ("codex", "cursor")):
         return total_or_fresh
     cache_read = _token_count(
         row.get("cache_read_tokens"), usage.get("cache_read_tokens"),

@@ -54,8 +54,8 @@ _NUMS = ("ts", "turn", "tokens_in", "tokens_out", "cache_read_tokens", "cache_wr
 # "other", so no free text (a name, a diagnosis, a path) can reach the store. The enum types come
 # from the writer's own Literal types; the rest are the values the proxy code sets.
 _SETS = {
-    "client": {"claude-code", "codex", "pi", "unknown"},
-    "endpoint_id": {"anthropic", "openai"},
+    "client": {"claude-code", "codex", "cursor", "pi", "unknown"},
+    "endpoint_id": {"anthropic", "openai", "xai"},
     "stratum": {"xs", "s", "m", "l", "xl", "xxl", "unknown"},
     "stop_reason": {"end_turn", "tool_use", "max_tokens", "stop_sequence", "pause_turn", "refusal",
                     "content_filter", "completed", "failed", "incomplete", "cancelled",
@@ -80,6 +80,7 @@ _SEEN_MODELS = frozenset({
     "gpt-6", "gpt-6-astra", "gpt-6-codex", "gpt-6-luna", "gpt-6-nova", "gpt-6-pro", "gpt-6-sol",
     "gpt-6-terra", "gpt-6.1", "gpt-6.1-astra", "gpt-6.1-codex", "gpt-6.1-luna", "gpt-6.1-pro",
     "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.5-sol",
+    "grok-3", "grok-3-mini", "grok-4", "grok-4-fast", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7",
 })
 _PREFIX = "it-entra-"
 _MODEL_ID = re.compile(r"\A[a-z0-9][a-z0-9.-]{0,63}\Z")

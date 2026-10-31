@@ -18,6 +18,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from apex_router.proxy_engine.config import OPENAI_COMPAT_ENDPOINTS
 from apex_router.proxy_engine.readout.pricing import Rates
 
 SUPPORTED_SCHEMA = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}  # v13 total_ms; v12 stop_reason/refusal; v11 retry_policy/retry_arm/retry_propensity; v10 bytes_up/bytes_down; v4 upstream_error_wait_ms; v5 error_cause; v6 matcher_error/connect_retries; v7 error_detail; v8 upstream_rejected; v9 cache_key_rewrite; doctor's fields are v2-compatible
@@ -246,7 +247,7 @@ def _fresh_input(d: dict) -> int:
     """FRESH (uncached) input tokens for a row — WIRE-AWARE, because the two wires disagree on what
     the provider's `input_tokens` counts (verified against apex/proxy/usage.py + real telemetry):
 
-      - OpenAI/Responses (`endpoint_id == "openai"`): `input_tokens` is the TOTAL prompt and
+      - OpenAI-compatible (`endpoint_id` in openai, xai): `input_tokens` is the TOTAL prompt and
         `cache_read` (input_tokens_details.cached_tokens) is a SUBSET of it → fresh = total − read.
         Real row: tokens_in=14986, cache_read=14208 → fresh=778 (NOT 14986).
       - Anthropic (anthropic wire): `input_tokens` is ALREADY the fresh remainder; `cache_read`/`cache_write`
@@ -258,7 +259,7 @@ def _fresh_input(d: dict) -> int:
     cached."""
     u = d.get("usage") or {}
     ti = d.get("tokens_in") or u.get("input_tokens") or 0
-    if (d.get("endpoint_id") or "").lower() == "openai":
+    if (d.get("endpoint_id") or "").lower() in OPENAI_COMPAT_ENDPOINTS:
         cr = d.get("cache_read_tokens") or 0
         return max(0, ti - cr)  # total prompt minus the cached subset
     return ti  # Anthropic: already the fresh remainder
@@ -561,7 +562,9 @@ def refusal_panel(rows: list[dict]) -> dict:
             continue
         regimes[r.pricing_regime.split("(")[0]] += 1
         u = d.get("usage") or {}
-        fresh = (u.get("input_tokens") or 0) - ((u.get("cache_read_tokens") or 0) if d.get("endpoint_id") == "openai" else 0)
+        fresh = (u.get("input_tokens") or 0) - (
+            (u.get("cache_read_tokens") or 0)
+            if (d.get("endpoint_id") or "").lower() in OPENAI_COMPAT_ENDPOINTS else 0)
         dollars += (fresh * r.input + (u.get("cache_read_tokens") or 0) * r.cache_read
                     + (u.get("cache_creation_tokens") or 0) * r.cache_write + (u.get("output_tokens") or 0) * r.output) / 1e6
     return {"total": len(ref), "observed_rows": len(seen), "dollars": dollars, "unpriced": unpriced, "regimes": dict(regimes),

@@ -14,8 +14,17 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
 from apex_router.proxy_engine.config import APEX_VERSION
-from apex_router.proxy_engine.proxy.upstream import Upstream, filter_request_headers, filter_response_headers
-from apex_router.proxy_engine.proxy.usage import ErrorBodyScanner, UsageScanner, capture_error_headers
+from apex_router.proxy_engine.proxy.upstream import (
+    Upstream,
+    filter_request_headers,
+    filter_response_headers,
+    route_call,
+)
+from apex_router.proxy_engine.proxy.usage import (
+    ErrorBodyScanner,
+    UsageScanner,
+    capture_error_headers,
+)
 from apex_router.proxy_engine.telemetry.events import TelemetryEvent, TelemetryWriter
 
 _ANTHROPIC_ENDPOINTS = ("/messages",)
@@ -40,11 +49,18 @@ def detect_client(request: Request) -> str:
     if path.endswith(_ANTHROPIC_ENDPOINTS):
         return "claude-code"
     if path.endswith(_OPENAI_ENDPOINTS):
+        # Cursor IDE BYOK (Override OpenAI Base URL → :8788/v1) speaks the OpenAI wire; attribute
+        # it separately from Codex when the UA says so. A grok model id on this wire goes to xAI.
+        ua = request.headers.get("user-agent", "").lower()
+        if "cursor" in ua:
+            return "cursor"
         return "codex"
     h = request.headers
     if "x-claude-code-session-id" in h or h.get("anthropic-version"):
         return "claude-code"
     ua = h.get("user-agent", "").lower()
+    if "cursor" in ua:
+        return "cursor"
     if "codex" in ua or "openai" in ua:
         return "codex"
     return "claude-code"  # dominant traffic; Anthropic wire
@@ -85,10 +101,11 @@ async def handle(
     event.session_id = _session_id(request)
     event.agent_id = request.headers.get("x-claude-code-agent-id")  # sub-agent attribution (P0.2)
     event.request_id = request.headers.get("x-request-id")
-    event.endpoint_id = upstream.endpoint_id(client_kind)  # where the wire is reached (not a const)
 
     body = await request.body()  # raw inbound bytes — forwarded unchanged in M0
     event.model_requested = _requested_model(body)  # body `model` key (fail-open)
+    # After the model is known: a grok id on the OpenAI wire is endpoint xai, not openai.
+    event.endpoint_id = route_call(upstream.endpoint_id, client_kind, model=event.model_requested)
 
     # §4 matcher wiring: content-derived session identity. The client header (when present)
     # stays the telemetry session_id — downstream joins (cache-handoff-nudge) key on it —
@@ -137,7 +154,10 @@ async def handle(
     raw_path = request.scope.get("raw_path") or request.url.path.encode("latin-1")
     if isinstance(raw_path, bytes):
         raw_path = raw_path.split(b"?", 1)[0].decode("latin-1")
-    url = upstream.build_url(client_kind, raw_path, request.scope.get("query_string", b""))
+    url = route_call(
+        upstream.build_url, client_kind, raw_path, request.scope.get("query_string", b""),
+        model=event.model_requested,
+    )
     # Opt-in stable Codex cache key (identity unless APEX_CODEX_CACHE_KEY=1). Measurement above ran
     # on the client's original bytes; only the forwarded copy carries the edit (proxy.cache_key).
     prepare = getattr(upstream, "prepare_body", None)  # duck-typed upstreams (tests) forward as-is
