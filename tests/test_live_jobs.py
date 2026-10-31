@@ -1,5 +1,5 @@
-"""Sub-agent jobs in the menu bar: agent_runs.live_jobs reads the newest pi-jobs meta.json files;
-a "running" job with a dead pid does not count; the menu shows a "Jobs · N running" section."""
+"""agent_runs.live_jobs reads the newest pi-jobs meta.json files; a "running" job with a dead pid does not
+count."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 
-from apex_router import agent_runs, snapshot
+from apex_router import agent_runs
 
 
 def _job(d, jid, state, pid=None, started_ms=None, last_ms=None, agent="worker"):
@@ -49,23 +49,6 @@ def test_live_jobs_missing_dir_is_empty():
     assert agent_runs.live_jobs("/nonexistent/pi-jobs") == {"running": 0, "queued": 0, "items": []}
 
 
-def _menu(jobs):
-    snap = {"ts": time.time(), "pressure": {"level": "GREEN", "insufficient_sample": False},
-            "agents": [], "system": {}, "jobs": jobs}
-    return [ln.split(" | ")[0] for ln in snapshot.menubar(snap).splitlines()]
-
-
-def test_menu_shows_a_jobs_section_only_while_jobs_run():
-    assert not any(ln.startswith("Jobs") for ln in _menu({"running": 0, "queued": 0, "items": []}))
-    items = [{"id": f"x-{i:04d}", "role": "worker", "state": "running", "age_s": 60 * (i + 1),
-              "quiet_s": 400 if i == 0 else 2} for i in range(7)]
-    m = _menu({"running": 7, "queued": 0, "items": items})
-    i = m.index("Jobs · 7 running")
-    assert m[i + 1] == "worker 0000 · running 1m · quiet 6m"                     # quiet > 5 min: shown
-    assert m[i + 2] == "worker 0001 · running 2m"
-    assert m[i + 6] == "+2 more"
-
-
 def test_live_jobs_skips_an_oversized_meta_and_a_non_dict(tmp_path):
     now = time.time()
     _job(tmp_path, "20261027000001-aaaa", "running", os.getpid(), int(now * 1000), int(now * 1000))
@@ -77,19 +60,3 @@ def test_live_jobs_skips_an_oversized_meta_and_a_non_dict(tmp_path):
     (lst / "meta.json").write_text("[1, 2]")
     j = agent_runs.live_jobs(tmp_path, now)
     assert [i["id"] for i in j["items"]] == ["20261027000001-aaaa"]
-
-
-def test_flow_attribution_is_skipped_after_the_deadline(monkeypatch):
-    from apex_router.studio import traffic
-    called = []
-    monkeypatch.setattr(traffic, "requests_by_agent", lambda *a, **k: called.append(1) or {"pi": 9})
-
-    class Late:
-        def __init__(self):
-            self.n = 0
-
-        def remaining(self):
-            self.n += 1
-            return 1.0 if self.n == 1 else 0.0           # time is left at the start, not later
-    fb = snapshot.flow_block(None, time.time(), {"up": False}, Late())
-    assert called == [] and fb["sources"]["pi"] is None

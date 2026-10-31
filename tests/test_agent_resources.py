@@ -1061,7 +1061,6 @@ def test_collect_quiet_lsof_failure_still_lists_with_unknown_cwd(tmp_path):
 # ---------------------------------------------------------------- 0.4.2: the package split
 
 def test_package_reexports_and_one_implementation_per_helper(monkeypatch):
-    from apex_router import snapshot
     import importlib
     graph, procs, sessions, subs, system, telemetry, text = (
         importlib.import_module(f"apex_router.agent_resources.{m}") for m in
@@ -1071,11 +1070,10 @@ def test_package_reexports_and_one_implementation_per_helper(monkeypatch):
     assert ar.tree_metrics is procs.tree_metrics and ar.claude_sessions is sessions.claude_sessions
     assert ar.telemetry_split is telemetry.telemetry_split
     assert ar.parse_ollama is system.parse_ollama and ar.graph_text is graph.graph_text
-    assert ar.fmt_age is ar.fmt_dur is text.fmt_dur and snapshot.fmt_age is ar.fmt_dur
-    assert snapshot.fmt_mb is ar.fmt_mb and snapshot._num is ar._num and snapshot._err is ar._err
+    assert ar.fmt_age is ar.fmt_dur is text.fmt_dur
     assert ar.fmt_mb(None) == "?" and ar.fmt_mem(None) == "?MB" and ar.fmt_mem(2048) == "2.0GB"
     a = {"state": "active", "res": {"status": "idle|x"}}
-    assert snapshot._status_word(a) == "idle¦x" and ar.display_state(a) == "idle|x"
+    assert ar.display_state(a) == "idle|x"
     monkeypatch.setattr(ar, "_clock", lambda: 100.0)            # the package attribute is used
     assert ar.Deadline(1.0).remaining() == pytest.approx(1.0)
     assert ar.Deadline(1.0).end == pytest.approx(101.0)

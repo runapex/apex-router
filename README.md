@@ -610,9 +610,9 @@ as `__`) and `in/_all.jsonl` for yours, a cursor per agent; appends are locked, 
 per file and a torn line from a crashed writer never swallows the next one. Text is one line of
 at most 400 characters, control and bidi characters stripped; ids, times and names only besides
 the text. A question stays open until your next line to that agent or to `*`. Every post or send
-rewrites the menu-bar adapter `~/.apex-router/adapters/mail.json` for the run last written to, so
-the widget shows open questions, unread lines and the last few messages, dollar amounts masked
-(see [integrations/swiftbar/README.md](integrations/swiftbar/README.md)). `mail digest --to ADDR`
+rewrites the adapter file `~/.apex-router/adapters/mail.json` for the run last written to (open
+questions, unread lines and the last few messages, dollar amounts masked; the menu-bar widget that
+showed it is retired, D25). `mail digest --to ADDR`
 e-mails a short digest (what waits for you, where each agent is, and the decisions, questions and
 finishes since the last digest, never start lines or routine chatter) through Mail.app on macOS,
 falling back to `/usr/sbin/sendmail`; it sends nothing when there is nothing new, so it is safe

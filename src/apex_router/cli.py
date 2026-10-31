@@ -365,10 +365,6 @@ def main(argv=None) -> int:
     # a recommendation; `--check` exits 0/1/2/3 (UNKNOWN=3, usage=4) to gate a fan-out. Args forwarded to pressure.main.
     sub.add_parser("pressure", help="upstream rate-limit pressure (GREEN/AMBER/RED) before a "
                                     "fan-out; --check exits 0/1/2/3 (4=usage)", add_help=False)
-    # Menu-bar widget readout: pressure + errors + meters + running agents + worker/proxy +
-    # adapter sections, read-only (never writes pressure.json). Args forwarded to snapshot.main.
-    sub.add_parser("snapshot", help="read-only snapshot for the menu-bar widget "
-                                    "(--json | --menubar for SwiftBar | --graph)", add_help=False)
     sub.add_parser("xval", help="adaptive `codex exec` for cross-validation (per-category P2C over "
                                 "output-cap/scope arms); `xval stats`, `xval feedback <run> ok|bad`",
                    add_help=False)
@@ -605,9 +601,6 @@ def main(argv=None) -> int:
     if args.cmd == "mail":
         from .mail import main as _mail
         return _mail(extra)
-    if args.cmd == "snapshot":
-        from .snapshot import main as _snapshot
-        return _snapshot(extra)
     if args.cmd == "ornith-tier":
         from .ornith import tier_switch
         if args.unload:
