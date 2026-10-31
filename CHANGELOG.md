@@ -6,6 +6,12 @@ next tag will carry.
 
 ## 0.4.2 — unreleased
 
+- **terminal agent inbox** (D24): `apex-router agents` (pi jobs, Claude Code sub-agents and background
+  agents: needs you, running, done; resolve; masked result view), a pi overlay (`/agents`, ctrl+shift+a)
+  and widget, and Claude Code hooks (`install.sh --agents-hooks`: Stop-hook alert, `/agents`, status
+  line segment). Contract: `docs/design/AGENTS-INBOX.md`.
+- **retired** (D25): the HTML studio (`apex-router studio`) and the SwiftBar menu bar
+  (`apex-router snapshot`, `integrations/swiftbar`). Git history keeps the code.
 - **studio v2 "Metro"** (`apex-router studio`): the page is a metro map. One line per agent
   (pi, Claude Code, Codex) runs through the apex interchange to its provider. Line width = requests
   a minute; a train = one real request (SSE `/api/stream`); amber = slow, red = disruption with a

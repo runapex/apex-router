@@ -441,6 +441,10 @@ pi install integrations/pi/apex-hangguard.ts                # bash timeout, < /d
 pi install integrations/pi/apex-agents.ts                   # sub-agents: agent_spawn / wait / cancel
 ```
 
+Agent inbox in the terminal: `apex-router agents` lists pi jobs and Claude Code agents (needs you,
+running, done). In pi, `/agents` or ctrl+shift+a opens the overlay. For Claude Code, run
+`install.sh --agents-hooks`. Contract: [`docs/design/AGENTS-INBOX.md`](docs/design/AGENTS-INBOX.md).
+
 Full instructions, the family table, and testing steps:
 [`docs/RUNBOOK-pi-integration.md`](docs/RUNBOOK-pi-integration.md).
 
