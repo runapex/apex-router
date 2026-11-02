@@ -482,8 +482,9 @@ export class JobManager {
 	managed(): Meta[] {
 		return this.list().filter(m => this.manages(m));
 	}
-	/** Parsed meta.json per job, keyed by file identity. Every write is a rename (new inode), so a changed file never
-	 * matches. A stat is ~2 µs; a read + parse is ~90 µs, and each tick lists every job (about 1000) 5 times. */
+	/** Parsed meta.json per job, keyed by file identity. Every write is a rename (new inode, new birth time); chmod and
+	 * writes change ctime. So a changed or unreadable file never matches and is read again, as before the cache.
+	 * A stat is ~2 µs; a read + parse is ~90 µs, and each tick lists every job (about 1000) 5 times. */
 	private metaCache = new Map<string, { key: string; m: Meta }>();
 	list(): Meta[] {
 		if (!existsSync(this.root)) return [];
@@ -495,7 +496,7 @@ export class JobManager {
 			let key: string;
 			try {
 				const st = statSync(join(this.dir(id), "meta.json"));
-				key = `${st.ino}:${st.mtimeMs}:${st.size}`;
+				key = `${st.ino}:${st.birthtimeMs}:${st.ctimeMs}:${st.mtimeMs}:${st.size}`;
 			} catch {
 				this.metaCache.delete(id);
 				continue;

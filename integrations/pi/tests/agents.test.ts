@@ -462,13 +462,27 @@ function seedDone(root: string, id: string, created: number, extra: Partial<Meta
 
 test("list(): an unchanged meta.json is parsed once, not on every call", () => {
 	const { m, root } = mgr();
-	const paths = [seedDone(root, "j1", 1), seedDone(root, "j2", 2)];
+	seedDone(root, "j1", 1);
+	seedDone(root, "j2", 2);
 	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
-	for (const p of paths) chmodSync(p, 0o000); // stat still works, a read fails
+	const read = m.read.bind(m);
+	let reads = 0;
+	m.read = (id: string) => (reads++, read(id));
+	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
+	assert.equal(reads, 0);
+	m.stop();
+});
+
+test("list(): a cached meta.json that becomes unreadable leaves the list (as before the cache; xval P2)", () => {
+	const { m, root } = mgr();
+	const p = seedDone(root, "j1", 1);
+	seedDone(root, "j2", 2);
+	assert.equal(m.list().length, 2);
+	chmodSync(p, 0o000); // changes ctime only: stat works, a read fails
 	try {
-		assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
+		assert.deepEqual(m.list().map(x => x.id), ["j2"]);
 	} finally {
-		for (const p of paths) chmodSync(p, 0o644);
+		chmodSync(p, 0o644);
 		m.stop();
 	}
 });
