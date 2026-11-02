@@ -482,9 +482,36 @@ export class JobManager {
 	managed(): Meta[] {
 		return this.list().filter(m => this.manages(m));
 	}
+	/** Parsed meta.json per job, keyed by file identity. Every write is a rename (new inode), so a changed file never
+	 * matches. A stat is ~2 µs; a read + parse is ~90 µs, and each tick lists every job (about 1000) 5 times. */
+	private metaCache = new Map<string, { key: string; m: Meta }>();
 	list(): Meta[] {
 		if (!existsSync(this.root)) return [];
-		return readdirSync(this.root).map(id => this.read(id)).filter((m): m is Meta => m !== null).sort((a, b) => a.created - b.created);
+		const ids = readdirSync(this.root);
+		const seen = new Set(ids);
+		for (const id of this.metaCache.keys()) if (!seen.has(id)) this.metaCache.delete(id);
+		const out: Meta[] = [];
+		for (const id of ids) {
+			let key: string;
+			try {
+				const st = statSync(join(this.dir(id), "meta.json"));
+				key = `${st.ino}:${st.mtimeMs}:${st.size}`;
+			} catch {
+				this.metaCache.delete(id);
+				continue;
+			}
+			let c = this.metaCache.get(id);
+			if (c?.key !== key) {
+				const m = this.read(id);
+				if (!m) {
+					this.metaCache.delete(id);
+					continue;
+				}
+				this.metaCache.set(id, (c = { key, m }));
+			}
+			out.push({ ...c!.m, usage: { ...c!.m.usage } }); // callers change top-level fields and usage; the cache stays as read
+		}
+		return out.sort((a, b) => a.created - b.created);
 	}
 	running(): Meta[] {
 		return this.list().filter(m => m.state === "running");

@@ -1,7 +1,7 @@
 // node --test integrations/pi/tests/   — job manager against a fake child (no model, no pi).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -446,6 +446,62 @@ test("meta.json writes are atomic (no .tmp left, always parseable)", async () =>
 	}
 	await m.cancel(j.id);
 	assert.deepEqual(readdirSync(join(root, j.id)).filter(f => f.endsWith(".tmp")), []);
+	m.stop();
+});
+
+// ---- list() cache: each tick calls list() 5 times; one parse of ~1000 meta.json files blocked pi input for ~85 ms
+function seedDone(root: string, id: string, created: number, extra: Partial<Meta> = {}) {
+	const m = { id, state: "done", agent: "worker", kind: "pi", task: "t", cwd: "/home/u", argv: [], created, timeout_s: 60, idle_s: 60,
+		session_id: id, usage: { turns: 1, input: 1, output: 1, cost: 0.5 }, notified: true, ...extra };
+	mkdirSync(join(root, id), { recursive: true });
+	const p = join(root, id, "meta.json");
+	writeFileSync(`${p}.tmp`, JSON.stringify(m));
+	renameSync(`${p}.tmp`, p); // the same atomic rename as JobManager.write
+	return p;
+}
+
+test("list(): an unchanged meta.json is parsed once, not on every call", () => {
+	const { m, root } = mgr();
+	const paths = [seedDone(root, "j1", 1), seedDone(root, "j2", 2)];
+	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
+	for (const p of paths) chmodSync(p, 0o000); // stat still works, a read fails
+	try {
+		assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
+	} finally {
+		for (const p of paths) chmodSync(p, 0o644);
+		m.stop();
+	}
+});
+
+test("list(): a rewritten meta.json (another process) is read again", () => {
+	const { m, root } = mgr();
+	seedDone(root, "j1", 1);
+	assert.equal(m.list()[0]!.state, "done");
+	seedDone(root, "j1", 1, { state: "failed", reason: "x" });
+	const [r] = m.list();
+	assert.equal(r!.state, "failed");
+	assert.equal(r!.reason, "x");
+	m.stop();
+});
+
+test("list(): a caller that changes a listed meta does not change the next list()", () => {
+	const { m, root } = mgr();
+	seedDone(root, "j1", 1);
+	const a = m.list()[0]!;
+	a.state = "failed";
+	a.notified = false;
+	assert.equal(m.list()[0]!.state, "done");
+	assert.equal(m.list()[0]!.notified, true);
+	m.stop();
+});
+
+test("list(): a removed job folder leaves the list", () => {
+	const { m, root } = mgr();
+	seedDone(root, "j1", 1);
+	seedDone(root, "j2", 2);
+	assert.equal(m.list().length, 2);
+	rmSync(join(root, "j1"), { recursive: true });
+	assert.deepEqual(m.list().map(x => x.id), ["j2"]);
 	m.stop();
 });
 
