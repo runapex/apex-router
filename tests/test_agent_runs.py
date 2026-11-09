@@ -333,3 +333,82 @@ def test_report_xval_cost_in_usd_or_unknown(ar, tmp_path):
     astra = cells["gpt-6-astra"]
     assert astra["cost_sum"] is None and astra["cost_note"] == "usd unknown" and astra["cost_unknown"] == 1
     assert astra["pricing"][0].startswith("provisional:")
+
+
+# ---- archive: finished jobs leave pi-jobs (every pi session lists pi-jobs on each 2 s tick) --------------
+
+DAY_MS = 86_400_000
+NOW = 100 * DAY_MS / 1000
+
+
+def _set(home, jid, **kv):
+    p = home / "pi-jobs" / jid / "meta.json"
+    m = json.loads(p.read_text())
+    m.update(kv)
+    p.write_text(json.dumps(m))
+
+
+def test_archive_moves_only_old_notified_finished_collected_jobs(ar, tmp_path):
+    old, new = 90 * DAY_MS, 95 * DAY_MS                                   # NOW - 10 days, NOW - 5 days
+    for jid, state in (("a-old-done", "done"), ("b-old-failed", "failed"), ("c-old-unnotified", "done"),
+                       ("d-new-done", "done"), ("e-old-running", "running")):
+        _job(tmp_path, jid, state=state, started=old - 1000, ended=new if jid.startswith("d-") else old)
+        _set(tmp_path, jid, notified=not jid.startswith("c-"))
+    ar.collect_runs()
+    _job(tmp_path, "f-old-uncollected", started=old - 1000, ended=old)   # finished, but not in agent_runs.jsonl yet
+    _set(tmp_path, "f-old-uncollected", notified=True)
+    assert ar.archive_jobs(now=NOW) == 2
+    assert sorted(p.name for p in (tmp_path / "pi-jobs-archive").iterdir()) == ["a-old-done", "b-old-failed"]
+    assert sorted(p.name for p in (tmp_path / "pi-jobs").iterdir()) == [
+        "c-old-unnotified", "d-new-done", "e-old-running", "f-old-uncollected"]
+    assert (tmp_path / "pi-jobs-archive" / "a-old-done" / "result.md").read_text() == "done"   # whole job dir moved
+    assert ar.archive_jobs(now=NOW) == 0                                                      # idempotent
+
+
+def test_archive_never_overwrites_an_archived_job(ar, tmp_path):
+    _job(tmp_path, "a", ended=1)
+    _set(tmp_path, "a", notified=True)
+    ar.collect_runs()
+    (tmp_path / "pi-jobs-archive" / "a").mkdir(parents=True)
+    (tmp_path / "pi-jobs-archive" / "a" / "keep").write_text("x")
+    assert ar.archive_jobs(now=NOW) == 0
+    assert (tmp_path / "pi-jobs" / "a" / "meta.json").is_file()
+    assert (tmp_path / "pi-jobs-archive" / "a" / "keep").read_text() == "x"
+
+
+def test_archive_skips_unreadable_meta_and_missing_dirs(ar, tmp_path):
+    assert ar.archive_jobs(now=NOW) == 0                                  # no pi-jobs, no agent_runs.jsonl
+    _job(tmp_path, "a", ended=1)
+    _set(tmp_path, "a", notified=True)
+    ar.collect_runs()
+    (tmp_path / "pi-jobs" / "a" / "meta.json").write_text("{broken")
+    assert ar.archive_jobs(now=NOW) == 0
+
+
+def test_collect_cli_archives_and_refresh_reads_the_archive(ar, tmp_path, capsys):
+    _job(tmp_path, "j1", task="You are judge J1.", result="VERDICT: GO", ended=1)
+    _set(tmp_path, "j1", notified=True)
+    assert ar.main(["collect", "--json"]) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["runs_new"] == 1 and res["archived"] == 1
+    assert (tmp_path / "pi-jobs-archive" / "j1").is_dir()
+    rows = [json.loads(l) for l in ar.RUNS_OUT.read_text().splitlines()]
+    rows[0]["verdict"] = None
+    ar.RUNS_OUT.write_text(json.dumps(rows[0], sort_keys=True) + "\n")
+    assert ar.refresh_verdicts() == 1                                     # result.md found in the archive
+
+
+@pytest.mark.parametrize("ended", ["missing", True, float("nan"), float("-inf"), "7d-exact", "text"])
+def test_archive_needs_a_real_end_time_older_than_the_cut(ar, tmp_path, ended):
+    _job(tmp_path, "a", started=1, ended=1)
+    meta = tmp_path / "pi-jobs" / "a" / "meta.json"
+    m = json.loads(meta.read_text())
+    m.update(notified=True, created=1)
+    if ended == "missing":
+        del m["ended"]
+    else:
+        m["ended"] = (NOW - 7 * 86400) * 1000 if ended == "7d-exact" else ended
+    ar.collect_runs()
+    meta.write_text(json.dumps(m))
+    assert ar.archive_jobs(now=NOW) == 0
+    assert meta.is_file()

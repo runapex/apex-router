@@ -126,3 +126,12 @@ def test_git_capped_kills_a_grandchild_that_holds_the_pipe():
     code = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']); time.sleep(30)"
     assert P._git_capped([sys.executable, "-c", code], timeout=0.5) is None
     assert _t.monotonic() - t < 3
+
+
+def test_scan_jobs_reads_the_archive_too(tmp_path, monkeypatch):
+    # agent-runs collect moves finished jobs to pi-jobs-archive; the earlier findings must stay visible
+    monkeypatch.setenv("APEX_ROUTER_HOME", str(tmp_path))
+    _job(tmp_path / "pi-jobs", "20261003000001-new", "xval", "done")
+    _job(tmp_path / "pi-jobs-archive", "20261001000001-old", "xval", "done")
+    assert [j["id"] for j in P.scan_jobs()] == ["20261003000001-new", "20261001000001-old"]
+    assert [j["id"] for j in P.scan_jobs(tmp_path / "pi-jobs")] == ["20261003000001-new"]   # an explicit dir: only it

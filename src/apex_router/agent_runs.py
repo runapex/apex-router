@@ -12,6 +12,10 @@ Two streams, both append-only JSONL under ~/.apex-router/labels/ (idempotent: a 
    from the plugin's ``observe/*.jsonl`` measure rows, and whether context dropped below 50 %
    within 30 minutes (a /compact or a fresh session). That is a PROXY for "the user acted".
 
+Archive: ``collect`` also moves a finished job dir from ``pi-jobs`` to ``pi-jobs-archive`` when it ended
+more than ARCHIVE_AFTER_DAYS ago, its owner was notified and its row is in ``agent_runs.jsonl``. Every pi
+session lists ``pi-jobs`` on each 2 s tick, and the dir grew by 30-140 jobs a day.
+
 Privacy: the collector never copies the brief, the answer, file paths or descriptions. The role is
 an enum read from the brief's first line ("You are judge J1" -> judge). The verdict is an enum.
 
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -35,6 +40,8 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("APEX_HOME", Path.home() / ".apex-router"))
 JOBS = HOME / "pi-jobs"
+ARCHIVE = HOME / "pi-jobs-archive"
+ARCHIVE_AFTER_DAYS = 7          # the spawn gates (review rounds, pending branches) look back 7 days
 OBSERVE = HOME / "observe"
 XVAL_RUNS = HOME / "xval_runs.jsonl"
 OUT_DIR = HOME / "labels"
@@ -271,6 +278,41 @@ def collect_runs() -> int:
     return len(new)
 
 
+def archive_jobs(now: float | None = None, days: float = ARCHIVE_AFTER_DAYS) -> int:
+    """Move finished job dirs from JOBS to ARCHIVE. A job moves only when its state is final, ``notified`` is
+    true (the owner delivered the result), ``ended`` is a finite time more than ``days`` ago, and its row is in
+    RUNS_OUT. An archived dir with the same id is never overwritten. Fail open: a job that cannot be read
+    stays. Returns the number moved."""
+    now = time.time() if now is None else now
+    if not JOBS.is_dir():
+        return 0
+    seen = _seen(RUNS_OUT, "id")
+    cut_ms = (now - days * 86400) * 1000
+    moved = 0
+    for d in sorted(JOBS.iterdir()):
+        if d.name not in seen:
+            continue
+        try:
+            m = json.loads((d / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(m, dict) or m.get("state") not in FINAL or m.get("notified") is not True:
+            continue
+        end = m.get("ended")
+        if isinstance(end, bool) or not isinstance(end, (int, float)) or not math.isfinite(end) or not end < cut_ms:
+            continue
+        dst = ARCHIVE / d.name
+        if dst.exists():
+            continue
+        try:
+            ARCHIVE.mkdir(parents=True, exist_ok=True)
+            os.rename(d, dst)
+        except OSError:
+            continue
+        moved += 1
+    return moved
+
+
 def refresh_verdicts() -> int:
     """Re-parse the verdict of every judge/reviewer row from its job's answer (rows from an older
     parser). Rewrites ``agent_runs.jsonl`` atomically; a row whose job dir is gone stays as is.
@@ -295,6 +337,8 @@ def _refresh_locked() -> int:
             continue
         if isinstance(r, dict) and r.get("role") in ("judge", "reviewer") and isinstance(r.get("id"), str):
             res = JOBS / r["id"] / "result.md"
+            if not res.is_file():
+                res = ARCHIVE / r["id"] / "result.md"
             if res.is_file():
                 v = _verdict(res.read_text(errors="replace"))
                 if v != r.get("verdict"):
@@ -473,10 +517,11 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "collect":
         res = {"runs_new": collect_runs(), "alerts_new": collect_alerts(), "runs_file": str(RUNS_OUT), "alerts_file": str(ALERTS_OUT)}
+        res["archived"] = archive_jobs()                     # after collect_runs: a job moves only with its row written
         if a.refresh_verdicts:
             res["verdicts_refreshed"] = refresh_verdicts()
         tail = f", verdicts refreshed {res['verdicts_refreshed']}" if a.refresh_verdicts else ""
-        print(json.dumps(res) if a.json else f"agent runs +{res['runs_new']}, band alerts +{res['alerts_new']}{tail}")
+        print(json.dumps(res) if a.json else f"agent runs +{res['runs_new']}, band alerts +{res['alerts_new']}, archived {res['archived']}{tail}")
         return 0
     rep = report(a.since)
     if a.json:

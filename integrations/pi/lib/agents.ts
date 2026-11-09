@@ -827,10 +827,20 @@ export class JobManager {
 		return id ? [this.read(id)].filter((m): m is Meta => m !== null) : this.list();
 	}
 
+	/** `apex-router agent-runs collect` moves a job dir to `<root>-archive` 7 days after it ended: a result asked
+	 *  by id is still found there (read only; list() and the tick do not see the archive). */
 	result(id: string): { meta: Meta; text: string; path: string } | null {
-		const m = this.read(id);
-		if (!m) return null;
-		const path = join(this.dir(id), "result.md");
+		let dir = this.dir(id);
+		let m = this.read(id);
+		if (!m) {
+			dir = join(`${this.root}-archive`, id);
+			try {
+				m = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as Meta;
+			} catch {
+				return null;
+			}
+		}
+		const path = join(dir, "result.md");
 		return { meta: m, text: existsSync(path) ? readFileSync(path, "utf8") : `job ${id} is ${m.state}`, path };
 	}
 

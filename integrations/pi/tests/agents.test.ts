@@ -593,3 +593,16 @@ test("list(): a rewritten meta.json is read again; a removed job is gone; caller
 	rmSync(join(root, "j2"), { recursive: true });
 	assert.deepEqual(m.list().map(x => x.id), ["j1"]);
 });
+
+test("result(): a job that agent-runs collect moved to <root>-archive is still found by id", () => {
+	const root = metaRoot(["j1"]);
+	writeFileSync(join(root, "j1", "result.md"), "VERDICT: GO");
+	mkdirSync(`${root}-archive`);
+	renameSync(join(root, "j1"), join(`${root}-archive`, "j1"));
+	const m = new JobManager({ root, pressure: () => "GREEN" });
+	const r = m.result("j1");
+	assert.equal(r?.text, "VERDICT: GO");
+	assert.equal(r?.meta.state, "done");
+	assert.deepEqual(m.list(), []); // the archive is not listed (that is the point of it)
+	assert.equal(m.result("nope"), null);
+});

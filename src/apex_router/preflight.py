@@ -113,20 +113,22 @@ def _norm(p: str) -> str:
 
 
 def scan_jobs(jobs_dir: Path | None = None) -> list[dict]:
-    """[{id, agent, state, cost, files, faults}] for the newest JOBS_MAX jobs (fail open)."""
-    d = jobs_dir or router_home() / "pi-jobs"
+    """[{id, agent, state, cost, files, faults}] for the newest JOBS_MAX jobs (fail open). Default: pi-jobs and
+    pi-jobs-archive (``agent-runs collect`` moves finished jobs there); a given ``jobs_dir`` only."""
+    dirs = [jobs_dir] if jobs_dir else [router_home() / "pi-jobs", router_home() / "pi-jobs-archive"]
     names = []
-    try:
-        with os.scandir(d) as it:
-            for i, e in enumerate(it):
-                if i >= LIST_MAX:
-                    break
-                names.append(e.name)
-    except OSError:
-        return []
-    names = sorted(names, reverse=True)[:JOBS_MAX]
+    for d in dirs:
+        try:
+            with os.scandir(d) as it:
+                for i, e in enumerate(it):
+                    if i >= LIST_MAX:
+                        break
+                    names.append((e.name, d))
+        except OSError:
+            continue
+    names = sorted(names, key=lambda x: x[0], reverse=True)[:JOBS_MAX]
     out = []
-    for name in names:
+    for name, d in names:
         raw = _read(d / name / "meta.json", META_MAX)
         try:
             m = json.loads(raw) if raw else None
