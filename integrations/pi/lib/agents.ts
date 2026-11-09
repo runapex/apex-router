@@ -234,6 +234,8 @@ export type Options = {
 	now?: () => number;
 	/** D1 resume delay (default RESUME_DELAY_MS). Tests use a short one. */
 	resumeDelayMs?: number;
+	/** Reads the text of a meta.json for list() (default: readFileSync). Tests count the reads. */
+	readMeta?: (path: string) => string;
 };
 
 export const DEFAULT_ROOT = join(homedir(), ".apex-router", "pi-jobs");
@@ -424,6 +426,7 @@ export class JobManager {
 			graceMs: opts.graceMs ?? 10_000,
 			tickMs: opts.tickMs ?? 2000,
 			now: opts.now ?? Date.now,
+			readMeta: opts.readMeta ?? (p => readFileSync(p, "utf8")),
 			onDone: opts.onDone,
 			resumeDelayMs: opts.resumeDelayMs ?? RESUME_DELAY_MS,
 			// the owner is gone when its process ended, or when it was a replaced manager in THIS process
@@ -482,37 +485,33 @@ export class JobManager {
 	managed(): Meta[] {
 		return this.list().filter(m => this.manages(m));
 	}
-	/** Parsed meta.json per job, keyed by file identity. Every write is a rename (new inode, new birth time); chmod and
-	 * writes change ctime. So a changed or unreadable file never matches and is read again, as before the cache.
-	 * A stat is ~2 µs; a read + parse is ~90 µs, and each tick lists every job (about 1000) 5 times. */
-	private metaCache = new Map<string, { key: string; m: Meta }>();
 	list(): Meta[] {
-		if (!existsSync(this.root)) return [];
-		const ids = readdirSync(this.root);
-		const seen = new Set(ids);
-		for (const id of this.metaCache.keys()) if (!seen.has(id)) this.metaCache.delete(id);
-		const out: Meta[] = [];
-		for (const id of ids) {
-			let key: string;
-			try {
-				const st = statSync(join(this.dir(id), "meta.json"));
-				key = `${st.ino}:${st.birthtimeMs}:${st.ctimeMs}:${st.mtimeMs}:${st.size}`;
-			} catch {
-				this.metaCache.delete(id);
-				continue;
-			}
-			let c = this.metaCache.get(id);
-			if (c?.key !== key) {
-				const m = this.read(id);
-				if (!m) {
-					this.metaCache.delete(id);
-					continue;
-				}
-				this.metaCache.set(id, (c = { key, m }));
-			}
-			out.push({ ...c!.m, usage: { ...c!.m.usage } }); // callers change top-level fields and usage; the cache stays as read
+		if (!existsSync(this.root)) {
+			this.metaText.clear();
+			return [];
 		}
-		return out.sort((a, b) => a.created - b.created);
+		const ids = readdirSync(this.root);
+		const keep = new Set(ids);
+		for (const id of this.metaText.keys()) if (!keep.has(id)) this.metaText.delete(id);
+		return ids.map(id => this.readCached(id)).filter((m): m is Meta => m !== null).sort((a, b) => a.created - b.created);
+	}
+	/** meta.json text by job id, kept while inode, size, mtime and ctime are the same (a write, rename, chmod or
+	 *  utimes changes ctime, and no program can set ctime back). list() runs several times on each
+	 *  tick and before each bash call (hang guard); most jobs are finished and never change, and a new read of
+	 *  every file cost 106 ms for 1,099 jobs. The text is parsed on each call: callers change the objects. */
+	private metaText = new Map<string, { key: string; text: string }>();
+	private readCached(id: string): Meta | null {
+		const p = join(this.dir(id), "meta.json");
+		try {
+			const st = statSync(p, { bigint: true });
+			const key = `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+			let c = this.metaText.get(id);
+			if (c?.key !== key) this.metaText.set(id, (c = { key, text: this.o.readMeta(p) }));
+			return JSON.parse(c.text) as Meta;
+		} catch {
+			this.metaText.delete(id);
+			return null;
+		}
 	}
 	running(): Meta[] {
 		return this.list().filter(m => m.state === "running");

@@ -1,7 +1,7 @@
 // node --test integrations/pi/tests/   — job manager against a fake child (no model, no pi).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -449,76 +449,6 @@ test("meta.json writes are atomic (no .tmp left, always parseable)", async () =>
 	m.stop();
 });
 
-// ---- list() cache: each tick calls list() 5 times; one parse of ~1000 meta.json files blocked pi input for ~85 ms
-function seedDone(root: string, id: string, created: number, extra: Partial<Meta> = {}) {
-	const m = { id, state: "done", agent: "worker", kind: "pi", task: "t", cwd: "/home/u", argv: [], created, timeout_s: 60, idle_s: 60,
-		session_id: id, usage: { turns: 1, input: 1, output: 1, cost: 0.5 }, notified: true, ...extra };
-	mkdirSync(join(root, id), { recursive: true });
-	const p = join(root, id, "meta.json");
-	writeFileSync(`${p}.tmp`, JSON.stringify(m));
-	renameSync(`${p}.tmp`, p); // the same atomic rename as JobManager.write
-	return p;
-}
-
-test("list(): an unchanged meta.json is parsed once, not on every call", () => {
-	const { m, root } = mgr();
-	seedDone(root, "j1", 1);
-	seedDone(root, "j2", 2);
-	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
-	const read = m.read.bind(m);
-	let reads = 0;
-	m.read = (id: string) => (reads++, read(id));
-	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
-	assert.equal(reads, 0);
-	m.stop();
-});
-
-test("list(): a cached meta.json that becomes unreadable leaves the list (as before the cache; xval P2)", () => {
-	const { m, root } = mgr();
-	const p = seedDone(root, "j1", 1);
-	seedDone(root, "j2", 2);
-	assert.equal(m.list().length, 2);
-	chmodSync(p, 0o000); // changes ctime only: stat works, a read fails
-	try {
-		assert.deepEqual(m.list().map(x => x.id), ["j2"]);
-	} finally {
-		chmodSync(p, 0o644);
-		m.stop();
-	}
-});
-
-test("list(): a rewritten meta.json (another process) is read again", () => {
-	const { m, root } = mgr();
-	seedDone(root, "j1", 1);
-	assert.equal(m.list()[0]!.state, "done");
-	seedDone(root, "j1", 1, { state: "failed", reason: "x" });
-	const [r] = m.list();
-	assert.equal(r!.state, "failed");
-	assert.equal(r!.reason, "x");
-	m.stop();
-});
-
-test("list(): a caller that changes a listed meta does not change the next list()", () => {
-	const { m, root } = mgr();
-	seedDone(root, "j1", 1);
-	const a = m.list()[0]!;
-	a.state = "failed";
-	a.notified = false;
-	assert.equal(m.list()[0]!.state, "done");
-	assert.equal(m.list()[0]!.notified, true);
-	m.stop();
-});
-
-test("list(): a removed job folder leaves the list", () => {
-	const { m, root } = mgr();
-	seedDone(root, "j1", 1);
-	seedDone(root, "j2", 2);
-	assert.equal(m.list().length, 2);
-	rmSync(join(root, "j1"), { recursive: true });
-	assert.deepEqual(m.list().map(x => x.id), ["j2"]);
-	m.stop();
-});
-
 test("no fake child left after the suite", () => {
 	const left = execFileSync("ps", ["-A", "-o", "command="], { encoding: "utf8" }).split("\n").filter(l => l.startsWith(process.execPath) && l.includes("fake-pi.mjs"));
 	assert.deepEqual(left, []);
@@ -589,4 +519,77 @@ test("childEnv: depth never passes MAX_TREE_DEPTH + 1, even from a bad parent de
 		assert.ok(Number(e.APEX_AGENT_DEPTH) <= 4, bad);
 		assert.ok(Number(e.APEX_AGENT_DEPTH) >= Number(e.APEX_AGENT_MAX_DEPTH), bad); // cannot spawn
 	}
+});
+
+// list() runs on every 2 s tick (several times) and before every bash call (hang guard): an unchanged
+// meta.json must not be opened again (1,099 jobs cost 106 ms and 1,099 file opens per call).
+function metaRoot(ids: string[]) {
+	const root = mkdtempSync(join(tmpdir(), "apexjobs-"));
+	for (const [i, id] of ids.entries()) {
+		mkdirSync(join(root, id));
+		const m = { id, state: "done", agent: "a", kind: "pi", task: "t", cwd: "/", argv: [], created: i, timeout_s: 1, idle_s: 1, session_id: "s", usage: { turns: 0, input: 0, output: 0, cost: 0 }, notified: true };
+		writeFileSync(join(root, id, "meta.json"), JSON.stringify(m));
+	}
+	return root;
+}
+
+test("list(): an unchanged meta.json is not read again; a changed one is", () => {
+	const root = metaRoot(["j1", "j2"]);
+	const reads: string[] = [];
+	const m = new JobManager({ root, pressure: () => "GREEN", readMeta: p => (reads.push(p), readFileSync(p, "utf8")) });
+	assert.deepEqual(m.list().map(x => x.id), ["j1", "j2"]);
+	assert.equal(reads.length, 2);
+	m.list();
+	m.list();
+	assert.equal(reads.length, 2); // unchanged: no new read
+	const p = join(root, "j1", "meta.json");
+	writeFileSync(`${p}.tmp`, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf8")), state: "killed" }));
+	renameSync(`${p}.tmp`, p);
+	assert.equal(m.list()[0].state, "killed");
+	assert.deepEqual(reads.slice(2), [p]); // only the rewritten file
+});
+
+test("list(): a same-size rewrite in place with the old mtime put back is read again (ctime changes)", () => {
+	const root = metaRoot(["j1"]);
+	const m = new JobManager({ root, pressure: () => "GREEN" });
+	const p = join(root, "j1", "meta.json");
+	utimesSync(p, 1_700_000_000, 1_700_000_000); // whole seconds: utimes can put this mtime back exactly
+	const st = statSync(p, { bigint: true });
+	assert.equal(m.list()[0].state, "done");
+	writeFileSync(p, readFileSync(p, "utf8").replace('"state":"done"', '"state":"dead"')); // same length
+	utimesSync(p, 1_700_000_000, 1_700_000_000);
+	const st2 = statSync(p, { bigint: true });
+	assert.deepEqual([st2.ino, st2.size, st2.mtimeNs], [st.ino, st.size, st.mtimeNs]); // only ctime differs
+	assert.equal(m.list()[0].state, "dead");
+});
+
+test("list(): a removed root empties the cache", () => {
+	const root = metaRoot(["j1"]);
+	const reads: string[] = [];
+	const m = new JobManager({ root, pressure: () => "GREEN", readMeta: p => (reads.push(p), readFileSync(p, "utf8")) });
+	m.list();
+	assert.equal((m as any).metaText.size, 1);
+	rmSync(root, { recursive: true });
+	assert.deepEqual(m.list(), []);
+	assert.equal((m as any).metaText.size, 0); // no text kept for jobs that are gone
+	mkdirSync(join(root, "j1"), { recursive: true });
+	writeFileSync(join(root, "j1", "meta.json"), JSON.stringify({ id: "j1", state: "failed", created: 0 }));
+	assert.equal(m.list()[0].state, "failed");
+	assert.equal(reads.length, 2);
+});
+
+test("list(): a rewritten meta.json is read again; a removed job is gone; callers get fresh objects", () => {
+	const root = metaRoot(["j1", "j2"]);
+	const m = new JobManager({ root, pressure: () => "GREEN" });
+	const first = m.list();
+	first[0].state = "failed"; // a caller changes its copy (finish() does this): the next list() must not see it
+	assert.equal(m.list()[0].state, "done");
+	const p = join(root, "j1", "meta.json");
+	writeFileSync(`${p}.tmp`, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf8")), state: "killed" }));
+	renameSync(`${p}.tmp`, p); // the same atomic replace as write()
+	assert.equal(m.list()[0].state, "killed");
+	writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf8")), state: "failed" })); // in place (other writers)
+	assert.equal(m.list()[0].state, "failed");
+	rmSync(join(root, "j2"), { recursive: true });
+	assert.deepEqual(m.list().map(x => x.id), ["j1"]);
 });
